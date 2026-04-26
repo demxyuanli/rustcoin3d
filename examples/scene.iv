@@ -1,0 +1,57 @@
+#Inventor V2.1 ascii
+
+Separator {
+    PerspectiveCamera {
+        position 3 3 5
+        nearDistance 0.1
+        farDistance 100
+        heightAngle 0.785
+    }
+    DirectionalLight {
+        direction -1 -1 -1
+        color 1 1 1
+    }
+    Separator {
+        Transform {
+            translation -2.5 0 0
+        }
+        Material {
+            diffuseColor 0.9 0.2 0.2
+        }
+        Cube { }
+    }
+    Separator {
+        Material {
+            diffuseColor 0.2 0.8 0.2
+        }
+        Sphere { radius 0.8 }
+    }
+    Separator {
+        Transform {
+            translation 2.5 0 0
+        }
+        Material {
+            diffuseColor 0.2 0.3 0.9
+        }
+        Cone { bottomRadius 0.6 height 1.5 }
+    }
+    Separator {
+        Transform {
+            translation -1.25 0 -2.5
+        }
+        Material {
+            diffuseColor 0.9 0.8 0.1
+        }
+        Cylinder { radius 0.4 height 1.2 }
+    }
+    Separator {
+        Transform {
+            translation 1.25 0 -2.5
+            scaleFactor 0.5 1.5 0.5
+        }
+        Material {
+            diffuseColor 0.7 0.2 0.8
+        }
+        Cube { }
+    }
+}

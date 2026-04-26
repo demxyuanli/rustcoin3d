@@ -1,0 +1,8 @@
+[package]
+name = "rc3d-mesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rc3d-core = { workspace = true }

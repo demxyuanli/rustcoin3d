@@ -1,0 +1,16 @@
+[package]
+name = "rc3d-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rc3d-core = { workspace = true }
+rc3d-fields = { workspace = true }
+rc3d-scene = { workspace = true }
+rc3d-actions = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+wgpu = { workspace = true }
+log = { workspace = true }
+winit = { workspace = true }

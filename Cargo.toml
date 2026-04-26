@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/rc3d-core",
+    "crates/rc3d-fields",
+    "crates/rc3d-scene",
+    "crates/rc3d-nodes",
+    "crates/rc3d-actions",
+    "crates/rc3d-render",
+    "crates/rc3d-engine",
+    "crates/rc3d-io",
+    "crates/rc3d-app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "BSD-3-Clause"
+
+[workspace.dependencies]
+glam = "0.29"
+slotmap = "1.0"
+wgpu = "24"
+winit = "0.30"
+bytemuck = { version = "1.21", features = ["derive"] }
+pollster = "0.4"
+thiserror = "2.0"
+log = "0.4"
+env_logger = "0.11"
+
+# Internal crates
+rc3d-core = { path = "crates/rc3d-core" }
+rc3d-fields = { path = "crates/rc3d-fields" }
+rc3d-scene = { path = "crates/rc3d-scene" }
+rc3d-nodes = { path = "crates/rc3d-nodes" }
+rc3d-actions = { path = "crates/rc3d-actions" }
+rc3d-render = { path = "crates/rc3d-render" }
+rc3d-engine = { path = "crates/rc3d-engine" }
+rc3d-io = { path = "crates/rc3d-io" }

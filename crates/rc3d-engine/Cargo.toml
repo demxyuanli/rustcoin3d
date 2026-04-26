@@ -1,0 +1,9 @@
+[package]
+name = "rc3d-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rc3d-core = { workspace = true }
+rc3d-scene = { workspace = true }
