@@ -1,6 +1,6 @@
 use rc3d_actions::{LightData, LightType, State};
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::NodeId;
+use rc3d_core::{NodeId, DisplayMode};
 use rc3d_scene::{NodeData, SceneGraph};
 
 use crate::vertex::Vertex;
@@ -10,13 +10,17 @@ use crate::vertex::Vertex;
 pub struct DrawCall {
     pub vertices: Vec<Vertex>,
     pub indices: Option<Vec<u32>>,
+    pub edge_positions: Vec<[f32; 3]>,
     pub mvp: Mat4,
     pub model_matrix: Mat4,
     pub camera_pos: Vec3,
     pub light_dir: Vec3,
     pub light_color: Vec3,
     pub color: Vec3,
-    pub aabb: Option<rc3d_actions::Aabb>,
+    pub aabb: Option<rc3d_core::Aabb>,
+    pub display_mode: DisplayMode,
+    pub selected: bool,
+    pub overlay_color: Option<[f32; 4]>,
 }
 
 /// Traverses the scene graph, accumulates state, and collects draw calls.
@@ -26,6 +30,9 @@ pub struct RenderCollector {
     pub camera_pos: Vec3,
     pub first_light_dir: Vec3,
     pub first_light_color: Vec3,
+    pub view_matrix: Mat4,
+    pub projection_matrix: Mat4,
+    pub global_display_mode: DisplayMode,
 }
 
 impl RenderCollector {
@@ -36,6 +43,9 @@ impl RenderCollector {
             camera_pos: Vec3::new(0.0, 0.0, 5.0),
             first_light_dir: Vec3::new(0.0, 0.0, -1.0),
             first_light_color: Vec3::ONE,
+            view_matrix: Mat4::IDENTITY,
+            projection_matrix: Mat4::IDENTITY,
+            global_display_mode: DisplayMode::ShadedWithEdges,
         }
     }
 
@@ -48,6 +58,8 @@ impl RenderCollector {
             return;
         };
         let data = entry.data.clone();
+        let is_selected = graph.is_selected(node);
+        let node_display_mode = entry.display_mode;
 
         match &data {
             NodeData::Separator(_) => {
@@ -86,11 +98,15 @@ impl RenderCollector {
             NodeData::PerspectiveCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
+                self.view_matrix = cam.view_matrix();
+                self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
             }
             NodeData::OrthographicCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
+                self.view_matrix = cam.view_matrix();
+                self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
             }
             NodeData::DirectionalLight(light) => {
@@ -138,82 +154,100 @@ impl RenderCollector {
                         .normalize();
                     vec![n, n, n]
                 };
-                let vertices: Vec<Vertex> = coord.points[..3]
-                    .iter()
-                    .zip(face_n.iter())
-                    .map(|(p, n)| Vertex {
-                        position: p.to_array(),
-                        normal: n.to_array(),
-                    })
-                    .collect();
-                self.emit_draw_call(vertices, None);
+                let positions = vec![coord.points[0], coord.points[1], coord.points[2]];
+                let mesh = rc3d_mesh::TriangleMesh::from_tris(&positions);
+                let mut vertices = Vec::with_capacity(3);
+                for (i, v) in mesh.phong_buffers().0.iter().enumerate() {
+                    let n = if i < face_n.len() { face_n[i].to_array() } else { [v[3], v[4], v[5]] };
+                    vertices.push(Vertex { position: [v[0], v[1], v[2]], normal: n });
+                }
+                let edge_positions = Vec::new();
+                self.emit_draw_call_with_edges(vertices, Some((0..3u32).collect()), edge_positions, is_selected, node_display_mode);
             }
             NodeData::Cube(cube) => {
-                let (vertices, indices) = tessellate_cube(cube.width, cube.height, cube.depth);
-                self.emit_draw_call(vertices, Some(indices));
+                let mesh = rc3d_mesh::tessellate_cube(cube.width, cube.height, cube.depth);
+                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
             }
             NodeData::Sphere(sphere) => {
-                let (vertices, indices) = tessellate_sphere(sphere.radius, 24, 16);
-                self.emit_draw_call(vertices, Some(indices));
+                let mesh = rc3d_mesh::tessellate_sphere(sphere.radius, 24, 16);
+                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
             }
             NodeData::Cone(cone) => {
-                let (vertices, indices) = tessellate_cone(cone.bottom_radius, cone.height, 24);
-                self.emit_draw_call(vertices, Some(indices));
+                let mesh = rc3d_mesh::tessellate_cone(cone.bottom_radius, cone.height, 24);
+                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
             }
             NodeData::Cylinder(cyl) => {
-                let (vertices, indices) = tessellate_cylinder(cyl.radius, cyl.height, 24);
-                self.emit_draw_call(vertices, Some(indices));
+                let mesh = rc3d_mesh::tessellate_cylinder(cyl.radius, cyl.height, 24);
+                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
             }
             NodeData::IndexedFaceSet(ifs) => {
                 let coord = self.state.coordinate();
                 if coord.points.is_empty() {
                     return;
                 }
-                let mut vertices = Vec::new();
-                let mut indices = Vec::new();
-                let mut vi = 0u32;
-                let mut face_points = Vec::new();
-                for &idx in &ifs.coord_index {
-                    if idx < 0 {
-                        if face_points.len() >= 3 {
-                            for j in 1..face_points.len() - 1 {
-                                let p0: Vec3 = coord.points[face_points[0]];
-                                let p1: Vec3 = coord.points[face_points[j]];
-                                let p2: Vec3 = coord.points[face_points[j + 1]];
-                                let n = (p1 - p0).cross(p2 - p0).normalize();
-                                vertices.push(Vertex { position: p0.to_array(), normal: n.to_array() });
-                                vertices.push(Vertex { position: p1.to_array(), normal: n.to_array() });
-                                vertices.push(Vertex { position: p2.to_array(), normal: n.to_array() });
-                                indices.extend_from_slice(&[vi, vi + 1, vi + 2]);
-                                vi += 3;
-                            }
-                        }
-                        face_points.clear();
-                    } else {
-                        face_points.push(idx as usize);
-                    }
+                let mesh = rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index);
+                if mesh.positions.is_empty() {
+                    return;
                 }
-                if !vertices.is_empty() {
-                    self.emit_draw_call(vertices, Some(indices));
-                }
+                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
             }
         }
     }
 
-    fn emit_draw_call(&mut self, vertices: Vec<Vertex>, indices: Option<Vec<u32>>) {
+    fn emit_mesh_draw_call(&mut self, mesh: &rc3d_mesh::TriangleMesh, selected: bool, node_display_mode: Option<DisplayMode>) {
+        let (phong_verts, indices) = mesh.phong_buffers();
+        let vertices: Vec<Vertex> = phong_verts
+            .iter()
+            .map(|v| Vertex { position: [v[0], v[1], v[2]], normal: [v[3], v[4], v[5]] })
+            .collect();
+        self.emit_draw_call_with_edges(vertices, Some(indices), Vec::new(), selected, node_display_mode);
+    }
+
+    fn extract_edge_positions(&self, mesh: &rc3d_mesh::TriangleMesh) -> Vec<[f32; 3]> {
+        let edge_ids = match self.global_display_mode {
+            DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine => {
+                let world_view_dir = self.view_direction();
+                let model = self.state.model_matrix();
+                let local_view_dir = model.inverse().transform_vector3(world_view_dir).normalize();
+                let mut edges = mesh.silhouette_edges(local_view_dir);
+                edges.extend(mesh.boundary_edges());
+                edges
+            }
+            _ => return Vec::new(),
+        };
+
+        let line_indices = mesh.edge_line_indices(&edge_ids);
+        line_indices.iter().map(|&idx| mesh.positions[idx as usize].to_array()).collect()
+    }
+
+    fn view_direction(&self) -> Vec3 {
+        Vec3::new(
+            self.view_matrix.z_axis.x,
+            self.view_matrix.z_axis.y,
+            self.view_matrix.z_axis.z,
+        ).normalize()
+    }
+
+    fn emit_draw_call_with_edges(
+        &mut self,
+        vertices: Vec<Vertex>,
+        indices: Option<Vec<u32>>,
+        edge_positions: Vec<[f32; 3]>,
+        selected: bool,
+        node_display_mode: Option<DisplayMode>,
+    ) {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
 
-        // Compute world-space AABB from transformed vertices
         let aabb = if vertices.is_empty() {
             None
         } else {
             let first = model.transform_point3(Vec3::from_array(vertices[0].position));
-            let mut aabb = rc3d_actions::Aabb::from_point(first);
+            let mut aabb = rc3d_core::Aabb::from_point(first);
             for v in &vertices[1..] {
                 let p = model.transform_point3(Vec3::from_array(v.position));
-                aabb = aabb.union(&rc3d_actions::Aabb::from_point(p));
+                aabb = aabb.union(&rc3d_core::Aabb::from_point(p));
             }
             Some(aabb)
         };
@@ -221,6 +255,7 @@ impl RenderCollector {
         self.draw_calls.push(DrawCall {
             vertices,
             indices,
+            edge_positions,
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
@@ -228,6 +263,9 @@ impl RenderCollector {
             light_color: self.first_light_color,
             color: mat.diffuse,
             aabb,
+            display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
+            selected,
+            overlay_color: None,
         });
     }
 }
@@ -236,175 +274,4 @@ impl Default for RenderCollector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// --- Shape tessellation ---
-
-fn tessellate_cube(w: f32, h: f32, d: f32) -> (Vec<Vertex>, Vec<u32>) {
-    let hw = w / 2.0;
-    let hh = h / 2.0;
-    let hd = d / 2.0;
-    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-        ([0.0, 0.0, 1.0], [[-hw, -hh, hd], [hw, -hh, hd], [hw, hh, hd], [-hw, hh, hd]]),
-        ([0.0, 0.0, -1.0], [[hw, -hh, -hd], [-hw, -hh, -hd], [-hw, hh, -hd], [hw, hh, -hd]]),
-        ([1.0, 0.0, 0.0], [[hw, -hh, hd], [hw, -hh, -hd], [hw, hh, -hd], [hw, hh, hd]]),
-        ([-1.0, 0.0, 0.0], [[-hw, -hh, -hd], [-hw, -hh, hd], [-hw, hh, hd], [-hw, hh, -hd]]),
-        ([0.0, 1.0, 0.0], [[-hw, hh, hd], [hw, hh, hd], [hw, hh, -hd], [-hw, hh, -hd]]),
-        ([0.0, -1.0, 0.0], [[-hw, -hh, -hd], [hw, -hh, -hd], [hw, -hh, hd], [-hw, -hh, hd]]),
-    ];
-    let mut vertices = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (normal, corners) in &faces {
-        let base = vertices.len() as u32;
-        for c in corners {
-            vertices.push(Vertex {
-                position: *c,
-                normal: *normal,
-            });
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    (vertices, indices)
-}
-
-fn tessellate_sphere(radius: f32, slices: u32, stacks: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-
-    for i in 0..=stacks {
-        let theta = std::f32::consts::PI * i as f32 / stacks as f32;
-        let sin_t = theta.sin();
-        let cos_t = theta.cos();
-        for j in 0..=slices {
-            let phi = 2.0 * std::f32::consts::PI * j as f32 / slices as f32;
-            let x = sin_t * phi.cos();
-            let y = cos_t;
-            let z = sin_t * phi.sin();
-            vertices.push(Vertex {
-                position: [x * radius, y * radius, z * radius],
-                normal: [x, y, z],
-            });
-        }
-    }
-
-    for i in 0..stacks {
-        for j in 0..slices {
-            let a = i * (slices + 1) + j;
-            let b = a + slices + 1;
-            indices.extend_from_slice(&[a, b, a + 1, b, b + 1, a + 1]);
-        }
-    }
-    (vertices, indices)
-}
-
-fn tessellate_cone(radius: f32, height: f32, segments: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let half_h = height / 2.0;
-
-    for i in 0..=segments {
-        let theta = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
-        let x = theta.cos();
-        let z = theta.sin();
-        let slope_len = (radius * radius + height * height).sqrt();
-        let nx = height * x / slope_len;
-        let nz = height * z / slope_len;
-        let ny = radius / slope_len;
-        vertices.push(Vertex {
-            position: [x * radius, -half_h, z * radius],
-            normal: [nx, ny, nz],
-        });
-        vertices.push(Vertex {
-            position: [0.0, half_h, 0.0],
-            normal: [nx, ny, nz],
-        });
-    }
-
-    for i in 0..segments {
-        let bl = i * 2;
-        let tl = bl + 1;
-        let br = bl + 2;
-        let tr = tl + 2;
-        indices.extend_from_slice(&[bl, br, tl, br, tr, tl]);
-    }
-
-    let cap_base = vertices.len() as u32;
-    vertices.push(Vertex {
-        position: [0.0, -half_h, 0.0],
-        normal: [0.0, -1.0, 0.0],
-    });
-    for i in 0..=segments {
-        let theta = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
-        vertices.push(Vertex {
-            position: [theta.cos() * radius, -half_h, theta.sin() * radius],
-            normal: [0.0, -1.0, 0.0],
-        });
-    }
-    for i in 0..segments {
-        indices.extend_from_slice(&[cap_base, cap_base + i + 2, cap_base + i + 1]);
-    }
-
-    (vertices, indices)
-}
-
-fn tessellate_cylinder(radius: f32, height: f32, segments: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let half_h = height / 2.0;
-
-    for i in 0..=segments {
-        let theta = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
-        let x = theta.cos();
-        let z = theta.sin();
-        vertices.push(Vertex {
-            position: [x * radius, -half_h, z * radius],
-            normal: [x, 0.0, z],
-        });
-        vertices.push(Vertex {
-            position: [x * radius, half_h, z * radius],
-            normal: [x, 0.0, z],
-        });
-    }
-
-    for i in 0..segments {
-        let bl = i * 2;
-        let tl = bl + 1;
-        let br = bl + 2;
-        let tr = tl + 2;
-        indices.extend_from_slice(&[bl, br, tl, br, tr, tl]);
-    }
-
-    let top_base = vertices.len() as u32;
-    vertices.push(Vertex {
-        position: [0.0, half_h, 0.0],
-        normal: [0.0, 1.0, 0.0],
-    });
-    for i in 0..=segments {
-        let theta = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
-        vertices.push(Vertex {
-            position: [theta.cos() * radius, half_h, theta.sin() * radius],
-            normal: [0.0, 1.0, 0.0],
-        });
-    }
-    for i in 0..segments {
-        indices.extend_from_slice(&[top_base, top_base + i + 1, top_base + i + 2]);
-    }
-
-    let bot_base = vertices.len() as u32;
-    vertices.push(Vertex {
-        position: [0.0, -half_h, 0.0],
-        normal: [0.0, -1.0, 0.0],
-    });
-    for i in 0..=segments {
-        let theta = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
-        vertices.push(Vertex {
-            position: [theta.cos() * radius, -half_h, theta.sin() * radius],
-            normal: [0.0, -1.0, 0.0],
-        });
-    }
-    for i in 0..segments {
-        indices.extend_from_slice(&[bot_base, bot_base + i + 2, bot_base + i + 1]);
-    }
-
-    (vertices, indices)
 }

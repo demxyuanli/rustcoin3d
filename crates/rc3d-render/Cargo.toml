@@ -9,8 +9,10 @@ rc3d-core = { workspace = true }
 rc3d-fields = { workspace = true }
 rc3d-scene = { workspace = true }
 rc3d-actions = { workspace = true }
+rc3d-mesh = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }
+slotmap = { workspace = true }
 wgpu = { workspace = true }
 log = { workspace = true }
 winit = { workspace = true }

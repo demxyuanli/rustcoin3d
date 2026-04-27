@@ -5,6 +5,8 @@ struct SceneUniforms {
     light_dir: vec4<f32>,
     light_color: vec4<f32>,
     object_color: vec4<f32>,
+    clip_planes: array<vec4<f32>, 6>,
+    clip_count: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: SceneUniforms;
@@ -31,6 +33,16 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Clip planes
+    let count = i32(u.clip_count.x);
+    for (var i = 0; i < count; i = i + 1) {
+        let plane = u.clip_planes[i];
+        let dist = dot(plane.xyz, in.world_pos) + plane.w;
+        if (dist < 0.0) {
+            discard;
+        }
+    }
+
     let n = normalize(in.world_normal);
     let light_dir = normalize(-u.light_dir.xyz);
     let view_dir = normalize(u.camera_pos.xyz - in.world_pos);

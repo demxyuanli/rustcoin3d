@@ -90,12 +90,22 @@ pub struct PickHit {
     pub point: Vec3,
     pub normal: Vec3,
     pub distance: f32,
+    pub face_index: Option<u32>,
+    pub edge_index: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickMode {
+    Node,
+    Face,
+    Edge,
 }
 
 pub struct RayPickAction {
     pub state: State,
     pub ray: Ray,
     pub hits: Vec<PickHit>,
+    pub mode: PickMode,
 }
 
 impl RayPickAction {
@@ -104,6 +114,16 @@ impl RayPickAction {
             state: State::new(),
             ray,
             hits: Vec::new(),
+            mode: PickMode::Node,
+        }
+    }
+
+    pub fn with_mode(ray: Ray, mode: PickMode) -> Self {
+        Self {
+            state: State::new(),
+            ray,
+            hits: Vec::new(),
+            mode,
         }
     }
 
@@ -158,14 +178,22 @@ impl RayPickAction {
                     let v0 = model.transform_point3(coord.points[0]);
                     let v1 = model.transform_point3(coord.points[1]);
                     let v2 = model.transform_point3(coord.points[2]);
-                    if let Some((t, _)) = self.ray.intersect_triangle(v0, v1, v2) {
+                    if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
                         let point = self.ray.origin + self.ray.direction * t;
                         let normal = (v1 - v0).cross(v2 - v0).normalize();
+                        let face_index = if self.mode != PickMode::Node { Some(0) } else { None };
+                        let edge_index = if self.mode == PickMode::Edge {
+                            Some(closest_edge_from_bary(&bary))
+                        } else {
+                            None
+                        };
                         self.hits.push(PickHit {
                             node,
                             point,
                             normal,
                             distance: t,
+                            face_index,
+                            edge_index,
                         });
                     }
                 }
@@ -177,13 +205,10 @@ impl RayPickAction {
                 self.pick_sphere(node, sphere.radius);
             }
             NodeData::Cone(cone) => {
-                // Use bounding sphere for rough pick
-                let radius = cone.bottom_radius.max(cone.height * 0.5);
-                self.pick_sphere_with_radius(node, radius);
+                self.pick_cone(node, cone.bottom_radius, cone.height);
             }
             NodeData::Cylinder(cyl) => {
-                let radius = cyl.radius.max(cyl.height * 0.5);
-                self.pick_sphere_with_radius(node, radius);
+                self.pick_cylinder(node, cyl.radius, cyl.height);
             }
             NodeData::IndexedFaceSet(ifs) => {
                 self.pick_indexed_face_set(node, &ifs.coord_index);
@@ -252,30 +277,23 @@ impl RayPickAction {
                 ],
             ),
         ];
+        let mut tri_idx = 0u32;
         for (normal, corners) in &faces {
             let v = corners.map(|c| model.transform_point3(c));
-            if let Some((t, _)) = self.ray.intersect_triangle(v[0], v[1], v[2]) {
+            if let Some((t, bary)) = self.ray.intersect_triangle(v[0], v[1], v[2]) {
                 let point = self.ray.origin + self.ray.direction * t;
                 let world_normal = model.transform_vector3(*normal).normalize();
-                self.hits.push(PickHit {
-                    node,
-                    point,
-                    normal: world_normal,
-                    distance: t,
-                });
+                self.push_hit(node, point, world_normal, t, tri_idx, &bary);
                 return;
             }
-            if let Some((t, _)) = self.ray.intersect_triangle(v[0], v[2], v[3]) {
+            tri_idx += 1;
+            if let Some((t, bary)) = self.ray.intersect_triangle(v[0], v[2], v[3]) {
                 let point = self.ray.origin + self.ray.direction * t;
                 let world_normal = model.transform_vector3(*normal).normalize();
-                self.hits.push(PickHit {
-                    node,
-                    point,
-                    normal: world_normal,
-                    distance: t,
-                });
+                self.push_hit(node, point, world_normal, t, tri_idx, &bary);
                 return;
             }
+            tri_idx += 1;
         }
     }
 
@@ -286,7 +304,6 @@ impl RayPickAction {
     fn pick_sphere_with_radius(&mut self, node: NodeId, radius: f32) {
         let model = self.state.model_matrix();
         let center = model.transform_point3(Vec3::ZERO);
-        // Approximate: use max scale axis for radius
         let sx = model.transform_vector3(Vec3::X).length();
         let sy = model.transform_vector3(Vec3::Y).length();
         let sz = model.transform_vector3(Vec3::Z).length();
@@ -294,12 +311,7 @@ impl RayPickAction {
         if let Some(t) = self.ray.intersect_sphere(center, world_radius) {
             let point = self.ray.origin + self.ray.direction * t;
             let normal = (point - center).normalize();
-            self.hits.push(PickHit {
-                node,
-                point,
-                normal,
-                distance: t,
-            });
+            self.push_hit(node, point, normal, t, 0, &Vec3::new(1.0/3.0, 1.0/3.0, 1.0/3.0));
         }
     }
 
@@ -310,6 +322,7 @@ impl RayPickAction {
         }
         let model = self.state.model_matrix();
         let mut face_points = Vec::new();
+        let mut tri_idx = 0u32;
         for &idx in coord_index {
             if idx < 0 {
                 if face_points.len() >= 3 {
@@ -317,17 +330,13 @@ impl RayPickAction {
                     for j in 1..face_points.len() - 1 {
                         let v1 = model.transform_point3(coord.points[face_points[j]]);
                         let v2 = model.transform_point3(coord.points[face_points[j + 1]]);
-                        if let Some((t, _)) = self.ray.intersect_triangle(v0, v1, v2) {
+                        if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
                             let point = self.ray.origin + self.ray.direction * t;
                             let normal = (v1 - v0).cross(v2 - v0).normalize();
-                            self.hits.push(PickHit {
-                                node,
-                                point,
-                                normal,
-                                distance: t,
-                            });
+                            self.push_hit(node, point, normal, t, tri_idx, &bary);
                             return;
                         }
+                        tri_idx += 1;
                     }
                 }
                 face_points.clear();
@@ -336,4 +345,140 @@ impl RayPickAction {
             }
         }
     }
+
+    fn push_hit(
+        &mut self,
+        node: NodeId,
+        point: Vec3,
+        normal: Vec3,
+        distance: f32,
+        tri_idx: u32,
+        bary: &Vec3,
+    ) {
+        let face_index = if self.mode != PickMode::Node {
+            Some(tri_idx)
+        } else {
+            None
+        };
+        let edge_index = if self.mode == PickMode::Edge {
+            Some(closest_edge_from_bary(bary))
+        } else {
+            None
+        };
+        self.hits.push(PickHit {
+            node,
+            point,
+            normal,
+            distance,
+            face_index,
+            edge_index,
+        });
+    }
+
+    fn pick_cone(&mut self, node: NodeId, radius: f32, height: f32) {
+        let model = self.state.model_matrix();
+        let half_h = height / 2.0;
+        let segments = 24u32;
+        let mut tri_idx = 0u32;
+
+        for i in 0..segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+            let bl = model.transform_point3(Vec3::new(t0.cos() * radius, -half_h, t0.sin() * radius));
+            let br = model.transform_point3(Vec3::new(t1.cos() * radius, -half_h, t1.sin() * radius));
+            let tip = model.transform_point3(Vec3::new(0.0, half_h, 0.0));
+
+            if let Some((t, bary)) = self.ray.intersect_triangle(bl, br, tip) {
+                let point = self.ray.origin + self.ray.direction * t;
+                let normal = (br - bl).cross(tip - bl).normalize();
+                self.push_hit(node, point, normal, t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+        }
+
+        let center = model.transform_point3(Vec3::new(0.0, -half_h, 0.0));
+        for i in 0..segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+            let p0 = model.transform_point3(Vec3::new(t1.cos() * radius, -half_h, t1.sin() * radius));
+            let p1 = model.transform_point3(Vec3::new(t0.cos() * radius, -half_h, t0.sin() * radius));
+            if let Some((t, bary)) = self.ray.intersect_triangle(center, p0, p1) {
+                let point = self.ray.origin + self.ray.direction * t;
+                self.push_hit(node, point, Vec3::new(0.0, -1.0, 0.0), t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+        }
+    }
+
+    fn pick_cylinder(&mut self, node: NodeId, radius: f32, height: f32) {
+        let model = self.state.model_matrix();
+        let half_h = height / 2.0;
+        let segments = 24u32;
+        let mut tri_idx = 0u32;
+
+        for i in 0..segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+            let bl = model.transform_point3(Vec3::new(t0.cos() * radius, -half_h, t0.sin() * radius));
+            let br = model.transform_point3(Vec3::new(t1.cos() * radius, -half_h, t1.sin() * radius));
+            let tl = model.transform_point3(Vec3::new(t0.cos() * radius, half_h, t0.sin() * radius));
+            let tr = model.transform_point3(Vec3::new(t1.cos() * radius, half_h, t1.sin() * radius));
+
+            if let Some((t, bary)) = self.ray.intersect_triangle(bl, br, tl) {
+                let point = self.ray.origin + self.ray.direction * t;
+                let n = (br - bl).cross(tl - bl).normalize();
+                self.push_hit(node, point, n, t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+            if let Some((t, bary)) = self.ray.intersect_triangle(br, tr, tl) {
+                let point = self.ray.origin + self.ray.direction * t;
+                let n = (tr - br).cross(tl - br).normalize();
+                self.push_hit(node, point, n, t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+        }
+
+        let top_center = model.transform_point3(Vec3::new(0.0, half_h, 0.0));
+        for i in 0..segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+            let p0 = model.transform_point3(Vec3::new(t0.cos() * radius, half_h, t0.sin() * radius));
+            let p1 = model.transform_point3(Vec3::new(t1.cos() * radius, half_h, t1.sin() * radius));
+            if let Some((t, bary)) = self.ray.intersect_triangle(top_center, p0, p1) {
+                let point = self.ray.origin + self.ray.direction * t;
+                self.push_hit(node, point, Vec3::new(0.0, 1.0, 0.0), t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+        }
+
+        let bot_center = model.transform_point3(Vec3::new(0.0, -half_h, 0.0));
+        for i in 0..segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+            let p0 = model.transform_point3(Vec3::new(t1.cos() * radius, -half_h, t1.sin() * radius));
+            let p1 = model.transform_point3(Vec3::new(t0.cos() * radius, -half_h, t0.sin() * radius));
+            if let Some((t, bary)) = self.ray.intersect_triangle(bot_center, p0, p1) {
+                let point = self.ray.origin + self.ray.direction * t;
+                self.push_hit(node, point, Vec3::new(0.0, -1.0, 0.0), t, tri_idx, &bary);
+                return;
+            }
+            tri_idx += 1;
+        }
+    }
+}
+
+/// Given barycentric coords (w0, w1, w2), return which edge is closest (0, 1, or 2).
+fn closest_edge_from_bary(bary: &Vec3) -> u32 {
+    let weights = [bary.x, bary.y, bary.z];
+    let min_idx = weights.iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    min_idx as u32
 }

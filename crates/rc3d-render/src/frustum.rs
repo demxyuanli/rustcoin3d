@@ -1,4 +1,4 @@
-use rc3d_actions::Aabb;
+use rc3d_core::Aabb;
 use rc3d_core::math::{Mat4, Vec4};
 
 #[derive(Clone, Debug)]

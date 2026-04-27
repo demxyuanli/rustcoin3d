@@ -45,19 +45,45 @@ pub struct Edge {
 pub struct TriangleMesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    pub tri_indices: Vec<u32>,
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
     pub edge_map: HashMap<EdgeKey, EdgeId>,
 }
 
+fn quantize(v: Vec3) -> [i64; 3] {
+    const SCALE: f64 = 1e5;
+    [
+        (v.x as f64 * SCALE).round() as i64,
+        (v.y as f64 * SCALE).round() as i64,
+        (v.z as f64 * SCALE).round() as i64,
+    ]
+}
+
 impl TriangleMesh {
     /// Build from a triangle soup (flat position array, 3 per triangle).
-    pub fn from_tris(positions: &[Vec3]) -> Self {
-        let face_count = positions.len() / 3;
+    /// Vertices at the same position are deduplicated so edges are shared.
+    pub fn from_tris(raw_positions: &[Vec3]) -> Self {
+        let mut positions = Vec::new();
+        let mut pos_map: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut tri_indices = Vec::with_capacity(raw_positions.len());
+
+        for p in raw_positions {
+            let key = quantize(*p);
+            let idx = *pos_map.entry(key).or_insert_with(|| {
+                let i = positions.len() as u32;
+                positions.push(*p);
+                i
+            });
+            tri_indices.push(idx);
+        }
+
+        let vert_count = positions.len();
         let mut mesh = Self {
-            positions: positions.to_vec(),
-            normals: vec![Vec3::ZERO; positions.len()],
-            faces: Vec::with_capacity(face_count),
+            positions,
+            normals: vec![Vec3::ZERO; vert_count],
+            tri_indices,
+            faces: Vec::with_capacity(raw_positions.len() / 3),
             edges: Vec::new(),
             edge_map: HashMap::new(),
         };
@@ -67,31 +93,33 @@ impl TriangleMesh {
         mesh
     }
 
-    /// Build from indexed triangle list.
+    /// Build from indexed triangle list (positions already shared by index).
     pub fn from_indexed(positions: &[Vec3], indices: &[u32]) -> Self {
-        let mut all_positions = Vec::with_capacity(indices.len());
-        for chunk in indices.chunks(3) {
-            if chunk.len() == 3 {
-                all_positions.push(positions[chunk[0] as usize]);
-                all_positions.push(positions[chunk[1] as usize]);
-                all_positions.push(positions[chunk[2] as usize]);
-            }
-        }
-        Self::from_tris(&all_positions)
+        let mut mesh = Self {
+            positions: positions.to_vec(),
+            normals: vec![Vec3::ZERO; positions.len()],
+            tri_indices: indices.to_vec(),
+            faces: Vec::with_capacity(indices.len() / 3),
+            edges: Vec::new(),
+            edge_map: HashMap::new(),
+        };
+        mesh.build_topology();
+        mesh.compute_face_normals();
+        mesh.compute_vertex_normals();
+        mesh
     }
 
     /// Build from an Open Inventor indexed face set (negative index = face end, fan-triangulated).
     pub fn from_indexed_face_set(positions: &[Vec3], coord_index: &[i32]) -> Self {
-        let mut all_positions = Vec::new();
+        let mut all_indices = Vec::new();
         let mut face_verts = Vec::new();
         for &idx in coord_index {
             if idx < 0 {
-                // Fan-triangulate the polygon
                 if face_verts.len() >= 3 {
                     for j in 1..face_verts.len() - 1 {
-                        all_positions.push(positions[face_verts[0]]);
-                        all_positions.push(positions[face_verts[j]]);
-                        all_positions.push(positions[face_verts[j + 1]]);
+                        all_indices.push(face_verts[0] as u32);
+                        all_indices.push(face_verts[j] as u32);
+                        all_indices.push(face_verts[j + 1] as u32);
                     }
                 }
                 face_verts.clear();
@@ -99,15 +127,14 @@ impl TriangleMesh {
                 face_verts.push(idx as usize);
             }
         }
-        // Handle trailing face without terminator
         if face_verts.len() >= 3 {
             for j in 1..face_verts.len() - 1 {
-                all_positions.push(positions[face_verts[0]]);
-                all_positions.push(positions[face_verts[j]]);
-                all_positions.push(positions[face_verts[j + 1]]);
+                all_indices.push(face_verts[0] as u32);
+                all_indices.push(face_verts[j] as u32);
+                all_indices.push(face_verts[j + 1] as u32);
             }
         }
-        Self::from_tris(&all_positions)
+        Self::from_indexed(positions, &all_indices)
     }
 
     /// Empty mesh.
@@ -115,6 +142,7 @@ impl TriangleMesh {
         Self {
             positions: Vec::new(),
             normals: Vec::new(),
+            tri_indices: Vec::new(),
             faces: Vec::new(),
             edges: Vec::new(),
             edge_map: HashMap::new(),
@@ -126,11 +154,11 @@ impl TriangleMesh {
         self.edges.clear();
         self.faces.clear();
 
-        let tri_count = self.positions.len() / 3;
+        let tri_count = self.tri_indices.len() / 3;
         for fi in 0..tri_count {
-            let v0 = (fi * 3) as u32;
-            let v1 = (fi * 3 + 1) as u32;
-            let v2 = (fi * 3 + 2) as u32;
+            let v0 = self.tri_indices[fi * 3];
+            let v1 = self.tri_indices[fi * 3 + 1];
+            let v2 = self.tri_indices[fi * 3 + 2];
             let verts = [v0, v1, v2];
             let mut edge_ids = [EdgeId(0), EdgeId(0), EdgeId(0)];
             let mut adj = [None, None, None];
@@ -140,7 +168,7 @@ impl TriangleMesh {
                 let eid = match self.edge_map.get(&ek) {
                     Some(&id) => {
                         // Second face sharing this edge
-                        let ev = ek.vertices();
+                        let _ev = ek.vertices();
                         adj[i] = self.edges[id.0 as usize].faces[0];
                         self.edges[id.0 as usize].faces[1] = Some(FaceId(fi as u32));
                         id
@@ -179,7 +207,7 @@ impl TriangleMesh {
 
     fn compute_vertex_normals(&mut self) {
         // Area-weighted average of adjacent face normals
-        for (i, n) in self.normals.iter_mut().enumerate() {
+        for (_i, n) in self.normals.iter_mut().enumerate() {
             *n = Vec3::ZERO;
         }
         for fi in 0..self.faces.len() {
@@ -256,8 +284,7 @@ impl TriangleMesh {
     /// Flat buffers for GPU: (positions as [f32;3] array, indices).
     pub fn triangle_buffers(&self) -> (Vec<[f32; 3]>, Vec<u32>) {
         let positions: Vec<[f32; 3]> = self.positions.iter().map(|p| p.to_array()).collect();
-        let indices: Vec<u32> = (0..self.positions.len() as u32).collect();
-        (positions, indices)
+        (positions, self.tri_indices.clone())
     }
 
     /// Interleaved position+normal buffers for Phong shading.
@@ -273,18 +300,17 @@ impl TriangleMesh {
                 v
             })
             .collect();
-        let indices: Vec<u32> = (0..self.positions.len() as u32).collect();
-        (vertices, indices)
+        (vertices, self.tri_indices.clone())
     }
 
     /// Bounding box in local space.
-    pub fn bounding_box(&self) -> rc3d_actions::Aabb {
+    pub fn bounding_box(&self) -> rc3d_core::Aabb {
         if self.positions.is_empty() {
-            return rc3d_actions::Aabb::empty();
+            return rc3d_core::Aabb::empty();
         }
-        let mut aabb = rc3d_actions::Aabb::from_point(self.positions[0]);
+        let mut aabb = rc3d_core::Aabb::from_point(self.positions[0]);
         for p in &self.positions[1..] {
-            aabb = aabb.union(&rc3d_actions::Aabb::from_point(*p));
+            aabb = aabb.union(&rc3d_core::Aabb::from_point(*p));
         }
         aabb
     }

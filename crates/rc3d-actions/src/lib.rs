@@ -6,6 +6,6 @@ pub mod state;
 
 pub use action::{Action, ActionKind};
 pub use element::*;
-pub use get_bounding_box::{Aabb, GetBoundingBoxAction};
-pub use ray_pick::{PickHit, Ray, RayPickAction};
+pub use get_bounding_box::GetBoundingBoxAction;
+pub use ray_pick::{PickHit, PickMode, Ray, RayPickAction};
 pub use state::State;

@@ -9,9 +9,28 @@ pub struct Vertex {
 
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ATTRIBUTES,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct LineVertex {
+    pub position: [f32; 3],
+}
+
+impl LineVertex {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+            wgpu::vertex_attr_array![0 => Float32x3];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &ATTRIBUTES,
         }
@@ -27,4 +46,22 @@ pub struct SceneUniforms {
     pub light_dir: [f32; 4],
     pub light_color: [f32; 4],
     pub object_color: [f32; 4],
+    pub clip_planes: [[f32; 4]; 6],
+    pub clip_count: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct FlatUniforms {
+    pub mvp: [[f32; 4]; 4],
+    pub color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct OutlineUniforms {
+    pub mvp: [[f32; 4]; 4],
+    pub outline_width: f32,
+    pub _pad: [f32; 3],
+    pub color: [f32; 4],
 }

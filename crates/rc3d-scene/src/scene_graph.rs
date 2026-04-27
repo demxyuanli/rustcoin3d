@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rc3d_core::NodeId;
 use slotmap::SlotMap;
 
@@ -7,6 +9,7 @@ use crate::node_entry::NodeEntry;
 pub struct SceneGraph {
     nodes: SlotMap<NodeId, NodeEntry>,
     roots: Vec<NodeId>,
+    selected: HashSet<NodeId>,
 }
 
 impl SceneGraph {
@@ -14,6 +17,7 @@ impl SceneGraph {
         Self {
             nodes: SlotMap::with_key(),
             roots: Vec::new(),
+            selected: HashSet::new(),
         }
     }
 
@@ -23,6 +27,7 @@ impl SceneGraph {
             parent: None,
             children: Vec::new(),
             name: None,
+            display_mode: None,
         });
         self.roots.push(id);
         id
@@ -34,6 +39,7 @@ impl SceneGraph {
             parent: Some(parent),
             children: Vec::new(),
             name: None,
+            display_mode: None,
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             entry.children.push(id);
@@ -42,7 +48,6 @@ impl SceneGraph {
     }
 
     pub fn remove(&mut self, id: NodeId) {
-        // Remove from parent's children list
         if let Some(entry) = self.nodes.remove(id) {
             if let Some(parent_id) = entry.parent {
                 if let Some(parent) = self.nodes.get_mut(parent_id) {
@@ -50,8 +55,8 @@ impl SceneGraph {
                 }
             }
         }
-        // Remove from roots if present
         self.roots.retain(|&r| r != id);
+        self.selected.remove(&id);
     }
 
     pub fn get(&self, id: NodeId) -> Option<&NodeEntry> {
@@ -71,6 +76,36 @@ impl SceneGraph {
 
     pub fn roots(&self) -> &[NodeId] {
         &self.roots
+    }
+
+    pub fn select(&mut self, id: NodeId) {
+        if self.nodes.contains_key(id) {
+            self.selected.insert(id);
+        }
+    }
+
+    pub fn deselect(&mut self, id: NodeId) {
+        self.selected.remove(&id);
+    }
+
+    pub fn toggle_selection(&mut self, id: NodeId) {
+        if self.selected.contains(&id) {
+            self.selected.remove(&id);
+        } else if self.nodes.contains_key(id) {
+            self.selected.insert(id);
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+    }
+
+    pub fn is_selected(&self, id: NodeId) -> bool {
+        self.selected.contains(&id)
+    }
+
+    pub fn selected_nodes(&self) -> &HashSet<NodeId> {
+        &self.selected
     }
 }
 

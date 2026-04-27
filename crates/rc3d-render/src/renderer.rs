@@ -1,15 +1,26 @@
 use wgpu::util::DeviceExt;
 
-use crate::vertex::{SceneUniforms, Vertex};
+use crate::frustum::Frustum;
+use crate::gpu_resource::{GpuResourceManager, GpuUniformPool};
+use crate::pipelines::PipelineSet;
+use crate::render_action::DrawCall;
+use crate::vertex::{FlatUniforms, OutlineUniforms, SceneUniforms};
+use rc3d_core::DisplayMode;
 
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
+    pipelines: PipelineSet,
+    phong_pool: GpuUniformPool,
+    flat_pool: GpuUniformPool,
+    outline_pool: GpuUniformPool,
+    gpu_meshes: GpuResourceManager,
     depth_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
+    global_display_mode: DisplayMode,
+    clip_planes: Vec<[f32; 4]>,
+    wireframe_supported: bool,
 }
 
 impl Renderer {
@@ -37,8 +48,18 @@ impl Renderer {
             .await
             .expect("failed to find adapter");
 
+        let required_features = wgpu::Features::POLYGON_MODE_LINE;
+        let features = adapter.features() & required_features;
+        let wireframe_supported = features.contains(wgpu::Features::POLYGON_MODE_LINE);
+
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    required_features: features,
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("failed to create device");
 
@@ -63,87 +84,26 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Phong Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/phong.wgsl").into()),
-        });
+        let pipelines = PipelineSet::create(&device, config.format);
+        let phong_pool = GpuUniformPool::new_phong(&device, 1024);
+        let flat_pool = GpuUniformPool::new_flat(&device, 2048);
+        let outline_pool = GpuUniformPool::new_outline(&device, 1024);
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let depth_format = wgpu::TextureFormat::Depth32Float;
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Phong Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        });
-
-        let renderer = Self {
+        let mut renderer = Self {
             device,
             queue,
             surface,
             config,
-            pipeline,
-            bind_group_layout,
+            pipelines,
+            phong_pool,
+            flat_pool,
+            outline_pool,
+            gpu_meshes: GpuResourceManager::new(),
             depth_texture: None,
+            global_display_mode: DisplayMode::ShadedWithEdges,
+            clip_planes: Vec::new(),
+            wireframe_supported,
         };
-        let mut renderer = renderer;
         renderer.create_depth_texture();
         renderer
     }
@@ -178,7 +138,42 @@ impl Renderer {
         }
     }
 
-    pub fn render_draw_calls(&self, draw_calls: &[crate::render_action::DrawCall]) {
+    pub fn set_display_mode(&mut self, mode: DisplayMode) {
+        self.global_display_mode = mode;
+    }
+
+    pub fn display_mode(&self) -> DisplayMode {
+        self.global_display_mode
+    }
+
+    pub fn set_clip_planes(&mut self, planes: Vec<[f32; 4]>) {
+        self.clip_planes = planes;
+    }
+
+    pub fn clip_planes(&self) -> &[[f32; 4]] {
+        &self.clip_planes
+    }
+
+    pub fn toggle_clip_plane(&mut self, axis: usize) {
+        // axis: 0=X, 1=Y, 2=Z. Toggle clip plane at origin for that axis.
+        let normal = match axis {
+            0 => [1.0, 0.0, 0.0, 0.0],
+            1 => [0.0, 1.0, 0.0, 0.0],
+            2 => [0.0, 0.0, 1.0, 0.0],
+            _ => return,
+        };
+        if let Some(pos) = self.clip_planes.iter().position(|p| p[0] == normal[0] && p[1] == normal[1] && p[2] == normal[2]) {
+            self.clip_planes.remove(pos);
+        } else {
+            self.clip_planes.push(normal);
+        }
+    }
+
+    pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall]) {
+        if draw_calls.is_empty() {
+            return;
+        }
+
         let output = match self.surface.get_current_texture() {
             Ok(o) => o,
             Err(_) => return,
@@ -193,25 +188,39 @@ impl Renderer {
             .expect("depth texture missing")
             .1;
 
+        // Frustum culling: compute VP from first draw call
+        let first = &draw_calls[0];
+        let vp = first.mvp * first.model_matrix.inverse();
+        let frustum = Frustum::from_view_projection(vp);
+        let visible: Vec<&DrawCall> = draw_calls
+            .iter()
+            .filter(|dc| dc.aabb.as_ref().map_or(true, |aabb| frustum.intersects_aabb(aabb)))
+            .collect();
+
+        self.phong_pool.reset();
+        self.flat_pool.reset();
+        self.outline_pool.reset();
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
 
-        {
+        let bg_color = wgpu::Color { r: 0.08, g: 0.08, b: 0.08, a: 1.0 };
+
+        let mode = self.global_display_mode;
+
+        // Outline pass (inverted hull): draw extruded backfaces before solid
+        let run_outline = mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine;
+        if run_outline {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Outline Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.08,
-                            b: 0.08,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(bg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -227,53 +236,356 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.pipelines.outline);
 
-            for dc in draw_calls {
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&dc.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+            let outline_color = if mode == DisplayMode::HiddenLine {
+                [0.5, 0.7, 1.0, 1.0]
+            } else {
+                [0.0, 0.0, 0.0, 1.0]
+            };
+            let outline_width = 0.015;
 
+            for dc in &visible {
+                if dc.vertices.is_empty() { continue; }
+                let uniforms = OutlineUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    outline_width,
+                    _pad: [0.0; 3],
+                    color: outline_color,
+                };
+                if let Some((bg, offset)) = self.outline_pool.push_outline(&self.device, &self.queue, &uniforms) {
+                    pass.set_bind_group(0, &bg, &[offset]);
+                    let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Outline VB"),
+                        contents: bytemuck::cast_slice(&dc.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    if let Some(ref indices) = dc.indices {
+                        let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Outline IB"),
+                            contents: bytemuck::cast_slice(indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                    } else {
+                        pass.draw(0..dc.vertices.len() as u32, 0..1);
+                    }
+                }
+            }
+        }
+
+        // Pass 1: Solid (fills depth + shading)
+        if mode == DisplayMode::Shaded || mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine {
+            let color_load = if run_outline { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(bg_color) };
+            let depth_load = if run_outline { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Solid Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: color_load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: depth_load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&self.pipelines.solid);
+
+            let mut clip_arr = [[0.0f32; 4]; 6];
+            for (i, cp) in self.clip_planes.iter().enumerate() {
+                if i < 6 { clip_arr[i] = *cp; }
+            }
+            let clip_count = [self.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
+
+            for dc in &visible {
+                if dc.vertices.is_empty() { continue; }
+                let obj_color = if mode == DisplayMode::HiddenLine {
+                    [0.08, 0.08, 0.08, 1.0]
+                } else {
+                    [dc.color.x, dc.color.y, dc.color.z, 1.0]
+                };
                 let uniforms = SceneUniforms {
                     mvp: dc.mvp.to_cols_array_2d(),
                     model: dc.model_matrix.to_cols_array_2d(),
                     camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
                     light_dir: [dc.light_dir.x, dc.light_dir.y, dc.light_dir.z, 0.0],
                     light_color: [dc.light_color.x, dc.light_color.y, dc.light_color.z, 1.0],
-                    object_color: [dc.color.x, dc.color.y, dc.color.z, 1.0],
+                    object_color: obj_color,
+                    clip_planes: clip_arr,
+                    clip_count,
                 };
-
-                // Each draw call needs its own uniform buffer to avoid overwriting
-                let uniform_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Draw Uniform Buffer"),
-                    contents: bytemuck::bytes_of(&uniforms),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-
-                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Draw Bind Group"),
-                    layout: &self.bind_group_layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    }],
-                });
-
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-
-                if let Some(ref indices) = dc.indices {
-                    let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Index Buffer"),
-                        contents: bytemuck::cast_slice(indices),
-                        usage: wgpu::BufferUsages::INDEX,
+                if let Some((bg, offset)) = self.phong_pool.push_scene(&self.device, &self.queue, &uniforms) {
+                    pass.set_bind_group(0, &bg, &[offset]);
+                    let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("VB"),
+                        contents: bytemuck::cast_slice(&dc.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
                     });
-                    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
-                } else {
-                    pass.draw(0..dc.vertices.len() as u32, 0..1);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    if let Some(ref indices) = dc.indices {
+                        let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("IB"),
+                            contents: bytemuck::cast_slice(indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                    } else {
+                        pass.draw(0..dc.vertices.len() as u32, 0..1);
+                    }
+                }
+            }
+        }
+
+        // Wireframe pass (standalone only)
+        if self.wireframe_supported && mode == DisplayMode::Wireframe {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Wireframe Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(bg_color), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&self.pipelines.wireframe);
+            let line_color = if mode == DisplayMode::HiddenLine {
+                [0.6, 0.8, 1.0, 1.0] // light blue edges for hidden line
+            } else {
+                [0.2, 1.0, 0.4, 1.0] // green wireframe
+            };
+
+            for dc in &visible {
+                if dc.vertices.is_empty() { continue; }
+                let uniforms = FlatUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    color: line_color,
+                };
+                if let Some((bg, offset)) = self.flat_pool.push_flat(&self.device, &self.queue, &uniforms) {
+                    pass.set_bind_group(0, &bg, &[offset]);
+                    let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("VB"),
+                        contents: bytemuck::cast_slice(&dc.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    if let Some(ref indices) = dc.indices {
+                        let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("IB"),
+                            contents: bytemuck::cast_slice(indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                    } else {
+                        pass.draw(0..dc.vertices.len() as u32, 0..1);
+                    }
+                }
+            }
+        }
+
+        // Edge overlay pass (shaded + edges mode, or hidden-line silhouette, or measurement overlay)
+        let edge_worthy = mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine;
+        let has_overlay = visible.iter().any(|dc| dc.overlay_color.is_some());
+        if edge_worthy || has_overlay {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Edge Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&self.pipelines.edge_overlay);
+
+            let default_edge_color = if mode == DisplayMode::HiddenLine {
+                [0.6, 0.8, 1.0, 0.8]
+            } else {
+                [0.0, 0.0, 0.0, 0.5]
+            };
+
+            for dc in &visible {
+                if dc.edge_positions.is_empty() {
+                    continue;
+                }
+                // Skip regular edges in non-edge modes (only draw overlays)
+                if !edge_worthy && dc.overlay_color.is_none() {
+                    continue;
+                }
+                let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
+                let uniforms = FlatUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    color: edge_color,
+                };
+                if let Some((bg, offset)) = self.flat_pool.push_flat(&self.device, &self.queue, &uniforms) {
+                    pass.set_bind_group(0, &bg, &[offset]);
+                    use crate::vertex::LineVertex;
+                    let line_verts: Vec<LineVertex> = dc.edge_positions.iter()
+                        .map(|&p| LineVertex { position: p })
+                        .collect();
+                    let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Edge VB"),
+                        contents: bytemuck::cast_slice(&line_verts),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.draw(0..line_verts.len() as u32, 0..1);
+                }
+            }
+        }
+
+        // Selection highlight pass (additive orange overlay + bright edges)
+        let has_selection = visible.iter().any(|dc| dc.selected);
+        if has_selection {
+            // Fill highlight
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Selection Fill Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                pass.set_pipeline(&self.pipelines.selection_fill);
+
+                for dc in &visible {
+                    if !dc.selected || dc.vertices.is_empty() {
+                        continue;
+                    }
+                    let uniforms = FlatUniforms {
+                        mvp: dc.mvp.to_cols_array_2d(),
+                        color: [1.0, 0.6, 0.0, 0.35],
+                    };
+                    if let Some((bg, offset)) = self.flat_pool.push_flat(&self.device, &self.queue, &uniforms) {
+                        pass.set_bind_group(0, &bg, &[offset]);
+                        let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Selection VB"),
+                            contents: bytemuck::cast_slice(&dc.vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        if let Some(ref indices) = dc.indices {
+                            let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Selection IB"),
+                                contents: bytemuck::cast_slice(indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                        } else {
+                            pass.draw(0..dc.vertices.len() as u32, 0..1);
+                        }
+                    }
+                }
+            }
+
+            // Edge highlight (bright orange wireframe on selected objects)
+            if self.wireframe_supported {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Selection Edge Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                pass.set_pipeline(&self.pipelines.wireframe);
+                let sel_color = [1.0, 0.5, 0.0, 1.0];
+
+                for dc in &visible {
+                    if !dc.selected || dc.vertices.is_empty() {
+                        continue;
+                    }
+                    let uniforms = FlatUniforms {
+                        mvp: dc.mvp.to_cols_array_2d(),
+                        color: sel_color,
+                    };
+                    if let Some((bg, offset)) = self.flat_pool.push_flat(&self.device, &self.queue, &uniforms) {
+                        pass.set_bind_group(0, &bg, &[offset]);
+                        let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Sel Edge VB"),
+                            contents: bytemuck::cast_slice(&dc.vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        if let Some(ref indices) = dc.indices {
+                            let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Sel Edge IB"),
+                                contents: bytemuck::cast_slice(indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+                        } else {
+                            pass.draw(0..dc.vertices.len() as u32, 0..1);
+                        }
+                    }
                 }
             }
         }
