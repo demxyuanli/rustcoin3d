@@ -1,7 +1,7 @@
 use crate::element::{
     CoordinateElement, Element, ElementId, LightData, LightElement, MaterialElement,
-    ModelMatrixElement, NormalElement, ProjectionMatrixElement, ViewMatrixElement,
-    NUM_ELEMENT_TYPES,
+    ModelMatrixElement, NormalElement, ProjectionMatrixElement, TextureCoordinate2Element,
+    ViewMatrixElement, NUM_ELEMENT_TYPES,
 };
 use rc3d_core::math::{Mat4, Vec3};
 
@@ -19,6 +19,7 @@ impl State {
             vec![Box::new(NormalElement::default()) as Box<dyn Element>],
             vec![Box::new(MaterialElement::default()) as Box<dyn Element>],
             vec![Box::new(LightElement::default()) as Box<dyn Element>],
+            vec![Box::new(TextureCoordinate2Element::default()) as Box<dyn Element>],
         ];
         Self { stacks }
     }
@@ -107,6 +108,14 @@ impl State {
 
     pub fn add_light(&mut self, light: LightData) {
         self.get_el_mut::<LightElement>(ElementId(6)).lights.push(light);
+    }
+
+    pub fn texture_coordinate2(&self) -> &TextureCoordinate2Element {
+        self.get_el_ref::<TextureCoordinate2Element>(ElementId(7))
+    }
+
+    pub fn set_texture_coordinate2(&mut self, coords: Vec<[f32; 2]>) {
+        self.get_el_mut::<TextureCoordinate2Element>(ElementId(7)).coords = coords;
     }
 
     fn get_el<T: 'static>(&self, id: ElementId) -> &T {

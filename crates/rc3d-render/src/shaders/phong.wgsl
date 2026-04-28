@@ -14,6 +14,12 @@ struct SceneUniforms {
     shininess: vec4<f32>,
     clip_planes: array<vec4<f32>, 6>,
     clip_count: vec4<f32>,
+    pbr_base_color: vec4<f32>,
+    pbr_metallic_roughness: vec4<f32>,
+    ibl_diffuse: vec4<f32>,
+    ibl_specular: vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: SceneUniforms;
@@ -21,12 +27,14 @@ struct SceneUniforms {
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) texcoord: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 @vertex
@@ -35,6 +43,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clip_position = u.mvp * vec4<f32>(in.position, 1.0);
     out.world_pos = (u.model * vec4<f32>(in.position, 1.0)).xyz;
     out.world_normal = normalize((u.model * vec4<f32>(in.normal, 0.0)).xyz);
+    out.uv = in.texcoord;
     return out;
 }
 

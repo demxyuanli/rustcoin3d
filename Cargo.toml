@@ -30,6 +30,8 @@ thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11"
 glyphon = "0.8"
+meshopt = "0.6"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
 
 # Internal crates
 rc3d-core = { path = "crates/rc3d-core" }

@@ -7,10 +7,21 @@ struct FlatUniforms {
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-};
+    @location(1) normal: vec3<f32>,
+    @location(2) texcoord: vec2<f32>,
+}
+
+struct LineVertexInput {
+    @location(0) position: vec3<f32>,
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
+    return u.mvp * vec4<f32>(in.position, 1.0);
+}
+
+@vertex
+fn vs_line(in: LineVertexInput) -> @builtin(position) vec4<f32> {
     return u.mvp * vec4<f32>(in.position, 1.0);
 }
 

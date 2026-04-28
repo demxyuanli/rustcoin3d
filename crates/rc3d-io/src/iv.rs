@@ -129,6 +129,25 @@ impl<'a> Parser<'a> {
         Ok(Vec3::new(self.read_float()?, self.read_float()?, self.read_float()?))
     }
 
+    fn read_bool_field(&mut self) -> Result<bool, IvError> {
+        match self.next_tok()? {
+            Token::Number(f) => Ok(*f != 0.0),
+            Token::Int(i) => Ok(*i != 0),
+            Token::Ident(s) => match s.as_str() {
+                "TRUE" | "True" | "true" => Ok(true),
+                "FALSE" | "False" | "false" => Ok(false),
+                _ => Err(IvError::Parse {
+                    line: 0,
+                    message: format!("expected boolean field value, got ident `{s}`"),
+                }),
+            },
+            other => Err(IvError::Parse {
+                line: 0,
+                message: format!("expected boolean field value, got {other:?}"),
+            }),
+        }
+    }
+
     fn parse(&mut self) -> Result<SceneGraph, IvError> {
         let mut graph = SceneGraph::new();
         while self.pos < self.tokens.len() {
@@ -190,6 +209,7 @@ impl<'a> Parser<'a> {
             "Cone" => self.parse_cone(),
             "Cylinder" => self.parse_cylinder(),
             "PerspectiveCamera" => self.parse_perspective_camera(),
+            "OrthographicCamera" => self.parse_orthographic_camera(),
             "DirectionalLight" => self.parse_directional_light(),
             "Coordinate3" => self.parse_coordinate3(),
             _ => {
@@ -226,10 +246,17 @@ impl<'a> Parser<'a> {
         let mut mat = MaterialNode::default();
         while let Some(Token::Ident(field)) = self.peek().cloned() {
             match field.as_str() {
-                "diffuseColor" => { self.pos += 1; mat.diffuse_color = self.read_vec3()?; }
+                "diffuseColor" => {
+                    self.pos += 1;
+                    mat.diffuse_color = self.read_vec3()?;
+                    mat.base_color = mat.diffuse_color;
+                }
                 "ambientColor" => { self.pos += 1; mat.ambient_color = self.read_vec3()?; }
                 "specularColor" => { self.pos += 1; mat.specular_color = self.read_vec3()?; }
                 "shininess" => { self.pos += 1; mat.shininess = self.read_float()?; }
+                "baseColor" => { self.pos += 1; mat.base_color = self.read_vec3()?; }
+                "metallic" => { self.pos += 1; mat.metallic = self.read_float()?; }
+                "roughness" => { self.pos += 1; mat.roughness = self.read_float()?; }
                 _ => break,
             }
         }
@@ -283,18 +310,40 @@ impl<'a> Parser<'a> {
 
     fn parse_perspective_camera(&mut self) -> Result<NodeData, IvError> {
         let mut cam = PerspectiveCameraNode::default();
+        let mut aspect_from_file = false;
         while let Some(Token::Ident(f)) = self.peek().cloned() {
             match f.as_str() {
                 "position" => { self.pos += 1; cam.position = self.read_vec3()?; }
                 "nearDistance" => { self.pos += 1; cam.near = self.read_float()?; }
                 "farDistance" => { self.pos += 1; cam.far = self.read_float()?; }
                 "heightAngle" => { self.pos += 1; cam.fov = self.read_float()?; }
+                "aspectRatio" => { self.pos += 1; cam.aspect = self.read_float()?; aspect_from_file = true; }
+                "reverseDepth" => { self.pos += 1; cam.reverse_depth = self.read_bool_field()?; }
                 _ => break,
             }
         }
-        cam.aspect = 800.0 / 600.0;
+        if !aspect_from_file {
+            cam.aspect = 800.0 / 600.0;
+        }
         cam.orientation = rc3d_core::math::Mat4::look_at_rh(cam.position, Vec3::ZERO, Vec3::Y);
         Ok(NodeData::PerspectiveCamera(cam))
+    }
+
+    fn parse_orthographic_camera(&mut self) -> Result<NodeData, IvError> {
+        let mut cam = OrthographicCameraNode::default();
+        while let Some(Token::Ident(f)) = self.peek().cloned() {
+            match f.as_str() {
+                "position" => { self.pos += 1; cam.position = self.read_vec3()?; }
+                "nearDistance" => { self.pos += 1; cam.near = self.read_float()?; }
+                "farDistance" => { self.pos += 1; cam.far = self.read_float()?; }
+                "viewportHeight" => { self.pos += 1; cam.height = self.read_float()?; }
+                "aspectRatio" => { self.pos += 1; cam.aspect = self.read_float()?; }
+                "reverseDepth" => { self.pos += 1; cam.reverse_depth = self.read_bool_field()?; }
+                _ => break,
+            }
+        }
+        cam.orientation = rc3d_core::math::Mat4::look_at_rh(cam.position, Vec3::ZERO, Vec3::Y);
+        Ok(NodeData::OrthographicCamera(cam))
     }
 
     fn parse_directional_light(&mut self) -> Result<NodeData, IvError> {
@@ -331,8 +380,10 @@ fn is_field_name(name: &str) -> bool {
     matches!(name,
         "translation" | "rotation" | "scaleFactor" | "center" |
         "diffuseColor" | "ambientColor" | "specularColor" | "shininess" | "emissiveColor" |
+        "baseColor" | "metallic" | "roughness" |
         "width" | "height" | "depth" | "radius" | "bottomRadius" |
         "position" | "nearDistance" | "farDistance" | "heightAngle" | "focalDistance" |
+        "aspectRatio" | "viewportHeight" | "reverseDepth" |
         "direction" | "color" | "intensity" | "location" | "cutOffAngle" | "dropOffRate" |
         "point" | "vector" | "coordIndex" | "normalIndex" |
         "renderCaching" | "boundingBoxCaching" | "renderCulling" | "pickCulling"
@@ -378,8 +429,34 @@ fn write_node(graph: &SceneGraph, node: rc3d_core::NodeId, out: &mut String, ind
             out.push_str(&format!("{pad}Cylinder {{ radius {} height {} }}\n", c.radius, c.height));
         }
         NodeData::PerspectiveCamera(c) => {
-            out.push_str(&format!("{pad}PerspectiveCamera {{ position {} {} {} heightAngle {} }}\n",
-                c.position.x, c.position.y, c.position.z, c.fov));
+            out.push_str(&format!("{pad}PerspectiveCamera {{\n"));
+            out.push_str(&format!(
+                "{pad}  position {} {} {}\n",
+                c.position.x, c.position.y, c.position.z
+            ));
+            out.push_str(&format!("{pad}  heightAngle {}\n", c.fov));
+            out.push_str(&format!("{pad}  nearDistance {}\n", c.near));
+            out.push_str(&format!("{pad}  farDistance {}\n", c.far));
+            out.push_str(&format!("{pad}  aspectRatio {}\n", c.aspect));
+            if c.reverse_depth {
+                out.push_str(&format!("{pad}  reverseDepth 1\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        NodeData::OrthographicCamera(c) => {
+            out.push_str(&format!("{pad}OrthographicCamera {{\n"));
+            out.push_str(&format!(
+                "{pad}  position {} {} {}\n",
+                c.position.x, c.position.y, c.position.z
+            ));
+            out.push_str(&format!("{pad}  viewportHeight {}\n", c.height));
+            out.push_str(&format!("{pad}  nearDistance {}\n", c.near));
+            out.push_str(&format!("{pad}  farDistance {}\n", c.far));
+            out.push_str(&format!("{pad}  aspectRatio {}\n", c.aspect));
+            if c.reverse_depth {
+                out.push_str(&format!("{pad}  reverseDepth 1\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
         }
         NodeData::DirectionalLight(l) => {
             out.push_str(&format!("{pad}DirectionalLight {{ direction {} {} {} }}\n",

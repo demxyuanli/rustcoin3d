@@ -5,12 +5,13 @@ use bytemuck::{Pod, Zeroable};
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    pub texcoord: [f32; 2],
 }
 
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -55,6 +56,19 @@ pub struct SceneUniforms {
     pub shininess: [f32; 4],
     pub clip_planes: [[f32; 4]; 6],
     pub clip_count: [f32; 4],
+    pub pbr_base_color: [f32; 4],
+    pub pbr_metallic_roughness: [f32; 4],
+    pub ibl_diffuse: [f32; 4],
+    pub ibl_specular: [f32; 4],
+    pub light_view_proj: [[f32; 4]; 4],
+    /// x=inv shadow map size, y=depth bias, z=PCF half-width (0/1/2), w=enabled (1/0).
+    pub shadow_params: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct ShadowDrawUniforms {
+    pub shadow_mvp: [[f32; 4]; 4],
 }
 
 #[repr(C)]

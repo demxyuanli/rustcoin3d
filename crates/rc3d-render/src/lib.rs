@@ -1,15 +1,23 @@
+pub mod cluster;
 pub mod frustum;
 pub mod gpu_resource;
 pub mod hud;
+pub mod hzb;
 pub mod pipelines;
 pub mod render_action;
+pub mod render_graph;
+pub mod render_passes;
 pub mod renderer;
+pub mod shadow_map;
+pub mod sort_keys;
+pub mod texture_cache;
 pub mod vertex;
 
 pub use frustum::Frustum;
 pub use gpu_resource::{GpuResourceManager, GpuUniformPool, MeshId};
 pub use hud::HudRenderer;
-pub use pipelines::PipelineSet;
+pub use pipelines::{DepthModePipelines, PipelineSet};
 pub use render_action::{DrawCall, RenderCollector};
 pub use renderer::{FrameStats, Renderer};
-pub use vertex::{FlatUniforms, LineVertex, SceneUniforms, Vertex};
+pub use texture_cache::{ibl_from_image_path, TextureCache, TextureHandle};
+pub use vertex::{FlatUniforms, LineVertex, SceneUniforms, ShadowDrawUniforms, Vertex};

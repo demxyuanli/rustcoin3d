@@ -5,11 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rc3d-mesh = { workspace = true }
 rc3d-core = { workspace = true }
 rc3d-fields = { workspace = true }
 rc3d-scene = { workspace = true }
 rc3d-actions = { workspace = true }
-rc3d-mesh = { workspace = true }
 bytemuck = { workspace = true }
 glam = { workspace = true }
 slotmap = { workspace = true }
@@ -18,3 +18,4 @@ log = { workspace = true }
 winit = { workspace = true }
 glyphon = { workspace = true }
 twox-hash = "1.6.3"
+image = { workspace = true }

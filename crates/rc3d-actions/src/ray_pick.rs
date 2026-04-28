@@ -1,8 +1,12 @@
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
+use rc3d_mesh::{Bvh, BvhTriangle};
 use rc3d_scene::{NodeData, SceneGraph};
 
 use crate::State;
+
+/// Use BVH ray cast when fan triangle count reaches this threshold.
+const IFS_BVH_TRIANGLE_THRESHOLD: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub struct Ray {
@@ -165,7 +169,7 @@ impl RayPickAction {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
             }
-            NodeData::Coordinate3(_) | NodeData::Normal(_) | NodeData::Material(_) => {}
+            NodeData::Coordinate3(_) | NodeData::TextureCoordinate2(_) | NodeData::Normal(_) | NodeData::Material(_) => {}
             NodeData::DirectionalLight(_)
             | NodeData::PointLight(_)
             | NodeData::SpotLight(_) => {}
@@ -320,6 +324,15 @@ impl RayPickAction {
             return;
         }
         let model = self.state.model_matrix();
+        let tris = collect_ifs_world_triangles(coord, coord_index, model);
+        if tris.len() >= IFS_BVH_TRIANGLE_THRESHOLD {
+            let bvh = Bvh::from_triangles(tris);
+            if let Some(h) = bvh.intersect_ray(self.ray.origin, self.ray.direction, 0.001) {
+                let point = self.ray.origin + self.ray.direction * h.t;
+                self.push_hit(node, point, h.normal, h.t, h.tri_id, &h.bary);
+            }
+            return;
+        }
         let mut face_points = Vec::new();
         let mut tri_idx = 0u32;
         for &idx in coord_index {
@@ -469,6 +482,36 @@ impl RayPickAction {
             tri_idx += 1;
         }
     }
+}
+
+fn collect_ifs_world_triangles(
+    coord: &crate::element::CoordinateElement,
+    coord_index: &[i32],
+    model: Mat4,
+) -> Vec<BvhTriangle> {
+    let mut out = Vec::new();
+    let mut face_points = Vec::new();
+    let mut tri_idx = 0u32;
+    for &idx in coord_index {
+        if idx < 0 {
+            if face_points.len() >= 3 {
+                let v0 = model.transform_point3(coord.points[face_points[0]]);
+                for j in 1..face_points.len() - 1 {
+                    let v1 = model.transform_point3(coord.points[face_points[j]]);
+                    let v2 = model.transform_point3(coord.points[face_points[j + 1]]);
+                    out.push(BvhTriangle {
+                        vertices: [v0, v1, v2],
+                        id: tri_idx,
+                    });
+                    tri_idx += 1;
+                }
+            }
+            face_points.clear();
+        } else {
+            face_points.push(idx as usize);
+        }
+    }
+    out
 }
 
 /// Given barycentric coords (w0, w1, w2), return which edge is closest (0, 1, or 2).

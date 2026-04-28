@@ -1,64 +1,63 @@
+//! Loads a model on a background thread; main thread uploads GPU resources on redraw.
+//! Usage: import_viewer_async <file.stl|file.obj|file.iv>
+
 use std::env;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 use rc3d_actions::GetBoundingBoxAction;
 use rc3d_app::App;
 use rc3d_app::camera_controller::CameraController;
-use rc3d_core::{math::{Mat4, Vec3}, DisplayMode};
+use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::DisplayMode;
 use rc3d_core::NodeId;
 use rc3d_scene::node_data::*;
+use rc3d_scene::SceneGraph;
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    ).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info")).init();
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: import_viewer <file.stl|file.obj|file.iv> [--high-contrast=on|off]");
+        eprintln!("Usage: import_viewer_async <file.stl|file.obj|file.iv>");
         return;
     }
+    let path = args[1].clone();
+    let path_buf = Path::new(&path).to_path_buf();
+    let high_contrast = path_buf
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("stl"))
+        .unwrap_or(false);
 
-    let path = Path::new(&args[1]);
-    let high_contrast = parse_high_contrast(&args, path);
-    let graph = match rc3d_io::import_file(path) {
-        Ok(g) => {
-            println!("Loaded: {}", path.display());
-            g
-        }
-        Err(e) => {
-            eprintln!("Import error: {e}");
-            return;
-        }
-    };
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let r = rc3d_io::import_file(&path_buf)
+            .map(|g| ensure_camera_and_light(g, high_contrast))
+            .map_err(|e| e.to_string());
+        let _ = tx.send(r);
+    });
 
-    let mut graph = ensure_camera_and_light(graph, high_contrast);
-    let (target, orbit_radius) = fit_camera_to_scene(&mut graph);
-    let controller_root = find_first_camera_node(&graph).unwrap_or(graph.roots()[0]);
-    let ctrl = CameraController::new(controller_root, target, orbit_radius);
-    let mut app = App::new(graph)
-        .with_camera_controller(ctrl)
-        .with_initial_display_mode(DisplayMode::ShadedWithEdges)
-        .with_hdr_post_processing(true);
+    println!("Loading in background: {}", path);
+
+    let mut app = App::new(SceneGraph::new())
+        .with_initial_display_mode(DisplayMode::ShadedWithEdges);
+    app.set_pending_graph_receiver(rx);
+    app.set_graph_load_hook(move |app| {
+        let (target, orbit_radius) = fit_camera_to_scene(&mut app.graph);
+        let controller_root = find_first_camera_node(&app.graph)
+            .or_else(|| app.graph.roots().first().copied())
+            .expect("non-empty graph after load");
+        app.camera_controller = Some(CameraController::new(controller_root, target, orbit_radius));
+    });
+
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
 }
 
-fn parse_high_contrast(args: &[String], path: &Path) -> bool {
-    for arg in args.iter().skip(2) {
-        if let Some(value) = arg.strip_prefix("--high-contrast=") {
-            return matches!(value, "on" | "true" | "1");
-        }
-    }
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("stl"))
-        .unwrap_or(false)
-}
-
-/// Find the first Separator root that contains geometry, or the first root.
 fn find_geometry_root(graph: &rc3d_scene::SceneGraph) -> NodeId {
     let roots = graph.roots();
     for &root in roots {
@@ -72,7 +71,9 @@ fn find_geometry_root(graph: &rc3d_scene::SceneGraph) -> NodeId {
 }
 
 fn has_geometry_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool {
-    let Some(entry) = graph.get(node) else { return false };
+    let Some(entry) = graph.get(node) else {
+        return false;
+    };
     match &entry.data {
         NodeData::Coordinate3(_)
         | NodeData::TextureCoordinate2(_)
@@ -92,17 +93,50 @@ fn has_geometry_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool 
     false
 }
 
+fn has_camera_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool {
+    let Some(entry) = graph.get(node) else {
+        return false;
+    };
+    if matches!(
+        entry.data,
+        NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_)
+    ) {
+        return true;
+    }
+    for &child in &entry.children {
+        if has_camera_recursive(graph, child) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_material_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool {
+    let Some(entry) = graph.get(node) else {
+        return false;
+    };
+    if matches!(entry.data, NodeData::Material(_)) {
+        return true;
+    }
+    for &child in &entry.children {
+        if has_material_recursive(graph, child) {
+            return true;
+        }
+    }
+    false
+}
+
 fn ensure_camera_and_light(mut graph: rc3d_scene::SceneGraph, high_contrast: bool) -> rc3d_scene::SceneGraph {
-    let has_camera = graph.roots().iter().any(|&root| {
-        has_camera_recursive(&graph, root)
-    });
+    let has_camera = graph
+        .roots()
+        .iter()
+        .any(|&root| has_camera_recursive(&graph, root));
 
     if !has_camera {
-        // Insert camera + light at index 0 so they are visited BEFORE geometry.
-        // RenderCollector processes children in order; VP matrix must be set first.
         let target_root = find_geometry_root(&graph);
         graph.insert_child(
-            target_root, 0,
+            target_root,
+            0,
             NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
                 Vec3::new(5.0, 5.0, 8.0),
                 Vec3::ZERO,
@@ -111,18 +145,18 @@ fn ensure_camera_and_light(mut graph: rc3d_scene::SceneGraph, high_contrast: boo
                 800.0 / 600.0,
             )),
         );
-        // Main key light: upper-left-front
         graph.insert_child(
-            target_root, 1,
+            target_root,
+            1,
             NodeData::DirectionalLight(DirectionalLightNode {
                 direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
                 color: Vec3::ONE,
                 intensity: 1.0,
             }),
         );
-        // Fill light: upper-right, softer intensity to brighten shadows
         graph.insert_child(
-            target_root, 2,
+            target_root,
+            2,
             NodeData::DirectionalLight(DirectionalLightNode {
                 direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
                 color: Vec3::new(0.9, 0.92, 1.0),
@@ -131,49 +165,34 @@ fn ensure_camera_and_light(mut graph: rc3d_scene::SceneGraph, high_contrast: boo
         );
     }
 
-    let has_material = graph.roots().iter().any(|&root| {
-        has_material_recursive(&graph, root)
-    });
+    let has_material = graph
+        .roots()
+        .iter()
+        .any(|&root| has_material_recursive(&graph, root));
     if !has_material {
         let target_root = find_geometry_root(&graph);
         let cam_count = if has_camera { 0 } else { 3 };
         graph.insert_child(
-            target_root, cam_count,
+            target_root,
+            cam_count,
             NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.7, 0.7, 0.7))),
         );
     }
 
-    if high_contrast {
-        apply_high_contrast_mode(&mut graph);
-        log::info!("High-contrast import mode enabled");
-    }
-
-    graph
-}
-
-fn apply_high_contrast_mode(graph: &mut rc3d_scene::SceneGraph) {
-    if !has_directional_light(graph) {
-        let target_root = find_geometry_root(graph);
+    if high_contrast && !has_directional_light(&graph) {
+        let target_root = find_geometry_root(&graph);
         graph.insert_child(
-            target_root, 0,
+            target_root,
+            0,
             NodeData::DirectionalLight(DirectionalLightNode {
                 direction: Vec3::new(-1.0, -0.8, -0.6).normalize(),
                 color: Vec3::ONE,
                 intensity: 2.4,
             }),
         );
-        graph.insert_child(
-            target_root, 1,
-            NodeData::DirectionalLight(DirectionalLightNode {
-                direction: Vec3::new(1.0, -0.5, 0.7).normalize(),
-                color: Vec3::new(0.9, 0.92, 1.0),
-                intensity: 1.0,
-            }),
-        );
     }
-    for &root in graph.roots().to_vec().iter() {
-        boost_contrast_recursive(graph, root);
-    }
+
+    graph
 }
 
 fn has_directional_light(graph: &rc3d_scene::SceneGraph) -> bool {
@@ -186,7 +205,9 @@ fn has_directional_light(graph: &rc3d_scene::SceneGraph) -> bool {
 }
 
 fn has_directional_light_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool {
-    let Some(entry) = graph.get(node) else { return false };
+    let Some(entry) = graph.get(node) else {
+        return false;
+    };
     if matches!(entry.data, NodeData::DirectionalLight(_)) {
         return true;
     }
@@ -196,28 +217,6 @@ fn has_directional_light_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId)
         }
     }
     false
-}
-
-fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
-    let children = graph.children(node).to_vec();
-    if let Some(entry) = graph.get_mut(node) {
-        match &mut entry.data {
-            NodeData::DirectionalLight(light) => {
-                light.intensity = light.intensity.max(2.2);
-                light.color = Vec3::ONE;
-            }
-            NodeData::Material(mat) => {
-                mat.diffuse_color = mat.diffuse_color.max(Vec3::splat(0.75));
-                mat.ambient_color = mat.ambient_color.max(Vec3::splat(0.25));
-                mat.specular_color = mat.specular_color.max(Vec3::splat(0.6));
-                mat.shininess = mat.shininess.max(48.0);
-            }
-            _ => {}
-        }
-    }
-    for child in children {
-        boost_contrast_recursive(graph, child);
-    }
 }
 
 fn fit_camera_to_scene(graph: &mut rc3d_scene::SceneGraph) -> (Vec3, f32) {
@@ -286,7 +285,10 @@ fn find_first_camera_node(graph: &rc3d_scene::SceneGraph) -> Option<NodeId> {
 
 fn find_camera_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> Option<NodeId> {
     let entry = graph.get(node)?;
-    if matches!(entry.data, NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_)) {
+    if matches!(
+        entry.data,
+        NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_)
+    ) {
         return Some(node);
     }
     for &child in &entry.children {
@@ -295,31 +297,4 @@ fn find_camera_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> Option
         }
     }
     None
-}
-
-fn has_camera_recursive(graph: &rc3d_scene::SceneGraph, node: rc3d_core::NodeId) -> bool {
-    let Some(entry) = graph.get(node) else { return false };
-    match &entry.data {
-        NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_) => return true,
-        _ => {}
-    }
-    for &child in &entry.children {
-        if has_camera_recursive(graph, child) {
-            return true;
-        }
-    }
-    false
-}
-
-fn has_material_recursive(graph: &rc3d_scene::SceneGraph, node: rc3d_core::NodeId) -> bool {
-    let Some(entry) = graph.get(node) else { return false };
-    if matches!(entry.data, NodeData::Material(_)) {
-        return true;
-    }
-    for &child in &entry.children {
-        if has_material_recursive(graph, child) {
-            return true;
-        }
-    }
-    false
 }

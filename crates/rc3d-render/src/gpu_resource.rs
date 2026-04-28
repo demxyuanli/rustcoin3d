@@ -1,7 +1,7 @@
 use slotmap::new_key_type;
 use wgpu::util::DeviceExt;
 
-use crate::vertex::{FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms, Vertex};
+use crate::vertex::{FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms, ShadowDrawUniforms, Vertex};
 
 new_key_type! {
     pub struct MeshId;
@@ -201,6 +201,43 @@ impl GpuUniformPool {
         }
     }
 
+    /// Pool for per-draw shadow MVP; `layout` must match [PipelineSet::shadow_draw_bgl].
+    pub fn new_shadow_pool(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, capacity: usize) -> Self {
+        let raw_stride = std::mem::size_of::<ShadowDrawUniforms>() as u64;
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
+        let size = stride * capacity as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shadow Uniform Pool"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group_layout = layout.clone();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Shadow Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
+    }
+
     pub fn new_outline(device: &wgpu::Device, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<OutlineUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
@@ -277,6 +314,10 @@ impl GpuUniformPool {
     }
 
     pub fn push_outline(&mut self, uniforms: &OutlineUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    pub fn push_shadow(&mut self, uniforms: &ShadowDrawUniforms) -> Option<u32> {
         self.push_bytes(bytemuck::bytes_of(uniforms))
     }
 

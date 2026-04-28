@@ -124,6 +124,7 @@ fn main() {
                     if let NodeData::Material(mat) = &mut entry.data {
                         // Highlight: set to white
                         mat.diffuse_color = Vec3::ONE;
+                        mat.base_color = Vec3::ONE;
                         log::info!("Picked node, highlighted material");
                     }
                 }

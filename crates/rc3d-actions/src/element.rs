@@ -90,6 +90,26 @@ impl Element for CoordinateElement {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct TextureCoordinate2Element {
+    pub coords: Vec<[f32; 2]>,
+}
+
+impl Element for TextureCoordinate2Element {
+    fn element_id(&self) -> ElementId {
+        ElementId(7)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn Element> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct NormalElement {
     pub vectors: Vec<Vec3>,
 }
@@ -107,6 +127,10 @@ pub struct MaterialElement {
     pub ambient: Vec3,
     pub specular: Vec3,
     pub shininess: f32,
+    pub base_color: Vec3,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub albedo_texture: Option<String>,
 }
 
 impl Default for MaterialElement {
@@ -116,6 +140,10 @@ impl Default for MaterialElement {
             ambient: Vec3::new(0.2, 0.2, 0.2),
             specular: Vec3::new(0.0, 0.0, 0.0),
             shininess: 0.0,
+            base_color: Vec3::new(0.8, 0.8, 0.8),
+            metallic: 0.0,
+            roughness: 0.5,
+            albedo_texture: None,
         }
     }
 }
@@ -157,4 +185,4 @@ impl Element for LightElement {
     fn clone_box(&self) -> Box<dyn Element> { Box::new(self.clone()) }
 }
 
-pub const NUM_ELEMENT_TYPES: usize = 7;
+pub const NUM_ELEMENT_TYPES: usize = 8;

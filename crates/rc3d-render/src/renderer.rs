@@ -1,15 +1,26 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
+
+use glam::Vec3;
 use slotmap::Key;
 use wgpu::util::DeviceExt;
 
+use crate::cluster::{ClusterRenderer, ClusterSet};
 use crate::frustum::Frustum;
 use crate::gpu_resource::{GpuMesh, GpuResourceManager, GpuUniformPool};
 use crate::hud::HudRenderer;
+use crate::hzb::{HzbBaker, HzbPyramids};
 use crate::pipelines::PipelineSet;
 use crate::render_action::DrawCall;
-use crate::vertex::{FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms};
+use crate::texture_cache::{ibl_from_image_path, TextureCache};
+use crate::render_passes::{self, PassContext};
+use crate::shadow_map::{aabb_from_scene, directional_light_view_proj, primary_directional_light_dir, union_draw_call_aabbs};
+use crate::sort_keys;
+use crate::vertex::LineVertex;
+use glam::Mat4;
 use rc3d_core::DisplayMode;
+use rc3d_scene::SceneGraph;
 
 const MESH_CACHE_MAX: usize = 256;
 const MESH_CACHE_IDLE_FRAMES: u64 = 120;
@@ -18,9 +29,10 @@ const ADAPTIVE_MEDIUM_ENTER_MS: f32 = 26.0;
 const ADAPTIVE_LOW_ENTER_MS: f32 = 40.0;
 const ADAPTIVE_MEDIUM_EXIT_MS: f32 = 22.0;
 const ADAPTIVE_LOW_EXIT_MS: f32 = 33.0;
+const CLUSTER_PIPELINE_GENERATION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AdaptiveQuality {
+pub(super) enum AdaptiveQuality {
     High,
     Medium,
     Low,
@@ -38,61 +50,231 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
-    pipelines: PipelineSet,
-    phong_pool: GpuUniformPool,
-    flat_pool: GpuUniformPool,
-    outline_pool: GpuUniformPool,
-    gpu_meshes: GpuResourceManager,
-    depth_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
-    global_display_mode: DisplayMode,
-    clip_planes: Vec<[f32; 4]>,
-    wireframe_supported: bool,
-    mesh_cache: HashMap<u64, (crate::gpu_resource::MeshId, u64)>,
-    frame_counter: u64,
-    performance_mode_active: bool,
-    hud: Option<HudRenderer>,
-    hud_enabled: bool,
-    adaptive_quality: AdaptiveQuality,
-    last_hud_update_frame: u64,
+    pub pipelines: PipelineSet,
+    pub phong_pool: GpuUniformPool,
+    pub flat_pool: GpuUniformPool,
+    pub outline_pool: GpuUniformPool,
+    pub gpu_meshes: GpuResourceManager,
+    pub depth_texture: Option<(wgpu::Texture, wgpu::TextureView, wgpu::TextureView)>,
+    pub global_display_mode: DisplayMode,
+    pub clip_planes: Vec<[f32; 4]>,
+    pub wireframe_supported: bool,
+    pub mesh_cache: HashMap<u64, (crate::gpu_resource::MeshId, u64)>,
+    pub frame_counter: u64,
+    pub performance_mode_active: bool,
+    pub hud: Option<HudRenderer>,
+    pub hud_enabled: bool,
+    pub(super) adaptive_quality: AdaptiveQuality,
+    pub last_hud_update_frame: u64,
+    pub outline_width: f32,
+    pub outline_color: [f32; 4],
+    pub cluster_renderer: Option<ClusterRenderer>,
+    pub cluster_cache: HashMap<u64, ClusterSet>,
+    pub hzb: Option<HzbPyramids>,
+    pub hzb_baker: Option<HzbBaker>,
+    pub cluster_pipeline_generation: u32,
+    depth_reversed_z_mismatch_warned: bool,
+    pub texture_cache: TextureCache,
+    pub ibl_diffuse: [f32; 4],
+    pub ibl_specular: [f32; 4],
+    pub shadow_pool: GpuUniformPool,
+    pub shadow_compare_sampler: wgpu::Sampler,
+    pub shadow_depth_tex: wgpu::Texture,
+    pub shadow_depth_view: wgpu::TextureView,
+    pub shadow_bind_group: wgpu::BindGroup,
+    pub shadow_map_resolution: u32,
+    pub hdr_post_processing: bool,
+    pub post_process_bgl: wgpu::BindGroupLayout,
+    pub post_process_sampler: wgpu::Sampler,
+    /// Tonemap + FXAA: HDR scene -> linear LDR (`post_ldr`).
+    pub post_process_pipeline: wgpu::RenderPipeline,
+    /// Fullscreen blit: `post_ldr` -> swapchain (display encoding).
+    pub blit_ldr_pipeline: wgpu::RenderPipeline,
+    pub hdr_scene_tex: Option<wgpu::Texture>,
+    pub hdr_scene_view: Option<wgpu::TextureView>,
+    pub post_process_bind_group: Option<wgpu::BindGroup>,
+    pub post_ldr_tex: Option<wgpu::Texture>,
+    pub post_ldr_view: Option<wgpu::TextureView>,
+    pub blit_ldr_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl Renderer {
-    fn display_mode_sort_key(mode: DisplayMode) -> u8 {
-        match mode {
-            DisplayMode::Shaded => 0,
-            DisplayMode::ShadedWithEdges => 1,
-            DisplayMode::Wireframe => 2,
-            DisplayMode::HiddenLine => 3,
+    fn create_shadow_map_resources(
+        device: &wgpu::Device,
+        pipelines: &PipelineSet,
+        compare_sampler: &wgpu::Sampler,
+        resolution: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+        let resolution = resolution.max(1);
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Shadow map"),
+            size: wgpu::Extent3d {
+                width: resolution,
+                height: resolution,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Shadow resources"),
+            layout: &pipelines.shadow_resource_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(compare_sampler),
+                },
+            ],
+        });
+        (tex, view, bg)
+    }
+
+    pub fn ensure_shadow_map(&mut self, resolution: u32) {
+        let resolution = resolution.max(1);
+        if resolution == self.shadow_map_resolution {
+            return;
+        }
+        let (tex, view, bg) = Self::create_shadow_map_resources(
+            &self.device,
+            &self.pipelines,
+            &self.shadow_compare_sampler,
+            resolution,
+        );
+        self.shadow_depth_tex = tex;
+        self.shadow_depth_view = view;
+        self.shadow_bind_group = bg;
+        self.shadow_map_resolution = resolution;
+    }
+
+    pub fn set_hdr_post_processing(&mut self, enabled: bool) {
+        self.hdr_post_processing = enabled;
+        if !enabled {
+            self.hdr_scene_tex = None;
+            self.hdr_scene_view = None;
+            self.post_process_bind_group = None;
+            self.post_ldr_tex = None;
+            self.post_ldr_view = None;
+            self.blit_ldr_bind_group = None;
+        } else {
+            self.ensure_hdr_scene_target();
         }
     }
 
-    fn color_sort_key(color: [f32; 4]) -> [u32; 4] {
-        [
-            color[0].to_bits(),
-            color[1].to_bits(),
-            color[2].to_bits(),
-            color[3].to_bits(),
-        ]
+    pub(super) fn ensure_hdr_scene_target(&mut self) {
+        if !self.hdr_post_processing {
+            return;
+        }
+        let w = self.config.width.max(1);
+        let h = self.config.height.max(1);
+        if let (Some(ht), Some(pt)) = (&self.hdr_scene_tex, &self.post_ldr_tex) {
+            let hsz = ht.size();
+            let psz = pt.size();
+            if hsz.width == w
+                && hsz.height == h
+                && psz.width == w
+                && psz.height == h
+                && self.post_process_bind_group.is_some()
+                && self.blit_ldr_bind_group.is_some()
+            {
+                return;
+            }
+        }
+        self.hdr_scene_tex = None;
+        self.hdr_scene_view = None;
+        self.post_process_bind_group = None;
+        self.post_ldr_tex = None;
+        self.post_ldr_view = None;
+        self.blit_ldr_bind_group = None;
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("HDR scene color"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Post process bind"),
+            layout: &self.post_process_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+            ],
+        });
+        self.hdr_scene_tex = Some(tex);
+        self.hdr_scene_view = Some(tv);
+        self.post_process_bind_group = Some(bg);
+
+        let post_ldr = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Post LDR color"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let post_ldr_v = post_ldr.create_view(&wgpu::TextureViewDescriptor::default());
+        let blit_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Blit post LDR"),
+            layout: &self.post_process_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&post_ldr_v),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+            ],
+        });
+        self.post_ldr_tex = Some(post_ldr);
+        self.post_ldr_view = Some(post_ldr_v);
+        self.blit_ldr_bind_group = Some(blit_bg);
     }
 
-    fn light_dirs_sort_key(dirs: [[f32; 4]; 4]) -> [[u32; 4]; 4] {
-        dirs.map(Self::color_sort_key)
-    }
-
-    fn light_colors_sort_key(colors: [[f32; 4]; 4]) -> [[u32; 4]; 4] {
-        colors.map(Self::color_sort_key)
-    }
-
-    fn light_types_sort_key(types: [[f32; 4]; 4]) -> [[u32; 4]; 4] {
-        types.map(Self::color_sort_key)
-    }
-
-    fn light_positions_sort_key(positions: [[f32; 4]; 4]) -> [[u32; 4]; 4] {
-        positions.map(Self::color_sort_key)
-    }
-
-    fn spot_params_sort_key(params: [[f32; 4]; 4]) -> [[u32; 4]; 4] {
-        params.map(Self::color_sort_key)
+    fn log_mesh_shader_assessment(adapter: &wgpu::Adapter) {
+        let info = adapter.get_info();
+        let backend = format!("{:?}", info.backend);
+        let driver = info.driver.clone();
+        let device = info.name.clone();
+        let features = adapter.features();
+        let has_indirect = features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+        log::warn!(
+            "Mesh shader assessment: backend={}, device={}, driver={}, indirect_first_instance={}, recommendation=keep compute-culling+indirect-draw for portability; evaluate mesh shaders only on vendor-locked high-end targets",
+            backend,
+            device,
+            driver,
+            has_indirect
+        );
     }
 
     pub async fn new(window: &winit::window::Window) -> Self {
@@ -118,6 +300,7 @@ impl Renderer {
             })
             .await
             .expect("failed to find adapter");
+        Self::log_mesh_shader_assessment(&adapter);
 
         let required_features = wgpu::Features::POLYGON_MODE_LINE
             | wgpu::Features::DEPTH32FLOAT_STENCIL8;
@@ -158,8 +341,122 @@ impl Renderer {
 
         let pipelines = PipelineSet::create(&device, config.format);
         let phong_pool = GpuUniformPool::new_phong(&device, 1024);
+        let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 1024);
         let flat_pool = GpuUniformPool::new_flat(&device, 2048);
         let outline_pool = GpuUniformPool::new_outline(&device, 1024);
+        let texture_cache = TextureCache::new(&device, &queue);
+        let shadow_compare_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Shadow compare"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::Less),
+            ..Default::default()
+        });
+        let (shadow_depth_tex, shadow_depth_view, shadow_bind_group) =
+            Self::create_shadow_map_resources(&device, &pipelines, &shadow_compare_sampler, 1);
+        let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Post tonemap FXAA"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post_tonemap_fxaa.wgsl").into()),
+        });
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Blit LDR to swapchain"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit_tex.wgsl").into()),
+        });
+        let post_process_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Post process BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let post_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Post PLL"),
+            bind_group_layouts: &[&post_process_bgl],
+            push_constant_ranges: &[],
+        });
+        let post_process_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Post tonemap FXAA"),
+            layout: Some(&post_pll),
+            vertex: wgpu::VertexState {
+                module: &post_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &post_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let blit_ldr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blit post LDR to swapchain"),
+            layout: Some(&post_pll),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let post_process_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Post process sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        let ibl_path = Path::new("test_data/studio.hdr");
+        let (idl, isl) = ibl_from_image_path(ibl_path).unwrap_or((Vec3::splat(0.07), Vec3::splat(0.15)));
+        let ibl_diffuse = [idl.x, idl.y, idl.z, 1.0];
+        let ibl_specular = [isl.x, isl.y, isl.z, 1.0];
 
         let mut renderer = Self {
             device,
@@ -168,6 +465,7 @@ impl Renderer {
             config,
             pipelines,
             phong_pool,
+            shadow_pool,
             flat_pool,
             outline_pool,
             gpu_meshes: GpuResourceManager::new(),
@@ -182,6 +480,33 @@ impl Renderer {
             hud_enabled: true,
             adaptive_quality: AdaptiveQuality::High,
             last_hud_update_frame: 0,
+            outline_width: 0.022,
+            outline_color: [0.0, 0.0, 0.0, 1.0],
+            cluster_renderer: None,
+            cluster_cache: HashMap::new(),
+            hzb: None,
+            hzb_baker: None,
+            cluster_pipeline_generation: 0,
+            depth_reversed_z_mismatch_warned: false,
+            texture_cache,
+            ibl_diffuse,
+            ibl_specular,
+            shadow_compare_sampler,
+            shadow_depth_tex,
+            shadow_depth_view,
+            shadow_bind_group,
+            shadow_map_resolution: 1,
+            hdr_post_processing: false,
+            post_process_bgl,
+            post_process_sampler,
+            post_process_pipeline,
+            blit_ldr_pipeline,
+            hdr_scene_tex: None,
+            hdr_scene_view: None,
+            post_process_bind_group: None,
+            post_ldr_tex: None,
+            post_ldr_view: None,
+            blit_ldr_bind_group: None,
         };
         renderer.hud = Some(HudRenderer::new(
             &renderer.device,
@@ -191,10 +516,16 @@ impl Renderer {
             renderer.config.height,
         ));
         renderer.create_depth_texture();
+        renderer.hzb = Some(HzbPyramids::new(
+            &renderer.device,
+            renderer.config.width,
+            renderer.config.height,
+        ));
+        renderer.hzb_baker = Some(HzbBaker::new(&renderer.device));
         renderer
     }
 
-    fn create_depth_texture(&mut self) {
+    pub(super) fn create_depth_texture(&mut self) {
         let size = wgpu::Extent3d {
             width: self.config.width,
             height: self.config.height,
@@ -207,12 +538,25 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32FloatStencil8,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         };
         let texture = self.device.create_texture(&desc);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.depth_texture = Some((texture, view));
+        let depth_only = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Depth Only"),
+            format: Some(wgpu::TextureFormat::Depth32Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        });
+        self.depth_texture = Some((texture, view, depth_only));
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -221,8 +565,13 @@ impl Renderer {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.create_depth_texture();
+            self.hzb = Some(HzbPyramids::new(&self.device, width, height));
+            self.hzb_baker = Some(HzbBaker::new(&self.device));
             if let Some(hud) = &mut self.hud {
                 hud.resize(&self.queue, width, height);
+            }
+            if self.hdr_post_processing {
+                self.ensure_hdr_scene_target();
             }
         }
     }
@@ -284,13 +633,10 @@ impl Renderer {
                 }
             }
         };
-
         if previous != self.adaptive_quality {
             log::warn!(
                 "Adaptive quality changed: {:?} -> {:?} (frame_ms={:.2})",
-                previous,
-                self.adaptive_quality,
-                frame_time_ms
+                previous, self.adaptive_quality, frame_time_ms
             );
         }
     }
@@ -328,31 +674,15 @@ impl Renderer {
 
     pub fn invalidate_mesh_cache(&mut self) {
         self.mesh_cache.clear();
+        self.cluster_cache.clear();
     }
 
-    pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall]) -> FrameStats {
+    pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall], scene: &SceneGraph) -> FrameStats {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         if draw_calls.is_empty() {
             return FrameStats::default();
         }
 
-        let output = match self.surface.get_current_texture() {
-            Ok(o) => o,
-            Err(_) => return FrameStats::default(),
-        };
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        if self.depth_texture.is_none() {
-            self.create_depth_texture();
-        }
-        let Some((_, depth_view)) = self.depth_texture.as_ref() else {
-            return FrameStats::default();
-        };
-        let depth_view = depth_view.clone();
-
-        // Frustum culling: compute VP from first draw call
         let first = &draw_calls[0];
         let vp = first.mvp * first.model_matrix.inverse();
         let frustum = Frustum::from_view_projection(vp);
@@ -360,95 +690,122 @@ impl Renderer {
             .iter()
             .filter(|dc| dc.aabb.as_ref().map_or(true, |aabb| frustum.intersects_aabb(aabb)))
             .collect();
-        let stats = FrameStats {
-            visible_triangles: 0,
-            visible_draw_calls: visible.len(),
-            culled_draw_calls: draw_calls.len().saturating_sub(visible.len()),
-        };
+
+        if let Some(head) = visible.first() {
+            let dz = head.depth_reversed_z;
+            let inconsistent = visible.iter().any(|dc| dc.depth_reversed_z != dz);
+            if inconsistent {
+                if !self.depth_reversed_z_mismatch_warned {
+                    log::warn!(
+                        "visible draw calls disagree on depth_reversed_z; using first visible ({}) for pipelines and depth clears",
+                        dz
+                    );
+                    self.depth_reversed_z_mismatch_warned = true;
+                }
+            } else {
+                self.depth_reversed_z_mismatch_warned = false;
+            }
+        }
+
         let total_visible_triangles: u64 = visible
             .iter()
             .map(|dc| {
-                if let Some(indices) = dc.indices.as_ref() {
+                if let Some(md) = dc.meshlet_data.as_ref() {
+                    md.total_triangles as u64
+                } else if let Some(indices) = dc.indices.as_ref() {
                     (indices.len() / 3) as u64
                 } else {
                     (dc.vertices.len() / 3) as u64
                 }
             })
             .sum();
-        let stats = FrameStats {
-            visible_triangles: total_visible_triangles,
-            ..stats
-        };
         let enable_perf_mode = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
         if enable_perf_mode != self.performance_mode_active {
             self.performance_mode_active = enable_perf_mode;
             if enable_perf_mode {
-                log::warn!(
-                    "Performance mode enabled: triangle_count={} threshold={}",
-                    total_visible_triangles,
-                    PERFORMANCE_MODE_TRIANGLE_THRESHOLD
-                );
+                log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
             } else {
                 log::info!("Performance mode disabled");
             }
         }
 
-        // Precompute mesh handles once for all passes
-        // Use Arc pointer identity as fast-path hash; full data hash as fallback.
         let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
-        {
-            for dc in &visible {
-                let handle = if dc.vertices.is_empty() {
-                    None
+        for dc in &visible {
+            let handle = if dc.vertices.is_empty() && dc.meshlet_data.is_none() {
+                None
+            } else if dc.meshlet_data.is_some() {
+                // Meshlet path: upload as standard mesh using meshlet-expanded buffers
+                let md = dc.meshlet_data.as_ref().unwrap();
+                let ptr = Arc::as_ptr(md) as u64;
+                if let Some((mesh_id, last_used)) = self.mesh_cache.get_mut(&ptr) {
+                    *last_used = self.frame_counter;
+                    Some(*mesh_id)
                 } else {
-                    let hash = dc.mesh_hash.unwrap_or_else(|| {
-                        let ptr_key = (
-                            Arc::as_ptr(&dc.vertices) as u64,
-                            dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
-                        );
-                        let mut h = twox_hash::XxHash64::with_seed(0);
-                        std::hash::Hasher::write_u64(&mut h, ptr_key.0);
-                        std::hash::Hasher::write_u64(&mut h, ptr_key.1);
-                        std::hash::Hasher::finish(&h)
-                    });
-                    if let Some((mesh_id, last_used)) = self.mesh_cache.get_mut(&hash) {
-                        *last_used = self.frame_counter;
-                        Some(*mesh_id)
-                    } else {
-                        // Hash cached but mesh evicted - need to re-upload
-                        let h = hash;
-                        if self.mesh_cache.len() >= MESH_CACHE_MAX {
-                            self.prune_mesh_cache();
-                        }
-                        let mesh_id = self.gpu_meshes.upload_mesh(
-                            &self.device,
-                            &dc.vertices,
-                            dc.indices.as_ref().map(|a| a.as_slice()),
-                            &dc.edge_positions,
-                        );
-                        self.mesh_cache.insert(h, (mesh_id, self.frame_counter));
-                        Some(mesh_id)
+                    if self.mesh_cache.len() >= MESH_CACHE_MAX {
+                        self.prune_mesh_cache();
                     }
-                };
-                mesh_handles.push(handle);
-            }
+                    // Convert meshlet vertices to standard Vertex format
+                    let verts: Vec<crate::vertex::Vertex> = md.vertices.iter().map(|mv| crate::vertex::Vertex {
+                        position: mv.position,
+                        normal: mv.normal,
+                        texcoord: mv.texcoord,
+                    }).collect();
+                    let mesh_id = self.gpu_meshes.upload_mesh(
+                        &self.device,
+                        &verts,
+                        Some(&md.indices),
+                        &[],
+                    );
+                    self.mesh_cache.insert(ptr, (mesh_id, self.frame_counter));
+                    Some(mesh_id)
+                }
+            } else {
+                let hash = dc.mesh_hash.unwrap_or_else(|| {
+                    let ptr_key = (
+                        Arc::as_ptr(&dc.vertices) as u64,
+                        dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
+                    );
+                    let mut h = twox_hash::XxHash64::with_seed(0);
+                    std::hash::Hasher::write_u64(&mut h, ptr_key.0);
+                    std::hash::Hasher::write_u64(&mut h, ptr_key.1);
+                    std::hash::Hasher::finish(&h)
+                });
+                if let Some((mesh_id, last_used)) = self.mesh_cache.get_mut(&hash) {
+                    *last_used = self.frame_counter;
+                    Some(*mesh_id)
+                } else {
+                    if self.mesh_cache.len() >= MESH_CACHE_MAX {
+                        self.prune_mesh_cache();
+                    }
+                    let mesh_id = self.gpu_meshes.upload_mesh(
+                        &self.device,
+                        &dc.vertices,
+                        dc.indices.as_ref().map(|a| a.as_slice()),
+                        &dc.edge_positions,
+                    );
+                    self.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
+                    Some(mesh_id)
+                }
+            };
+            mesh_handles.push(handle);
         }
+
         let mut solid_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| !visible[i].vertices.is_empty())
+            .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
             .collect();
         solid_order.sort_by_key(|&i| {
             let dc = visible[i];
             (
-                Self::light_dirs_sort_key(dc.light_dirs),
-                Self::light_colors_sort_key(dc.light_colors),
-                Self::light_types_sort_key(dc.light_types),
-                Self::light_positions_sort_key(dc.light_positions),
-                Self::spot_params_sort_key(dc.spot_params),
+                sort_keys::vec4_array_sort_key(dc.light_dirs),
+                sort_keys::vec4_array_sort_key(dc.light_colors),
+                sort_keys::vec4_array_sort_key(dc.light_types),
+                sort_keys::vec4_array_sort_key(dc.light_positions),
+                sort_keys::vec4_array_sort_key(dc.spot_params),
                 dc.light_count,
-                Self::display_mode_sort_key(dc.display_mode),
-                Self::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
-                Self::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
-                Self::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
+                sort_keys::display_mode_sort_key(dc.display_mode),
+                sort_keys::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
+                sort_keys::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
+                sort_keys::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
                 dc.shininess.to_bits(),
                 mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
             )
@@ -459,33 +816,49 @@ impl Renderer {
         edge_order.sort_by_key(|&i| {
             let dc = visible[i];
             (
-                Self::display_mode_sort_key(dc.display_mode),
-                Self::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
+                sort_keys::display_mode_sort_key(dc.display_mode),
+                sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
                 mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
             )
         });
         let mut selected_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| visible[i].selected && !visible[i].vertices.is_empty())
+            .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
             .collect();
         selected_order.sort_by_key(|&i| {
             let dc = visible[i];
             (
-                Self::display_mode_sort_key(dc.display_mode),
+                sort_keys::display_mode_sort_key(dc.display_mode),
                 mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
             )
         });
 
+        // Collect meshlet visible indices and upload ClusterSets
+        let mut meshlet_indices: Vec<usize> = Vec::new();
+        for (i, dc) in visible.iter().enumerate() {
+            if dc.meshlet_data.is_some() {
+                meshlet_indices.push(i);
+                let md = dc.meshlet_data.as_ref().unwrap();
+                let ptr = Arc::as_ptr(md) as u64;
+                if !self.cluster_cache.contains_key(&ptr) {
+                    let cs = ClusterSet::from_meshlet_data(&self.device, md);
+                    self.cluster_cache.insert(ptr, cs);
+                }
+            }
+        }
+        if !meshlet_indices.is_empty() {
+            if self.cluster_pipeline_generation != CLUSTER_PIPELINE_GENERATION {
+                self.cluster_renderer = None;
+                self.cluster_pipeline_generation = CLUSTER_PIPELINE_GENERATION;
+            }
+            if self.cluster_renderer.is_none() {
+                self.cluster_renderer = Some(ClusterRenderer::new(&self.device));
+            }
+        }
+
         self.phong_pool.reset();
+        self.shadow_pool.reset();
         self.flat_pool.reset();
         self.outline_pool.reset();
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
-
-        let bg_color = wgpu::Color { r: 0.08, g: 0.08, b: 0.08, a: 1.0 };
 
         let base_mode = if self.performance_mode_active {
             DisplayMode::Shaded
@@ -497,389 +870,66 @@ impl Renderer {
         } else {
             base_mode
         };
-
-        // Inverted-hull + stencil: solid writes stencil=1; expanded backfaces (cull front) only
-        // pass where stencil==0 (halo) so interior is not overdrawn in outline color.
         let run_outline = !self.performance_mode_active
             && self.adaptive_quality == AdaptiveQuality::High
             && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
 
-        if mode == DisplayMode::Shaded || mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine {
-            let pass_label = if run_outline {
-                "Solid+Outline Pass"
-            } else {
-                "Solid Pass"
-            };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(pass_label),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg_color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0u32),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+        let solid_wants_shadow = !self.performance_mode_active
+            && matches!(
+                mode,
+                DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
+            );
 
-            pass.set_pipeline(&self.pipelines.solid);
-            // Reference value 1: solid Replace writes stencil=1 for lit surface pixels.
-            pass.set_stencil_reference(1);
+        let mut light_view_proj = Mat4::IDENTITY;
+        let mut shadow_params = [0.0_f32, 0.0004, 0.0, 0.0];
+        let mut run_shadow_pass = false;
 
-            let mut clip_arr = [[0.0f32; 4]; 6];
-            for (i, cp) in self.clip_planes.iter().enumerate() {
-                if i < 6 { clip_arr[i] = *cp; }
-            }
-            let clip_count = [self.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
-
-            let mut last_bound_mesh = None;
-            let mut start = 0usize;
-            while start < solid_order.len() {
-                let head_idx = solid_order[start];
-                let head_dc = visible[head_idx];
-                let light_key = (
-                    Self::light_dirs_sort_key(head_dc.light_dirs),
-                    Self::light_colors_sort_key(head_dc.light_colors),
-                    Self::light_types_sort_key(head_dc.light_types),
-                    Self::light_positions_sort_key(head_dc.light_positions),
-                    Self::spot_params_sort_key(head_dc.spot_params),
-                    head_dc.light_count,
-                    Self::color_sort_key([head_dc.diffuse_color.x, head_dc.diffuse_color.y, head_dc.diffuse_color.z, 1.0]),
-                    Self::color_sort_key([head_dc.ambient_color.x, head_dc.ambient_color.y, head_dc.ambient_color.z, 1.0]),
-                    Self::color_sort_key([head_dc.specular_color.x, head_dc.specular_color.y, head_dc.specular_color.z, 1.0]),
-                    head_dc.shininess.to_bits(),
-                );
-                let mut end = start + 1;
-                while end < solid_order.len() {
-                    let idx = solid_order[end];
-                    let dc = visible[idx];
-                    let key = (
-                        Self::light_dirs_sort_key(dc.light_dirs),
-                        Self::light_colors_sort_key(dc.light_colors),
-                        Self::light_types_sort_key(dc.light_types),
-                        Self::light_positions_sort_key(dc.light_positions),
-                        Self::spot_params_sort_key(dc.spot_params),
-                        dc.light_count,
-                        Self::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
-                        Self::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
-                        Self::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
-                        dc.shininess.to_bits(),
-                    );
-                    if key != light_key {
-                        break;
-                    }
-                    end += 1;
-                }
-
-                for &i in &solid_order[start..end] {
-                    let dc = visible[i];
-                    let diffuse_color = if mode == DisplayMode::HiddenLine {
-                        [0.08, 0.08, 0.08, 1.0]
-                    } else {
-                        [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+        if solid_wants_shadow {
+            if let Some(dir) = primary_directional_light_dir(scene) {
+                let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
+                if let Some(aabb) = aabb {
+                    let sm_size = match self.adaptive_quality {
+                        AdaptiveQuality::High => 2048,
+                        AdaptiveQuality::Medium => 1024,
+                        AdaptiveQuality::Low => 512,
                     };
-                    let uniforms = SceneUniforms {
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        model: dc.model_matrix.to_cols_array_2d(),
-                        camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                        light_dirs: head_dc.light_dirs,
-                        light_colors: head_dc.light_colors,
-                        light_types: head_dc.light_types,
-                        light_positions: head_dc.light_positions,
-                        spot_params: head_dc.spot_params,
-                        light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
-                        diffuse_color,
-                        ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                        specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
-                        shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                        clip_planes: clip_arr,
-                        clip_count,
+                    self.ensure_shadow_map(sm_size);
+                    light_view_proj = directional_light_view_proj(dir, &aabb, 8.0);
+                    let inv = 1.0 / sm_size as f32;
+                    let (bias, pcf) = match self.adaptive_quality {
+                        AdaptiveQuality::High => (0.00015_f32, 2.0_f32),
+                        AdaptiveQuality::Medium => (0.00028, 1.0),
+                        AdaptiveQuality::Low => (0.00045, 0.0),
                     };
-                    if let Some(offset) = self.phong_pool.push_scene(&uniforms) {
-                        pass.set_bind_group(0, self.phong_pool.bind_group(), &[offset]);
-                        if let Some(mesh_id) = mesh_handles[i] {
-                            self.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                        }
-                    }
-                }
-                start = end;
-            }
-
-            if run_outline {
-                pass.set_pipeline(&self.pipelines.outline);
-                // Equal(0): only halo pixels; interior has stencil=1 and fails the test.
-                pass.set_stencil_reference(0);
-
-                let outline_color = if mode == DisplayMode::HiddenLine {
-                    [0.5, 0.7, 1.0, 1.0]
-                } else {
-                    [0.0, 0.0, 0.0, 1.0]
-                };
-                let outline_width = 0.022;
-
-                let mut last_bound_mesh = None;
-                for &i in &solid_order {
-                    let dc = visible[i];
-                    let uniforms = OutlineUniforms {
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        outline_width,
-                        _pad: [0.0; 3],
-                        color: outline_color,
-                    };
-                    if let Some(offset) = self.outline_pool.push_outline(&uniforms) {
-                        pass.set_bind_group(0, self.outline_pool.bind_group(), &[offset]);
-                        if let Some(mesh_id) = mesh_handles[i] {
-                            self.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                        }
-                    }
+                    shadow_params = [inv, bias, pcf, 1.0];
+                    run_shadow_pass = true;
                 }
             }
         }
 
-        // Wireframe pass (standalone only)
-        if !self.performance_mode_active && self.wireframe_supported && mode == DisplayMode::Wireframe {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Wireframe Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(bg_color), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0u32),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+        let ctx = PassContext {
+            visible: &visible,
+            solid_order: &solid_order,
+            edge_order: &edge_order,
+            selected_order: &selected_order,
+            mesh_handles: &mesh_handles,
+            mode,
+            run_outline,
+            bg_color: wgpu::Color { r: 0.08, g: 0.08, b: 0.08, a: 1.0 },
+            performance_mode_active: self.performance_mode_active,
+            wireframe_supported: self.wireframe_supported,
+            adaptive_quality: self.adaptive_quality,
+            outline_width: self.outline_width,
+            outline_color: self.outline_color,
+            meshlet_indices: &meshlet_indices,
+            camera_pos: [first.camera_pos.x, first.camera_pos.y, first.camera_pos.z],
+            depth_reversed_z: first.depth_reversed_z,
+            light_view_proj,
+            shadow_params,
+            run_shadow_pass,
+        };
 
-            pass.set_pipeline(&self.pipelines.wireframe);
-            let line_color = [0.2, 1.0, 0.4, 1.0];
-
-            let mut last_bound_mesh = None;
-            for &i in &solid_order {
-                let dc = visible[i];
-                let uniforms = FlatUniforms {
-                    mvp: dc.mvp.to_cols_array_2d(),
-                    color: line_color,
-                };
-                if let Some(offset) = self.flat_pool.push_flat(&uniforms) {
-                    pass.set_bind_group(0, self.flat_pool.bind_group(), &[offset]);
-                    if let Some(mesh_id) = mesh_handles[i] {
-                        self.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                    }
-                }
-            }
-        }
-
-        // Edge overlay pass
-        let edge_worthy = !self.performance_mode_active
-            && self.adaptive_quality != AdaptiveQuality::Low
-            && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
-        let has_overlay = visible.iter().any(|dc| dc.overlay_color.is_some());
-        if edge_worthy || has_overlay {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Edge Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_stencil_reference(0);
-            pass.set_pipeline(&self.pipelines.edge_overlay);
-
-            let default_edge_color = if mode == DisplayMode::HiddenLine {
-                [0.6, 0.8, 1.0, 0.8]
-            } else {
-                [0.0, 0.0, 0.0, 0.5]
-            };
-
-            let mut last_bound_edge_mesh = None;
-            for &i in &edge_order {
-                let dc = visible[i];
-                if !edge_worthy && dc.overlay_color.is_none() {
-                    continue;
-                }
-                let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
-                let uniforms = FlatUniforms {
-                    mvp: dc.mvp.to_cols_array_2d(),
-                    color: edge_color,
-                };
-                if let Some(offset) = self.flat_pool.push_flat(&uniforms) {
-                    pass.set_bind_group(0, self.flat_pool.bind_group(), &[offset]);
-                    let drawn_from_cache = if let Some(mesh_id) = mesh_handles[i] {
-                        self.draw_edges_batched(&mut pass, mesh_id, &mut last_bound_edge_mesh)
-                    } else {
-                        false
-                    };
-                    if !drawn_from_cache {
-                        self.bind_and_draw_edges(&mut pass, dc, mesh_handles[i]);
-                    }
-                }
-            }
-        }
-
-        // Selection highlight pass
-        let has_selection = visible.iter().any(|dc| dc.selected);
-        if has_selection && !self.performance_mode_active {
-            // Fill highlight
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Selection Fill Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                pass.set_stencil_reference(0);
-                pass.set_pipeline(&self.pipelines.selection_fill);
-
-                let mut last_bound_mesh = None;
-                for &i in &selected_order {
-                    let dc = visible[i];
-                    let uniforms = FlatUniforms {
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        color: [1.0, 0.6, 0.0, 0.35],
-                    };
-                    if let Some(offset) = self.flat_pool.push_flat(&uniforms) {
-                        pass.set_bind_group(0, self.flat_pool.bind_group(), &[offset]);
-                        if let Some(mesh_id) = mesh_handles[i] {
-                            self.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                        }
-                    }
-                }
-            }
-
-            // Edge highlight (bright orange wireframe on selected objects)
-            if self.wireframe_supported && self.adaptive_quality != AdaptiveQuality::Low {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Selection Edge Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                pass.set_stencil_reference(0);
-                pass.set_pipeline(&self.pipelines.wireframe);
-                let sel_color = [1.0, 0.5, 0.0, 1.0];
-
-                let mut last_bound_mesh = None;
-                for &i in &selected_order {
-                    let dc = visible[i];
-                    let uniforms = FlatUniforms {
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        color: sel_color,
-                    };
-                    if let Some(offset) = self.flat_pool.push_flat(&uniforms) {
-                        pass.set_bind_group(0, self.flat_pool.bind_group(), &[offset]);
-                        if let Some(mesh_id) = mesh_handles[i] {
-                            self.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                        }
-                    }
-                }
-            }
-        }
-
-        self.outline_pool.flush(&self.queue);
-        self.phong_pool.flush(&self.queue);
-        self.flat_pool.flush(&self.queue);
-        if self.hud_enabled {
-            if let Some(hud) = self.hud.as_ref() {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("HUD Overlay Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                hud.render(&mut pass);
-            }
-        }
-        self.prune_mesh_cache();
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        stats
+        render_passes::execute_passes(self, &ctx, draw_calls, self.frame_counter)
     }
 
     pub fn update_hud(&mut self, fps: f32, frame_time_ms: f32, stats: FrameStats, mode_name: &str) {
@@ -898,24 +948,15 @@ impl Renderer {
         let quality_name = self.adaptive_quality_name();
         let hud_mode_name = format!("{mode_name} [{quality_name}]");
         if let Some(hud) = &mut self.hud {
-            hud.update_text(
-                &self.device,
-                &self.queue,
-                fps,
-                frame_time_ms,
-                stats,
-                &hud_mode_name,
-            );
+            hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
         }
     }
-
-    // -- Mesh cache helpers --
 
     fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
         self.gpu_meshes.get(mesh_id)
     }
 
-    fn draw_mesh_batched(
+    pub(super) fn draw_mesh_batched(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         mesh_id: crate::gpu_resource::MeshId,
@@ -936,7 +977,7 @@ impl Renderer {
         }
     }
 
-    fn draw_edges_batched(
+    pub(super) fn draw_edges_batched(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         mesh_id: crate::gpu_resource::MeshId,
@@ -952,7 +993,7 @@ impl Renderer {
         true
     }
 
-    fn bind_and_draw_edges(
+    pub(super) fn bind_and_draw_edges(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         dc: &DrawCall,
@@ -967,13 +1008,8 @@ impl Renderer {
                 }
             }
         }
-        // Fallback: edge-only draw calls (no vertices) or missing edge buffer
         if !dc.edge_positions.is_empty() {
-            let line_verts: Vec<LineVertex> = dc
-                .edge_positions
-                .iter()
-                .map(|&p| LineVertex { position: p })
-                .collect();
+            let line_verts: Vec<LineVertex> = dc.edge_positions.iter().map(|&p| LineVertex { position: p }).collect();
             let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Edge VB"),
                 contents: bytemuck::cast_slice(&line_verts),
@@ -984,7 +1020,7 @@ impl Renderer {
         }
     }
 
-    fn prune_mesh_cache(&mut self) {
+    pub(super) fn prune_mesh_cache(&mut self) {
         let frame = self.frame_counter;
         let stale_keys: Vec<u64> = self
             .mesh_cache

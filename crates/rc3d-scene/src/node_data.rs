@@ -1,3 +1,17 @@
+//! Scene graph node payloads (cameras, geometry, lights).
+//!
+//! ## Depth convention (`PerspectiveCameraNode` / `OrthographicCameraNode`)
+//!
+//! Set [`PerspectiveCameraNode::reverse_depth`] or [`OrthographicCameraNode::reverse_depth`] to build
+//! a projection whose clip-space Z ordering matches **reverse-Z** rendering (WebGPU:
+//! `CompareFunction::Greater`, depth clear `0.0`, HZB max pyramid). Leave `false` for **forward-Z**
+//! (`Less`, clear `1.0`, HZB min pyramid).
+//!
+//! `DrawCall::depth_reversed_z` (see `rc3d-render`) is derived from the active projection matrix via
+//! `rc3d_core::depth_reversed_z_from_projection`; keep camera projection and GPU depth state aligned.
+//! If one frame mixes draw calls built from incompatible projections, `render_draw_calls` logs a
+//! warning and uses the first visible draw call for pipeline depth mode.
+
 use rc3d_core::math::{Mat4, Vec3, Vec4};
 
 /// Behavioral marker: saves/restores all state elements during traversal.
@@ -16,6 +30,18 @@ pub struct Coordinate3Node {
 
 impl Coordinate3Node {
     pub fn from_points(points: Vec<Vec3>) -> Self {
+        Self { point: points }
+    }
+}
+
+/// Per-vertex 2D texture coordinates (parallel to [`Coordinate3Node::point`] when used with IFS).
+#[derive(Clone, Debug)]
+pub struct TextureCoordinate2Node {
+    pub point: Vec<[f32; 2]>,
+}
+
+impl TextureCoordinate2Node {
+    pub fn from_points(points: Vec<[f32; 2]>) -> Self {
         Self { point: points }
     }
 }
@@ -39,6 +65,10 @@ pub struct MaterialNode {
     pub ambient_color: Vec3,
     pub specular_color: Vec3,
     pub shininess: f32,
+    pub base_color: Vec3,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub albedo_texture: Option<String>,
 }
 
 impl MaterialNode {
@@ -48,6 +78,10 @@ impl MaterialNode {
             ambient_color: diffuse * 0.2,
             specular_color: Vec3::new(0.5, 0.5, 0.5),
             shininess: 32.0,
+            base_color: diffuse,
+            metallic: 0.0,
+            roughness: 0.5,
+            albedo_texture: None,
         }
     }
 }
@@ -59,6 +93,10 @@ impl Default for MaterialNode {
             ambient_color: Vec3::new(0.2, 0.2, 0.2),
             specular_color: Vec3::new(0.0, 0.0, 0.0),
             shininess: 0.0,
+            base_color: Vec3::new(0.8, 0.8, 0.8),
+            metallic: 0.0,
+            roughness: 0.5,
+            albedo_texture: None,
         }
     }
 }
@@ -181,6 +219,9 @@ pub struct PerspectiveCameraNode {
     pub near: f32,
     pub far: f32,
     pub aspect: f32,
+    /// When `true`, builds reverse-Z clip mapping (near plane -> ndc_z ~ 1, far -> ~0). Match WebGPU
+    /// depth test `Greater` and clear `0.0`.
+    pub reverse_depth: bool,
 }
 
 impl Default for PerspectiveCameraNode {
@@ -192,6 +233,7 @@ impl Default for PerspectiveCameraNode {
             near: 0.1,
             far: 100.0,
             aspect: 1.0,
+            reverse_depth: false,
         }
     }
 }
@@ -205,6 +247,7 @@ impl PerspectiveCameraNode {
             near: 0.1,
             far: 100.0,
             aspect,
+            reverse_depth: false,
         }
     }
 
@@ -213,15 +256,27 @@ impl PerspectiveCameraNode {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        // WebGPU requires Z clip range [0, 1], not [-1, 1]
+        // WebGPU clip Z in [0, w]; xy unchanged vs OpenGL NDC.
         let f = 1.0 / (self.fov * 0.5).tan();
-        let nf = 1.0 / (self.near - self.far);
-        Mat4::from_cols(
-            Vec4::new(f / self.aspect, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, f, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, self.far * nf, -1.0),
-            Vec4::new(0.0, 0.0, self.near * self.far * nf, 0.0),
-        )
+        if self.reverse_depth {
+            let d = self.far - self.near;
+            let a = self.near / d;
+            let b = self.near * self.far / d;
+            Mat4::from_cols(
+                Vec4::new(f / self.aspect, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, f, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, a, -1.0),
+                Vec4::new(0.0, 0.0, b, 0.0),
+            )
+        } else {
+            let nf = 1.0 / (self.near - self.far);
+            Mat4::from_cols(
+                Vec4::new(f / self.aspect, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, f, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, self.far * nf, -1.0),
+                Vec4::new(0.0, 0.0, self.near * self.far * nf, 0.0),
+            )
+        }
     }
 }
 
@@ -234,6 +289,8 @@ pub struct OrthographicCameraNode {
     pub near: f32,
     pub far: f32,
     pub aspect: f32,
+    /// When `true`, ndc_z increases toward the near plane (reverse-Z); pair with `Greater` + clear `0`.
+    pub reverse_depth: bool,
 }
 
 impl Default for OrthographicCameraNode {
@@ -245,6 +302,7 @@ impl Default for OrthographicCameraNode {
             near: 0.1,
             far: 100.0,
             aspect: 1.0,
+            reverse_depth: false,
         }
     }
 }
@@ -255,18 +313,26 @@ impl OrthographicCameraNode {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        // WebGPU requires Z clip range [0, 1]
         let half_h = self.height / 2.0;
         let half_w = half_h * self.aspect;
         let rml = half_w * 2.0;
         let tmb = half_h * 2.0;
         let fmn = self.far - self.near;
-        Mat4::from_cols(
-            Vec4::new(2.0 / rml, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, 2.0 / tmb, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, 1.0 / (self.near - self.far), 0.0),
-            Vec4::new(0.0, 0.0, -self.near / fmn, 1.0),
-        )
+        if self.reverse_depth {
+            Mat4::from_cols(
+                Vec4::new(2.0 / rml, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, 2.0 / tmb, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, 1.0 / fmn, 0.0),
+                Vec4::new(0.0, 0.0, self.far / fmn, 1.0),
+            )
+        } else {
+            Mat4::from_cols(
+                Vec4::new(2.0 / rml, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, 2.0 / tmb, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, 1.0 / (self.near - self.far), 0.0),
+                Vec4::new(0.0, 0.0, -self.near / fmn, 1.0),
+            )
+        }
     }
 }
 
@@ -339,6 +405,7 @@ pub enum NodeData {
     // Properties
     Transform(TransformNode),
     Coordinate3(Coordinate3Node),
+    TextureCoordinate2(TextureCoordinate2Node),
     Normal(NormalNode),
     Material(MaterialNode),
     // Shapes
@@ -364,6 +431,7 @@ impl NodeData {
             NodeData::Group(_) => "Group",
             NodeData::Transform(_) => "Transform",
             NodeData::Coordinate3(_) => "Coordinate3",
+            NodeData::TextureCoordinate2(_) => "TextureCoordinate2",
             NodeData::Normal(_) => "Normal",
             NodeData::Material(_) => "Material",
             NodeData::Triangle(_) => "Triangle",

@@ -22,10 +22,12 @@ enum ShapeKey {
         coord_index_len: u32,
         points_sig: [u32; 6],
         index_sig: [i32; 2],
+        tex_len: u32,
+        tex_sig: [u32; 4],
     },
 }
 
-type CachedShapeData = (Arc<Vec<Vertex>>, Arc<Vec<u32>>, Arc<Vec<[f32; 3]>>, rc3d_core::Aabb);
+type CachedShapeData = (Arc<Vec<Vertex>>, Arc<Vec<u32>>, Arc<Vec<[f32; 3]>>, rc3d_core::Aabb, Option<Arc<rc3d_mesh::MeshletData>>);
 type PackedLights = (
     [[f32; 4]; MAX_LIGHTS],
     [[f32; 4]; MAX_LIGHTS],
@@ -36,9 +38,10 @@ type PackedLights = (
 );
 
 const MAX_EDGE_POSITIONS: usize = 2_000_000;
+const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
 
 /// Collected draw data from scene graph traversal.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DrawCall {
     pub vertices: Arc<Vec<Vertex>>,
     pub indices: Option<Arc<Vec<u32>>>,
@@ -56,12 +59,55 @@ pub struct DrawCall {
     pub ambient_color: Vec3,
     pub specular_color: Vec3,
     pub shininess: f32,
+    pub base_color: Vec3,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub albedo_path: Option<Arc<str>>,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
     pub selected: bool,
     pub overlay_color: Option<[f32; 4]>,
-    /// Cached mesh hash for GPU upload dedup. None until first computed.
     pub mesh_hash: Option<u64>,
+    pub meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
+    pub projection_orthographic: bool,
+    /// Align with camera projection (e.g. `PerspectiveCameraNode::reverse_depth` in `rc3d-scene`) and
+    /// renderer depth ops; inferred via `rc3d_core::depth_reversed_z_from_projection`.
+    pub depth_reversed_z: bool,
+}
+
+impl Default for DrawCall {
+    fn default() -> Self {
+        Self {
+            vertices: Arc::new(Vec::new()),
+            indices: None,
+            edge_positions: Arc::new(Vec::new()),
+            mvp: Mat4::IDENTITY,
+            model_matrix: Mat4::IDENTITY,
+            camera_pos: Vec3::ZERO,
+            light_dirs: [[0.0; 4]; MAX_LIGHTS],
+            light_colors: [[0.0; 4]; MAX_LIGHTS],
+            light_types: [[0.0; 4]; MAX_LIGHTS],
+            light_positions: [[0.0; 4]; MAX_LIGHTS],
+            spot_params: [[0.0; 4]; MAX_LIGHTS],
+            light_count: 0,
+            diffuse_color: Vec3::ZERO,
+            ambient_color: Vec3::ZERO,
+            specular_color: Vec3::ZERO,
+            shininess: 1.0,
+            base_color: Vec3::ZERO,
+            metallic: 0.0,
+            roughness: 0.5,
+            albedo_path: None,
+            aabb: None,
+            display_mode: DisplayMode::ShadedWithEdges,
+            selected: false,
+            overlay_color: None,
+            mesh_hash: None,
+            meshlet_data: None,
+            projection_orthographic: false,
+            depth_reversed_z: false,
+        }
+    }
 }
 
 /// Traverses the scene graph, accumulates state, and collects draw calls.
@@ -71,6 +117,7 @@ pub struct RenderCollector {
     pub camera_pos: Vec3,
     pub view_matrix: Mat4,
     pub projection_matrix: Mat4,
+    pub projection_orthographic: bool,
     pub global_display_mode: DisplayMode,
     mesh_cache: HashMap<ShapeKey, CachedShapeData>,
 }
@@ -83,6 +130,7 @@ impl RenderCollector {
             camera_pos: Vec3::new(0.0, 0.0, 5.0),
             view_matrix: Mat4::IDENTITY,
             projection_matrix: Mat4::IDENTITY,
+            projection_orthographic: false,
             global_display_mode: DisplayMode::ShadedWithEdges,
             mesh_cache: HashMap::new(),
         }
@@ -126,6 +174,9 @@ impl RenderCollector {
             NodeData::Coordinate3(coord) => {
                 self.state.set_coordinate(coord.point.clone());
             }
+            NodeData::TextureCoordinate2(tex) => {
+                self.state.set_texture_coordinate2(tex.point.clone());
+            }
             NodeData::Normal(norm) => {
                 self.state.set_normal(norm.vector.clone());
             }
@@ -135,6 +186,10 @@ impl RenderCollector {
                     ambient: mat.ambient_color,
                     specular: mat.specular_color,
                     shininess: mat.shininess,
+                    base_color: mat.base_color,
+                    metallic: mat.metallic,
+                    roughness: mat.roughness,
+                    albedo_texture: mat.albedo_texture.clone(),
                 });
             }
             NodeData::PerspectiveCamera(cam) => {
@@ -143,6 +198,7 @@ impl RenderCollector {
                 self.view_matrix = cam.view_matrix();
                 self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
+                self.projection_orthographic = false;
             }
             NodeData::OrthographicCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
@@ -150,6 +206,7 @@ impl RenderCollector {
                 self.view_matrix = cam.view_matrix();
                 self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
+                self.projection_orthographic = true;
             }
             NodeData::DirectionalLight(light) => {
                 self.state.add_light(LightData {
@@ -203,7 +260,11 @@ impl RenderCollector {
                 let mut vertices = Vec::with_capacity(3);
                 for (i, v) in mesh.phong_buffers().0.iter().enumerate() {
                     let n = if i < face_n.len() { face_n[i].to_array() } else { [v[3], v[4], v[5]] };
-                    vertices.push(Vertex { position: [v[0], v[1], v[2]], normal: n });
+                    vertices.push(Vertex {
+                        position: [v[0], v[1], v[2]],
+                        normal: n,
+                        texcoord: [v[6], v[7]],
+                    });
                 }
                 let edge_positions = Vec::new();
                 self.emit_draw_call_with_edges(vertices, Some((0..3u32).collect()), edge_positions, is_selected, node_display_mode);
@@ -294,16 +355,45 @@ impl RenderCollector {
                 } else {
                     [0, 0]
                 };
+                let tex_el = self.state.texture_coordinate2();
+                let (tex_len, tex_sig) = if tex_el.coords.is_empty() {
+                    (0u32, [0u32; 4])
+                } else {
+                    let first = tex_el.coords[0];
+                    let last = tex_el.coords[tex_el.coords.len() - 1];
+                    (
+                        tex_el.coords.len() as u32,
+                        [
+                            first[0].to_bits(),
+                            first[1].to_bits(),
+                            last[0].to_bits(),
+                            last[1].to_bits(),
+                        ],
+                    )
+                };
                 let key = ShapeKey::IndexedFaceSet {
                     node: node.data().as_ffi(),
                     coord_len: coord.points.len() as u32,
                     coord_index_len: ifs.coord_index.len() as u32,
                     points_sig,
                     index_sig,
+                    tex_len,
+                    tex_sig,
                 };
                 #[allow(clippy::map_entry)]
                 if !self.mesh_cache.contains_key(&key) {
-                    let mesh = rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index);
+                    let mesh = {
+                        let use_tex = !tex_el.coords.is_empty() && tex_el.coords.len() == coord.points.len();
+                        if use_tex {
+                            rc3d_mesh::TriangleMesh::from_indexed_face_set_tex(
+                                &coord.points,
+                                &tex_el.coords,
+                                &ifs.coord_index,
+                            )
+                        } else {
+                            rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index)
+                        }
+                    };
                     if !mesh.positions.is_empty() {
                         let (phong_verts, indices) = mesh.phong_buffers();
                         let edge_positions = mesh.edge_line_positions();
@@ -313,12 +403,29 @@ impl RenderCollector {
                             .map(|v| Vertex {
                                 position: [v[0], v[1], v[2]],
                                 normal: [v[3], v[4], v[5]],
+                                texcoord: [v[6], v[7]],
                             })
                             .collect();
-                        self.mesh_cache.insert(key, (Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb));
+                        let tri_count = indices.len() / 3;
+                        let meshlet_data = if tri_count > MESHLET_TRIANGLE_THRESHOLD {
+                            let md = rc3d_mesh::build_meshlets_from_mesh(
+                                &mesh.positions,
+                                &mesh.normals,
+                                &mesh.texcoords,
+                                &mesh.tri_indices,
+                            );
+                            log::info!(
+                                "Meshlet: {} tris -> {} meshlets ({} verts)",
+                                tri_count, md.total_meshlets, md.vertices.len(),
+                            );
+                            Some(Arc::new(md))
+                        } else {
+                            None
+                        };
+                        self.mesh_cache.insert(key, (Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb, meshlet_data));
                     }
                 }
-                if let Some((vertices, indices, edge_positions, local_aabb)) = self.mesh_cache.get(&key) {
+                if let Some((vertices, indices, edge_positions, local_aabb, meshlet_data)) = self.mesh_cache.get(&key) {
                     let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
                         Arc::new(Vec::new())
                     } else {
@@ -329,6 +436,7 @@ impl RenderCollector {
                         Some(Arc::clone(indices)),
                         edge_positions,
                         local_aabb.clone(),
+                        meshlet_data.clone(),
                         is_selected,
                         node_display_mode,
                     );
@@ -361,13 +469,14 @@ impl RenderCollector {
                     .map(|v| Vertex {
                         position: [v[0], v[1], v[2]],
                         normal: [v[3], v[4], v[5]],
+                        texcoord: [v[6], v[7]],
                     })
                     .collect();
-                vacant.insert((Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb));
+                vacant.insert((Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb, None));
             }
         }
 
-        if let Some((vertices, indices, edge_positions, local_aabb)) = self.mesh_cache.get(&key) {
+        if let Some((vertices, indices, edge_positions, local_aabb, meshlet_data)) = self.mesh_cache.get(&key) {
             let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
                 Arc::new(Vec::new())
             } else {
@@ -378,6 +487,7 @@ impl RenderCollector {
                 Some(Arc::clone(indices)),
                 edge_positions,
                 local_aabb.clone(),
+                meshlet_data.clone(),
                 selected,
                 node_display_mode,
             );
@@ -390,6 +500,7 @@ impl RenderCollector {
         indices: Option<Arc<Vec<u32>>>,
         edge_positions: Arc<Vec<[f32; 3]>>,
         local_aabb: rc3d_core::Aabb,
+        meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
         selected: bool,
         node_display_mode: Option<DisplayMode>,
     ) {
@@ -417,11 +528,23 @@ impl RenderCollector {
             ambient_color: mat.ambient,
             specular_color: mat.specular,
             shininess: mat.shininess,
+            base_color: mat.base_color,
+            metallic: mat.metallic,
+            roughness: mat.roughness,
+            albedo_path: mat
+                .albedo_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
             overlay_color: None,
             mesh_hash: None,
+            meshlet_data,
+            projection_orthographic: self.projection_orthographic,
+            depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
+                self.state.projection_matrix(),
+            ),
         });
     }
 
@@ -468,11 +591,23 @@ impl RenderCollector {
             ambient_color: mat.ambient,
             specular_color: mat.specular,
             shininess: mat.shininess,
+            base_color: mat.base_color,
+            metallic: mat.metallic,
+            roughness: mat.roughness,
+            albedo_path: mat
+                .albedo_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
             overlay_color: None,
             mesh_hash: None,
+            meshlet_data: None,
+            projection_orthographic: self.projection_orthographic,
+            depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
+                self.state.projection_matrix(),
+            ),
         });
     }
 

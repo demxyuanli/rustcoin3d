@@ -45,6 +45,8 @@ pub struct Edge {
 pub struct TriangleMesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// Per-vertex UV; same length as `positions` when populated.
+    pub texcoords: Vec<[f32; 2]>,
     pub tri_indices: Vec<u32>,
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
@@ -82,6 +84,7 @@ impl TriangleMesh {
         let mut mesh = Self {
             positions,
             normals: vec![Vec3::ZERO; vert_count],
+            texcoords: vec![[0.0, 0.0]; vert_count],
             tri_indices,
             faces: Vec::with_capacity(raw_positions.len() / 3),
             edges: Vec::new(),
@@ -98,6 +101,33 @@ impl TriangleMesh {
         let mut mesh = Self {
             positions: positions.to_vec(),
             normals: vec![Vec3::ZERO; positions.len()],
+            texcoords: vec![[0.0, 0.0]; positions.len()],
+            tri_indices: indices.to_vec(),
+            faces: Vec::with_capacity(indices.len() / 3),
+            edges: Vec::new(),
+            edge_map: HashMap::new(),
+        };
+        mesh.build_topology();
+        mesh.compute_face_normals();
+        mesh.compute_vertex_normals();
+        mesh
+    }
+
+    /// Same as `from_indexed` but with per-vertex texture coordinates.
+    pub fn from_indexed_with_texcoords(
+        positions: &[Vec3],
+        indices: &[u32],
+        texcoords: &[[f32; 2]],
+    ) -> Self {
+        assert_eq!(
+            positions.len(),
+            texcoords.len(),
+            "texcoords length must match positions"
+        );
+        let mut mesh = Self {
+            positions: positions.to_vec(),
+            normals: vec![Vec3::ZERO; positions.len()],
+            texcoords: texcoords.to_vec(),
             tri_indices: indices.to_vec(),
             faces: Vec::with_capacity(indices.len() / 3),
             edges: Vec::new(),
@@ -111,30 +141,51 @@ impl TriangleMesh {
 
     /// Build from an Open Inventor indexed face set (negative index = face end, fan-triangulated).
     pub fn from_indexed_face_set(positions: &[Vec3], coord_index: &[i32]) -> Self {
-        let mut all_indices = Vec::new();
-        let mut face_verts = Vec::new();
-        for &idx in coord_index {
-            if idx < 0 {
-                if face_verts.len() >= 3 {
-                    for j in 1..face_verts.len() - 1 {
-                        all_indices.push(face_verts[0] as u32);
-                        all_indices.push(face_verts[j] as u32);
-                        all_indices.push(face_verts[j + 1] as u32);
-                    }
-                }
-                face_verts.clear();
-            } else {
-                face_verts.push(idx as usize);
-            }
-        }
-        if face_verts.len() >= 3 {
-            for j in 1..face_verts.len() - 1 {
-                all_indices.push(face_verts[0] as u32);
-                all_indices.push(face_verts[j] as u32);
-                all_indices.push(face_verts[j + 1] as u32);
-            }
-        }
+        let all_indices = tri_indices_from_coord_index(coord_index);
         Self::from_indexed(positions, &all_indices)
+    }
+
+    /// Same as `from_indexed_face_set` with per-vertex UVs (`texcoords.len() == positions.len()`).
+    pub fn from_indexed_face_set_tex(
+        positions: &[Vec3],
+        texcoords: &[[f32; 2]],
+        coord_index: &[i32],
+    ) -> Self {
+        assert_eq!(
+            positions.len(),
+            texcoords.len(),
+            "positions and texcoords must align"
+        );
+        let all_indices = tri_indices_from_coord_index(coord_index);
+        Self::from_indexed_with_texcoords(positions, &all_indices, texcoords)
+    }
+
+    /// Non-welded triangle list: `positions.len()` divisible by 3, one UV per corner.
+    pub fn from_triangle_list_with_texcoords(
+        positions: &[Vec3],
+        texcoords: &[[f32; 2]],
+    ) -> Self {
+        assert_eq!(positions.len(), texcoords.len());
+        assert_eq!(
+            positions.len() % 3,
+            0,
+            "triangle list length must be multiple of 3"
+        );
+        let n = positions.len();
+        let tri_indices: Vec<u32> = (0..n as u32).collect();
+        let mut mesh = Self {
+            positions: positions.to_vec(),
+            normals: vec![Vec3::ZERO; n],
+            texcoords: texcoords.to_vec(),
+            tri_indices,
+            faces: Vec::with_capacity(n / 3),
+            edges: Vec::new(),
+            edge_map: HashMap::new(),
+        };
+        mesh.build_topology();
+        mesh.compute_face_normals();
+        mesh.compute_vertex_normals();
+        mesh
     }
 
     /// Empty mesh.
@@ -142,6 +193,7 @@ impl TriangleMesh {
         Self {
             positions: Vec::new(),
             normals: Vec::new(),
+            texcoords: Vec::new(),
             tri_indices: Vec::new(),
             faces: Vec::new(),
             edges: Vec::new(),
@@ -299,17 +351,19 @@ impl TriangleMesh {
         (positions, self.tri_indices.clone())
     }
 
-    /// Interleaved position+normal buffers for Phong shading.
-    pub fn phong_buffers(&self) -> (Vec<[f32; 6]>, Vec<u32>) {
-        let vertices: Vec<[f32; 6]> = self
+    /// Interleaved position + normal + texcoord for lit shading.
+    pub fn phong_buffers(&self) -> (Vec<[f32; 8]>, Vec<u32>) {
+        let default_uv = [0.0f32, 0.0];
+        let vertices: Vec<[f32; 8]> = self
             .positions
             .iter()
-            .zip(self.normals.iter())
-            .map(|(p, n)| {
-                let mut v = [0f32; 6];
-                v[0..3].copy_from_slice(&p.to_array());
-                v[3..6].copy_from_slice(&n.to_array());
-                v
+            .enumerate()
+            .map(|(i, p)| {
+                let n = self.normals.get(i).copied().unwrap_or(Vec3::ZERO);
+                let uv = self.texcoords.get(i).copied().unwrap_or(default_uv);
+                [
+                    p.x, p.y, p.z, n.x, n.y, n.z, uv[0], uv[1],
+                ]
             })
             .collect();
         (vertices, self.tri_indices.clone())
@@ -326,4 +380,32 @@ impl TriangleMesh {
         }
         aabb
     }
+}
+
+/// Fan-triangulate Inventor-style `coord_index` into a triangle index list.
+pub fn tri_indices_from_coord_index(coord_index: &[i32]) -> Vec<u32> {
+    let mut all_indices = Vec::new();
+    let mut face_verts = Vec::new();
+    for &idx in coord_index {
+        if idx < 0 {
+            if face_verts.len() >= 3 {
+                for j in 1..face_verts.len() - 1 {
+                    all_indices.push(face_verts[0] as u32);
+                    all_indices.push(face_verts[j] as u32);
+                    all_indices.push(face_verts[j + 1] as u32);
+                }
+            }
+            face_verts.clear();
+        } else {
+            face_verts.push(idx as usize);
+        }
+    }
+    if face_verts.len() >= 3 {
+        for j in 1..face_verts.len() - 1 {
+            all_indices.push(face_verts[0] as u32);
+            all_indices.push(face_verts[j] as u32);
+            all_indices.push(face_verts[j + 1] as u32);
+        }
+    }
+    all_indices
 }

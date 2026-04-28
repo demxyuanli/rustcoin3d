@@ -4,7 +4,7 @@ use rc3d_engine::EngineRegistry;
 use rc3d_render::{DrawCall, FrameStats, RenderCollector, Renderer};
 use rc3d_scene::{NodeData, SceneGraph};
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::{
@@ -17,14 +17,142 @@ use winit::{
 use crate::camera_controller::CameraController;
 
 type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
+type MeshLodStage = (Vec<Vec3>, Option<Vec<[f32; 2]>>, Vec<i32>);
+
 const PREVIEW_TRIANGLE_THRESHOLD: usize = 1_000_000;
-const PREVIEW_TARGET_TRIANGLES: usize = 250_000;
-const PREVIEW_MIN_MS: u128 = 1_500;
+
+/// Gaussian-CDF streaming: approx erf function (Abramowitz & Stegun 7.1.26, max error 1.5e-7).
+fn erf_approx(x: f64) -> f64 {
+    let a1 = 0.254829592;
+    let a2 = -0.284496736;
+    let a3 = 1.421413741;
+    let a4 = -1.453152027;
+    let a5 = 1.061405429;
+    let p = 0.3275911;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let ax = x.abs();
+    let t = 1.0 / (1.0 + p * ax);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-ax * ax).exp();
+    sign * y
+}
+
+/// Standard-normal CDF using the erf approximation.
+fn normal_cdf(x: f64) -> f64 {
+    0.5 * (1.0 + erf_approx(x / std::f64::consts::SQRT_2))
+}
+
+/// Streaming LOD configuration: Gaussian CDF mapped over `[0..STREAM_DURATION_S]`.
+/// - `sigma` controls spread: smaller = more triangles early; larger = slower ramp.
+/// - `STREAM_DURATION_S` is total wall-clock time from first GPU frame to full mesh.
+const STREAM_SIGMA: f64 = 0.22;
+const STREAM_DURATION_S: f64 = 2.2;
+
+/// Triangle budgets sampled from the Gaussian CDF at evenly spaced time points.
+/// Using 10 steps gives smooth visual progression over ~2 s.
+const STREAM_LOD_TARGETS: &[usize] =
+    &[12_000, 30_000, 60_000, 110_000, 180_000, 280_000, 430_000, 660_000, 1_000_000, 1_600_000];
+/// Minimum wall time between applying consecutive LOD stages (avoid GPU stalls).
+const STREAM_STEP_MS: u64 = 180;
+
 struct FullResPatch {
     coord_node: rc3d_core::NodeId,
     ifs_node: rc3d_core::NodeId,
+    tex_node: Option<rc3d_core::NodeId>,
     full_points: Vec<Vec3>,
+    full_tex: Option<Vec<[f32; 2]>>,
     full_coord_index: Vec<i32>,
+    total_full_tris: usize,
+    /// Pre-computed LOD stages, triangle counts monotonically increasing.
+    stream_stages: Vec<MeshLodStage>,
+    /// Triangle count per stage (cached to avoid re-scanning).
+    stage_tri_counts: Vec<usize>,
+    /// Index of the last stage that was written into the graph.
+    current_stage: usize,
+    /// Instant when streaming started (first GPU frame with renderer).
+    stream_start: Option<Instant>,
+}
+
+fn apply_lod_stage_to_graph(
+    graph: &mut SceneGraph,
+    coord_id: rc3d_core::NodeId,
+    ifs_id: rc3d_core::NodeId,
+    tex_node: Option<rc3d_core::NodeId>,
+    stage: &MeshLodStage,
+) {
+    let (points, tex, coord_index) = stage;
+    if let Some(coord_mut) = graph.get_mut(coord_id) {
+        if let NodeData::Coordinate3(c) = &mut coord_mut.data {
+            c.point = points.clone();
+        }
+    }
+    if let (Some(tid), Some(tex_pts)) = (tex_node, tex.as_ref()) {
+        if let Some(tex_mut) = graph.get_mut(tid) {
+            if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
+                t.point = tex_pts.clone();
+            }
+        }
+    }
+    if let Some(ifs_mut) = graph.get_mut(ifs_id) {
+        if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
+            ifs.coord_index = coord_index.clone();
+        }
+    }
+}
+
+impl FullResPatch {
+    fn apply_stage_to_graph(&self, graph: &mut SceneGraph, stage_i: usize) {
+        apply_lod_stage_to_graph(
+            graph,
+            self.coord_node,
+            self.ifs_node,
+            self.tex_node,
+            &self.stream_stages[stage_i],
+        );
+    }
+
+    fn apply_full_to_graph(self, graph: &mut SceneGraph) {
+        if let Some(coord_mut) = graph.get_mut(self.coord_node) {
+            if let NodeData::Coordinate3(c) = &mut coord_mut.data {
+                c.point = self.full_points;
+            }
+        }
+        if let (Some(tex_id), Some(full_tex)) = (self.tex_node, self.full_tex) {
+            if let Some(tex_mut) = graph.get_mut(tex_id) {
+                if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
+                    t.point = full_tex;
+                }
+            }
+        }
+        if let Some(ifs_mut) = graph.get_mut(self.ifs_node) {
+            if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
+                ifs.coord_index = self.full_coord_index;
+            }
+        }
+    }
+
+    /// Find the best matching stage index for a target triangle budget (binary search).
+    fn stage_for_budget(&self, budget: usize) -> Option<usize> {
+        let n = self.stage_tri_counts.len();
+        if n == 0 || budget == 0 {
+            return None;
+        }
+        // Find last stage with tri count <= budget
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.stage_tri_counts[mid] <= budget {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            None
+        } else {
+            Some(lo - 1)
+        }
+    }
 }
 
 struct FpsTracker {
@@ -99,12 +227,17 @@ pub struct App {
     collector: RenderCollector,
     perf_mode_last: bool,
     full_res_patches: Vec<FullResPatch>,
-    full_res_ready_rx: Option<Receiver<()>>,
     preview_mode_active: bool,
-    preview_started_at: Option<Instant>,
+    /// When to apply the next streaming LOD step (armed on first GPU frame while streaming).
+    stream_next_tick: Option<Instant>,
     initial_display_mode: DisplayMode,
+    enable_hdr_post_processing: bool,
     last_frame_time: Instant,
     fps_tracker: FpsTracker,
+    /// When set, `RedrawRequested` polls for a loaded scene from a background thread.
+    pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
+    /// Called once on the main thread after a successful async graph replace (camera fit, etc.).
+    graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
 }
 
 impl App {
@@ -112,22 +245,12 @@ impl App {
         let mut graph = graph;
         let full_res_patches = Self::apply_decimated_preview(&mut graph);
         let preview_mode_active = !full_res_patches.is_empty();
-        let full_res_ready_rx = if preview_mode_active {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(800));
-                let _ = tx.send(());
-            });
-            Some(rx)
-        } else {
-            None
-        };
         if preview_mode_active {
             log::warn!(
-                "Preview mode: {} patches decimated to {}K triangles, full-res restore after {}ms",
+                "Streaming mesh load: {} patch(es), Gaussian CDF sigma={}, duration={}s",
                 full_res_patches.len(),
-                PREVIEW_TARGET_TRIANGLES / 1000,
-                PREVIEW_MIN_MS,
+                STREAM_SIGMA,
+                STREAM_DURATION_S,
             );
         }
         Self {
@@ -146,12 +269,50 @@ impl App {
             collector: RenderCollector::new(),
             perf_mode_last: false,
             full_res_patches,
-            full_res_ready_rx,
             preview_mode_active,
-            preview_started_at: if preview_mode_active { Some(Instant::now()) } else { None },
+            stream_next_tick: None,
             initial_display_mode: DisplayMode::ShadedWithEdges,
+            enable_hdr_post_processing: false,
             last_frame_time: Instant::now(),
             fps_tracker: FpsTracker::new(60),
+            pending_graph_rx: None,
+            graph_load_hook: None,
+        }
+    }
+
+    pub fn set_pending_graph_receiver(&mut self, rx: std::sync::mpsc::Receiver<Result<SceneGraph, String>>) {
+        self.pending_graph_rx = Some(rx);
+    }
+
+    pub fn set_graph_load_hook(&mut self, hook: impl FnOnce(&mut App) + 'static) {
+        self.graph_load_hook = Some(Box::new(hook));
+    }
+
+    fn poll_pending_graph_load(&mut self) {
+        let Some(rx) = self.pending_graph_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(graph)) => {
+                self.graph = graph;
+                self.pending_graph_rx = None;
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.invalidate_mesh_cache();
+                }
+                log::info!("Async scene load applied");
+                if let Some(hook) = self.graph_load_hook.take() {
+                    hook(self);
+                }
+            }
+            Ok(Err(e)) => {
+                self.pending_graph_rx = None;
+                log::error!("Async scene load failed: {}", e);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.pending_graph_rx = None;
+                log::warn!("Async scene load channel disconnected");
+            }
         }
     }
 
@@ -185,6 +346,12 @@ impl App {
         self.initial_display_mode = mode;
         self
     }
+
+    /// Enable HDR scene target, tonemap/FXAA to `post_ldr`, then blit to swapchain (see `Renderer::set_hdr_post_processing`).
+    pub fn with_hdr_post_processing(mut self, enabled: bool) -> Self {
+        self.enable_hdr_post_processing = enabled;
+        self
+    }
 }
 
 impl ApplicationHandler for App {
@@ -205,6 +372,9 @@ impl ApplicationHandler for App {
             self.renderer = Some(renderer);
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_display_mode(self.initial_display_mode);
+                if self.enable_hdr_post_processing {
+                    renderer.set_hdr_post_processing(true);
+                }
             }
             if let Some(window) = &self.window {
                 window.set_visible(true);
@@ -309,7 +479,11 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.try_promote_full_res();
+                self.poll_pending_graph_load();
+                if self.preview_mode_active && self.renderer.is_some() && self.stream_next_tick.is_none() {
+                    self.stream_next_tick = Some(Instant::now() + Duration::from_millis(STREAM_STEP_MS));
+                }
+                self.tick_mesh_stream();
                 if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                     let size = window.inner_size();
                     let aspect = size.width as f32 / size.height as f32;
@@ -329,6 +503,7 @@ impl ApplicationHandler for App {
                     self.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
                     self.collector.view_matrix = Mat4::IDENTITY;
                     self.collector.projection_matrix = Mat4::IDENTITY;
+                    self.collector.projection_orthographic = false;
                     self.collector.global_display_mode = renderer.display_mode();
                     for &root in self.graph.roots() {
                         self.collector.traverse(&self.graph, root);
@@ -355,17 +530,26 @@ impl ApplicationHandler for App {
                                 ambient_color: Vec3::ZERO,
                                 specular_color: Vec3::ZERO,
                                 shininess: 1.0,
+                                base_color: Vec3::ZERO,
+                                metallic: 0.0,
+                                roughness: 0.5,
+                                albedo_path: None,
                                 aabb: None,
                                 display_mode: DisplayMode::ShadedWithEdges,
                                 selected: false,
                                 overlay_color: Some([1.0, 1.0, 0.0, 1.0]),
                                 mesh_hash: None,
+                                meshlet_data: None,
+                                projection_orthographic: self.collector.projection_orthographic,
+                                depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
+                                    self.collector.projection_matrix,
+                                ),
                             });
                         }
                     }
 
                     if !self.collector.draw_calls.is_empty() {
-                        let stats = renderer.render_draw_calls(&self.collector.draw_calls);
+                        let stats = renderer.render_draw_calls(&self.collector.draw_calls, &self.graph);
                         let now = Instant::now();
                         let frame_time_ms =
                             now.duration_since(self.last_frame_time).as_secs_f32() * 1000.0;
@@ -393,13 +577,19 @@ impl ApplicationHandler for App {
                             }
                         }
                         if self.preview_mode_active {
-                            window.set_title("rustcoin3d [Preview]");
+                            window.set_title("rustcoin3d [Stream mesh]");
                         }
                     } else {
                         drop(renderer.surface.get_current_texture());
                     }
                     if self.engines.is_some() {
                         window.request_redraw();
+                    }
+                }
+                // Without animation engines, redraws only happen on input; promotion must run on the main thread.
+                if self.preview_mode_active {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
                     }
                 }
             }
@@ -424,6 +614,56 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn build_stream_stages(
+        full_points: &[Vec3],
+        tex: Option<&[[f32; 2]]>,
+        full_coord_index: &[i32],
+        tri_count: usize,
+    ) -> Vec<MeshLodStage> {
+        let mut out = Vec::new();
+        let n = STREAM_LOD_TARGETS.len();
+        let mut last_tris: usize = 0;
+        for i in 0..n {
+            let t = STREAM_LOD_TARGETS[i];
+            if t >= tri_count {
+                break;
+            }
+            let stage = Self::decimate_indexed_face_set(full_points, tex, full_coord_index, t);
+            let tris = stage.2.iter().filter(|&&v| v == -1).count();
+            if tris > last_tris {
+                last_tris = tris;
+                out.push(stage);
+            }
+        }
+        if out.is_empty() {
+            let fallback = STREAM_LOD_TARGETS
+                .iter()
+                .copied()
+                .find(|&x| x < tri_count)
+                .unwrap_or(250_000);
+            out.push(Self::decimate_indexed_face_set(
+                full_points,
+                tex,
+                full_coord_index,
+                fallback,
+            ));
+        }
+        out
+    }
+
+    /// Gaussian CDF-based triangle budget for elapsed time `t_s` in `[0..STREAM_DURATION_S]`.
+    fn gaussian_triangle_budget(t_s: f64, total_tris: usize) -> usize {
+        if t_s <= 0.0 {
+            return 0;
+        }
+        if t_s >= STREAM_DURATION_S {
+            return total_tris;
+        }
+        let x = (t_s / STREAM_DURATION_S - 0.5) / STREAM_SIGMA;
+        let fraction = normal_cdf(x).clamp(0.005, 0.999);
+        ((total_tris as f64) * fraction) as usize
+    }
+
     fn apply_decimated_preview(graph: &mut SceneGraph) -> Vec<FullResPatch> {
         let mut patches = Vec::new();
         for &root in graph.roots().to_vec().iter() {
@@ -434,6 +674,53 @@ impl App {
 
     fn collect_preview_patches(graph: &mut SceneGraph, node: rc3d_core::NodeId, patches: &mut Vec<FullResPatch>) {
         let children: Vec<rc3d_core::NodeId> = graph.children(node).to_vec();
+        if children.len() >= 3 {
+            for trip in children.windows(3) {
+                let coord_id = trip[0];
+                let tex_id = trip[1];
+                let ifs_id = trip[2];
+                let (Some(coord_entry), Some(tex_entry), Some(ifs_entry)) =
+                    (graph.get(coord_id), graph.get(tex_id), graph.get(ifs_id))
+                else {
+                    continue;
+                };
+                let (NodeData::Coordinate3(coord), NodeData::TextureCoordinate2(tex), NodeData::IndexedFaceSet(ifs)) =
+                    (&coord_entry.data, &tex_entry.data, &ifs_entry.data)
+                else {
+                    continue;
+                };
+                if tex.point.len() != coord.point.len() {
+                    continue;
+                }
+                let tri_count = ifs.coord_index.iter().filter(|&&v| v == -1).count();
+                if tri_count <= PREVIEW_TRIANGLE_THRESHOLD {
+                    continue;
+                }
+                let full_points = coord.point.clone();
+                let full_tex = tex.point.clone();
+                let full_coord_index = ifs.coord_index.clone();
+                let stream_stages =
+                    Self::build_stream_stages(&full_points, Some(&full_tex), &full_coord_index, tri_count);
+                let stage_tri_counts: Vec<usize> = stream_stages
+                    .iter()
+                    .map(|s| s.2.iter().filter(|&&v| v == -1).count())
+                    .collect();
+                apply_lod_stage_to_graph(graph, coord_id, ifs_id, Some(tex_id), &stream_stages[0]);
+                patches.push(FullResPatch {
+                    coord_node: coord_id,
+                    ifs_node: ifs_id,
+                    tex_node: Some(tex_id),
+                    full_points,
+                    full_tex: Some(full_tex),
+                    full_coord_index,
+                    total_full_tris: tri_count,
+                    stream_stages,
+                    stage_tri_counts,
+                    current_stage: 0,
+                    stream_start: None,
+                });
+            }
+        }
         if children.len() >= 2 {
             for pair in children.windows(2) {
                 let coord_id = pair[0];
@@ -452,23 +739,24 @@ impl App {
                 }
                 let full_points = coord.point.clone();
                 let full_coord_index = ifs.coord_index.clone();
-                let (preview_points, preview_coord_index) =
-                    Self::decimate_indexed_face_set(&full_points, &full_coord_index, PREVIEW_TARGET_TRIANGLES);
-                if let Some(coord_mut) = graph.get_mut(coord_id) {
-                    if let NodeData::Coordinate3(coord_mut_data) = &mut coord_mut.data {
-                        coord_mut_data.point = preview_points;
-                    }
-                }
-                if let Some(ifs_mut) = graph.get_mut(ifs_id) {
-                    if let NodeData::IndexedFaceSet(ifs_mut_data) = &mut ifs_mut.data {
-                        ifs_mut_data.coord_index = preview_coord_index;
-                    }
-                }
+                let stream_stages = Self::build_stream_stages(&full_points, None, &full_coord_index, tri_count);
+                let stage_tri_counts: Vec<usize> = stream_stages
+                    .iter()
+                    .map(|s| s.2.iter().filter(|&&v| v == -1).count())
+                    .collect();
+                apply_lod_stage_to_graph(graph, coord_id, ifs_id, None, &stream_stages[0]);
                 patches.push(FullResPatch {
                     coord_node: coord_id,
                     ifs_node: ifs_id,
+                    tex_node: None,
                     full_points,
+                    full_tex: None,
                     full_coord_index,
+                    total_full_tris: tri_count,
+                    stream_stages,
+                    stage_tri_counts,
+                    current_stage: 0,
+                    stream_start: None,
                 });
             }
         }
@@ -479,15 +767,24 @@ impl App {
 
     fn decimate_indexed_face_set(
         points: &[Vec3],
+        tex: Option<&[[f32; 2]]>,
         coord_index: &[i32],
         target_triangles: usize,
-    ) -> (Vec<Vec3>, Vec<i32>) {
+    ) -> (Vec<Vec3>, Option<Vec<[f32; 2]>>, Vec<i32>) {
+        if let Some(t) = tex {
+            assert_eq!(t.len(), points.len(), "texture coords must match positions");
+        }
         let tri_count = coord_index.iter().filter(|&&v| v == -1).count();
         if tri_count <= target_triangles || tri_count == 0 {
-            return (points.to_vec(), coord_index.to_vec());
+            return (
+                points.to_vec(),
+                tex.map(|t| t.to_vec()),
+                coord_index.to_vec(),
+            );
         }
         let stride = (tri_count / target_triangles).max(2);
         let mut new_points = Vec::new();
+        let mut new_tex: Option<Vec<[f32; 2]>> = tex.map(|_| Vec::new());
         let mut new_index = Vec::new();
         let mut remap: HashMap<i32, i32> = HashMap::new();
 
@@ -503,6 +800,9 @@ impl App {
                             let m = new_points.len() as i32;
                             remap.insert(src, m);
                             new_points.push(points[src as usize]);
+                            if let (Some(t_in), Some(ref mut t_out)) = (tex, new_tex.as_mut()) {
+                                t_out.push(t_in[src as usize]);
+                            }
                             m
                         };
                         new_index.push(mapped);
@@ -516,61 +816,90 @@ impl App {
             }
         }
         if new_points.is_empty() || new_index.is_empty() {
-            return (points.to_vec(), coord_index.to_vec());
+            return (
+                points.to_vec(),
+                tex.map(|t| t.to_vec()),
+                coord_index.to_vec(),
+            );
         }
-        (new_points, new_index)
+        (new_points, new_tex, new_index)
     }
 
-    fn try_promote_full_res(&mut self) {
-        let Some(rx) = &self.full_res_ready_rx else {
-            return;
-        };
+    fn tick_mesh_stream(&mut self) {
         if self.full_res_patches.is_empty() {
             return;
         }
-        if let Some(started) = self.preview_started_at {
-            let elapsed = started.elapsed().as_millis();
-            if elapsed < PREVIEW_MIN_MS {
-                log::debug!("Full-res promotion waiting: {elapsed}ms < {PREVIEW_MIN_MS}ms");
-                return;
-            }
-        }
-        if rx.try_recv().is_err() {
-            log::debug!("Full-res channel not ready yet");
+        let Some(fire_at) = self.stream_next_tick else {
+            return;
+        };
+        let now = Instant::now();
+        if now < fire_at {
             return;
         }
-        let patch_count = self.full_res_patches.len();
-        let mut total_points = 0usize;
-        let mut total_indices = 0usize;
-        for patch in self.full_res_patches.drain(..) {
-            total_points += patch.full_points.len();
-            total_indices += patch.full_coord_index.len();
-            if let Some(coord_mut) = self.graph.get_mut(patch.coord_node) {
-                if let NodeData::Coordinate3(coord_data) = &mut coord_mut.data {
-                    coord_data.point = patch.full_points;
+        self.stream_next_tick = Some(now + Duration::from_millis(STREAM_STEP_MS));
+
+        let mut remaining = Vec::new();
+        let mut any_change = false;
+        let mut finished_patches: Vec<FullResPatch> = Vec::new();
+
+        for mut patch in self.full_res_patches.drain(..) {
+            let start = *patch.stream_start.get_or_insert(now);
+            let t_s = start.elapsed().as_secs_f64();
+
+            let budget = Self::gaussian_triangle_budget(t_s, patch.total_full_tris);
+
+            if budget >= patch.total_full_tris || t_s >= STREAM_DURATION_S {
+                finished_patches.push(patch);
+                continue;
+            }
+
+            if let Some(target_stage) = patch.stage_for_budget(budget) {
+                if target_stage > patch.current_stage {
+                    patch.apply_stage_to_graph(&mut self.graph, target_stage);
+                    let tris = patch.stage_tri_counts[target_stage];
+                    log::info!(
+                        "Mesh stream [Gaussian]: ~{}K tris at t={:.2}s (budget={})",
+                        tris / 1000,
+                        t_s,
+                        budget,
+                    );
+                    patch.current_stage = target_stage;
+                    any_change = true;
                 }
             }
-            if let Some(ifs_mut) = self.graph.get_mut(patch.ifs_node) {
-                if let NodeData::IndexedFaceSet(ifs_data) = &mut ifs_mut.data {
-                    ifs_data.coord_index = patch.full_coord_index;
-                }
+            remaining.push(patch);
+        }
+
+        let n_finished = finished_patches.len();
+        for patch in finished_patches {
+            let total_points = patch.full_points.len();
+            let total_indices = patch.full_coord_index.len();
+            let total_tris = total_indices / 4;
+            patch.apply_full_to_graph(&mut self.graph);
+            log::warn!(
+                "Full-resolution mesh restored: points={}, indices={}, ~{}K triangles",
+                total_points,
+                total_indices,
+                total_tris / 1000,
+            );
+        }
+
+        self.full_res_patches = remaining;
+
+        if any_change || n_finished > 0 {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.invalidate_mesh_cache();
             }
+            self.collector.invalidate_mesh_cache();
         }
-        let total_tris = total_indices / 4;
-        self.full_res_ready_rx = None;
-        self.preview_mode_active = false;
-        self.preview_started_at = None;
-        if let Some(renderer) = &mut self.renderer {
-            renderer.invalidate_mesh_cache();
-        }
-        self.collector.invalidate_mesh_cache();
-        log::warn!(
-            "Full-resolution mesh restored: patches={}, points={}, indices={}, ~{}K triangles",
-            patch_count, total_points, total_indices, total_tris / 1000,
-        );
-        if let Some(window) = &self.window {
-            window.set_title("rustcoin3d");
-            window.request_redraw();
+
+        if self.full_res_patches.is_empty() {
+            self.preview_mode_active = false;
+            self.stream_next_tick = None;
+            if let Some(window) = &self.window {
+                window.set_title("rustcoin3d");
+                window.request_redraw();
+            }
         }
     }
 
