@@ -67,7 +67,7 @@ impl Ray {
         let f = 1.0 / a;
         let s = self.origin - v0;
         let u = f * s.dot(h);
-        if u < 0.0 || u > 1.0 {
+        if !(0.0..=1.0).contains(&u) {
             return None;
         }
         let q = s.cross(e1);
@@ -129,16 +129,15 @@ impl RayPickAction {
 
     pub fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
         self.traverse_node(graph, root);
-        self.hits.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+        self.hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     }
 
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
         let Some(entry) = graph.get(node) else {
             return;
         };
-        let data = entry.data.clone();
 
-        match &data {
+        match &entry.data {
             NodeData::Separator(_) => {
                 self.state.push_all();
                 for &child in &entry.children {
@@ -477,7 +476,7 @@ fn closest_edge_from_bary(bary: &Vec3) -> u32 {
     let weights = [bary.x, bary.y, bary.z];
     let min_idx = weights.iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
         .unwrap_or(0);
     min_idx as u32

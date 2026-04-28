@@ -207,7 +207,7 @@ impl TriangleMesh {
 
     fn compute_vertex_normals(&mut self) {
         // Area-weighted average of adjacent face normals
-        for (_i, n) in self.normals.iter_mut().enumerate() {
+        for n in &mut self.normals {
             *n = Vec3::ZERO;
         }
         for fi in 0..self.faces.len() {
@@ -225,7 +225,7 @@ impl TriangleMesh {
         for n in self.normals.iter_mut() {
             let len = n.length();
             if len > 1e-10 {
-                *n = *n / len;
+                *n /= len;
             }
         }
     }
@@ -279,6 +279,18 @@ impl TriangleMesh {
             indices.push(edge.vertices[1]);
         }
         indices
+    }
+
+    /// Generate all edges as line-list vertex positions.
+    pub fn edge_line_positions(&self) -> Vec<[f32; 3]> {
+        let mut positions = Vec::with_capacity(self.edges.len() * 2);
+        for edge in &self.edges {
+            let p0 = self.positions[edge.vertices[0] as usize].to_array();
+            let p1 = self.positions[edge.vertices[1] as usize].to_array();
+            positions.push(p0);
+            positions.push(p1);
+        }
+        positions
     }
 
     /// Flat buffers for GPU: (positions as [f32;3] array, indices).

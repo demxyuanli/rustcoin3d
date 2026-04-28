@@ -78,7 +78,18 @@ fn parse_face(s: &str, line_num: usize, vertex_count: usize) -> Result<Vec<u32>,
     let mut indices = Vec::new();
     for part in s.split_whitespace() {
         // Formats: "v", "v/vt", "v/vt/vn", "v//vn"
-        let v_str = part.split('/').next().unwrap();
+        let Some(v_str) = part.split('/').next() else {
+            return Err(ObjError::Parse {
+                line: line_num,
+                message: format!("invalid face token: {part}"),
+            });
+        };
+        if v_str.is_empty() {
+            return Err(ObjError::Parse {
+                line: line_num,
+                message: format!("empty face index: {part}"),
+            });
+        }
         let idx = if v_str.starts_with('-') {
             // Negative index: relative to end
             let n: i32 = v_str.parse().map_err(|_| ObjError::Parse { line: line_num, message: format!("invalid face index: {part}") })?;

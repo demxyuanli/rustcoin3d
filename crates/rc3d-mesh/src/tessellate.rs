@@ -26,21 +26,54 @@ pub fn tessellate_cube(w: f32, h: f32, d: f32) -> TriangleMesh {
     TriangleMesh::from_tris(&positions)
 }
 
+/// UV sphere: pole bands in the old layout had two corners at the same point per triangle, so
+/// those faces are degenerate (zero area) and `compute_vertex_normals` left pole normals as zero,
+/// which breaks Phong lighting at the top/bottom. Use a triangle fan at each pole plus regular
+/// latitude quads in between.
 pub fn tessellate_sphere(radius: f32, slices: u32, stacks: u32) -> TriangleMesh {
     let mut positions = Vec::new();
-    for i in 0..stacks {
-        let theta0 = std::f32::consts::PI * i as f32 / stacks as f32;
-        let theta1 = std::f32::consts::PI * (i + 1) as f32 / stacks as f32;
+    if slices < 3 || stacks < 2 {
+        return TriangleMesh::from_tris(&[]);
+    }
+
+    let north = Vec3::new(0.0, radius, 0.0);
+    let south = Vec3::new(0.0, -radius, 0.0);
+
+    // North cap: one triangle per sector from pole to the first non-degenerate ring.
+    let theta1 = std::f32::consts::PI / stacks as f32;
+    for j in 0..slices {
+        let phi0 = 2.0 * std::f32::consts::PI * j as f32 / slices as f32;
+        let phi1 = 2.0 * std::f32::consts::PI * (j + 1) as f32 / slices as f32;
+        let p0 = sphere_point(radius, theta1, phi0);
+        let p1 = sphere_point(radius, theta1, phi1);
+        positions.extend_from_slice(&[north, p1, p0]);
+    }
+
+    // Quads between ring k and k+1 for k = 1..stacks-2 (ring k is at PI*k/stacks).
+    for k in 1..(stacks - 1) {
+        let theta0 = std::f32::consts::PI * k as f32 / stacks as f32;
+        let theta1b = std::f32::consts::PI * (k + 1) as f32 / stacks as f32;
         for j in 0..slices {
             let phi0 = 2.0 * std::f32::consts::PI * j as f32 / slices as f32;
             let phi1 = 2.0 * std::f32::consts::PI * (j + 1) as f32 / slices as f32;
-            let p00 = sphere_point(radius, theta0, phi0);
-            let p10 = sphere_point(radius, theta1, phi0);
-            let p01 = sphere_point(radius, theta0, phi1);
-            let p11 = sphere_point(radius, theta1, phi1);
-            positions.extend_from_slice(&[p00, p01, p10, p01, p11, p10]);
+            let a0 = sphere_point(radius, theta0, phi0);
+            let a1 = sphere_point(radius, theta0, phi1);
+            let b0 = sphere_point(radius, theta1b, phi0);
+            let b1 = sphere_point(radius, theta1b, phi1);
+            positions.extend_from_slice(&[a0, a1, b0, a1, b1, b0]);
         }
     }
+
+    // South cap: fan from the last ring to the south pole.
+    let theta_last = std::f32::consts::PI * (stacks - 1) as f32 / stacks as f32;
+    for j in 0..slices {
+        let phi0 = 2.0 * std::f32::consts::PI * j as f32 / slices as f32;
+        let phi1 = 2.0 * std::f32::consts::PI * (j + 1) as f32 / slices as f32;
+        let p0 = sphere_point(radius, theta_last, phi0);
+        let p1 = sphere_point(radius, theta_last, phi1);
+        positions.extend_from_slice(&[south, p0, p1]);
+    }
+
     TriangleMesh::from_tris(&positions)
 }
 

@@ -24,9 +24,7 @@ impl GetBoundingBoxAction {
         let Some(entry) = graph.get(node) else {
             return;
         };
-        let data = entry.data.clone();
-
-        match &data {
+        match &entry.data {
             NodeData::Separator(_) => {
                 self.state.push_all();
                 for &child in &entry.children {

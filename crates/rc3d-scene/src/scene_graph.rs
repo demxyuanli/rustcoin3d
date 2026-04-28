@@ -47,12 +47,31 @@ impl SceneGraph {
         id
     }
 
+    pub fn insert_child(&mut self, parent: NodeId, index: usize, data: NodeData) -> NodeId {
+        let id = self.nodes.insert(NodeEntry {
+            data,
+            parent: Some(parent),
+            children: Vec::new(),
+            name: None,
+            display_mode: None,
+        });
+        if let Some(entry) = self.nodes.get_mut(parent) {
+            let idx = index.min(entry.children.len());
+            entry.children.insert(idx, id);
+        }
+        id
+    }
+
     pub fn remove(&mut self, id: NodeId) {
         if let Some(entry) = self.nodes.remove(id) {
             if let Some(parent_id) = entry.parent {
                 if let Some(parent) = self.nodes.get_mut(parent_id) {
                     parent.children.retain(|&c| c != id);
                 }
+            }
+            // Recursively remove orphaned children
+            for child in entry.children {
+                self.remove(child);
             }
         }
         self.roots.retain(|&r| r != id);

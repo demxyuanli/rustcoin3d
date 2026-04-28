@@ -32,6 +32,7 @@ pub fn parse_stl(data: &[u8]) -> Result<SceneGraph, StlError> {
     Ok(triangles_to_scene(&triangles))
 }
 
+#[allow(dead_code)]
 struct StlTriangle {
     normal: [f32; 3],
     vertices: [[f32; 3]; 3],
@@ -110,9 +111,9 @@ fn parse_stl_ascii(text: &str) -> Result<Vec<StlTriangle>, StlError> {
         skip_line(&mut lines, "outer"); // 'outer loop'
 
         let mut vertices = [[0.0f32; 3]; 3];
-        for i in 0..3 {
+        for vertex in &mut vertices {
             if let Some(vline) = lines.next() {
-                parse_vertex(vline.trim(), &mut vertices[i]);
+                parse_vertex(vline.trim(), vertex);
             }
         }
 

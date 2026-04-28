@@ -89,15 +89,9 @@ impl Element for CoordinateElement {
     fn clone_box(&self) -> Box<dyn Element> { Box::new(self.clone()) }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NormalElement {
     pub vectors: Vec<Vec3>,
-}
-
-impl Default for NormalElement {
-    fn default() -> Self {
-        Self { vectors: Vec::new() }
-    }
 }
 
 impl Element for NormalElement {
@@ -133,7 +127,7 @@ impl Element for MaterialElement {
     fn clone_box(&self) -> Box<dyn Element> { Box::new(self.clone()) }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LightElement {
     pub lights: Vec<LightData>,
 }
@@ -145,6 +139,8 @@ pub struct LightData {
     pub location: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    pub cut_off_angle: f32,
+    pub drop_off_rate: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -152,12 +148,6 @@ pub enum LightType {
     Directional,
     Point,
     Spot,
-}
-
-impl Default for LightElement {
-    fn default() -> Self {
-        Self { lights: Vec::new() }
-    }
 }
 
 impl Element for LightElement {

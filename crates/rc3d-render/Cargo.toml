@@ -16,3 +16,5 @@ slotmap = { workspace = true }
 wgpu = { workspace = true }
 log = { workspace = true }
 winit = { workspace = true }
+glyphon = { workspace = true }
+twox-hash = "1.6.3"

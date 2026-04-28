@@ -1,13 +1,8 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum DisplayMode {
+    #[default]
+    ShadedWithEdges,
     Shaded,
     Wireframe,
-    ShadedWithEdges,
     HiddenLine,
-}
-
-impl Default for DisplayMode {
-    fn default() -> Self {
-        Self::ShadedWithEdges
-    }
 }

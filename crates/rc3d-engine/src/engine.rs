@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::time::Instant;
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_scene::SceneGraph;
@@ -11,12 +10,10 @@ pub trait Engine: Any + std::fmt::Debug {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// Engine that outputs elapsed time since creation.
-/// Drives animation by updating a Transform node's rotation.
+/// Rotates a Transform node continuously using the elapsed time.
 #[derive(Debug)]
 pub struct ElapsedTimeEngine {
     pub transform_node: rc3d_core::NodeId,
-    pub start: Instant,
     pub speed: f32,
     pub axis: Vec3,
 }
@@ -25,7 +22,6 @@ impl ElapsedTimeEngine {
     pub fn new(transform_node: rc3d_core::NodeId, speed: f32, axis: Vec3) -> Self {
         Self {
             transform_node,
-            start: Instant::now(),
             speed,
             axis,
         }
@@ -33,8 +29,8 @@ impl ElapsedTimeEngine {
 }
 
 impl Engine for ElapsedTimeEngine {
-    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        let elapsed = self.start.elapsed().as_secs_f64() as f32;
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        let elapsed = time as f32;
         let angle = elapsed * self.speed;
         let rotation = Mat4::from_axis_angle(self.axis, angle);
         if let Some(entry) = graph.get_mut(self.transform_node) {
@@ -48,11 +44,10 @@ impl Engine for ElapsedTimeEngine {
     fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
-/// Engine that oscillates a value using sine wave.
+/// Oscillates a Transform field using a sine wave driven by elapsed time.
 #[derive(Debug)]
 pub struct SineOscillatorEngine {
     pub transform_node: rc3d_core::NodeId,
-    pub start: Instant,
     pub frequency: f32,
     pub amplitude: f32,
     pub field: SineField,
@@ -70,7 +65,6 @@ impl SineOscillatorEngine {
     pub fn new(transform_node: rc3d_core::NodeId, frequency: f32, amplitude: f32, field: SineField) -> Self {
         Self {
             transform_node,
-            start: Instant::now(),
             frequency,
             amplitude,
             field,
@@ -79,8 +73,8 @@ impl SineOscillatorEngine {
 }
 
 impl Engine for SineOscillatorEngine {
-    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        let elapsed = self.start.elapsed().as_secs_f64() as f32;
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        let elapsed = time as f32;
         let value = (elapsed * self.frequency * std::f32::consts::TAU).sin() * self.amplitude;
         if let Some(entry) = graph.get_mut(self.transform_node) {
             if let rc3d_scene::node_data::NodeData::Transform(t) = &mut entry.data {

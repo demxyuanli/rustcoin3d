@@ -14,7 +14,22 @@ pub struct PipelineSet {
 
 impl PipelineSet {
     pub fn create(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let depth_format = wgpu::TextureFormat::Depth32Float;
+        let depth_format = wgpu::TextureFormat::Depth32FloatStencil8;
+
+        let stencil_op_keep = |cmp: wgpu::CompareFunction| wgpu::StencilFaceState {
+            compare: cmp,
+            fail_op: wgpu::StencilOperation::Keep,
+            depth_fail_op: wgpu::StencilOperation::Keep,
+            pass_op: wgpu::StencilOperation::Keep,
+        };
+
+        // Do not read/write stencil (write_mask 0) when compare is Always.
+        let stencil_unchanged = wgpu::StencilState {
+            front: stencil_op_keep(wgpu::CompareFunction::Always),
+            back: stencil_op_keep(wgpu::CompareFunction::Always),
+            read_mask: 0xff,
+            write_mask: 0x00,
+        };
 
         let phong_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Phong Shader"),
@@ -68,7 +83,49 @@ impl PipelineSet {
             format: depth_format,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
+            stencil: stencil_unchanged.clone(),
+            bias: wgpu::DepthBiasState::default(),
+        };
+
+        let depth_stencil_solid = wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Always,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Replace,
+                },
+                back: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Always,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Replace,
+                },
+                read_mask: 0xff,
+                write_mask: 0xff,
+            },
+            bias: wgpu::DepthBiasState::default(),
+        };
+
+        let depth_stencil_outline = wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState {
+                // Cull front: only back-facing tris; those use the `back` stencil state.
+                front: stencil_op_keep(wgpu::CompareFunction::Always),
+                back: wgpu::StencilFaceState {
+                    compare: wgpu::CompareFunction::Equal,
+                    fail_op: wgpu::StencilOperation::Keep,
+                    depth_fail_op: wgpu::StencilOperation::Keep,
+                    pass_op: wgpu::StencilOperation::Keep,
+                },
+                read_mask: 0xff,
+                write_mask: 0x00,
+            },
             bias: wgpu::DepthBiasState::default(),
         };
 
@@ -106,8 +163,8 @@ impl PipelineSet {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(depth_stencil.clone()),
-            multisample: ms.clone(),
+            depth_stencil: Some(depth_stencil_solid),
+            multisample: ms,
             multiview: None,
             cache: None,
         });
@@ -144,7 +201,7 @@ impl PipelineSet {
                 depth_write_enabled: false,
                 ..depth_stencil.clone()
             }),
-            multisample: ms.clone(),
+            multisample: ms,
             multiview: None,
             cache: None,
         });
@@ -187,7 +244,7 @@ impl PipelineSet {
                 },
                 ..depth_stencil.clone()
             }),
-            multisample: ms.clone(),
+            multisample: ms,
             multiview: None,
             cache: None,
         });
@@ -232,7 +289,7 @@ impl PipelineSet {
                 depth_compare: wgpu::CompareFunction::LessEqual,
                 ..depth_stencil.clone()
             }),
-            multisample: ms.clone(),
+            multisample: ms,
             multiview: None,
             cache: None,
         });
@@ -275,7 +332,7 @@ impl PipelineSet {
             depth_stencil: Some(wgpu::DepthStencilState {
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::LessEqual,
-                ..depth_stencil
+                ..depth_stencil.clone()
             }),
             multisample: ms,
             multiview: None,
@@ -330,19 +387,14 @@ impl PipelineSet {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Front), // Only draw backfaces
+                cull_mode: Some(wgpu::Face::Front),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-                format: depth_format,
-            }),
-            multisample: ms.clone(),
+            // Stencil: only stencil==0 (not covered by solid) AND depth; interior keeps stencil=1.
+            depth_stencil: Some(depth_stencil_outline),
+            multisample: ms,
             multiview: None,
             cache: None,
         });

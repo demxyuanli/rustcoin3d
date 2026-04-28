@@ -1,26 +1,67 @@
 use rc3d_actions::{LightData, LightType, State};
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::{NodeId, DisplayMode};
+use rc3d_core::{DisplayMode, NodeId};
 use rc3d_scene::{NodeData, SceneGraph};
+use slotmap::Key;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::vertex::Vertex;
+const MAX_LIGHTS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ShapeKey {
+    Cube { w: u32, h: u32, d: u32 },
+    Sphere { r: u32, slices: u32, stacks: u32 },
+    Cone { r: u32, h: u32, segments: u32 },
+    Cylinder { r: u32, h: u32, segments: u32 },
+    IndexedFaceSet {
+        node: u64,
+        coord_len: u32,
+        coord_index_len: u32,
+        points_sig: [u32; 6],
+        index_sig: [i32; 2],
+    },
+}
+
+type CachedShapeData = (Arc<Vec<Vertex>>, Arc<Vec<u32>>, Arc<Vec<[f32; 3]>>, rc3d_core::Aabb);
+type PackedLights = (
+    [[f32; 4]; MAX_LIGHTS],
+    [[f32; 4]; MAX_LIGHTS],
+    [[f32; 4]; MAX_LIGHTS],
+    [[f32; 4]; MAX_LIGHTS],
+    [[f32; 4]; MAX_LIGHTS],
+    u32,
+);
+
+const MAX_EDGE_POSITIONS: usize = 2_000_000;
 
 /// Collected draw data from scene graph traversal.
 #[derive(Clone, Debug, Default)]
 pub struct DrawCall {
-    pub vertices: Vec<Vertex>,
-    pub indices: Option<Vec<u32>>,
-    pub edge_positions: Vec<[f32; 3]>,
+    pub vertices: Arc<Vec<Vertex>>,
+    pub indices: Option<Arc<Vec<u32>>>,
+    pub edge_positions: Arc<Vec<[f32; 3]>>,
     pub mvp: Mat4,
     pub model_matrix: Mat4,
     pub camera_pos: Vec3,
-    pub light_dir: Vec3,
-    pub light_color: Vec3,
-    pub color: Vec3,
+    pub light_dirs: [[f32; 4]; MAX_LIGHTS],
+    pub light_colors: [[f32; 4]; MAX_LIGHTS],
+    pub light_types: [[f32; 4]; MAX_LIGHTS],
+    pub light_positions: [[f32; 4]; MAX_LIGHTS],
+    pub spot_params: [[f32; 4]; MAX_LIGHTS],
+    pub light_count: u32,
+    pub diffuse_color: Vec3,
+    pub ambient_color: Vec3,
+    pub specular_color: Vec3,
+    pub shininess: f32,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
     pub selected: bool,
     pub overlay_color: Option<[f32; 4]>,
+    /// Cached mesh hash for GPU upload dedup. None until first computed.
+    pub mesh_hash: Option<u64>,
 }
 
 /// Traverses the scene graph, accumulates state, and collects draw calls.
@@ -28,11 +69,10 @@ pub struct RenderCollector {
     pub state: State,
     pub draw_calls: Vec<DrawCall>,
     pub camera_pos: Vec3,
-    pub first_light_dir: Vec3,
-    pub first_light_color: Vec3,
     pub view_matrix: Mat4,
     pub projection_matrix: Mat4,
     pub global_display_mode: DisplayMode,
+    mesh_cache: HashMap<ShapeKey, CachedShapeData>,
 }
 
 impl RenderCollector {
@@ -41,11 +81,10 @@ impl RenderCollector {
             state: State::new(),
             draw_calls: Vec::new(),
             camera_pos: Vec3::new(0.0, 0.0, 5.0),
-            first_light_dir: Vec3::new(0.0, 0.0, -1.0),
-            first_light_color: Vec3::ONE,
             view_matrix: Mat4::IDENTITY,
             projection_matrix: Mat4::IDENTITY,
             global_display_mode: DisplayMode::ShadedWithEdges,
+            mesh_cache: HashMap::new(),
         }
     }
 
@@ -53,15 +92,18 @@ impl RenderCollector {
         self.traverse_node(graph, root);
     }
 
+    pub fn invalidate_mesh_cache(&mut self) {
+        self.mesh_cache.clear();
+    }
+
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
         let Some(entry) = graph.get(node) else {
             return;
         };
-        let data = entry.data.clone();
         let is_selected = graph.is_selected(node);
         let node_display_mode = entry.display_mode;
 
-        match &data {
+        match &entry.data {
             NodeData::Separator(_) => {
                 self.state.push_all();
                 for &child in &entry.children {
@@ -110,16 +152,14 @@ impl RenderCollector {
                 self.camera_pos = cam.position;
             }
             NodeData::DirectionalLight(light) => {
-                if self.state.lights().is_empty() {
-                    self.first_light_dir = light.direction;
-                    self.first_light_color = light.color * light.intensity;
-                }
                 self.state.add_light(LightData {
                     light_type: LightType::Directional,
                     direction: light.direction,
                     location: Vec3::ZERO,
                     color: light.color,
                     intensity: light.intensity,
+                    cut_off_angle: 0.0,
+                    drop_off_rate: 0.0,
                 });
             }
             NodeData::PointLight(light) => {
@@ -129,6 +169,8 @@ impl RenderCollector {
                     location: light.location,
                     color: light.color,
                     intensity: light.intensity,
+                    cut_off_angle: 0.0,
+                    drop_off_rate: 0.0,
                 });
             }
             NodeData::SpotLight(light) => {
@@ -138,6 +180,8 @@ impl RenderCollector {
                     location: light.location,
                     color: light.color,
                     intensity: light.intensity,
+                    cut_off_angle: light.cut_off_angle,
+                    drop_off_rate: light.drop_off_rate,
                 });
             }
             NodeData::Triangle(_) => {
@@ -165,67 +209,220 @@ impl RenderCollector {
                 self.emit_draw_call_with_edges(vertices, Some((0..3u32).collect()), edge_positions, is_selected, node_display_mode);
             }
             NodeData::Cube(cube) => {
-                let mesh = rc3d_mesh::tessellate_cube(cube.width, cube.height, cube.depth);
-                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
+                self.emit_cached_shape(
+                    ShapeKey::Cube {
+                        w: cube.width.to_bits(),
+                        h: cube.height.to_bits(),
+                        d: cube.depth.to_bits(),
+                    },
+                    || rc3d_mesh::tessellate_cube(cube.width, cube.height, cube.depth),
+                    is_selected,
+                    node_display_mode,
+                );
             }
             NodeData::Sphere(sphere) => {
-                let mesh = rc3d_mesh::tessellate_sphere(sphere.radius, 24, 16);
-                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
+                const SLICES: u32 = 24;
+                const STACKS: u32 = 16;
+                self.emit_cached_shape(
+                    ShapeKey::Sphere {
+                        r: sphere.radius.to_bits(),
+                        slices: SLICES,
+                        stacks: STACKS,
+                    },
+                    || rc3d_mesh::tessellate_sphere(sphere.radius, SLICES, STACKS),
+                    is_selected,
+                    node_display_mode,
+                );
             }
             NodeData::Cone(cone) => {
-                let mesh = rc3d_mesh::tessellate_cone(cone.bottom_radius, cone.height, 24);
-                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
+                const SEGMENTS: u32 = 24;
+                self.emit_cached_shape(
+                    ShapeKey::Cone {
+                        r: cone.bottom_radius.to_bits(),
+                        h: cone.height.to_bits(),
+                        segments: SEGMENTS,
+                    },
+                    || rc3d_mesh::tessellate_cone(cone.bottom_radius, cone.height, SEGMENTS),
+                    is_selected,
+                    node_display_mode,
+                );
             }
             NodeData::Cylinder(cyl) => {
-                let mesh = rc3d_mesh::tessellate_cylinder(cyl.radius, cyl.height, 24);
-                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
+                const SEGMENTS: u32 = 24;
+                self.emit_cached_shape(
+                    ShapeKey::Cylinder {
+                        r: cyl.radius.to_bits(),
+                        h: cyl.height.to_bits(),
+                        segments: SEGMENTS,
+                    },
+                    || rc3d_mesh::tessellate_cylinder(cyl.radius, cyl.height, SEGMENTS),
+                    is_selected,
+                    node_display_mode,
+                );
             }
             NodeData::IndexedFaceSet(ifs) => {
                 let coord = self.state.coordinate();
                 if coord.points.is_empty() {
                     return;
                 }
-                let mesh = rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index);
-                if mesh.positions.is_empty() {
-                    return;
+                let points_sig = if coord.points.len() >= 2 {
+                    let first = coord.points[0].to_array();
+                    let last = coord.points[coord.points.len() - 1].to_array();
+                    [
+                        first[0].to_bits(),
+                        first[1].to_bits(),
+                        first[2].to_bits(),
+                        last[0].to_bits(),
+                        last[1].to_bits(),
+                        last[2].to_bits(),
+                    ]
+                } else {
+                    let p = coord.points[0].to_array();
+                    [
+                        p[0].to_bits(),
+                        p[1].to_bits(),
+                        p[2].to_bits(),
+                        p[0].to_bits(),
+                        p[1].to_bits(),
+                        p[2].to_bits(),
+                    ]
+                };
+                let index_sig = if ifs.coord_index.len() >= 2 {
+                    [ifs.coord_index[0], ifs.coord_index[ifs.coord_index.len() - 1]]
+                } else if ifs.coord_index.len() == 1 {
+                    [ifs.coord_index[0], ifs.coord_index[0]]
+                } else {
+                    [0, 0]
+                };
+                let key = ShapeKey::IndexedFaceSet {
+                    node: node.data().as_ffi(),
+                    coord_len: coord.points.len() as u32,
+                    coord_index_len: ifs.coord_index.len() as u32,
+                    points_sig,
+                    index_sig,
+                };
+                #[allow(clippy::map_entry)]
+                if !self.mesh_cache.contains_key(&key) {
+                    let mesh = rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index);
+                    if !mesh.positions.is_empty() {
+                        let (phong_verts, indices) = mesh.phong_buffers();
+                        let edge_positions = mesh.edge_line_positions();
+                        let local_aabb = mesh.bounding_box();
+                        let vertices: Vec<Vertex> = phong_verts
+                            .iter()
+                            .map(|v| Vertex {
+                                position: [v[0], v[1], v[2]],
+                                normal: [v[3], v[4], v[5]],
+                            })
+                            .collect();
+                        self.mesh_cache.insert(key, (Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb));
+                    }
                 }
-                self.emit_mesh_draw_call(&mesh, is_selected, node_display_mode);
+                if let Some((vertices, indices, edge_positions, local_aabb)) = self.mesh_cache.get(&key) {
+                    let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
+                        Arc::new(Vec::new())
+                    } else {
+                        Arc::clone(edge_positions)
+                    };
+                    self.emit_draw_call_with_cached_aabb(
+                        Arc::clone(vertices),
+                        Some(Arc::clone(indices)),
+                        edge_positions,
+                        local_aabb.clone(),
+                        is_selected,
+                        node_display_mode,
+                    );
+                }
             }
         }
     }
 
-    fn emit_mesh_draw_call(&mut self, mesh: &rc3d_mesh::TriangleMesh, selected: bool, node_display_mode: Option<DisplayMode>) {
-        let (phong_verts, indices) = mesh.phong_buffers();
-        let vertices: Vec<Vertex> = phong_verts
-            .iter()
-            .map(|v| Vertex { position: [v[0], v[1], v[2]], normal: [v[3], v[4], v[5]] })
-            .collect();
-        self.emit_draw_call_with_edges(vertices, Some(indices), Vec::new(), selected, node_display_mode);
-    }
-
-    fn extract_edge_positions(&self, mesh: &rc3d_mesh::TriangleMesh) -> Vec<[f32; 3]> {
-        let edge_ids = match self.global_display_mode {
-            DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine => {
-                let world_view_dir = self.view_direction();
-                let model = self.state.model_matrix();
-                let local_view_dir = model.inverse().transform_vector3(world_view_dir).normalize();
-                let mut edges = mesh.silhouette_edges(local_view_dir);
-                edges.extend(mesh.boundary_edges());
-                edges
+    fn emit_cached_shape<F>(
+        &mut self,
+        key: ShapeKey,
+        build_mesh: F,
+        selected: bool,
+        node_display_mode: Option<DisplayMode>,
+    ) where
+        F: FnOnce() -> rc3d_mesh::TriangleMesh,
+    {
+        match self.mesh_cache.entry(key) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(vacant) => {
+                let mesh = build_mesh();
+                if mesh.positions.is_empty() {
+                    return;
+                }
+                let (phong_verts, indices) = mesh.phong_buffers();
+                let edge_positions = mesh.edge_line_positions();
+                let local_aabb = mesh.bounding_box();
+                let vertices: Vec<Vertex> = phong_verts
+                    .iter()
+                    .map(|v| Vertex {
+                        position: [v[0], v[1], v[2]],
+                        normal: [v[3], v[4], v[5]],
+                    })
+                    .collect();
+                vacant.insert((Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb));
             }
-            _ => return Vec::new(),
-        };
+        }
 
-        let line_indices = mesh.edge_line_indices(&edge_ids);
-        line_indices.iter().map(|&idx| mesh.positions[idx as usize].to_array()).collect()
+        if let Some((vertices, indices, edge_positions, local_aabb)) = self.mesh_cache.get(&key) {
+            let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
+                Arc::new(Vec::new())
+            } else {
+                Arc::clone(edge_positions)
+            };
+            self.emit_draw_call_with_cached_aabb(
+                Arc::clone(vertices),
+                Some(Arc::clone(indices)),
+                edge_positions,
+                local_aabb.clone(),
+                selected,
+                node_display_mode,
+            );
+        }
     }
 
-    fn view_direction(&self) -> Vec3 {
-        Vec3::new(
-            self.view_matrix.z_axis.x,
-            self.view_matrix.z_axis.y,
-            self.view_matrix.z_axis.z,
-        ).normalize()
+    fn emit_draw_call_with_cached_aabb(
+        &mut self,
+        vertices: Arc<Vec<Vertex>>,
+        indices: Option<Arc<Vec<u32>>>,
+        edge_positions: Arc<Vec<[f32; 3]>>,
+        local_aabb: rc3d_core::Aabb,
+        selected: bool,
+        node_display_mode: Option<DisplayMode>,
+    ) {
+        let model = self.state.model_matrix();
+        let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
+        let mat = self.state.material();
+        let aabb = Some(local_aabb.transform(model));
+        let (light_dirs, light_colors, light_types, light_positions, spot_params, light_count) =
+            self.collect_lights();
+
+        self.draw_calls.push(DrawCall {
+            vertices,
+            indices,
+            edge_positions,
+            mvp,
+            model_matrix: model,
+            camera_pos: self.camera_pos,
+            light_dirs,
+            light_colors,
+            light_types,
+            light_positions,
+            spot_params,
+            light_count,
+            diffuse_color: mat.diffuse,
+            ambient_color: mat.ambient,
+            specular_color: mat.specular,
+            shininess: mat.shininess,
+            aabb,
+            display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
+            selected,
+            overlay_color: None,
+            mesh_hash: None,
+        });
     }
 
     fn emit_draw_call_with_edges(
@@ -239,6 +436,8 @@ impl RenderCollector {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
+        let (light_dirs, light_colors, light_types, light_positions, spot_params, light_count) =
+            self.collect_lights();
 
         let aabb = if vertices.is_empty() {
             None
@@ -253,20 +452,60 @@ impl RenderCollector {
         };
 
         self.draw_calls.push(DrawCall {
-            vertices,
-            indices,
-            edge_positions,
+            vertices: Arc::new(vertices),
+            indices: indices.map(Arc::new),
+            edge_positions: Arc::new(edge_positions),
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
-            light_dir: self.first_light_dir,
-            light_color: self.first_light_color,
-            color: mat.diffuse,
+            light_dirs,
+            light_colors,
+            light_types,
+            light_positions,
+            spot_params,
+            light_count,
+            diffuse_color: mat.diffuse,
+            ambient_color: mat.ambient,
+            specular_color: mat.specular,
+            shininess: mat.shininess,
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
             overlay_color: None,
+            mesh_hash: None,
         });
+    }
+
+    fn collect_lights(&self) -> PackedLights {
+        let mut dirs = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut colors = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut types = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut positions = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut spot_params = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut count = 0u32;
+        for light in self.state.lights() {
+            if (count as usize) < MAX_LIGHTS {
+                let idx = count as usize;
+                dirs[idx] = [light.direction.x, light.direction.y, light.direction.z, 0.0];
+                let c = light.color * light.intensity;
+                colors[idx] = [c.x, c.y, c.z, 1.0];
+                positions[idx] = [light.location.x, light.location.y, light.location.z, 1.0];
+                types[idx][0] = match light.light_type {
+                    LightType::Directional => 0.0,
+                    LightType::Point => 1.0,
+                    LightType::Spot => 2.0,
+                };
+                spot_params[idx] = [light.cut_off_angle.cos(), light.drop_off_rate, 0.0, 0.0];
+                count += 1;
+            }
+        }
+        if count == 0 {
+            dirs[0] = [0.0, 0.0, -1.0, 0.0];
+            colors[0] = [1.0, 1.0, 1.0, 1.0];
+            types[0][0] = 0.0;
+            count = 1;
+        }
+        (dirs, colors, types, positions, spot_params, count)
     }
 }
 

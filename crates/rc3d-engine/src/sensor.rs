@@ -2,6 +2,9 @@ use std::time::Instant;
 
 use rc3d_scene::SceneGraph;
 
+type AlarmCallback = Box<dyn FnMut(&mut SceneGraph)>;
+type TimerCallback = Box<dyn FnMut(&mut SceneGraph, f64)>;
+
 /// A sensor fires a callback when triggered (by time or field change).
 pub trait Sensor: std::fmt::Debug {
     fn should_fire(&self, time: f64) -> bool;
@@ -11,7 +14,7 @@ pub trait Sensor: std::fmt::Debug {
 /// Fires once after a delay.
 pub struct AlarmSensor {
     pub fire_time: f64,
-    pub callback: Option<Box<dyn FnMut(&mut SceneGraph)>>,
+    pub callback: Option<AlarmCallback>,
     pub fired: bool,
 }
 
@@ -20,7 +23,7 @@ impl std::fmt::Debug for AlarmSensor {
         f.debug_struct("AlarmSensor")
             .field("fire_time", &self.fire_time)
             .field("fired", &self.fired)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -50,7 +53,7 @@ impl Sensor for AlarmSensor {
 pub struct TimerSensor {
     pub interval: f64,
     pub next_fire: f64,
-    pub callback: Option<Box<dyn FnMut(&mut SceneGraph, f64)>>,
+    pub callback: Option<TimerCallback>,
 }
 
 impl std::fmt::Debug for TimerSensor {
@@ -58,7 +61,7 @@ impl std::fmt::Debug for TimerSensor {
         f.debug_struct("TimerSensor")
             .field("interval", &self.interval)
             .field("next_fire", &self.next_fire)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

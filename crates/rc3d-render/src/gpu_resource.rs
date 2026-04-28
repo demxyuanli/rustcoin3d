@@ -21,6 +21,12 @@ pub struct GpuResourceManager {
     meshes: slotmap::SlotMap<MeshId, GpuMesh>,
 }
 
+impl Default for GpuResourceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GpuResourceManager {
     pub fn new() -> Self {
         Self {
@@ -90,16 +96,19 @@ impl GpuResourceManager {
 pub struct GpuUniformPool {
     buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
     stride: u64,
     capacity: usize,
     cursor: usize,
+    staging: Vec<u8>,
+    written_end: usize,
 }
 
 impl GpuUniformPool {
     pub fn new_phong(device: &wgpu::Device, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<SceneUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let stride = ((raw_stride + alignment - 1) / alignment) * alignment;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
         let size = stride * capacity as u64;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Phong Uniform Pool"),
@@ -120,13 +129,34 @@ impl GpuUniformPool {
                 count: None,
             }],
         });
-        Self { buffer, bind_group_layout, stride, capacity, cursor: 0 }
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Phong Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
     }
 
     pub fn new_flat(device: &wgpu::Device, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<FlatUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let stride = ((raw_stride + alignment - 1) / alignment) * alignment;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
         let size = stride * capacity as u64;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Flat Uniform Pool"),
@@ -147,13 +177,34 @@ impl GpuUniformPool {
                 count: None,
             }],
         });
-        Self { buffer, bind_group_layout, stride, capacity, cursor: 0 }
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Flat Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
     }
 
     pub fn new_outline(device: &wgpu::Device, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<OutlineUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let stride = ((raw_stride + alignment - 1) / alignment) * alignment;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
         let size = stride * capacity as u64;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Outline Uniform Pool"),
@@ -174,83 +225,72 @@ impl GpuUniformPool {
                 count: None,
             }],
         });
-        Self { buffer, bind_group_layout, stride, capacity, cursor: 0 }
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Outline Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
     }
 
     pub fn reset(&mut self) {
         self.cursor = 0;
+        self.written_end = 0;
     }
 
-    pub fn push_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &SceneUniforms) -> Option<(wgpu::BindGroup, u32)> {
+    fn push_bytes(&mut self, bytes: &[u8]) -> Option<u32> {
         if self.cursor >= self.capacity {
             return None;
         }
-        let offset = (self.cursor * self.stride as usize) as u64;
-        queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(&[*uniforms]));
+        let stride = self.stride as usize;
+        let offset = self.cursor * stride;
+        let end = offset + bytes.len();
+        self.staging[offset..end].copy_from_slice(bytes);
+        self.written_end = self.written_end.max(offset + stride);
         let offset_u32 = offset as u32;
         self.cursor += 1;
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.buffer,
-                    offset: 0,
-                    size: Some(std::num::NonZero::new(self.stride).unwrap()),
-                }),
-            }],
-            label: None,
-        });
-        Some((bg, offset_u32))
+        Some(offset_u32)
     }
 
-    pub fn push_flat(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &FlatUniforms) -> Option<(wgpu::BindGroup, u32)> {
-        if self.cursor >= self.capacity {
-            return None;
-        }
-        let offset = (self.cursor * self.stride as usize) as u64;
-        queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(&[*uniforms]));
-        let offset_u32 = offset as u32;
-        self.cursor += 1;
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.buffer,
-                    offset: 0,
-                    size: Some(std::num::NonZero::new(self.stride).unwrap()),
-                }),
-            }],
-            label: None,
-        });
-        Some((bg, offset_u32))
+    pub fn push_scene(&mut self, uniforms: &SceneUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
     }
 
-    pub fn push_outline(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uniforms: &OutlineUniforms) -> Option<(wgpu::BindGroup, u32)> {
-        if self.cursor >= self.capacity {
-            return None;
+    pub fn push_flat(&mut self, uniforms: &FlatUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    pub fn push_outline(&mut self, uniforms: &OutlineUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    pub fn flush(&self, queue: &wgpu::Queue) {
+        if self.written_end > 0 {
+            queue.write_buffer(&self.buffer, 0, &self.staging[..self.written_end]);
         }
-        let offset = (self.cursor * self.stride as usize) as u64;
-        queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(&[*uniforms]));
-        let offset_u32 = offset as u32;
-        self.cursor += 1;
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.buffer,
-                    offset: 0,
-                    size: Some(std::num::NonZero::new(self.stride).unwrap()),
-                }),
-            }],
-            label: None,
-        });
-        Some((bg, offset_u32))
     }
 
     pub fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.bind_group_layout
+    }
+
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
     }
 }

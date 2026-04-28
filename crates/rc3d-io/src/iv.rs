@@ -45,11 +45,7 @@ enum Token {
 fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, IvError> {
     let mut tokens = Vec::new();
     let mut chars = input.char_indices().peekable();
-    loop {
-        let (i, ch) = match chars.peek() {
-            Some(&x) => x,
-            None => break,
-        };
+    while let Some(&(i, ch)) = chars.peek() {
         match ch {
             '{' => { tokens.push((Token::LBrace, i)); chars.next(); }
             '}' => { tokens.push((Token::RBrace, i)); chars.next(); }
@@ -136,7 +132,7 @@ impl<'a> Parser<'a> {
     fn parse(&mut self) -> Result<SceneGraph, IvError> {
         let mut graph = SceneGraph::new();
         while self.pos < self.tokens.len() {
-            if let Token::Ident(name) = self.peek().cloned().unwrap_or(Token::Ident(String::new())) {
+            if let Token::Ident(_) = self.peek().cloned().unwrap_or(Token::Ident(String::new())) {
                 self.parse_top_level_node(&mut graph, None)?;
             } else {
                 self.pos += 1;

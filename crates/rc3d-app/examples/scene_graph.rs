@@ -9,13 +9,23 @@ fn main() {
 
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // Light
+    // Key light: upper-left-front
     graph.add_child(
         root,
         NodeData::DirectionalLight(DirectionalLightNode {
             direction: Vec3::new(-0.5, -1.0, -0.5).normalize(),
             color: Vec3::ONE,
             intensity: 1.0,
+        }),
+    );
+
+    // Fill light: upper-right, brightens shadows on top/right sides
+    graph.add_child(
+        root,
+        NodeData::DirectionalLight(DirectionalLightNode {
+            direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
+            color: Vec3::new(0.9, 0.92, 1.0),
+            intensity: 0.5,
         }),
     );
 
