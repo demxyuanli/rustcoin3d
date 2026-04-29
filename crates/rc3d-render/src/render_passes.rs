@@ -370,6 +370,7 @@ pub(super) fn execute_passes(
         if ctx.wireframe_supported && ctx.adaptive_quality != AdaptiveQuality::Low {
             pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         }
+        pass_selection::pass_selection_bbox(&mut encoder, shade_view, &depth_view, ctx, &scene_pl, &mut renderer.flat_pool, ctx.wireframe_supported);
     }
 
     // Transparent pass: iterate sorted draw calls with alpha blend pipeline

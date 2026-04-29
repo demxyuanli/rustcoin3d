@@ -124,6 +124,7 @@ pub struct Renderer {
     pub enable_volumetric_fog: bool,
     pub enable_cluster_lights: bool,
     pub enable_omni_shadows: bool,
+    pub xray_mode: bool,
 }
 
 impl Renderer {
@@ -406,6 +407,7 @@ impl Renderer {
             enable_volumetric_fog: false,
             enable_cluster_lights: false,
             enable_omni_shadows: false,
+            xray_mode: false,
         };
         renderer.hud = Some(HudRenderer::new(
             &renderer.device,

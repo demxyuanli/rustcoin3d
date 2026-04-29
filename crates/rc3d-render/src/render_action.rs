@@ -207,6 +207,11 @@ impl RenderCollector {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::SectionPlane(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
                 self.state.set_model_matrix(current * t.to_matrix());

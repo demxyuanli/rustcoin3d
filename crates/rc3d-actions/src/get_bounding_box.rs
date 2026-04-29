@@ -95,6 +95,11 @@ impl GetBoundingBoxAction {
                     self.bounding_box = self.bounding_box.union(&Aabb::from_point(wp));
                 }
             }
+            NodeData::SectionPlane(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             _ => {}
         }
     }

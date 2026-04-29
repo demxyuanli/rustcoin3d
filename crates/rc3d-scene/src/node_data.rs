@@ -444,6 +444,19 @@ impl Default for LodNode {
     }
 }
 
+/// Section/cutting plane node (Coin3D SoClipPlane pattern).
+#[derive(Clone, Debug)]
+pub struct SectionPlaneNode {
+    pub plane: [f32; 4],
+    pub enabled: bool,
+}
+
+impl Default for SectionPlaneNode {
+    fn default() -> Self {
+        Self { plane: [0.0, 1.0, 0.0, 0.0], enabled: true }
+    }
+}
+
 /// Central node type enum.
 #[derive(Clone, Debug)]
 pub enum NodeData {
@@ -476,6 +489,8 @@ pub enum NodeData {
     EventCallback(EventCallbackNode),
     /// Level-of-detail switch (Coin3D SoLOD pattern).
     Lod(LodNode),
+    /// Section/cutting plane (Coin3D SoClipPlane pattern).
+    SectionPlane(SectionPlaneNode),
 }
 
 impl NodeData {
@@ -502,6 +517,7 @@ impl NodeData {
             NodeData::HandlerNode(h) => h.handler_name(),
             NodeData::EventCallback(_) => "EventCallback",
             NodeData::Lod(_) => "Lod",
+            NodeData::SectionPlane(_) => "SectionPlane",
         }
     }
 }

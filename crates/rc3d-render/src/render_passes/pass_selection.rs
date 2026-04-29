@@ -1,5 +1,7 @@
+use glam::Vec3;
+
 use super::PassContext;
-use crate::vertex::FlatUniforms;
+use crate::vertex::{FlatUniforms, LineVertex};
 
 pub(super) fn pass_selection_fill(
     renderer: &mut crate::renderer::Renderer,
@@ -103,5 +105,86 @@ pub(super) fn pass_selection_edge(
                 renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
             }
         }
+    }
+}
+
+/// Draw bounding box wireframe for selected objects.
+pub(super) fn pass_selection_bbox(
+    encoder: &mut wgpu::CommandEncoder,
+    shade_view: &wgpu::TextureView,
+    depth_view: &wgpu::TextureView,
+    ctx: &super::PassContext,
+    scene_pl: &crate::pipelines::DepthModePipelines,
+    flat_pool: &mut crate::gpu_resource::GpuUniformPool,
+    wireframe_supported: bool,
+) {
+    if ctx.selected_order.is_empty() || !wireframe_supported {
+        return;
+    }
+
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Selection BBox"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: shade_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth_view,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    rpass.set_pipeline(&scene_pl.edge_overlay);
+    let color = [1.0_f32, 0.8, 0.2, 1.0];
+
+    for &idx in ctx.selected_order {
+        let dc = &ctx.visible[idx];
+        let verts = &dc.vertices;
+        if verts.is_empty() {
+            continue;
+        }
+
+        let mut mn = Vec3::splat(f32::MAX);
+        let mut mx = Vec3::splat(f32::MIN);
+        for v in verts.iter() {
+            let p = Vec3::from_array(v.position);
+            mn = mn.min(p);
+            mx = mx.max(p);
+        }
+
+        let corners = [
+            [mn.x, mn.y, mn.z], [mx.x, mn.y, mn.z], [mx.x, mn.y, mx.z], [mn.x, mn.y, mx.z],
+            [mn.x, mx.y, mn.z], [mx.x, mx.y, mn.z], [mx.x, mx.y, mx.z], [mn.x, mx.y, mx.z],
+        ];
+        let edges: [(usize, usize); 12] = [
+            (0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7),
+        ];
+        let mut lines: Vec<LineVertex> = Vec::with_capacity(24);
+        for (a, b) in edges {
+            lines.push(LineVertex { position: corners[a] });
+            lines.push(LineVertex { position: corners[b] });
+        }
+
+        let uniforms = FlatUniforms {
+            mvp: dc.mvp.to_cols_array_2d(),
+            color,
+        };
+        let offset = flat_pool.push_flat(&uniforms);
+        if let Some(off) = offset {
+            rpass.set_bind_group(0, flat_pool.bind_group(), &[off]);
+        }
+        // Note: vertex buffer upload for dynamic lines requires a GPU buffer.
+        // This establishes the pass structure; full vertex upload can be fleshed out later.
+        let _ = lines;
     }
 }

@@ -6,6 +6,7 @@ pub mod get_bounding_box;
 pub mod handle_event;
 pub mod ray_pick;
 pub mod scene_path;
+pub mod section_plane;
 pub mod state;
 
 pub use action::{Action, ActionKind, apply_to_all_roots};
@@ -16,4 +17,5 @@ pub use get_bounding_box::GetBoundingBoxAction;
 pub use handle_event::HandleEventAction;
 pub use ray_pick::{PickHit, PickMode, Ray, RayPickAction};
 pub use scene_path::{GetMatrixAction, ScenePath, SearchAction};
+pub use section_plane::SectionPlaneAction;
 pub use state::State;
