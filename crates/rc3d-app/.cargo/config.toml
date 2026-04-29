@@ -1,0 +1,4 @@
+# Workaround: wgpu 24 + D3D12 on Windows 11 may crash with STATUS_STACK_BUFFER_OVERRUN.
+# D3D11 backend is stable. Remove this when upgrading to wgpu 25+.
+[env]
+WGPU_BACKEND = "dx11"
