@@ -457,6 +457,34 @@ impl Default for SectionPlaneNode {
     }
 }
 
+/// Switch node: traverses one child based on index (Coin3D SoSwitch pattern).
+/// which_child: -1 = all, -2 = none, 0..N = specific child.
+#[derive(Clone, Debug)]
+pub struct SwitchNode {
+    pub which_child: i32,
+    pub children: Vec<rc3d_core::NodeId>,
+}
+
+impl Default for SwitchNode {
+    fn default() -> Self {
+        Self { which_child: -1, children: Vec::new() }
+    }
+}
+
+/// MultipleCopy node: repeats child traversal with offset transforms
+/// (Coin3D SoMultipleCopy pattern).
+#[derive(Clone, Debug)]
+pub struct MultipleCopyNode {
+    pub copies: Vec<rc3d_core::math::Mat4>,
+    pub children: Vec<rc3d_core::NodeId>,
+}
+
+impl Default for MultipleCopyNode {
+    fn default() -> Self {
+        Self { copies: Vec::new(), children: Vec::new() }
+    }
+}
+
 /// Central node type enum.
 #[derive(Clone, Debug)]
 pub enum NodeData {
@@ -489,6 +517,8 @@ pub enum NodeData {
     EventCallback(EventCallbackNode),
     /// Level-of-detail switch (Coin3D SoLOD pattern).
     Lod(LodNode),
+    Switch(SwitchNode),
+    MultipleCopy(MultipleCopyNode),
     /// Section/cutting plane (Coin3D SoClipPlane pattern).
     SectionPlane(SectionPlaneNode),
 }
@@ -517,6 +547,8 @@ impl NodeData {
             NodeData::HandlerNode(h) => h.handler_name(),
             NodeData::EventCallback(_) => "EventCallback",
             NodeData::Lod(_) => "Lod",
+            NodeData::Switch(_) => "Switch",
+            NodeData::MultipleCopy(_) => "MultipleCopy",
             NodeData::SectionPlane(_) => "SectionPlane",
         }
     }

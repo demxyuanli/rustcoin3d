@@ -191,6 +191,33 @@ impl RenderCollector {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::Switch(sw) => {
+                match sw.which_child {
+                    -2 => {} // none
+                    -1 => {
+                        for &child in &sw.children {
+                            self.traverse_node(graph, child);
+                        }
+                    }
+                    idx if idx >= 0 => {
+                        let i = idx as usize;
+                        if i < sw.children.len() {
+                            self.traverse_node(graph, sw.children[i]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            NodeData::MultipleCopy(mc) => {
+                let base = self.state.model_matrix();
+                for &copy_mat in &mc.copies {
+                    self.state.set_model_matrix(base * copy_mat);
+                    for &child in &mc.children {
+                        self.traverse_node(graph, child);
+                    }
+                }
+                self.state.set_model_matrix(base);
+            }
             NodeData::Lod(lod) => {
                 let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
                 if let Some(level_data) = lod.levels.get(level) {
