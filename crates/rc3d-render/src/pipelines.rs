@@ -1,9 +1,11 @@
+use crate::shader_permutation::{ShaderFeatures, ShaderVariantCache};
 use crate::vertex::{LineVertex, Vertex};
 
 /// Render pipelines for one depth convention (forward-Z: Less / clear 1, reverse-Z: Greater / clear 0).
 #[derive(Clone)]
 pub struct DepthModePipelines {
     pub solid: wgpu::RenderPipeline,
+    pub solid_alpha: wgpu::RenderPipeline,
     /// Phong solid with color writes disabled (depth/stencil only), for same-frame HZB prepass.
     pub solid_depth_prepass: wgpu::RenderPipeline,
     pub wireframe: wgpu::RenderPipeline,
@@ -50,13 +52,24 @@ impl PipelineSet {
         }
     }
 
-    pub fn create(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn create(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        shader_cache: &mut ShaderVariantCache,
+    ) -> Self {
         let depth_format = wgpu::TextureFormat::Depth32FloatStencil8;
 
-        let pbr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("PBR Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/pbr.wgsl").into()),
-        });
+        // Default PBR permutation: all features enabled
+        let pbr_features = ShaderFeatures::HAS_NORMAL_MAP
+            .with(ShaderFeatures::HAS_SHADOW)
+            .with(ShaderFeatures::HAS_ALBEDO_TEX)
+            .with(ShaderFeatures::HAS_IBL);
+        let pbr_shader = shader_cache.get_module(
+            device,
+            pbr_features.bits,
+            "pbr",
+            include_str!("shaders/pbr.wgsl"),
+        );
         let shadow_depth_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shadow depth"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_depth.wgsl").into()),
@@ -674,6 +687,46 @@ fn build_depth_mode_pipelines(
         cache: None,
     });
 
+    let solid_alpha = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("PBR solid alpha"),
+        layout: Some(lit_pll),
+        vertex: wgpu::VertexState {
+            module: lit_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Vertex::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: lit_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: false,
+            depth_compare: depth_cmp,
+            stencil: stencil_unchanged.clone(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: ms,
+        multiview: None,
+        cache: None,
+    });
+
     let outline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(outline_pll),
@@ -710,6 +763,7 @@ fn build_depth_mode_pipelines(
 
     DepthModePipelines {
         solid,
+        solid_alpha,
         solid_depth_prepass,
         wireframe,
         edge_overlay,

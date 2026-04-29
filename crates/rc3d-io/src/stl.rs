@@ -187,6 +187,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
             metallic: 0.0,
             roughness: 0.35,
             albedo_texture: None,
+            opacity: 1.0,
         }),
     );
     const MAX_VERTICES_PER_CHUNK: usize = 4_000_000;

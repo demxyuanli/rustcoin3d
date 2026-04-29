@@ -74,6 +74,7 @@ pub struct MaterialNode {
     pub metallic: f32,
     pub roughness: f32,
     pub albedo_texture: Option<String>,
+    pub opacity: f32,
 }
 
 impl MaterialNode {
@@ -87,6 +88,7 @@ impl MaterialNode {
             metallic: 0.0,
             roughness: 0.5,
             albedo_texture: None,
+            opacity: 1.0,
         }
     }
 }
@@ -102,6 +104,7 @@ impl Default for MaterialNode {
             metallic: 0.0,
             roughness: 0.5,
             albedo_texture: None,
+            opacity: 1.0,
         }
     }
 }

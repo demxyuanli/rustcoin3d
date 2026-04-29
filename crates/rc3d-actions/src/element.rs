@@ -131,6 +131,7 @@ pub struct MaterialElement {
     pub metallic: f32,
     pub roughness: f32,
     pub albedo_texture: Option<String>,
+    pub opacity: f32,
 }
 
 impl Default for MaterialElement {
@@ -144,6 +145,7 @@ impl Default for MaterialElement {
             metallic: 0.0,
             roughness: 0.35,
             albedo_texture: None,
+            opacity: 1.0,
         }
     }
 }

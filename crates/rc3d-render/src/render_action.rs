@@ -29,6 +29,7 @@ fn material_element_for_node(
         metallic: src.metallic,
         roughness: src.roughness,
         albedo_texture: src.albedo_texture.clone(),
+        opacity: src.opacity,
     }
 }
 
@@ -84,6 +85,7 @@ pub struct DrawCall {
     pub base_color: Vec3,
     pub metallic: f32,
     pub roughness: f32,
+    pub opacity: f32,
     pub albedo_path: Option<Arc<str>>,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
@@ -119,6 +121,7 @@ impl Default for DrawCall {
             base_color: Vec3::ZERO,
             metallic: 0.0,
             roughness: 0.5,
+            opacity: 1.0,
             albedo_path: None,
             aabb: None,
             display_mode: DisplayMode::ShadedWithEdges,
@@ -570,6 +573,7 @@ impl RenderCollector {
             base_color: mat.base_color,
             metallic: mat.metallic,
             roughness: mat.roughness,
+            opacity: mat.opacity,
             albedo_path: mat
                 .albedo_texture
                 .as_ref()
@@ -633,6 +637,7 @@ impl RenderCollector {
             base_color: mat.base_color,
             metallic: mat.metallic,
             roughness: mat.roughness,
+            opacity: mat.opacity,
             albedo_path: mat
                 .albedo_texture
                 .as_ref()

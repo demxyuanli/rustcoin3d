@@ -3,18 +3,19 @@ mod streaming_lod;
 
 use rc3d_core::{math::{Mat4, Vec3}, DisplayMode};
 use rc3d_render::{DrawCall, FrameStats, Renderer};
+use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use rc3d_scene::SceneGraph;
 use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
     event_loop::ActiveEventLoop,
     window::WindowAttributes,
 };
 
 use crate::camera_controller::CameraController;
+use crate::viewport_camera::ViewportCameraSet;
 use crate::world::World;
 use streaming_lod::{FullResPatch, apply_decimated_preview, gaussian_triangle_budget, stream_step_ms};
 
@@ -82,7 +83,8 @@ pub struct App {
     pub world: World,
     pub renderer: Option<Renderer>,
     pub window: Option<winit::window::Window>,
-    pub camera_controller: Option<CameraController>,
+    pub camera_controller: Option<CameraController>,  // legacy; prefer viewport_cameras
+    pub viewport_cameras: ViewportCameraSet,
     pub on_pick: Option<PickCallback>,
     cursor_pos: (f64, f64),
     shift_pressed: bool,
@@ -119,6 +121,7 @@ impl App {
             renderer: None,
             window: None,
             camera_controller: None,
+            viewport_cameras: ViewportCameraSet::new(),
             on_pick: None,
             cursor_pos: (0.0, 0.0),
             shift_pressed: false,
@@ -348,15 +351,23 @@ impl ApplicationHandler for App {
                     self.stream_next_tick = Some(Instant::now() + Duration::from_millis(stream_step_ms()));
                 }
                 self.tick_mesh_stream();
-                if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
-                    let size = window.inner_size();
-                    let aspect = size.width as f32 / size.height as f32;
 
-                    self.world.evaluate_engines();
-
-                    if let Some(ref ctrl) = self.camera_controller {
-                        ctrl.update_camera(&mut self.world.graph, aspect);
+                // Snapshot viewport layout for camera updates (before renderer is mutably borrowed)
+                if !self.viewport_cameras.cameras.is_empty() {
+                    let viewports: Vec<_> = self.renderer.as_ref().map(|r| {
+                        r.viewport_layout.viewports.iter().map(|v| {
+                            (v.id, v.rect.aspect())
+                        }).collect::<Vec<_>>()
+                    }).unwrap_or_default();
+                    for vc in &self.viewport_cameras.cameras {
+                        if let Some(&(_, aspect)) = viewports.iter().find(|&&(id, _)| id == vc.viewport_id) {
+                            vc.controller.update_camera_node(&mut self.world.graph, vc.camera_node, aspect);
+                        }
                     }
+                }
+
+                if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
+                    self.world.evaluate_engines();
 
                     renderer.materials = self.world.materials.clone();
                     self.world.collector.draw_calls.clear();
@@ -394,6 +405,7 @@ impl ApplicationHandler for App {
                                 base_color: Vec3::ZERO,
                                 metallic: 0.0,
                                 roughness: 0.5,
+                                opacity: 1.0,
                                 albedo_path: None,
                                 aabb: None,
                                 display_mode: DisplayMode::ShadedWithEdges,
@@ -456,9 +468,10 @@ impl ApplicationHandler for App {
             _ => {}
         }
 
+        // Camera control (legacy single-camera path)
         if let Some(ref mut ctrl) = self.camera_controller {
             if !self.measurement_mode {
-                ctrl.handle_event(&event);
+                Self::dispatch_camera_event(ctrl, &event, &self.cursor_pos);
                 if let Some(window) = &self.window {
                     match event {
                         WindowEvent::CursorMoved { .. }
@@ -468,6 +481,13 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 }
+            }
+        }
+
+        // Viewport camera set (new multi-viewport path)
+        if !self.viewport_cameras.cameras.is_empty() && !self.measurement_mode {
+            if let Some(vc) = self.viewport_cameras.active_mut() {
+                Self::dispatch_camera_event(&mut vc.controller, &event, &self.cursor_pos);
             }
         }
     }
@@ -582,6 +602,53 @@ impl App {
                 window.set_title("rustcoin3d");
                 window.request_redraw();
             }
+        }
+    }
+
+    fn dispatch_camera_event(
+        ctrl: &mut CameraController,
+        event: &WindowEvent,
+        cursor_pos: &(f64, f64),
+    ) {
+        match event {
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (MouseButton::Left, winit::event::ElementState::Pressed) => {
+                        ctrl.orbiting = true;
+                    }
+                    (MouseButton::Left, winit::event::ElementState::Released) => {
+                        ctrl.orbiting = false;
+                    }
+                    (MouseButton::Right, winit::event::ElementState::Pressed) => {
+                        ctrl.panning = true;
+                    }
+                    (MouseButton::Right, winit::event::ElementState::Released) => {
+                        ctrl.panning = false;
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let dx = (position.x - cursor_pos.0) as f32 * 0.005;
+                let dy = (position.y - cursor_pos.1) as f32 * 0.005;
+                if ctrl.orbiting {
+                    ctrl.orbit(dx, dy);
+                }
+                if ctrl.panning {
+                    // Mouse delta in pixels, scaled for pan
+                    let dx = (position.x - cursor_pos.0) as f32;
+                    let dy = (position.y - cursor_pos.1) as f32;
+                    ctrl.pan(dx, dy);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+                };
+                ctrl.zoom(scroll);
+            }
+            _ => {}
         }
     }
 

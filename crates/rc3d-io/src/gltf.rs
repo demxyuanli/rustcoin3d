@@ -374,5 +374,6 @@ fn build_material_node(
         metallic,
         roughness,
         albedo_texture,
+        opacity: 1.0,
     })
 }

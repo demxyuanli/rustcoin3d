@@ -25,7 +25,9 @@ use crate::render_passes::{self, PassContext};
 use crate::shadow_map::{aabb_from_scene, csm_light_view_projs, compute_csm_splits, primary_directional_light_dir, union_draw_call_aabbs};
 use crate::shadow_omni::OmniShadowRenderer;
 use crate::shadow_pass::{self, CsmShadowResources};
+use crate::shader_permutation::ShaderVariantCache;
 use crate::shader_reload::ShaderHotReload;
+use crate::viewport::ViewportLayout;
 use crate::sort_keys;
 use crate::ssr_pass::SsrPass;
 use crate::taa::{TaaJitter, TaaPass};
@@ -33,7 +35,7 @@ use crate::texture_cache::TextureCache;
 use crate::vertex::{InstanceData, LineVertex, CSM_CASCADE_COUNT, MAX_INSTANCES};
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::ibl::IblPreset;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::SceneGraph;
 
@@ -99,6 +101,8 @@ pub struct Renderer {
     pub gpu_query_period: f32, // timestamp period in ns
     // ── Phase 2 render features ──
     pub pipeline_cache: Option<PipelineCacheManager>,
+    pub shader_cache: ShaderVariantCache,
+    pub viewport_layout: ViewportLayout,
     pub shader_reload: ShaderHotReload,
     pub auto_exposure: AutoExposure,
     pub taa_pass: Option<TaaPass>,
@@ -270,7 +274,8 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let pipelines = PipelineSet::create(&device, config.format);
+        let mut shader_cache = ShaderVariantCache::new();
+        let pipelines = PipelineSet::create(&device, config.format, &mut shader_cache);
         let phong_pool = GpuUniformPool::new_phong(&device, 1024);
         let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 1024);
         let flat_pool = GpuUniformPool::new_flat(&device, 2048);
@@ -379,6 +384,8 @@ impl Renderer {
             gpu_query_period,
             // Phase 2 features (lazy init below)
             pipeline_cache: None,
+            shader_cache,
+            viewport_layout: ViewportLayout::new(),
             shader_reload: ShaderHotReload::new(),
             auto_exposure,
             taa_pass: None,
@@ -441,6 +448,9 @@ impl Renderer {
         // ── Material library: set BGL for bind group building ──
         renderer.materials.set_bind_group_layout(&renderer.pipelines.pbr_material_bgl);
 
+        // ── Multi-viewport layout ──
+        renderer.viewport_layout.rebuild(renderer.config.width, renderer.config.height);
+
         renderer
     }
 
@@ -483,6 +493,7 @@ impl Renderer {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+            self.viewport_layout.rebuild(width, height);
             self.create_depth_texture();
             self.hzb_baker = Some(HzbBaker::new(&self.device));
             let ds_bgl = &self.hzb_baker.as_ref().unwrap().downsample_bgl;
@@ -777,6 +788,19 @@ impl Renderer {
             )
         });
 
+    let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
+    let mut transparent_order: Vec<usize> = (0..draw_calls.len())
+        .filter(|&i| draw_calls[i].opacity < 1.0)
+        .collect();
+
+    transparent_order.sort_unstable_by(|&a, &b| {
+        let pos_a = draw_calls[a].model_matrix.w_axis.truncate();
+        let pos_b = draw_calls[b].model_matrix.w_axis.truncate();
+        let da = pos_a.distance(camera_pos_vec);
+        let db = pos_b.distance(camera_pos_vec);
+        db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
         // Collect meshlet visible indices and upload ClusterSets
         let mut meshlet_indices: Vec<usize> = Vec::new();
         for (i, dc) in visible.iter().enumerate() {
@@ -912,6 +936,7 @@ impl Renderer {
             solid_order: &solid_order,
             edge_order: &edge_order,
             selected_order: &selected_order,
+            transparent_order: &transparent_order,
             mesh_handles: &mesh_handles,
             mode,
             run_outline,
