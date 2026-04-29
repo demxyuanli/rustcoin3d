@@ -204,7 +204,7 @@ fn build_node(
         || scale != [1.0, 1.0, 1.0];
 
     if has_transform {
-        let rotation = Mat4::from_quat(Quat::from_array([rot[3], rot[0], rot[1], rot[2]]));
+        let rotation = Mat4::from_quat(Quat::from_array([rot[0], rot[1], rot[2], rot[3]]));
         let transform = TransformNode {
             translation: Vec3::new(trans[0], trans[1], trans[2]),
             rotation,

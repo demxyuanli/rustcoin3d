@@ -66,19 +66,34 @@ impl SceneGraph {
     }
 
     pub fn remove(&mut self, id: NodeId) {
-        if let Some(entry) = self.nodes.remove(id) {
-            if let Some(parent_id) = entry.parent {
-                if let Some(parent) = self.nodes.get_mut(parent_id) {
-                    parent.children.retain(|&c| c != id);
-                }
+        // Extract needed data before any mutation (avoid borrow conflict)
+        let (parent_id, children) = match self.nodes.get(id) {
+            Some(entry) => (entry.parent, entry.children.clone()),
+            None => return,
+        };
+
+        // Unlink from parent
+        if let Some(pid) = parent_id {
+            if let Some(parent) = self.nodes.get_mut(pid) {
+                parent.children.retain(|&c| c != id);
             }
-            // Recursively remove orphaned children
-            for child in entry.children {
-                self.remove(child);
-            }
+            self.roots.retain(|&r| r != id);
+        } else {
+            self.roots.retain(|&r| r != id);
         }
-        self.roots.retain(|&r| r != id);
+
+        // Iterative removal of subtree (avoid stack overflow on deep chains)
+        self.nodes.remove(id);
         self.selected.remove(&id);
+
+        let mut stack: Vec<NodeId> = children;
+        while let Some(node_id) = stack.pop() {
+            if let Some(child) = self.nodes.get(node_id) {
+                stack.extend(child.children.clone());
+                self.selected.remove(&node_id);
+            }
+            self.nodes.remove(node_id);
+        }
     }
 
     pub fn get(&self, id: NodeId) -> Option<&NodeEntry> {

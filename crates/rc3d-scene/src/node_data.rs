@@ -142,7 +142,7 @@ impl TransformNode {
         let ci = Mat4::from_translation(-self.center);
         let t = Mat4::from_translation(self.translation);
         let s = Mat4::from_scale(self.scale);
-        ci * s * self.rotation * c * t
+        t * c * self.rotation * s * ci
     }
 }
 
@@ -265,13 +265,15 @@ impl PerspectiveCameraNode {
 
     pub fn projection_matrix(&self) -> Mat4 {
         // WebGPU clip Z in [0, w]; xy unchanged vs OpenGL NDC.
-        let f = 1.0 / (self.fov * 0.5).tan();
+        let fov_clamped = self.fov.clamp(f32::EPSILON, std::f32::consts::PI - f32::EPSILON);
+        let f = 1.0 / (fov_clamped * 0.5).tan();
+        let d = (self.far - self.near).max(f32::EPSILON);
+        let aspect = self.aspect.max(f32::EPSILON);
         if self.reverse_depth {
-            let d = self.far - self.near;
             let a = self.near / d;
             let b = self.near * self.far / d;
             Mat4::from_cols(
-                Vec4::new(f / self.aspect, 0.0, 0.0, 0.0),
+                Vec4::new(f / aspect, 0.0, 0.0, 0.0),
                 Vec4::new(0.0, f, 0.0, 0.0),
                 Vec4::new(0.0, 0.0, a, -1.0),
                 Vec4::new(0.0, 0.0, b, 0.0),
@@ -279,7 +281,7 @@ impl PerspectiveCameraNode {
         } else {
             let nf = 1.0 / (self.near - self.far);
             Mat4::from_cols(
-                Vec4::new(f / self.aspect, 0.0, 0.0, 0.0),
+                Vec4::new(f / aspect, 0.0, 0.0, 0.0),
                 Vec4::new(0.0, f, 0.0, 0.0),
                 Vec4::new(0.0, 0.0, self.far * nf, -1.0),
                 Vec4::new(0.0, 0.0, self.near * self.far * nf, 0.0),
@@ -321,7 +323,7 @@ impl OrthographicCameraNode {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        let half_h = self.height / 2.0;
+        let half_h = self.height.max(f32::EPSILON) / 2.0;
         let half_w = half_h * self.aspect;
         let rml = half_w * 2.0;
         let tmb = half_h * 2.0;
@@ -517,6 +519,85 @@ impl Default for Text3Node {
 
 /// Central node type enum.
 #[derive(Clone, Debug)]
+pub enum MeasurementType {
+    Distance,
+    Angle,
+    Radius,
+    Diameter,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeasurementNode {
+    pub points: Vec<rc3d_core::math::Vec3>,
+    pub measurement_type: MeasurementType,
+    pub label: String,
+    pub color: [f32; 4],
+    pub value: f32,
+}
+
+impl Default for MeasurementNode {
+    fn default() -> Self {
+        Self {
+            points: Vec::new(),
+            measurement_type: MeasurementType::Distance,
+            label: String::new(),
+            color: [1.0, 1.0, 0.0, 1.0],
+            value: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum MarkupElement {
+    Line {
+        start: [f32; 2],
+        end: [f32; 2],
+        color: [f32; 4],
+        width: f32,
+    },
+    Rect {
+        origin: [f32; 2],
+        size: [f32; 2],
+        color: [f32; 4],
+        filled: bool,
+    },
+    Circle {
+        center: [f32; 2],
+        radius: f32,
+        color: [f32; 4],
+    },
+    Freehand {
+        points: Vec<[f32; 2]>,
+        color: [f32; 4],
+        width: f32,
+    },
+    Text {
+        position: [f32; 2],
+        string: String,
+        size: f32,
+        color: [f32; 4],
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct MarkupNode {
+    pub elements: Vec<MarkupElement>,
+    pub layer_name: String,
+    pub visible: bool,
+}
+
+impl Default for MarkupNode {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            layer_name: String::new(),
+            visible: true,
+        }
+    }
+}
+
+/// Central node type enum.
+#[derive(Clone, Debug)]
 pub enum NodeData {
     // Grouping
     Separator(SeparatorNode),
@@ -555,6 +636,8 @@ pub enum NodeData {
     Text2(Text2Node),
     /// World-space 3D text label (Coin3D SoText3 pattern).
     Text3(Text3Node),
+    Measurement(MeasurementNode),
+    Markup(MarkupNode),
 }
 
 /// Describes a named field on a node type.
@@ -617,6 +700,8 @@ impl NodeData {
             NodeData::SectionPlane(_) => "SectionPlane",
             NodeData::Text2(_) => "Text2",
             NodeData::Text3(_) => "Text3",
+            NodeData::Measurement(_) => "Measurement",
+            NodeData::Markup(_) => "Markup",
         }
     }
 }

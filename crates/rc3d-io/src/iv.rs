@@ -148,11 +148,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    const MAX_IV_DEPTH: u32 = 500;
+
     fn parse(&mut self) -> Result<SceneGraph, IvError> {
         let mut graph = SceneGraph::new();
         while self.pos < self.tokens.len() {
             if let Token::Ident(_) = self.peek().cloned().unwrap_or(Token::Ident(String::new())) {
-                self.parse_top_level_node(&mut graph, None)?;
+                self.parse_top_level_node(&mut graph, None, 0)?;
             } else {
                 self.pos += 1;
             }
@@ -161,7 +163,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a node and add it to the graph as child of `parent` (or as root if None).
-    fn parse_top_level_node(&mut self, graph: &mut SceneGraph, parent: Option<rc3d_core::NodeId>) -> Result<rc3d_core::NodeId, IvError> {
+    fn parse_top_level_node(
+        &mut self,
+        graph: &mut SceneGraph,
+        parent: Option<rc3d_core::NodeId>,
+        depth: u32,
+    ) -> Result<rc3d_core::NodeId, IvError> {
+        if depth > Self::MAX_IV_DEPTH {
+            return Err(IvError::Parse {
+                line: 0,
+                message: "max nesting depth exceeded".into(),
+            });
+        }
         let name = match self.peek() {
             Some(Token::Ident(s)) => s.clone(),
             _ => return Err(IvError::Parse { line: 0, message: "expected node name".into() }),
@@ -183,7 +196,7 @@ impl<'a> Parser<'a> {
                     if is_field_name(&child_name) {
                         break;
                     }
-                    self.parse_top_level_node(graph, Some(id))?;
+                    self.parse_top_level_node(graph, Some(id), depth + 1)?;
                 }
                 id
             }
@@ -248,7 +261,13 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let axis = self.read_vec3()?;
                     let angle = self.read_float()?;
-                    t.rotation = rc3d_core::math::Mat4::from_axis_angle(axis.normalize(), angle);
+                    if axis.length_squared() < f32::EPSILON {
+                        return Err(IvError::Parse {
+                            line: 0,
+                            message: "zero-length rotation axis".into(),
+                        });
+                    }
+                    t.rotation = rc3d_core::math::Mat4::from_axis_angle(axis, angle);
                 }
                 _ => break,
             }
@@ -280,7 +299,13 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let axis = self.read_vec3()?;
                     let angle = self.read_float()?;
-                    t.rotation = rc3d_core::math::Mat4::from_axis_angle(axis.normalize(), angle);
+                    if axis.length_squared() < f32::EPSILON {
+                        return Err(IvError::Parse {
+                            line: 0,
+                            message: "zero-length rotation axis".into(),
+                        });
+                    }
+                    t.rotation = rc3d_core::math::Mat4::from_axis_angle(axis, angle);
                 }
                 "center" => { self.pos += 1; t.center = self.read_vec3()?; }
                 _ => break,

@@ -17,26 +17,41 @@ pub struct ElapsedTimeEngine {
     pub transform_node: rc3d_core::NodeId,
     pub speed: f32,
     pub axis: Vec3,
+    last_time: Option<f64>,
 }
 
 impl ElapsedTimeEngine {
     pub fn new(transform_node: rc3d_core::NodeId, speed: f32, axis: Vec3) -> Self {
+        let axis = axis.normalize();
+        let axis = if axis.length_squared() < 1e-8 {
+            Vec3::Y
+        } else {
+            axis
+        };
         Self {
             transform_node,
             speed,
             axis,
+            last_time: None,
         }
     }
 }
 
 impl Engine for ElapsedTimeEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
-        let elapsed = time as f32;
-        let angle = elapsed * self.speed;
+        let dt = match self.last_time {
+            Some(prev) => ((time - prev) as f32).min(0.1), // cap at 100ms to avoid jump
+            None => 0.0,
+        };
+        self.last_time = Some(time);
+        if dt <= 0.0 {
+            return;
+        }
+        let angle = dt * self.speed;
         let rotation = Mat4::from_axis_angle(self.axis, angle);
         if let Some(entry) = graph.get_mut(self.transform_node) {
             if let rc3d_scene::node_data::NodeData::Transform(t) = &mut entry.data {
-                t.rotation = rotation;
+                t.rotation = rotation * t.rotation; // compound
             }
         }
     }
@@ -107,7 +122,10 @@ impl CalculatorEngine {
 }
 
 impl Engine for CalculatorEngine {
-    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {}
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        // Pending: expression parser and field evaluation.
+        // Will evaluate expressions like "oA = sin(iA) * 3.0" on connected fields.
+    }
 
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
@@ -134,7 +152,10 @@ impl ComposeMatrixEngine {
 }
 
 impl Engine for ComposeMatrixEngine {
-    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {}
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        // Pending: composition of TRS fields into a Mat4 output field.
+        // Will read translation/rotation/scale fields and write composed matrix.
+    }
 
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
