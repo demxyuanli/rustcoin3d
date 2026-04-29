@@ -74,10 +74,16 @@ impl HudRenderer {
         stats: FrameStats,
         mode_name: &str,
     ) {
-        let text = format!(
-            "FPS: {fps:.1} | Frame: {frame_time_ms:.2}ms\nTriangles: {} | Draw Calls: {} | Culled: {}\nMode: {mode_name}",
+        let mut text = format!(
+            "FPS: {fps:.1} | Frame: {frame_time_ms:.2}ms\nTri: {} | Draws: {} | Culled: {}\nMode: {mode_name}",
             stats.visible_triangles, stats.visible_draw_calls, stats.culled_draw_calls
         );
+        if let Some(times) = stats.gpu_pass_times_us {
+            text.push_str(&format!(
+                "\nGPU: shadow={:.0}us solid={:.0}us post={:.0}us total={:.0}us",
+                times[0], times[1], times[2], times[3]
+            ));
+        }
         self.buffer.set_text(
             &mut self.font_system,
             &text,

@@ -1,4 +1,5 @@
 pub mod bvh;
+pub mod lod;
 pub mod meshlet;
 pub mod tessellate;
 pub mod topology;

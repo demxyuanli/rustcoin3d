@@ -1,11 +1,18 @@
+use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
-use crate::vertex::{FlatUniforms, OutlineUniforms, SceneUniforms, ShadowDrawUniforms};
+use crate::vertex::{InstanceData, SceneUniforms, CSM_CASCADE_COUNT};
 use crate::FrameStats;
-use crate::renderer::AdaptiveQuality;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 use std::sync::OnceLock;
+
+mod pass_edge;
+mod pass_post;
+mod pass_selection;
+mod pass_shadow;
+mod pass_solid;
+mod pass_wireframe;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
 
@@ -20,7 +27,9 @@ fn albedo_material_bind_group<'a>(
         None => texture_cache.white_handle(),
         Some(p) => texture_cache.load_path(device, queue, p.as_ref()),
     };
-    texture_cache.albedo_bind_group(device, layout, handle)
+    // Normal map: use default flat normal if no explicit normal path
+    let normal_handle = texture_cache.default_normal_handle();
+    texture_cache.pbr_material_bind_group(device, layout, handle, normal_handle)
 }
 
 pub(super) struct PassContext<'a> {
@@ -39,11 +48,17 @@ pub(super) struct PassContext<'a> {
     pub outline_color: [f32; 4],
     pub meshlet_indices: &'a [usize],
     pub camera_pos: [f32; 3],
-    /// Matches `DrawCall::depth_reversed_z` / projection (frame-wide depth buffer convention).
     pub depth_reversed_z: bool,
-    pub light_view_proj: Mat4,
+    /// CSM cascade view-projection matrices (one per cascade)
+    pub csm_view_proj: [Mat4; CSM_CASCADE_COUNT],
+    /// CSM split depths in view space: [near, split1, split2, far] (4 values)
+    pub csm_split_depths: [f32; CSM_CASCADE_COUNT],
     pub shadow_params: [f32; 4],
     pub run_shadow_pass: bool,
+    /// Camera projection matrix (for SSAO depth reconstruction)
+    pub camera_proj: Mat4,
+    /// Camera inverse projection matrix
+    pub camera_inv_proj: Mat4,
 }
 
 pub(super) fn execute_passes(
@@ -54,12 +69,14 @@ pub(super) fn execute_passes(
 ) -> FrameStats {
     RC3D_RENDER_GRAPH_OK.get_or_init(|| {
         let g = RenderGraph::rc3d_forward_default();
-        g.topological_sort()
-            .expect("rc3d default render graph must be acyclic");
-        assert!(
-            declaration_order_is_valid(&g.passes),
-            "rc3d_forward_default pass vec order must match encoder dependency order; update passes or CHAIN_* edges"
-        );
+        if g.topological_sort().is_err() {
+            log::error!("rc3d default render graph is cyclic; execution will continue with best-effort pass order");
+        }
+        if !declaration_order_is_valid(&g.passes) {
+            log::error!(
+                "rc3d_forward_default pass declaration order mismatches dependency order; execution continues with degraded safety"
+            );
+        }
     });
 
     let output = match renderer.surface.get_current_texture() {
@@ -80,18 +97,19 @@ pub(super) fn execute_passes(
     let depth_read_view = depth_read_view.clone();
 
     if renderer.hdr_post_processing {
-        renderer.ensure_hdr_scene_target();
+        renderer.ensure_post_fx_targets();
     }
     let scene_pl = renderer
         .pipelines
         .for_shaded_target(ctx.depth_reversed_z, renderer.hdr_post_processing)
         .clone();
     let shade_color_view = if renderer.hdr_post_processing {
-        renderer
-            .hdr_scene_view
-            .as_ref()
-            .expect("HDR scene view")
-            .clone()
+        if let Some(fx) = renderer.post_fx.as_ref() {
+            fx.hdr_view.clone()
+        } else {
+            log::warn!("hdr_post_processing is enabled but post_fx is missing; falling back to swapchain view");
+            view.clone()
+        }
     } else {
         view.clone()
     };
@@ -103,8 +121,12 @@ pub(super) fn execute_passes(
             label: Some("Render Encoder"),
         });
 
+    // GPU timestamp: frame start
+    renderer.write_gpu_timestamp(&mut encoder);
+
     if ctx.run_shadow_pass {
-        pass_shadow_depth(renderer, &mut encoder, ctx);
+        pass_shadow::pass_shadow_depth(renderer, &mut encoder, ctx);
+        renderer.write_gpu_timestamp(&mut encoder); // shadow end
     }
 
     let mode = ctx.mode;
@@ -125,47 +147,61 @@ pub(super) fn execute_passes(
             .iter()
             .any(|&i| !ctx.visible[i].depth_reversed_z);
 
-    let run_meshlet_hzb_prepass = solid_mode
+    let requested_meshlet_hzb_prepass = solid_mode
         && !ctx.meshlet_indices.is_empty()
         && renderer.cluster_renderer.is_some()
         && renderer.hzb.is_some()
         && renderer.hzb_baker.is_some();
+    let run_meshlet_hzb_prepass = if requested_meshlet_hzb_prepass {
+        true
+    } else {
+        if solid_mode
+            && !ctx.meshlet_indices.is_empty()
+            && (renderer.cluster_renderer.is_none()
+                || renderer.hzb.is_none()
+                || renderer.hzb_baker.is_none())
+        {
+            log::warn!("meshlet HZB prepass requested but resources are incomplete; using fallback meshlet cull path");
+        }
+        false
+    };
 
     let mut meshlet_hzb_prepass_done = false;
 
-    if run_meshlet_hzb_prepass {
-        let mip_max;
-        let hzb_dims_xy: (u32, u32);
-        let max_bind_owned: wgpu::TextureView;
-        let min_bind_owned: wgpu::TextureView;
-        {
-            let hzb = renderer.hzb.as_ref().unwrap();
-            mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
-            hzb_dims_xy = (hzb.max_pyramid.width, hzb.max_pyramid.height);
-            max_bind_owned = if hzb_need_max {
-                hzb.max_pyramid.full_view.clone()
-            } else {
-                hzb.min_pyramid.full_view.clone()
-            };
-            min_bind_owned = if hzb_need_min {
-                hzb.min_pyramid.full_view.clone()
-            } else {
-                hzb.max_pyramid.full_view.clone()
-            };
-        }
+    'hzb_prepass: {
+        if run_meshlet_hzb_prepass {
+        let hzb = renderer.hzb.as_ref().expect("HZB missing despite pre-check");
+        let cluster_renderer = renderer.cluster_renderer.as_ref().expect("cluster renderer missing despite pre-check");
+
+        let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
+        let hzb_dims_xy = (hzb.max_pyramid.width, hzb.max_pyramid.height);
+        let max_bind_owned: wgpu::TextureView = if hzb_need_max {
+            hzb.max_pyramid.full_view.clone()
+        } else {
+            hzb.min_pyramid.full_view.clone()
+        };
+        let min_bind_owned: wgpu::TextureView = if hzb_need_min {
+            hzb.min_pyramid.full_view.clone()
+        } else {
+            hzb.max_pyramid.full_view.clone()
+        };
+
         let lod_stride = 1u32;
         let meshlet_phase = 0u32;
         let meshlet_stride_spatial = false;
 
+        // First cull pass (no HZB - uses full mip0 as coarse cull)
         {
-            let cluster_renderer = renderer.cluster_renderer.as_ref().unwrap();
             let max_bind: &wgpu::TextureView = &max_bind_owned;
             let min_bind: &wgpu::TextureView = &min_bind_owned;
             for &vis_idx in ctx.meshlet_indices {
                 let dc = ctx.visible[vis_idx];
-                let md = dc.meshlet_data.as_ref().unwrap();
+                let Some(md) = dc.meshlet_data.as_ref() else {
+                    log::warn!("meshlet index {} has no meshlet_data; skipping", vis_idx);
+                    continue;
+                };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -190,11 +226,11 @@ pub(super) fn execute_passes(
             }
         }
 
-        pass_depth_prepass(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
+        // Depth prepass
+        pass_solid::pass_depth_prepass(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
 
-        {
-            let baker = renderer.hzb_baker.as_ref().unwrap();
-            let hzb = renderer.hzb.as_ref().unwrap();
+        // Build HZB from depth
+        if let (Some(baker), Some(hzb)) = (renderer.hzb_baker.as_mut(), renderer.hzb.as_ref()) {
             baker.build_from_depth(
                 &renderer.device,
                 &mut encoder,
@@ -204,17 +240,22 @@ pub(super) fn execute_passes(
                 &hzb.max_pyramid,
                 &hzb.min_pyramid,
             );
+        } else {
+            meshlet_hzb_prepass_done = false;
+            break 'hzb_prepass;
         }
 
-        {
-            let cluster_renderer = renderer.cluster_renderer.as_ref().unwrap();
+        // Second cull pass (with HZB)
+        if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
             let max_bind: &wgpu::TextureView = &max_bind_owned;
             let min_bind: &wgpu::TextureView = &min_bind_owned;
             for &vis_idx in ctx.meshlet_indices {
                 let dc = ctx.visible[vis_idx];
-                let md = dc.meshlet_data.as_ref().unwrap();
+                let Some(md) = dc.meshlet_data.as_ref() else {
+                    continue;
+                };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -237,9 +278,16 @@ pub(super) fn execute_passes(
                     );
                 }
             }
+        } else {
+            meshlet_hzb_prepass_done = false;
+            break 'hzb_prepass;
         }
+
         meshlet_hzb_prepass_done = true;
-    } else if !ctx.meshlet_indices.is_empty() {
+        }
+    }
+
+    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() {
         if let (Some(cluster_renderer), Some(hzb)) =
             (renderer.cluster_renderer.as_ref(), renderer.hzb.as_ref())
         {
@@ -259,9 +307,12 @@ pub(super) fn execute_passes(
             let meshlet_stride_spatial = false;
             for &vis_idx in ctx.meshlet_indices {
                 let dc = ctx.visible[vis_idx];
-                let md = dc.meshlet_data.as_ref().unwrap();
+                let Some(md) = dc.meshlet_data.as_ref() else {
+                    log::warn!("meshlet index {} has no meshlet_data; skipping", vis_idx);
+                    continue;
+                };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -288,7 +339,7 @@ pub(super) fn execute_passes(
     }
 
     if solid_mode {
-        pass_solid_and_outline(
+        pass_solid::pass_solid_and_outline(
             renderer,
             &mut encoder,
             shade_view,
@@ -297,10 +348,11 @@ pub(super) fn execute_passes(
             meshlet_hzb_prepass_done,
             &scene_pl,
         );
+        renderer.write_gpu_timestamp(&mut encoder); // solid end
     }
 
     if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe {
-        pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
+        pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
     }
 
     let edge_worthy = !ctx.performance_mode_active
@@ -308,20 +360,121 @@ pub(super) fn execute_passes(
         && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
     if edge_worthy || has_overlay {
-        pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
+        pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
     let has_selection = ctx.visible.iter().any(|dc| dc.selected);
     if has_selection && !ctx.performance_mode_active {
-        pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
+        pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         if ctx.wireframe_supported && ctx.adaptive_quality != AdaptiveQuality::Low {
-            pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
+            pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         }
     }
 
     if renderer.hdr_post_processing {
-        pass_tonemap_hdr_to_post_ldr(renderer, &mut encoder, ctx.bg_color);
-        pass_blit_post_ldr_to_swapchain(renderer, &mut encoder, &view, ctx.bg_color);
+        if let Some(ref fx) = renderer.post_fx {
+            let pl = &renderer.post_fx_pipelines;
+            let w = renderer.config.width.max(1);
+            let h = renderer.config.height.max(1);
+            let proj = ctx.camera_proj.to_cols_array_2d();
+            let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
+
+            // ── Auto Exposure ──
+            let _exposure = renderer.auto_exposure.update(
+                &renderer.device, &renderer.queue, &mut encoder,
+                &fx.hdr_view, w, h, 0.016,
+            );
+
+            // ── SSR (screen-space reflections) ──
+            if renderer.enable_ssr {
+                if let Some(ref ssr) = renderer.ssr_pass {
+                    if let Some(ref hzb) = renderer.hzb {
+                        ssr.trace(
+                            &renderer.device, &renderer.queue, &mut encoder,
+                            &fx.hdr_view, &depth_read_view,
+                            &hzb.max_pyramid.full_view, &fx.hdr_view,
+                            w, h,
+                            ctx.camera_inv_proj, Mat4::IDENTITY,
+                        );
+                    }
+                }
+            }
+
+            // ── Volumetric Fog ──
+            if renderer.enable_volumetric_fog {
+                if let Some(ref fog) = renderer.volumetric_fog {
+                    fog.compute(
+                        &renderer.device, &renderer.queue, &mut encoder,
+                        &depth_read_view, &fx.hdr_view, w, h,
+                        ctx.camera_inv_proj,
+                        Vec3::from(ctx.camera_pos),
+                        Vec3::new(0.5, -0.8, 0.3),
+                        Vec3::new(1.0, 0.9, 0.7),
+                        Vec3::new(0.6, 0.7, 0.8),
+                        0.02, 0.5, 100.0, 32,
+                    );
+                }
+            }
+
+            // ── Motion Blur ──
+            if renderer.enable_motion_blur {
+                if let Some(ref mb) = renderer.motion_blur {
+                    mb.apply(
+                        &renderer.device, &renderer.queue, &mut encoder,
+                        &fx.hdr_view, &depth_read_view, &depth_read_view,
+                        &fx.hdr_view, w, h, 16, 0.5,
+                    );
+                }
+            }
+
+            // ── DOF ──
+            if renderer.enable_dof {
+                if let Some(ref dof) = renderer.dof_pass {
+                    dof.apply(
+                        &renderer.device, &renderer.queue, &mut encoder,
+                        &fx.hdr_view, &depth_read_view, &fx.hdr_view,
+                        w, h, 5.0, 2.0,
+                    );
+                }
+            }
+
+            // ── Color Grading ──
+            if renderer.enable_color_grading {
+                if let Some(ref cg) = renderer.color_grading {
+                    cg.apply(
+                        &renderer.device, &renderer.queue, &mut encoder,
+                        &fx.hdr_view, &fx.hdr_view, w, h, 1.0,
+                    );
+                }
+            }
+
+            // Bloom prefilter (compute dispatch: read HDR, write half-res bloom)
+            pass_post::pass_bloom_prefilter(&renderer.device, &mut encoder, pl, fx);
+            // SSAO (read depth, write AO)
+            pass_post::pass_ssao(&renderer.device, &mut encoder, pl, fx,
+                &depth_read_view, &renderer.ssao_noise_view, &proj, &inv_proj);
+            // SSAO blur (read AO + depth, write blurred AO)
+            pass_post::pass_ssao_blur(&renderer.device, &mut encoder, pl, fx, &depth_read_view);
+
+            // ── TAA (temporal anti-aliasing) ──
+            if renderer.enable_taa {
+                if let Some(ref mut taa) = renderer.taa_pass {
+                    taa.ensure_history(&renderer.device, w, h);
+                    taa.resolve(
+                        &renderer.device, &renderer.queue, &mut encoder,
+                        &fx.hdr_view, &depth_read_view, &depth_read_view,
+                        &fx.hdr_view,
+                        0.05, 1.0,
+                    );
+                }
+            }
+
+            // Tonemap + FXAA + Bloom + SSAO
+            pass_post::pass_tonemap_hdr_to_post_ldr(&mut encoder, pl, fx, ctx.bg_color);
+            // Blit to swapchain
+            pass_post::pass_blit_post_ldr_to_swapchain(&mut encoder, pl, fx, &view, ctx.bg_color);
+            renderer.write_gpu_timestamp(&mut encoder); // post end
+        }
     }
 
     renderer.outline_pool.flush(&renderer.queue);
@@ -350,6 +503,7 @@ pub(super) fn execute_passes(
     }
 
     renderer.prune_mesh_cache();
+    renderer.resolve_gpu_timestamps(&mut encoder);
     renderer.queue.submit(std::iter::once(encoder.finish()));
     output.present();
 
@@ -369,144 +523,8 @@ pub(super) fn execute_passes(
         visible_triangles: total_visible_triangles,
         visible_draw_calls: ctx.visible.len(),
         culled_draw_calls: draw_calls.len().saturating_sub(ctx.visible.len()),
+        gpu_pass_times_us: None,
     }
-}
-
-
-
-fn pass_tonemap_hdr_to_post_ldr(
-    renderer: &crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    bg_color: wgpu::Color,
-) {
-    let Some(hdr_bg) = renderer.post_process_bind_group.as_ref() else {
-        return;
-    };
-    let Some(post_ldr_view) = renderer.post_ldr_view.as_ref() else {
-        return;
-    };
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Tonemap + FXAA to post LDR"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: post_ldr_view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(bg_color),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-    pass.set_pipeline(&renderer.post_process_pipeline);
-    pass.set_bind_group(0, hdr_bg, &[]);
-    pass.draw(0..3, 0..1);
-}
-
-fn pass_blit_post_ldr_to_swapchain(
-    renderer: &crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    swap_view: &wgpu::TextureView,
-    bg_color: wgpu::Color,
-) {
-    let Some(blit_bg) = renderer.blit_ldr_bind_group.as_ref() else {
-        return;
-    };
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Blit post LDR to swapchain"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: swap_view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(bg_color),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-    pass.set_pipeline(&renderer.blit_ldr_pipeline);
-    pass.set_bind_group(0, blit_bg, &[]);
-    pass.draw(0..3, 0..1);
-}
-
-fn pass_shadow_depth(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    ctx: &PassContext<'_>,
-) {
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Shadow depth"),
-        color_attachments: &[],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &renderer.shadow_depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(1.0),
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: None,
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_pipeline(&renderer.pipelines.shadow_depth);
-    let light_vp = ctx.light_view_proj;
-    let mut last_bound_mesh = None;
-    for &i in ctx.solid_order {
-        let dc = ctx.visible[i];
-        let shadow_mvp = light_vp * dc.model_matrix;
-        let uniforms = ShadowDrawUniforms {
-            shadow_mvp: shadow_mvp.to_cols_array_2d(),
-        };
-        if let Some(offset) = renderer.shadow_pool.push_shadow(&uniforms) {
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                pass.set_bind_group(0, renderer.shadow_pool.bind_group(), &[offset]);
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-            }
-        }
-    }
-}
-
-fn pass_depth_prepass(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let prepass_pipeline = scene_pl.solid_depth_prepass.clone();
-    let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Depth prepass (HZB)"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(ctx.bg_color),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(depth_clear),
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(0u32),
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    // Omit meshlets here so HZB encodes only other occluders; otherwise meshlets self-occlude in the cull pass.
-    draw_opaque_triangle_batches(renderer, &mut pass, ctx, &prepass_pipeline, false);
 }
 
 fn draw_opaque_triangle_batches(
@@ -545,68 +563,29 @@ fn draw_opaque_triangle_batches(
             end += 1;
         }
 
+        // Split into meshlet and standard draws within this light group
+        let mut meshlet_draws: Vec<usize> = Vec::new();
+        let mut standard_draws: Vec<usize> = Vec::new();
         for &i in &ctx.solid_order[start..end] {
-            let dc = ctx.visible[i];
-
             if meshlet_set.contains(&i) {
                 if draw_meshlets {
-                    if let Some(md) = dc.meshlet_data.as_ref() {
-                        let ptr = std::sync::Arc::as_ptr(md) as u64;
-                        if renderer.cluster_renderer.is_some() && renderer.cluster_cache.contains_key(&ptr)
-                        {
-                            let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
-                                [0.08, 0.08, 0.08, 1.0]
-                            } else {
-                                [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
-                            };
-                            let uniforms = SceneUniforms {
-                                mvp: dc.mvp.to_cols_array_2d(),
-                                model: dc.model_matrix.to_cols_array_2d(),
-                                camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                                light_dirs: head_dc.light_dirs,
-                                light_colors: head_dc.light_colors,
-                                light_types: head_dc.light_types,
-                                light_positions: head_dc.light_positions,
-                                spot_params: head_dc.spot_params,
-                                light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
-                                diffuse_color,
-                                ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                                specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
-                                shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                                clip_planes: clip_arr,
-                                clip_count,
-                                pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                                pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                                ibl_diffuse: renderer.ibl_diffuse,
-                                ibl_specular: renderer.ibl_specular,
-                                light_view_proj: ctx.light_view_proj.to_cols_array_2d(),
-                                shadow_params: ctx.shadow_params,
-                            };
-                            if let Some(offset) = renderer.phong_pool.push_scene(&uniforms) {
-                                let mat_bg = albedo_material_bind_group(
-                                    &mut renderer.texture_cache,
-                                    &renderer.device,
-                                    &renderer.pipelines.pbr_material_bgl,
-                                    &renderer.queue,
-                                    dc,
-                                );
-                                let pool_bg = renderer.phong_pool.bind_group();
-                                pass.set_bind_group(0, pool_bg, &[offset]);
-                                pass.set_bind_group(1, mat_bg, &[]);
-                                pass.set_bind_group(2, &renderer.shadow_bind_group, &[]);
-                                let cluster_set = renderer.cluster_cache.get(&ptr).expect("cluster set");
-                                renderer
-                                    .cluster_renderer
-                                    .as_ref()
-                                    .expect("cluster renderer")
-                                    .draw_clustered(pass, cluster_set);
-                            }
-                        }
-                    }
+                    meshlet_draws.push(i);
+                } else {
+                    // Meshlet path disabled: fall back to stable per-object drawing.
+                    standard_draws.push(i);
                 }
-                continue;
+            } else {
+                standard_draws.push(i);
             }
+        }
 
+        // Meshlet path (unchanged: uses draw_clustered)
+        for &i in &meshlet_draws {
+            if !draw_meshlets { continue; }
+            let dc = ctx.visible[i];
+            let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
+            let ptr = std::sync::Arc::as_ptr(md) as u64;
+            if !(renderer.cluster_renderer.is_some() && renderer.assets.cluster_cache.contains_key(&ptr)) { continue; }
             let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                 [0.08, 0.08, 0.08, 1.0]
             } else {
@@ -616,37 +595,91 @@ fn draw_opaque_triangle_batches(
                 mvp: dc.mvp.to_cols_array_2d(),
                 model: dc.model_matrix.to_cols_array_2d(),
                 camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                light_dirs: head_dc.light_dirs,
-                light_colors: head_dc.light_colors,
-                light_types: head_dc.light_types,
-                light_positions: head_dc.light_positions,
+                light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
+                light_types: head_dc.light_types, light_positions: head_dc.light_positions,
                 spot_params: head_dc.spot_params,
                 light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
                 diffuse_color,
                 ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
                 specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
                 shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                clip_planes: clip_arr,
-                clip_count,
+                clip_planes: clip_arr, clip_count,
                 pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
                 pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                ibl_diffuse: renderer.ibl_diffuse,
-                ibl_specular: renderer.ibl_specular,
-                light_view_proj: ctx.light_view_proj.to_cols_array_2d(),
+                ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
+                csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
+                csm_split_depths: ctx.csm_split_depths,
                 shadow_params: ctx.shadow_params,
             };
             if let Some(offset) = renderer.phong_pool.push_scene(&uniforms) {
                 let mat_bg = albedo_material_bind_group(
-                    &mut renderer.texture_cache,
-                    &renderer.device,
-                    &renderer.pipelines.pbr_material_bgl,
-                    &renderer.queue,
-                    dc,
+                    &mut renderer.texture_cache, &renderer.device,
+                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
                 );
-                let pool_bg = renderer.phong_pool.bind_group();
-                pass.set_bind_group(0, pool_bg, &[offset]);
+                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
                 pass.set_bind_group(1, mat_bg, &[]);
-                pass.set_bind_group(2, &renderer.shadow_bind_group, &[]);
+                if let Some(ref csm) = renderer.csm_shadow { pass.set_bind_group(2, &csm.bind_group, &[]); }
+                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
+                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
+                    if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
+                        cluster_renderer.draw_clustered(pass, cluster_set);
+                    }
+                }
+            }
+        }
+
+        // Standard mesh path: draw per object to preserve exact transforms.
+        // The previous instanced path can collapse placements when instance payload
+        // and per-draw state drift apart; correctness is prioritized here.
+        if !standard_draws.is_empty() {
+            for &i in &standard_draws {
+                let dc = ctx.visible[i];
+                let diffuse = if ctx.mode == DisplayMode::HiddenLine {
+                    [0.08, 0.08, 0.08, 1.0]
+                } else {
+                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+                };
+                let uniforms = SceneUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
+                    light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
+                    light_types: head_dc.light_types, light_positions: head_dc.light_positions,
+                    spot_params: head_dc.spot_params,
+                    light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
+                    diffuse_color: diffuse,
+                    ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
+                    specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
+                    shininess: [dc.shininess, 0.0, 0.0, 0.0],
+                    clip_planes: clip_arr, clip_count,
+                    pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                    pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
+                    ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
+                    csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
+                    csm_split_depths: ctx.csm_split_depths,
+                    shadow_params: ctx.shadow_params,
+                };
+                let Some(offset) = renderer.phong_pool.push_scene(&uniforms) else { continue };
+
+                // Keep storage instance slot 0 in sync for shaders that source per-instance fields.
+                let one = [InstanceData {
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    diffuse_color: diffuse,
+                    base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                    metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
+                }];
+                renderer.queue.write_buffer(&renderer.instance_buffer, 0, bytemuck::cast_slice(&one));
+
+                let mat_bg = albedo_material_bind_group(
+                    &mut renderer.texture_cache, &renderer.device,
+                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                );
+                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
+                pass.set_bind_group(1, mat_bg, &[]);
+                if let Some(ref csm) = renderer.csm_shadow { pass.set_bind_group(2, &csm.bind_group, &[]); }
+                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
+
                 if let Some(mesh_id) = ctx.mesh_handles[i] {
                     renderer.draw_mesh_batched(pass, mesh_id, &mut last_bound_mesh);
                 }
@@ -656,308 +689,13 @@ fn draw_opaque_triangle_batches(
     }
 }
 
-fn pass_solid_and_outline(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    reuse_prepass_depth: bool,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let solid_pipeline = scene_pl.solid.clone();
-    let outline_pipeline = scene_pl.outline.clone();
-    let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
-    let depth_load = if reuse_prepass_depth {
-        wgpu::LoadOp::Load
-    } else {
-        wgpu::LoadOp::Clear(depth_clear)
-    };
-    let stencil_load = if reuse_prepass_depth {
-        wgpu::LoadOp::Load
-    } else {
-        wgpu::LoadOp::Clear(0u32)
-    };
-    let pass_label = if ctx.run_outline { "Solid+Outline Pass" } else { "Solid Pass" };
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some(pass_label),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(ctx.bg_color),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: depth_load,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: stencil_load,
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, true);
-
-    if ctx.run_outline {
-        let meshlet_set: std::collections::HashSet<usize> =
-            ctx.meshlet_indices.iter().copied().collect();
-        pass.set_pipeline(&outline_pipeline);
-        pass.set_stencil_reference(0);
-        let outline_color = if ctx.mode == DisplayMode::HiddenLine {
-            [0.5, 0.7, 1.0, 1.0]
-        } else {
-            ctx.outline_color
-        };
-        let mut last_bound_mesh = None;
-        for &i in ctx.solid_order {
-            if meshlet_set.contains(&i) {
-                continue;
-            }
-            let dc = ctx.visible[i];
-            let uniforms = OutlineUniforms {
-                mvp: dc.mvp.to_cols_array_2d(),
-                outline_width: ctx.outline_width,
-                _pad: [0.0; 3],
-                color: outline_color,
-            };
-            if let Some(offset) = renderer.outline_pool.push_outline(&uniforms) {
-                pass.set_bind_group(0, renderer.outline_pool.bind_group(), &[offset]);
-                if let Some(mesh_id) = ctx.mesh_handles[i] {
-                    renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-                }
-            }
+fn csm_to_uniform(vps: &[Mat4; CSM_CASCADE_COUNT]) -> [[f32; 4]; 16] {
+    let mut arr = [[0.0f32; 4]; 16];
+    for (i, vp) in vps.iter().enumerate() {
+        let cols = vp.to_cols_array_2d();
+        for r in 0..4 {
+            arr[i * 4 + r] = cols[r];
         }
     }
-}
-
-fn pass_wireframe(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let pl = scene_pl;
-    let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Wireframe Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(ctx.bg_color), store: wgpu::StoreOp::Store },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(depth_clear),
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Clear(0u32),
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_pipeline(&pl.wireframe);
-    let line_color = [0.2, 1.0, 0.4, 1.0];
-    let mut last_bound_mesh = None;
-    for &i in ctx.solid_order {
-        let dc = ctx.visible[i];
-        let uniforms = FlatUniforms {
-            mvp: dc.mvp.to_cols_array_2d(),
-            color: line_color,
-        };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-            }
-        }
-    }
-}
-
-fn pass_edge_overlay(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    edge_worthy: bool,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let pl = scene_pl;
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Edge Overlay Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_stencil_reference(0);
-    pass.set_pipeline(&pl.edge_overlay);
-
-    let default_edge_color = if ctx.mode == DisplayMode::HiddenLine {
-        [0.6, 0.8, 1.0, 0.8]
-    } else {
-        [0.0, 0.0, 0.0, 0.5]
-    };
-
-    let mut last_bound_edge_mesh = None;
-    for &i in ctx.edge_order {
-        let dc = ctx.visible[i];
-        if !edge_worthy && dc.overlay_color.is_none() {
-            continue;
-        }
-        let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
-        let uniforms = FlatUniforms {
-            mvp: dc.mvp.to_cols_array_2d(),
-            color: edge_color,
-        };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            let drawn_from_cache = if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_edges_batched(&mut pass, mesh_id, &mut last_bound_edge_mesh)
-            } else {
-                false
-            };
-            if !drawn_from_cache {
-                renderer.bind_and_draw_edges(&mut pass, dc, ctx.mesh_handles[i]);
-            }
-        }
-    }
-}
-
-fn pass_selection_fill(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let pl = scene_pl;
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Selection Fill Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_stencil_reference(0);
-    pass.set_pipeline(&pl.selection_fill);
-    let mut last_bound_mesh = None;
-    for &i in ctx.selected_order {
-        let dc = ctx.visible[i];
-        let uniforms = FlatUniforms {
-            mvp: dc.mvp.to_cols_array_2d(),
-            color: [1.0, 0.6, 0.0, 0.35],
-        };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-            }
-        }
-    }
-}
-
-fn pass_selection_edge(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    ctx: &PassContext<'_>,
-    scene_pl: &crate::pipelines::DepthModePipelines,
-) {
-    let pl = scene_pl;
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Selection Edge Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
-            depth_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: Some(wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            }),
-        }),
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_stencil_reference(0);
-    pass.set_pipeline(&pl.wireframe);
-    let sel_color = [1.0, 0.5, 0.0, 1.0];
-    let mut last_bound_mesh = None;
-    for &i in ctx.selected_order {
-        let dc = ctx.visible[i];
-        let uniforms = FlatUniforms {
-            mvp: dc.mvp.to_cols_array_2d(),
-            color: sel_color,
-        };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
-            }
-        }
-    }
+    arr
 }

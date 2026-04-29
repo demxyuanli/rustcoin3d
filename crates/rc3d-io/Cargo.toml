@@ -9,3 +9,6 @@ rc3d-core = { workspace = true }
 rc3d-scene = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+gltf = { version = "1", default-features = false, features = ["import", "KHR_lights_punctual", "names", "utils"] }
+base64 = "0.22"
+

@@ -16,10 +16,6 @@ impl GetBoundingBoxAction {
         }
     }
 
-    pub fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
-        self.traverse_node(graph, root);
-    }
-
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
         let Some(entry) = graph.get(node) else {
             return;
@@ -36,6 +32,9 @@ impl GetBoundingBoxAction {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }
+            }
+            NodeData::HandlerNode(h) => {
+                h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
             }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
@@ -96,5 +95,15 @@ impl GetBoundingBoxAction {
 impl Default for GetBoundingBoxAction {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::Action for GetBoundingBoxAction {
+    fn kind(&self) -> crate::ActionKind {
+        crate::ActionKind::GetBoundingBox
+    }
+
+    fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.traverse_node(graph, root);
     }
 }

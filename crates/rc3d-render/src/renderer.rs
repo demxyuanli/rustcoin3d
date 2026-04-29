@@ -1,48 +1,52 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use glam::Vec3;
 use slotmap::Key;
 use wgpu::util::DeviceExt;
 
+use crate::adaptive_quality::AdaptiveQuality;
+use crate::asset_manager::{GpuAssetManager, MESH_CACHE_MAX};
+use crate::auto_exposure::AutoExposure;
 use crate::cluster::{ClusterRenderer, ClusterSet};
+use crate::cluster_lighting::{ClusterLightCuller, ClusterLightResources};
+use crate::color_grading::ColorGradingPass;
+use crate::dof_pass::DofPass;
 use crate::frustum::Frustum;
 use crate::gpu_resource::{GpuMesh, GpuResourceManager, GpuUniformPool};
 use crate::hud::HudRenderer;
+use crate::material_library::MaterialLibrary;
 use crate::hzb::{HzbBaker, HzbPyramids};
+use crate::motion_blur::MotionBlurPass;
+use crate::pipeline_cache::PipelineCacheManager;
 use crate::pipelines::PipelineSet;
+use crate::post_processor::{self, PostFxPipelines, PostFxTextures};
 use crate::render_action::DrawCall;
-use crate::texture_cache::{ibl_from_image_path, TextureCache};
 use crate::render_passes::{self, PassContext};
-use crate::shadow_map::{aabb_from_scene, directional_light_view_proj, primary_directional_light_dir, union_draw_call_aabbs};
+use crate::shadow_map::{aabb_from_scene, csm_light_view_projs, compute_csm_splits, primary_directional_light_dir, union_draw_call_aabbs};
+use crate::shadow_omni::OmniShadowRenderer;
+use crate::shadow_pass::{self, CsmShadowResources};
+use crate::shader_reload::ShaderHotReload;
 use crate::sort_keys;
-use crate::vertex::LineVertex;
+use crate::ssr_pass::SsrPass;
+use crate::taa::{TaaJitter, TaaPass};
+use crate::texture_cache::TextureCache;
+use crate::vertex::{InstanceData, LineVertex, CSM_CASCADE_COUNT, MAX_INSTANCES};
+use crate::volumetric_fog::VolumetricFogPass;
+use crate::ibl::IblPreset;
 use glam::Mat4;
 use rc3d_core::DisplayMode;
 use rc3d_scene::SceneGraph;
 
-const MESH_CACHE_MAX: usize = 256;
-const MESH_CACHE_IDLE_FRAMES: u64 = 120;
 const PERFORMANCE_MODE_TRIANGLE_THRESHOLD: u64 = 2_000_000;
-const ADAPTIVE_MEDIUM_ENTER_MS: f32 = 26.0;
-const ADAPTIVE_LOW_ENTER_MS: f32 = 40.0;
-const ADAPTIVE_MEDIUM_EXIT_MS: f32 = 22.0;
-const ADAPTIVE_LOW_EXIT_MS: f32 = 33.0;
 const CLUSTER_PIPELINE_GENERATION: u32 = 5;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum AdaptiveQuality {
-    High,
-    Medium,
-    Low,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
     pub visible_triangles: u64,
     pub visible_draw_calls: usize,
     pub culled_draw_calls: usize,
+    /// Approximate GPU time per pass in microseconds: [shadow, solid, post, total]
+    pub gpu_pass_times_us: Option<[f64; 4]>,
 }
 
 pub struct Renderer {
@@ -59,7 +63,8 @@ pub struct Renderer {
     pub global_display_mode: DisplayMode,
     pub clip_planes: Vec<[f32; 4]>,
     pub wireframe_supported: bool,
-    pub mesh_cache: HashMap<u64, (crate::gpu_resource::MeshId, u64)>,
+    pub assets: GpuAssetManager,
+    pub materials: MaterialLibrary,
     pub frame_counter: u64,
     pub performance_mode_active: bool,
     pub hud: Option<HudRenderer>,
@@ -69,7 +74,6 @@ pub struct Renderer {
     pub outline_width: f32,
     pub outline_color: [f32; 4],
     pub cluster_renderer: Option<ClusterRenderer>,
-    pub cluster_cache: HashMap<u64, ClusterSet>,
     pub hzb: Option<HzbPyramids>,
     pub hzb_baker: Option<HzbBaker>,
     pub cluster_pipeline_generation: u32,
@@ -77,188 +81,90 @@ pub struct Renderer {
     pub texture_cache: TextureCache,
     pub ibl_diffuse: [f32; 4],
     pub ibl_specular: [f32; 4],
+    pub ibl_preset: IblPreset,
     pub shadow_pool: GpuUniformPool,
     pub shadow_compare_sampler: wgpu::Sampler,
-    pub shadow_depth_tex: wgpu::Texture,
-    pub shadow_depth_view: wgpu::TextureView,
-    pub shadow_bind_group: wgpu::BindGroup,
-    pub shadow_map_resolution: u32,
+    pub csm_shadow: Option<CsmShadowResources>,
     pub hdr_post_processing: bool,
-    pub post_process_bgl: wgpu::BindGroupLayout,
-    pub post_process_sampler: wgpu::Sampler,
-    /// Tonemap + FXAA: HDR scene -> linear LDR (`post_ldr`).
-    pub post_process_pipeline: wgpu::RenderPipeline,
-    /// Fullscreen blit: `post_ldr` -> swapchain (display encoding).
-    pub blit_ldr_pipeline: wgpu::RenderPipeline,
-    pub hdr_scene_tex: Option<wgpu::Texture>,
-    pub hdr_scene_view: Option<wgpu::TextureView>,
-    pub post_process_bind_group: Option<wgpu::BindGroup>,
-    pub post_ldr_tex: Option<wgpu::Texture>,
-    pub post_ldr_view: Option<wgpu::TextureView>,
-    pub blit_ldr_bind_group: Option<wgpu::BindGroup>,
+    pub post_fx_pipelines: PostFxPipelines,
+    pub post_fx: Option<PostFxTextures>,
+    pub ssao_noise_tex: wgpu::Texture,
+    pub ssao_noise_view: wgpu::TextureView,
+    pub instance_buffer: wgpu::Buffer,
+    pub ibl_instance_bind_group: wgpu::BindGroup,
+    pub timing_supported: bool,
+    pub gpu_query_set: Option<wgpu::QuerySet>,
+    pub gpu_query_buffer: Option<wgpu::Buffer>,
+    pub gpu_query_slots: u32,
+    pub gpu_query_period: f32, // timestamp period in ns
+    // ── Phase 2 render features ──
+    pub pipeline_cache: Option<PipelineCacheManager>,
+    pub shader_reload: ShaderHotReload,
+    pub auto_exposure: AutoExposure,
+    pub taa_pass: Option<TaaPass>,
+    pub taa_jitter: TaaJitter,
+    pub motion_blur: Option<MotionBlurPass>,
+    pub ssr_pass: Option<SsrPass>,
+    pub color_grading: Option<ColorGradingPass>,
+    pub dof_pass: Option<DofPass>,
+    pub volumetric_fog: Option<VolumetricFogPass>,
+    pub cluster_lights: Option<ClusterLightResources>,
+    pub cluster_light_culler: Option<ClusterLightCuller>,
+    pub omni_shadow: Option<OmniShadowRenderer>,
+    // Feature toggles
+    pub enable_taa: bool,
+    pub enable_motion_blur: bool,
+    pub enable_ssr: bool,
+    pub enable_color_grading: bool,
+    pub enable_dof: bool,
+    pub enable_volumetric_fog: bool,
+    pub enable_cluster_lights: bool,
+    pub enable_omni_shadows: bool,
 }
 
 impl Renderer {
-    fn create_shadow_map_resources(
-        device: &wgpu::Device,
-        pipelines: &PipelineSet,
-        compare_sampler: &wgpu::Sampler,
-        resolution: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+    fn ensure_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
         let resolution = resolution.max(1);
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Shadow map"),
-            size: wgpu::Extent3d {
-                width: resolution,
-                height: resolution,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Shadow resources"),
-            layout: &pipelines.shadow_resource_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(compare_sampler),
-                },
-            ],
-        });
-        (tex, view, bg)
-    }
-
-    pub fn ensure_shadow_map(&mut self, resolution: u32) {
-        let resolution = resolution.max(1);
-        if resolution == self.shadow_map_resolution {
-            return;
+        let cascade_count = cascade_count.max(1);
+        if let Some(ref csm) = self.csm_shadow {
+            if csm.resolution == resolution && csm.cascade_count == cascade_count {
+                return;
+            }
         }
-        let (tex, view, bg) = Self::create_shadow_map_resources(
+        self.csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
             &self.device,
             &self.pipelines,
             &self.shadow_compare_sampler,
             resolution,
-        );
-        self.shadow_depth_tex = tex;
-        self.shadow_depth_view = view;
-        self.shadow_bind_group = bg;
-        self.shadow_map_resolution = resolution;
+            cascade_count,
+        ));
     }
 
     pub fn set_hdr_post_processing(&mut self, enabled: bool) {
         self.hdr_post_processing = enabled;
         if !enabled {
-            self.hdr_scene_tex = None;
-            self.hdr_scene_view = None;
-            self.post_process_bind_group = None;
-            self.post_ldr_tex = None;
-            self.post_ldr_view = None;
-            self.blit_ldr_bind_group = None;
+            self.post_fx = None;
         } else {
-            self.ensure_hdr_scene_target();
+            self.ensure_post_fx_targets();
         }
     }
 
-    pub(super) fn ensure_hdr_scene_target(&mut self) {
+    pub(super) fn ensure_post_fx_targets(&mut self) {
         if !self.hdr_post_processing {
             return;
         }
         let w = self.config.width.max(1);
         let h = self.config.height.max(1);
-        if let (Some(ht), Some(pt)) = (&self.hdr_scene_tex, &self.post_ldr_tex) {
-            let hsz = ht.size();
-            let psz = pt.size();
-            if hsz.width == w
-                && hsz.height == h
-                && psz.width == w
-                && psz.height == h
-                && self.post_process_bind_group.is_some()
-                && self.blit_ldr_bind_group.is_some()
-            {
+        if let Some(ref fx) = self.post_fx {
+            if fx.hdr_tex.size().width == w && fx.hdr_tex.size().height == h {
                 return;
             }
         }
-        self.hdr_scene_tex = None;
-        self.hdr_scene_view = None;
-        self.post_process_bind_group = None;
-        self.post_ldr_tex = None;
-        self.post_ldr_view = None;
-        self.blit_ldr_bind_group = None;
-        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("HDR scene color"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Post process bind"),
-            layout: &self.post_process_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&tv),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
-                },
-            ],
-        });
-        self.hdr_scene_tex = Some(tex);
-        self.hdr_scene_view = Some(tv);
-        self.post_process_bind_group = Some(bg);
-
-        let post_ldr = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Post LDR color"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let post_ldr_v = post_ldr.create_view(&wgpu::TextureViewDescriptor::default());
-        let blit_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blit post LDR"),
-            layout: &self.post_process_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&post_ldr_v),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
-                },
-            ],
-        });
-        self.post_ldr_tex = Some(post_ldr);
-        self.post_ldr_view = Some(post_ldr_v);
-        self.blit_ldr_bind_group = Some(blit_bg);
+        // Create a 1x1 black texture for dummy slots
+        let (black_tex, black_view) = self.texture_cache.black_placeholder(&self.device);
+        self.post_fx = Some(post_processor::ensure_post_fx_textures(
+            &self.device, &self.post_fx_pipelines, w, h, &black_tex, &black_view,
+        ));
     }
 
     fn log_mesh_shader_assessment(adapter: &wgpu::Adapter) {
@@ -302,10 +208,15 @@ impl Renderer {
             .expect("failed to find adapter");
         Self::log_mesh_shader_assessment(&adapter);
 
-        let required_features = wgpu::Features::POLYGON_MODE_LINE
-            | wgpu::Features::DEPTH32FLOAT_STENCIL8;
-        let features = adapter.features() & required_features;
+        let requested_features = wgpu::Features::POLYGON_MODE_LINE
+            | wgpu::Features::DEPTH32FLOAT_STENCIL8
+            | wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+            | wgpu::Features::PIPELINE_CACHE;
+        let features = adapter.features() & requested_features;
         let wireframe_supported = features.contains(wgpu::Features::POLYGON_MODE_LINE);
+        let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
+            && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
 
         let (device, queue) = adapter
             .request_device(
@@ -317,6 +228,26 @@ impl Renderer {
             )
             .await
             .expect("failed to create device");
+
+        // GPU timestamp query setup
+        let gpu_query_period = queue.get_timestamp_period(); // in nanoseconds
+        let (gpu_query_set, gpu_query_buffer) = if timing_supported {
+            let query_count = 16u32; // 8 start/end pairs per frame
+            let qs = device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("GPU timestamps"),
+                ty: wgpu::QueryType::Timestamp,
+                count: query_count,
+            });
+            let qb = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("GPU query resolve"),
+                size: query_count as u64 * 8, // u64 per timestamp
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            (Some(qs), Some(qb))
+        } else {
+            (None, None)
+        };
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -345,119 +276,59 @@ impl Renderer {
         let flat_pool = GpuUniformPool::new_flat(&device, 2048);
         let outline_pool = GpuUniformPool::new_outline(&device, 1024);
         let texture_cache = TextureCache::new(&device, &queue);
-        let shadow_compare_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Shadow compare"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            compare: Some(wgpu::CompareFunction::Less),
-            ..Default::default()
+        let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
+        let csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
+            &device,
+            &pipelines,
+            &shadow_compare_sampler,
+            1,
+            1,
+        ));
+        let post_fx_pipelines = post_processor::create_post_fx_pipelines(&device, config.format);
+        let (ssao_noise_tex, ssao_noise_view) = post_processor::create_ssao_noise(&device, &queue);
+        let instance_stride = std::mem::size_of::<InstanceData>() as u64;
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Instance data SSBO"),
+            size: instance_stride * MAX_INSTANCES as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let (shadow_depth_tex, shadow_depth_view, shadow_bind_group) =
-            Self::create_shadow_map_resources(&device, &pipelines, &shadow_compare_sampler, 1);
-        let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Post tonemap FXAA"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post_tonemap_fxaa.wgsl").into()),
-        });
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Blit LDR to swapchain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit_tex.wgsl").into()),
-        });
-        let post_process_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Post process BGL"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let post_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Post PLL"),
-            bind_group_layouts: &[&post_process_bgl],
-            push_constant_ranges: &[],
-        });
-        let post_process_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Post tonemap FXAA"),
-            layout: Some(&post_pll),
-            vertex: wgpu::VertexState {
-                module: &post_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &post_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let blit_ldr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Blit post LDR to swapchain"),
-            layout: Some(&post_pll),
-            vertex: wgpu::VertexState {
-                module: &blit_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &blit_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let post_process_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Post process sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+
+        // IBL: load envmap + BRDF LUT, compute diffuse/specular constants
+        let ibl_path = Path::new("test_data/studio.hdr");
+        let ibl_preset = IblPreset::Studio;
+        // Create IBL resources (envmap + BRDF LUT textures)
+        let ibl_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("IBL sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let ibl_path = Path::new("test_data/studio.hdr");
-        let (idl, isl) = ibl_from_image_path(ibl_path).unwrap_or((Vec3::splat(0.07), Vec3::splat(0.15)));
-        let ibl_diffuse = [idl.x, idl.y, idl.z, 1.0];
-        let ibl_specular = [isl.x, isl.y, isl.z, 1.0];
+        let ibl_res = crate::ibl::IblResources::new(
+            &device, &queue,
+            &crate::ibl::create_ibl_bind_group_layout(&device),
+            &ibl_sampler, ibl_path, ibl_preset,
+        );
+        let ibl_diffuse = ibl_res.ibl_diffuse;
+        let ibl_specular = ibl_res.ibl_specular;
 
+        // Combined IBL + instance bind group (group 3, 4 bindings)
+        let ibl_instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("IBL + Instance BG"),
+            layout: &pipelines.ibl_instance_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&ibl_res.env_map_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: instance_buffer.as_entire_binding() },
+            ],
+        });
+
+        // Clone before move into struct (wgpu objects are Arc-internally cheap to clone)
+        let auto_exposure = AutoExposure::new(&device, config.width, config.height);
         let mut renderer = Self {
             device,
             queue,
@@ -473,7 +344,8 @@ impl Renderer {
             global_display_mode: DisplayMode::ShadedWithEdges,
             clip_planes: Vec::new(),
             wireframe_supported,
-            mesh_cache: HashMap::new(),
+            assets: GpuAssetManager::new(),
+            materials: MaterialLibrary::new(),
             frame_counter: 0,
             performance_mode_active: false,
             hud: None,
@@ -483,7 +355,6 @@ impl Renderer {
             outline_width: 0.022,
             outline_color: [0.0, 0.0, 0.0, 1.0],
             cluster_renderer: None,
-            cluster_cache: HashMap::new(),
             hzb: None,
             hzb_baker: None,
             cluster_pipeline_generation: 0,
@@ -491,22 +362,43 @@ impl Renderer {
             texture_cache,
             ibl_diffuse,
             ibl_specular,
+            ibl_preset,
             shadow_compare_sampler,
-            shadow_depth_tex,
-            shadow_depth_view,
-            shadow_bind_group,
-            shadow_map_resolution: 1,
+            csm_shadow,
             hdr_post_processing: false,
-            post_process_bgl,
-            post_process_sampler,
-            post_process_pipeline,
-            blit_ldr_pipeline,
-            hdr_scene_tex: None,
-            hdr_scene_view: None,
-            post_process_bind_group: None,
-            post_ldr_tex: None,
-            post_ldr_view: None,
-            blit_ldr_bind_group: None,
+            post_fx_pipelines,
+            post_fx: None,
+            ssao_noise_tex,
+            ssao_noise_view,
+            instance_buffer,
+            ibl_instance_bind_group,
+            timing_supported,
+            gpu_query_set,
+            gpu_query_buffer,
+            gpu_query_slots: 0,
+            gpu_query_period,
+            // Phase 2 features (lazy init below)
+            pipeline_cache: None,
+            shader_reload: ShaderHotReload::new(),
+            auto_exposure,
+            taa_pass: None,
+            taa_jitter: TaaJitter::new(),
+            motion_blur: None,
+            ssr_pass: None,
+            color_grading: None,
+            dof_pass: None,
+            volumetric_fog: None,
+            cluster_lights: None,
+            cluster_light_culler: None,
+            omni_shadow: None,
+            enable_taa: false,
+            enable_motion_blur: false,
+            enable_ssr: false,
+            enable_color_grading: false,
+            enable_dof: false,
+            enable_volumetric_fog: false,
+            enable_cluster_lights: false,
+            enable_omni_shadows: false,
         };
         renderer.hud = Some(HudRenderer::new(
             &renderer.device,
@@ -516,12 +408,39 @@ impl Renderer {
             renderer.config.height,
         ));
         renderer.create_depth_texture();
+        renderer.hzb_baker = Some(HzbBaker::new(&renderer.device));
+        let ds_bgl = &renderer.hzb_baker.as_ref().unwrap().downsample_bgl;
         renderer.hzb = Some(HzbPyramids::new(
             &renderer.device,
+            ds_bgl,
             renderer.config.width,
             renderer.config.height,
         ));
-        renderer.hzb_baker = Some(HzbBaker::new(&renderer.device));
+
+        // ── Phase 2: post-processing passes ──
+        renderer.taa_pass = Some(TaaPass::new(&renderer.device));
+        renderer.motion_blur = Some(MotionBlurPass::new(&renderer.device));
+        renderer.ssr_pass = Some(SsrPass::new(&renderer.device));
+        renderer.color_grading = Some(ColorGradingPass::new(&renderer.device, &renderer.queue));
+        renderer.dof_pass = Some(DofPass::new(&renderer.device));
+        renderer.volumetric_fog = Some(VolumetricFogPass::new(&renderer.device));
+
+        // ── Phase 2: lighting ──
+        renderer.cluster_light_culler = Some(ClusterLightCuller::new(&renderer.device));
+        renderer.cluster_lights = Some(ClusterLightResources::new(&renderer.device));
+        renderer.omni_shadow = Some(OmniShadowRenderer::new(&renderer.device));
+
+        // ── Pipeline cache ──
+        let cache_dir = std::path::Path::new("cache");
+        renderer.pipeline_cache = Some(PipelineCacheManager::new(&renderer.device, cache_dir));
+
+        // ── Shader hot-reload: watch shaders directory ──
+        let shaders_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
+        renderer.shader_reload.watch_directory(&shaders_dir);
+
+        // ── Material library: set BGL for bind group building ──
+        renderer.materials.set_bind_group_layout(&renderer.pipelines.pbr_material_bgl);
+
         renderer
     }
 
@@ -565,19 +484,64 @@ impl Renderer {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.create_depth_texture();
-            self.hzb = Some(HzbPyramids::new(&self.device, width, height));
             self.hzb_baker = Some(HzbBaker::new(&self.device));
+            let ds_bgl = &self.hzb_baker.as_ref().unwrap().downsample_bgl;
+            self.hzb = Some(HzbPyramids::new(&self.device, ds_bgl, width, height));
             if let Some(hud) = &mut self.hud {
                 hud.resize(&self.queue, width, height);
             }
             if self.hdr_post_processing {
-                self.ensure_hdr_scene_target();
+                self.ensure_post_fx_targets();
             }
         }
     }
 
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
         self.global_display_mode = mode;
+    }
+
+    pub fn ibl_preset_name(&self) -> &'static str {
+        self.ibl_preset.name()
+    }
+
+    pub fn cycle_ibl_preset(&mut self) {
+        let next = self.ibl_preset.next();
+        self.set_ibl_preset(next);
+    }
+
+    pub fn set_ibl_preset(&mut self, preset: IblPreset) {
+        self.ibl_preset = preset;
+        let ibl_path = Path::new("test_data/studio.hdr");
+        let ibl_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("IBL sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let ibl_res = crate::ibl::IblResources::new(
+            &self.device,
+            &self.queue,
+            &crate::ibl::create_ibl_bind_group_layout(&self.device),
+            &ibl_sampler,
+            ibl_path,
+            preset,
+        );
+        self.ibl_diffuse = ibl_res.ibl_diffuse;
+        self.ibl_specular = ibl_res.ibl_specular;
+        self.ibl_instance_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("IBL + Instance BG"),
+            layout: &self.pipelines.ibl_instance_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&ibl_res.env_map_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.instance_buffer.as_entire_binding() },
+            ],
+        });
+        log::info!("IBL preset switched to {}", preset.name());
     }
 
     pub fn display_mode(&self) -> DisplayMode {
@@ -589,50 +553,16 @@ impl Renderer {
     }
 
     pub fn adaptive_quality_name(&self) -> &'static str {
-        match self.adaptive_quality {
-            AdaptiveQuality::High => "High",
-            AdaptiveQuality::Medium => "Medium",
-            AdaptiveQuality::Low => "Low",
-        }
+        self.adaptive_quality.name()
     }
 
     pub fn adaptive_is_low(&self) -> bool {
-        self.adaptive_quality == AdaptiveQuality::Low
+        self.adaptive_quality.is_low()
     }
 
     pub fn report_frame_time_ms(&mut self, frame_time_ms: f32) {
         let previous = self.adaptive_quality;
-        self.adaptive_quality = match self.adaptive_quality {
-            AdaptiveQuality::High => {
-                if frame_time_ms >= ADAPTIVE_LOW_ENTER_MS {
-                    AdaptiveQuality::Low
-                } else if frame_time_ms >= ADAPTIVE_MEDIUM_ENTER_MS {
-                    AdaptiveQuality::Medium
-                } else {
-                    AdaptiveQuality::High
-                }
-            }
-            AdaptiveQuality::Medium => {
-                if frame_time_ms >= ADAPTIVE_LOW_ENTER_MS {
-                    AdaptiveQuality::Low
-                } else if frame_time_ms <= ADAPTIVE_MEDIUM_EXIT_MS {
-                    AdaptiveQuality::High
-                } else {
-                    AdaptiveQuality::Medium
-                }
-            }
-            AdaptiveQuality::Low => {
-                if frame_time_ms <= ADAPTIVE_LOW_EXIT_MS {
-                    if frame_time_ms <= ADAPTIVE_MEDIUM_EXIT_MS {
-                        AdaptiveQuality::High
-                    } else {
-                        AdaptiveQuality::Medium
-                    }
-                } else {
-                    AdaptiveQuality::Low
-                }
-            }
-        };
+        self.adaptive_quality = self.adaptive_quality.update(frame_time_ms);
         if previous != self.adaptive_quality {
             log::warn!(
                 "Adaptive quality changed: {:?} -> {:?} (frame_ms={:.2})",
@@ -673,12 +603,22 @@ impl Renderer {
     }
 
     pub fn invalidate_mesh_cache(&mut self) {
-        self.mesh_cache.clear();
-        self.cluster_cache.clear();
+        self.assets.invalidate_all();
     }
 
     pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall], scene: &SceneGraph) -> FrameStats {
         self.frame_counter = self.frame_counter.wrapping_add(1);
+
+        // ── Shader hot-reload: check for changed .wgsl files ──
+        let _changed = self.shader_reload.check_and_reload();
+
+        // ── Pipeline cache: save periodically (every 300 frames ≈ 5s) ──
+        if self.frame_counter % 300 == 0 {
+            if let Some(ref mut pc) = self.pipeline_cache {
+                pc.save_to_disk();
+            }
+        }
+
         if draw_calls.is_empty() {
             return FrameStats::default();
         }
@@ -731,33 +671,38 @@ impl Renderer {
 
         let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
         for dc in &visible {
-            let handle = if dc.vertices.is_empty() && dc.meshlet_data.is_none() {
-                None
-            } else if dc.meshlet_data.is_some() {
-                // Meshlet path: upload as standard mesh using meshlet-expanded buffers
-                let md = dc.meshlet_data.as_ref().unwrap();
-                let ptr = Arc::as_ptr(md) as u64;
-                if let Some((mesh_id, last_used)) = self.mesh_cache.get_mut(&ptr) {
-                    *last_used = self.frame_counter;
-                    Some(*mesh_id)
-                } else {
-                    if self.mesh_cache.len() >= MESH_CACHE_MAX {
-                        self.prune_mesh_cache();
+            let handle = if dc.vertices.is_empty() {
+                if let Some(md) = dc.meshlet_data.as_ref() {
+                    // Fallback-only path: use meshlet-expanded geometry when no standard vertices exist.
+                    let ptr = Arc::as_ptr(md) as u64;
+                    if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&ptr) {
+                        *last_used = self.frame_counter;
+                        Some(*mesh_id)
+                    } else {
+                        if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
+                            self.prune_mesh_cache();
+                        }
+                        let verts: Vec<crate::vertex::Vertex> =
+                            md.vertices
+                                .iter()
+                                .map(|mv| crate::vertex::Vertex {
+                                    position: mv.position,
+                                    normal: mv.normal,
+                                    texcoord: mv.texcoord,
+                                    tangent: mv.tangent,
+                                })
+                                .collect();
+                        let mesh_id = self.gpu_meshes.upload_mesh(
+                            &self.device,
+                            &verts,
+                            Some(&md.indices),
+                            &[],
+                        );
+                        self.assets.mesh_cache.insert(ptr, (mesh_id, self.frame_counter));
+                        Some(mesh_id)
                     }
-                    // Convert meshlet vertices to standard Vertex format
-                    let verts: Vec<crate::vertex::Vertex> = md.vertices.iter().map(|mv| crate::vertex::Vertex {
-                        position: mv.position,
-                        normal: mv.normal,
-                        texcoord: mv.texcoord,
-                    }).collect();
-                    let mesh_id = self.gpu_meshes.upload_mesh(
-                        &self.device,
-                        &verts,
-                        Some(&md.indices),
-                        &[],
-                    );
-                    self.mesh_cache.insert(ptr, (mesh_id, self.frame_counter));
-                    Some(mesh_id)
+                } else {
+                    None
                 }
             } else {
                 let hash = dc.mesh_hash.unwrap_or_else(|| {
@@ -770,11 +715,11 @@ impl Renderer {
                     std::hash::Hasher::write_u64(&mut h, ptr_key.1);
                     std::hash::Hasher::finish(&h)
                 });
-                if let Some((mesh_id, last_used)) = self.mesh_cache.get_mut(&hash) {
+                if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&hash) {
                     *last_used = self.frame_counter;
                     Some(*mesh_id)
                 } else {
-                    if self.mesh_cache.len() >= MESH_CACHE_MAX {
+                    if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
                         self.prune_mesh_cache();
                     }
                     let mesh_id = self.gpu_meshes.upload_mesh(
@@ -783,7 +728,7 @@ impl Renderer {
                         dc.indices.as_ref().map(|a| a.as_slice()),
                         &dc.edge_positions,
                     );
-                    self.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
+                    self.assets.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
                     Some(mesh_id)
                 }
             };
@@ -837,12 +782,6 @@ impl Renderer {
         for (i, dc) in visible.iter().enumerate() {
             if dc.meshlet_data.is_some() {
                 meshlet_indices.push(i);
-                let md = dc.meshlet_data.as_ref().unwrap();
-                let ptr = Arc::as_ptr(md) as u64;
-                if !self.cluster_cache.contains_key(&ptr) {
-                    let cs = ClusterSet::from_meshlet_data(&self.device, md);
-                    self.cluster_cache.insert(ptr, cs);
-                }
             }
         }
         if !meshlet_indices.is_empty() {
@@ -852,6 +791,22 @@ impl Renderer {
             }
             if self.cluster_renderer.is_none() {
                 self.cluster_renderer = Some(ClusterRenderer::new(&self.device));
+            }
+        }
+
+        // Upload cluster sets after cluster renderer is ready
+        let bgls = self.cluster_renderer.as_ref().map(|cr| cr.bind_group_layouts());
+        for &idx in &meshlet_indices {
+            let dc = visible[idx];
+            let md = dc.meshlet_data.as_ref().unwrap();
+            let ptr = Arc::as_ptr(md) as u64;
+            if !self.assets.cluster_cache.contains_key(&ptr) {
+                if let Some((cs_bgl, cmp_bgl, fin_bgl)) = bgls {
+                    let cs = ClusterSet::from_meshlet_data(
+                        &self.device, md, cs_bgl, cmp_bgl, fin_bgl,
+                    );
+                    self.assets.cluster_cache.insert(ptr, cs);
+                }
             }
         }
 
@@ -880,21 +835,66 @@ impl Renderer {
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
             );
 
-        let mut light_view_proj = Mat4::IDENTITY;
+        let _camera_vp = first.mvp * first.model_matrix.inverse();
+        // Build a default perspective projection for SSAO (fov=60°, aspect from config)
+        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
+        let near = 0.1f32;
+        let far = 1000.0f32;
+        let fov = 60.0f32.to_radians();
+        let f = 1.0 / (fov / 2.0).tan();
+        let camera_proj = Mat4::from_cols_array_2d(&[
+            [f / aspect, 0.0, 0.0, 0.0],
+            [0.0, f, 0.0, 0.0],
+            [0.0, 0.0, far / (far - near), 1.0],
+            [0.0, 0.0, -near * far / (far - near), 0.0],
+        ]);
+        let camera_inv_proj = camera_proj.inverse();
+
+        let mut csm_view_proj = [Mat4::IDENTITY; CSM_CASCADE_COUNT];
+        let mut csm_split_depths = [0.0f32; CSM_CASCADE_COUNT];
         let mut shadow_params = [0.0_f32, 0.0004, 0.0, 0.0];
         let mut run_shadow_pass = false;
 
         if solid_wants_shadow {
             if let Some(dir) = primary_directional_light_dir(scene) {
                 let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
-                if let Some(aabb) = aabb {
+                if let Some(_aabb) = aabb {
                     let sm_size = match self.adaptive_quality {
                         AdaptiveQuality::High => 2048,
                         AdaptiveQuality::Medium => 1024,
                         AdaptiveQuality::Low => 512,
                     };
-                    self.ensure_shadow_map(sm_size);
-                    light_view_proj = directional_light_view_proj(dir, &aabb, 8.0);
+                    let cascade_count = match self.adaptive_quality {
+                        AdaptiveQuality::High => 4,
+                        AdaptiveQuality::Medium => 3,
+                        AdaptiveQuality::Low => 1,
+                    };
+                    self.ensure_csm_shadow(sm_size, cascade_count);
+
+                    let vp = first.mvp * first.model_matrix.inverse();
+                    let camera_near = 0.1f32;
+                    let camera_far = 1000.0f32;
+                    let splits = compute_csm_splits(camera_near, camera_far, cascade_count, 0.5);
+                    let inv_vp = vp.inverse();
+                    let light_vps = csm_light_view_projs(dir, inv_vp, &splits, 8.0);
+
+                    for (i, lvp) in light_vps.iter().enumerate() {
+                        if i < CSM_CASCADE_COUNT {
+                            csm_view_proj[i] = *lvp;
+                        }
+                    }
+                    // Convert split depths to [0,1] range for shader comparison (view-space depth / far)
+                    let far_range = camera_far - camera_near;
+                    for i in 0..cascade_count as usize {
+                        if i + 1 < splits.len() {
+                            csm_split_depths[i] = (splits[i + 1] - camera_near) / far_range;
+                        }
+                    }
+                    // Fill remaining with far
+                    for i in cascade_count as usize..CSM_CASCADE_COUNT {
+                        csm_split_depths[i] = 1.0;
+                    }
+
                     let inv = 1.0 / sm_size as f32;
                     let (bias, pcf) = match self.adaptive_quality {
                         AdaptiveQuality::High => (0.00015_f32, 2.0_f32),
@@ -915,7 +915,8 @@ impl Renderer {
             mesh_handles: &mesh_handles,
             mode,
             run_outline,
-            bg_color: wgpu::Color { r: 0.08, g: 0.08, b: 0.08, a: 1.0 },
+            // Darker background for stronger silhouette/material contrast in sRGB output.
+            bg_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
             performance_mode_active: self.performance_mode_active,
             wireframe_supported: self.wireframe_supported,
             adaptive_quality: self.adaptive_quality,
@@ -924,12 +925,17 @@ impl Renderer {
             meshlet_indices: &meshlet_indices,
             camera_pos: [first.camera_pos.x, first.camera_pos.y, first.camera_pos.z],
             depth_reversed_z: first.depth_reversed_z,
-            light_view_proj,
+            csm_view_proj,
+            csm_split_depths,
             shadow_params,
             run_shadow_pass,
+            camera_proj,
+            camera_inv_proj,
         };
 
-        render_passes::execute_passes(self, &ctx, draw_calls, self.frame_counter)
+        let mut stats = render_passes::execute_passes(self, &ctx, draw_calls, self.frame_counter);
+        stats.gpu_pass_times_us = self.read_gpu_timestamps();
+        stats
     }
 
     pub fn update_hud(&mut self, fps: f32, frame_time_ms: f32, stats: FrameStats, mode_name: &str) {
@@ -952,7 +958,7 @@ impl Renderer {
         }
     }
 
-    fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
+    pub(super) fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
         self.gpu_meshes.get(mesh_id)
     }
 
@@ -1021,17 +1027,39 @@ impl Renderer {
     }
 
     pub(super) fn prune_mesh_cache(&mut self) {
-        let frame = self.frame_counter;
-        let stale_keys: Vec<u64> = self
-            .mesh_cache
-            .iter()
-            .filter(|(_, (_, last_used))| frame.saturating_sub(*last_used) > MESH_CACHE_IDLE_FRAMES)
-            .map(|(k, _)| *k)
-            .collect();
-        for key in stale_keys {
-            if let Some((mesh_id, _)) = self.mesh_cache.remove(&key) {
-                self.gpu_meshes.remove(mesh_id);
+        self.assets
+            .prune_stale_meshes(self.frame_counter, &mut self.gpu_meshes);
+    }
+
+    pub(super) fn write_gpu_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if let Some(ref qs) = self.gpu_query_set {
+            if self.gpu_query_slots < 16 {
+                encoder.write_timestamp(qs, self.gpu_query_slots);
+                self.gpu_query_slots += 1;
             }
         }
+    }
+
+    pub(super) fn resolve_gpu_timestamps(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if let (Some(ref qs), Some(ref qb)) = (&self.gpu_query_set, &self.gpu_query_buffer) {
+            let written = self.gpu_query_slots.min(16);
+            if written > 0 {
+                encoder.resolve_query_set(qs, 0..written, qb, 0);
+            }
+        }
+    }
+
+    pub(super) fn read_gpu_timestamps(&mut self) -> Option<[f64; 4]> {
+        let qb = self.gpu_query_buffer.as_ref()?;
+        let written = (self.gpu_query_slots.min(16)) as usize;
+        if written < 8 { return None; } // need at least 4 pairs
+
+        // Use a staging buffer for async readback (simplified: try immediate map)
+        // For production, use map_async with a callback. For now, skip readback.
+        let _ = qb;
+        let _ = written;
+        // Reset for next frame
+        self.gpu_query_slots = 0;
+        None // simplified: no readback yet; extend later with staging
     }
 }

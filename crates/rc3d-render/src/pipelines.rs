@@ -20,6 +20,7 @@ pub struct PipelineSet {
     pub shadow_resource_bgl: wgpu::BindGroupLayout,
     pub flat_bgl: wgpu::BindGroupLayout,
     pub outline_bgl: wgpu::BindGroupLayout,
+    pub ibl_instance_bgl: wgpu::BindGroupLayout,
     /// Directional shadow depth pass (forward-Z depth only, not tied to reverse-Z camera).
     pub shadow_depth: wgpu::RenderPipeline,
     pub forward: DepthModePipelines,
@@ -130,6 +131,16 @@ impl PipelineSet {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -148,14 +159,14 @@ impl PipelineSet {
         });
 
         let shadow_resource_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Shadow map BGL"),
+            label: Some("Shadow map BGL (D2Array for CSM)"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         sample_type: wgpu::TextureSampleType::Depth,
                     },
                     count: None,
@@ -164,6 +175,47 @@ impl PipelineSet {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
+        });
+
+        // Combined IBL + instance data BGL (group 3): bindings 0-2 = IBL, binding 3 = instance SSBO
+        let ibl_instance_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("IBL + Instance BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false, view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false, view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -209,7 +261,7 @@ impl PipelineSet {
 
         let lit_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Lit PBR PLL"),
-            bind_group_layouts: &[&phong_bgl, &pbr_material_bgl, &shadow_resource_bgl],
+            bind_group_layouts: &[&phong_bgl, &pbr_material_bgl, &shadow_resource_bgl, &ibl_instance_bgl],
             push_constant_ranges: &[],
         });
         let flat_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -281,6 +333,7 @@ impl PipelineSet {
             shadow_resource_bgl,
             flat_bgl,
             outline_bgl,
+            ibl_instance_bgl,
             shadow_depth,
             forward,
             reverse,

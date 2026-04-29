@@ -5,6 +5,9 @@ pub struct HzbPyramid {
     pub width: u32,
     pub height: u32,
     pub mip_count: u32,
+    /// Pre-built downsample bind groups for each mip transition (mip-1 → mip), index 0 = mip0→mip1
+    pub downsample_max_bgs: Vec<wgpu::BindGroup>,
+    pub downsample_min_bgs: Vec<wgpu::BindGroup>,
 }
 
 /// Two HZB chains from the same depth buffer: **max** mips for reverse-Z (larger = closer),
@@ -15,16 +18,27 @@ pub struct HzbPyramids {
 }
 
 impl HzbPyramids {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        downsample_bgl: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+    ) -> Self {
         Self {
-            max_pyramid: HzbPyramid::new(device, width, height),
-            min_pyramid: HzbPyramid::new(device, width, height),
+            max_pyramid: HzbPyramid::new(device, downsample_bgl, width, height, true),
+            min_pyramid: HzbPyramid::new(device, downsample_bgl, width, height, true),
         }
     }
 }
 
 impl HzbPyramid {
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        downsample_bgl: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+        build_sets: bool,
+    ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
         let mip_count = ((width.max(height) as f32).log2().floor() as u32 + 1).max(1);
@@ -67,6 +81,41 @@ impl HzbPyramid {
             }));
         }
 
+        let mut downsample_max_bgs = Vec::new();
+        let mut downsample_min_bgs = Vec::new();
+        if build_sets {
+            for mip in 1..mip_count as usize {
+                downsample_max_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("HZB Downsample Max BG (cached)"),
+                    layout: downsample_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&mip_views[mip - 1]),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&mip_views[mip]),
+                        },
+                    ],
+                }));
+                downsample_min_bgs.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("HZB Downsample Min BG (cached)"),
+                    layout: downsample_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&mip_views[mip - 1]),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&mip_views[mip]),
+                        },
+                    ],
+                }));
+            }
+        }
+
         Self {
             texture,
             mip_views,
@@ -74,6 +123,8 @@ impl HzbPyramid {
             width,
             height,
             mip_count,
+            downsample_max_bgs,
+            downsample_min_bgs,
         }
     }
 }
@@ -83,7 +134,9 @@ pub struct HzbBaker {
     depth_to_mip0_bgl: wgpu::BindGroupLayout,
     downsample_max_pipeline: wgpu::ComputePipeline,
     downsample_min_pipeline: wgpu::ComputePipeline,
-    downsample_bgl: wgpu::BindGroupLayout,
+    pub downsample_bgl: wgpu::BindGroupLayout,
+    /// Generation counter incremented on resize to invalidate depth-to-mip0 caches.
+    depth_view_generation: u64,
 }
 
 impl HzbBaker {
@@ -199,11 +252,16 @@ impl HzbBaker {
             downsample_max_pipeline,
             downsample_min_pipeline,
             downsample_bgl,
+            depth_view_generation: 0,
         }
     }
 
+    pub fn increment_generation(&mut self) {
+        self.depth_view_generation = self.depth_view_generation.wrapping_add(1);
+    }
+
     pub fn build_from_depth(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         depth_view: &wgpu::TextureView,
@@ -242,27 +300,13 @@ impl HzbBaker {
             for mip in 1..max_pyramid.mip_count as usize {
                 let dst_w = (max_pyramid.width >> mip as u32).max(1);
                 let dst_h = (max_pyramid.height >> mip as u32).max(1);
-                let bg_max = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("HZB Downsample Max BG"),
-                    layout: &self.downsample_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&max_pyramid.mip_views[mip - 1]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&max_pyramid.mip_views[mip]),
-                        },
-                    ],
-                });
                 {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("HZB Downsample Max"),
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(&self.downsample_max_pipeline);
-                    pass.set_bind_group(0, &bg_max, &[]);
+                    pass.set_bind_group(0, &max_pyramid.downsample_max_bgs[mip - 1], &[]);
                     let wg_x = (dst_w + 7) / 8;
                     let wg_y = (dst_h + 7) / 8;
                     pass.dispatch_workgroups(wg_x, wg_y, 1);
@@ -300,27 +344,13 @@ impl HzbBaker {
             for mip in 1..min_pyramid.mip_count as usize {
                 let dst_w = (min_pyramid.width >> mip as u32).max(1);
                 let dst_h = (min_pyramid.height >> mip as u32).max(1);
-                let bg_min = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("HZB Downsample Min BG"),
-                    layout: &self.downsample_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&min_pyramid.mip_views[mip - 1]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&min_pyramid.mip_views[mip]),
-                        },
-                    ],
-                });
                 {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("HZB Downsample Min"),
                         timestamp_writes: None,
                     });
                     pass.set_pipeline(&self.downsample_min_pipeline);
-                    pass.set_bind_group(0, &bg_min, &[]);
+                    pass.set_bind_group(0, &min_pyramid.downsample_min_bgs[mip - 1], &[]);
                     let wg_x = (dst_w + 7) / 8;
                     let wg_y = (dst_h + 7) / 8;
                     pass.dispatch_workgroups(wg_x, wg_y, 1);

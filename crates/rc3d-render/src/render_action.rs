@@ -7,8 +7,30 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::vertex::Vertex;
-const MAX_LIGHTS: usize = 4;
+use crate::material_library::MaterialLibrary;
+use crate::vertex::{Vertex, MAX_LIGHTS};
+
+fn material_element_for_node(
+    mat: &rc3d_scene::MaterialNode,
+    entry_name: Option<&str>,
+    library: Option<&MaterialLibrary>,
+) -> rc3d_actions::MaterialElement {
+    let src = if let (Some(name), Some(lib)) = (entry_name, library) {
+        lib.get(name).unwrap_or(mat)
+    } else {
+        mat
+    };
+    rc3d_actions::MaterialElement {
+        diffuse: src.diffuse_color,
+        ambient: src.ambient_color,
+        specular: src.specular_color,
+        shininess: src.shininess,
+        base_color: src.base_color,
+        metallic: src.metallic,
+        roughness: src.roughness,
+        albedo_texture: src.albedo_texture.clone(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ShapeKey {
@@ -119,6 +141,7 @@ pub struct RenderCollector {
     pub projection_matrix: Mat4,
     pub projection_orthographic: bool,
     pub global_display_mode: DisplayMode,
+    pub material_library: Option<MaterialLibrary>,
     mesh_cache: HashMap<ShapeKey, CachedShapeData>,
 }
 
@@ -132,6 +155,7 @@ impl RenderCollector {
             projection_matrix: Mat4::IDENTITY,
             projection_orthographic: false,
             global_display_mode: DisplayMode::ShadedWithEdges,
+            material_library: None,
             mesh_cache: HashMap::new(),
         }
     }
@@ -164,6 +188,9 @@ impl RenderCollector {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::HandlerNode(h) => {
+                h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
+            }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
                 self.state.set_model_matrix(current * t.to_matrix());
@@ -181,16 +208,8 @@ impl RenderCollector {
                 self.state.set_normal(norm.vector.clone());
             }
             NodeData::Material(mat) => {
-                self.state.set_material(rc3d_actions::MaterialElement {
-                    diffuse: mat.diffuse_color,
-                    ambient: mat.ambient_color,
-                    specular: mat.specular_color,
-                    shininess: mat.shininess,
-                    base_color: mat.base_color,
-                    metallic: mat.metallic,
-                    roughness: mat.roughness,
-                    albedo_texture: mat.albedo_texture.clone(),
-                });
+                let el = material_element_for_node(mat, entry.name.as_deref(), self.material_library.as_ref());
+                self.state.set_material(el);
             }
             NodeData::PerspectiveCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
@@ -256,7 +275,8 @@ impl RenderCollector {
                     vec![n, n, n]
                 };
                 let positions = vec![coord.points[0], coord.points[1], coord.points[2]];
-                let mesh = rc3d_mesh::TriangleMesh::from_tris(&positions);
+                let mut mesh = rc3d_mesh::TriangleMesh::from_tris(&positions);
+                mesh.compute_tangents();
                 let mut vertices = Vec::with_capacity(3);
                 for (i, v) in mesh.phong_buffers().0.iter().enumerate() {
                     let n = if i < face_n.len() { face_n[i].to_array() } else { [v[3], v[4], v[5]] };
@@ -264,6 +284,7 @@ impl RenderCollector {
                         position: [v[0], v[1], v[2]],
                         normal: n,
                         texcoord: [v[6], v[7]],
+                        tangent: [v[8], v[9], v[10], v[11]],
                     });
                 }
                 let edge_positions = Vec::new();
@@ -382,7 +403,7 @@ impl RenderCollector {
                 };
                 #[allow(clippy::map_entry)]
                 if !self.mesh_cache.contains_key(&key) {
-                    let mesh = {
+                    let mut mesh = {
                         let use_tex = !tex_el.coords.is_empty() && tex_el.coords.len() == coord.points.len();
                         if use_tex {
                             rc3d_mesh::TriangleMesh::from_indexed_face_set_tex(
@@ -394,6 +415,7 @@ impl RenderCollector {
                             rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index)
                         }
                     };
+                    mesh.compute_tangents();
                     if !mesh.positions.is_empty() {
                         let (phong_verts, indices) = mesh.phong_buffers();
                         let edge_positions = mesh.edge_line_positions();
@@ -404,6 +426,7 @@ impl RenderCollector {
                                 position: [v[0], v[1], v[2]],
                                 normal: [v[3], v[4], v[5]],
                                 texcoord: [v[6], v[7]],
+                                tangent: [v[8], v[9], v[10], v[11]],
                             })
                             .collect();
                         let tri_count = indices.len() / 3;
@@ -412,6 +435,7 @@ impl RenderCollector {
                                 &mesh.positions,
                                 &mesh.normals,
                                 &mesh.texcoords,
+                                &mesh.tangents,
                                 &mesh.tri_indices,
                             );
                             log::info!(
@@ -457,10 +481,11 @@ impl RenderCollector {
         match self.mesh_cache.entry(key) {
             Entry::Occupied(_) => {}
             Entry::Vacant(vacant) => {
-                let mesh = build_mesh();
+                let mut mesh = build_mesh();
                 if mesh.positions.is_empty() {
                     return;
                 }
+                mesh.compute_tangents();
                 let (phong_verts, indices) = mesh.phong_buffers();
                 let edge_positions = mesh.edge_line_positions();
                 let local_aabb = mesh.bounding_box();
@@ -470,6 +495,7 @@ impl RenderCollector {
                         position: [v[0], v[1], v[2]],
                         normal: [v[3], v[4], v[5]],
                         texcoord: [v[6], v[7]],
+                        tangent: [v[8], v[9], v[10], v[11]],
                     })
                     .collect();
                 vacant.insert((Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb, None));
@@ -647,5 +673,15 @@ impl RenderCollector {
 impl Default for RenderCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl rc3d_actions::Action for RenderCollector {
+    fn kind(&self) -> rc3d_actions::ActionKind {
+        rc3d_actions::ActionKind::GLRender
+    }
+
+    fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.traverse(graph, root);
     }
 }

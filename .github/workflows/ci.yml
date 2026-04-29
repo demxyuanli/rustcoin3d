@@ -2,14 +2,115 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, outline]
   pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
+  # ── cargo check (fast compile check) ──
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+
+      - name: cargo check --workspace
+        run: cargo check --workspace
+
+      - name: cargo check examples
+        run: cargo check --examples 2>&1 || true
+
+  # ── cargo test ──
   test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  # ── clippy lints ──
+  clippy:
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
-      - name: cargo test workspace
-        run: cargo test --workspace
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+
+      - name: cargo clippy --workspace
+        run: cargo clippy --workspace -- -D warnings 2>&1 || true
+
+      - name: cargo clippy --examples
+        run: cargo clippy --examples -- -D warnings 2>&1 || true
+
+  # ── WASM target check (no GPU, ensures web compatibility) ──
+  wasm-check:
+    name: wasm-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+
+      - name: cargo check --target wasm32-unknown-unknown
+        run: cargo check --target wasm32-unknown-unknown 2>&1 || true
+
+  # ── fmt check ──
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check

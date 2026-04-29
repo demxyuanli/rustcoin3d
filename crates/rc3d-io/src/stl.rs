@@ -1,9 +1,10 @@
 use std::io;
 use std::path::Path;
+use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
 use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_data::{Coordinate3Node, IndexedFaceSetNode, SeparatorNode};
+use rc3d_scene::node_data::{Coordinate3Node, IndexedFaceSetNode, MaterialNode, SeparatorNode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StlError {
@@ -153,18 +154,111 @@ fn skip_line<'a, I: Iterator<Item = &'a str>>(lines: &mut std::iter::Peekable<I>
 fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
     let mut points = Vec::with_capacity(triangles.len() * 3);
     let mut coord_index = Vec::with_capacity(triangles.len() * 4);
+    let mut remap: std::collections::HashMap<[u32; 3], i32> =
+        std::collections::HashMap::with_capacity(triangles.len() * 2);
 
     for tri in triangles {
-        let base = points.len() as i32;
-        points.push(Vec3::from(tri.vertices[0]));
-        points.push(Vec3::from(tri.vertices[1]));
-        points.push(Vec3::from(tri.vertices[2]));
-        coord_index.extend_from_slice(&[base, base + 1, base + 2, -1]);
+        for v in tri.vertices {
+            let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+            let idx = if let Some(&i) = remap.get(&key) {
+                i
+            } else {
+                let i = points.len() as i32;
+                points.push(Vec3::from(v));
+                remap.insert(key, i);
+                i
+            };
+            coord_index.push(idx);
+        }
+        coord_index.push(-1);
     }
 
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
-    graph.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(points)));
-    graph.add_child(root, NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index }));
+    // STL usually has no material payload; inject a readable default material for contrast.
+    graph.add_child(
+        root,
+        NodeData::Material(MaterialNode {
+            diffuse_color: Vec3::new(0.9, 0.9, 0.9),
+            ambient_color: Vec3::new(0.25, 0.25, 0.25),
+            specular_color: Vec3::new(0.0, 0.0, 0.0),
+            shininess: 0.0,
+            base_color: Vec3::new(0.94, 0.94, 0.94),
+            metallic: 0.0,
+            roughness: 0.35,
+            albedo_texture: None,
+        }),
+    );
+    const MAX_VERTICES_PER_CHUNK: usize = 4_000_000;
+    let chunks = split_indexed_face_set_into_chunks(&points, &coord_index, MAX_VERTICES_PER_CHUNK);
+    for (chunk_points, chunk_indices) in chunks {
+        graph.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(chunk_points)));
+        graph.add_child(root, NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index: chunk_indices }));
+    }
     graph
+}
+
+fn split_indexed_face_set_into_chunks(
+    points: &[Vec3],
+    coord_index: &[i32],
+    max_vertices_per_chunk: usize,
+) -> Vec<(Vec<Vec3>, Vec<i32>)> {
+    let mut out: Vec<(Vec<Vec3>, Vec<i32>)> = Vec::new();
+    let mut chunk_points: Vec<Vec3> = Vec::new();
+    let mut chunk_indices: Vec<i32> = Vec::new();
+    let mut remap: HashMap<i32, i32> = HashMap::new();
+    let mut face: Vec<i32> = Vec::with_capacity(3);
+
+    let flush_chunk = |out: &mut Vec<(Vec<Vec3>, Vec<i32>)>,
+                       chunk_points: &mut Vec<Vec3>,
+                       chunk_indices: &mut Vec<i32>,
+                       remap: &mut HashMap<i32, i32>| {
+        if !chunk_indices.is_empty() {
+            out.push((std::mem::take(chunk_points), std::mem::take(chunk_indices)));
+            remap.clear();
+        }
+    };
+
+    for &idx in coord_index {
+        if idx >= 0 {
+            face.push(idx);
+            continue;
+        }
+        if face.len() != 3 {
+            face.clear();
+            continue;
+        }
+
+        let mut new_vertices_needed = 0usize;
+        for &src in &face {
+            if !remap.contains_key(&src) {
+                new_vertices_needed += 1;
+            }
+        }
+
+        if !chunk_indices.is_empty() && chunk_points.len() + new_vertices_needed > max_vertices_per_chunk {
+            flush_chunk(&mut out, &mut chunk_points, &mut chunk_indices, &mut remap);
+        }
+
+        for &src in &face {
+            let mapped = if let Some(&m) = remap.get(&src) {
+                m
+            } else {
+                let m = chunk_points.len() as i32;
+                remap.insert(src, m);
+                chunk_points.push(points[src as usize]);
+                m
+            };
+            chunk_indices.push(mapped);
+        }
+        chunk_indices.push(-1);
+        face.clear();
+    }
+
+    flush_chunk(&mut out, &mut chunk_points, &mut chunk_indices, &mut remap);
+
+    if out.is_empty() {
+        out.push((points.to_vec(), coord_index.to_vec()));
+    }
+    out
 }

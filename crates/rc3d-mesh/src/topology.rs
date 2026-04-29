@@ -51,6 +51,8 @@ pub struct TriangleMesh {
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
     pub edge_map: HashMap<EdgeKey, EdgeId>,
+    /// Per-vertex tangent (xyz) + handedness (w). Computed by `compute_tangents()`.
+    pub tangents: Vec<[f32; 4]>,
 }
 
 fn quantize(v: Vec3) -> [i64; 3] {
@@ -89,6 +91,7 @@ impl TriangleMesh {
             faces: Vec::with_capacity(raw_positions.len() / 3),
             edges: Vec::new(),
             edge_map: HashMap::new(),
+            tangents: Vec::new(),
         };
         mesh.build_topology();
         mesh.compute_face_normals();
@@ -106,6 +109,7 @@ impl TriangleMesh {
             faces: Vec::with_capacity(indices.len() / 3),
             edges: Vec::new(),
             edge_map: HashMap::new(),
+            tangents: Vec::new(),
         };
         mesh.build_topology();
         mesh.compute_face_normals();
@@ -132,6 +136,7 @@ impl TriangleMesh {
             faces: Vec::with_capacity(indices.len() / 3),
             edges: Vec::new(),
             edge_map: HashMap::new(),
+            tangents: Vec::new(),
         };
         mesh.build_topology();
         mesh.compute_face_normals();
@@ -181,6 +186,7 @@ impl TriangleMesh {
             faces: Vec::with_capacity(n / 3),
             edges: Vec::new(),
             edge_map: HashMap::new(),
+            tangents: Vec::new(),
         };
         mesh.build_topology();
         mesh.compute_face_normals();
@@ -198,6 +204,7 @@ impl TriangleMesh {
             faces: Vec::new(),
             edges: Vec::new(),
             edge_map: HashMap::new(),
+            tangents: Vec::new(),
         }
     }
 
@@ -351,18 +358,82 @@ impl TriangleMesh {
         (positions, self.tri_indices.clone())
     }
 
-    /// Interleaved position + normal + texcoord for lit shading.
-    pub fn phong_buffers(&self) -> (Vec<[f32; 8]>, Vec<u32>) {
+    /// Compute per-vertex tangents using the MikkTSpace/Megelan method.
+    /// Requires positions, normals, texcoords, and triangle indices to be populated.
+    pub fn compute_tangents(&mut self) {
+        let vcount = self.positions.len();
+        let mut tan1 = vec![Vec3::ZERO; vcount];
+        let mut tan2 = vec![Vec3::ZERO; vcount];
+
+        for ti in (0..self.tri_indices.len()).step_by(3) {
+            let i0 = self.tri_indices[ti] as usize;
+            let i1 = self.tri_indices[ti + 1] as usize;
+            let i2 = self.tri_indices[ti + 2] as usize;
+            if i0 >= vcount || i1 >= vcount || i2 >= vcount { continue; }
+
+            let p0 = self.positions[i0];
+            let p1 = self.positions[i1];
+            let p2 = self.positions[i2];
+
+            let default_uv = [0.0f32, 0.0];
+            let uv0 = self.texcoords.get(i0).copied().unwrap_or(default_uv);
+            let uv1 = self.texcoords.get(i1).copied().unwrap_or(default_uv);
+            let uv2 = self.texcoords.get(i2).copied().unwrap_or(default_uv);
+
+            let x1 = p1.x - p0.x;
+            let y1 = p1.y - p0.y;
+            let z1 = p1.z - p0.z;
+            let x2 = p2.x - p0.x;
+            let y2 = p2.y - p0.y;
+            let z2 = p2.z - p0.z;
+
+            let s1 = uv1[0] - uv0[0];
+            let t1 = uv1[1] - uv0[1];
+            let s2 = uv2[0] - uv0[0];
+            let t2 = uv2[1] - uv0[1];
+
+            let r = 1.0 / (s1 * t2 - s2 * t1).max(1e-10);
+            let sdir = Vec3::new(
+                (t2 * x1 - t1 * x2) * r,
+                (t2 * y1 - t1 * y2) * r,
+                (t2 * z1 - t1 * z2) * r,
+            );
+            let tdir = Vec3::new(
+                (s1 * x2 - s2 * x1) * r,
+                (s1 * y2 - s2 * y1) * r,
+                (s1 * z2 - s2 * z1) * r,
+            );
+
+            tan1[i0] += sdir; tan1[i1] += sdir; tan1[i2] += sdir;
+            tan2[i0] += tdir; tan2[i1] += tdir; tan2[i2] += tdir;
+        }
+
+        self.tangents = Vec::with_capacity(vcount);
+        for i in 0..vcount {
+            let n = self.normals.get(i).copied().unwrap_or(Vec3::Y);
+            let t = tan1[i];
+            // Gram-Schmidt orthogonalize
+            let tangent = (t - n * n.dot(t)).normalize();
+            let handedness = if n.cross(t).dot(tan2[i]) < 0.0 { -1.0 } else { 1.0 };
+            self.tangents.push([tangent.x, tangent.y, tangent.z, handedness]);
+        }
+    }
+
+    /// Interleaved position + normal + texcoord + tangent for lit shading.
+    pub fn phong_buffers(&self) -> (Vec<[f32; 12]>, Vec<u32>) {
         let default_uv = [0.0f32, 0.0];
-        let vertices: Vec<[f32; 8]> = self
+        let default_tangent = [1.0f32, 0.0, 0.0, 1.0];
+        let vertices: Vec<[f32; 12]> = self
             .positions
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 let n = self.normals.get(i).copied().unwrap_or(Vec3::ZERO);
                 let uv = self.texcoords.get(i).copied().unwrap_or(default_uv);
+                let t = self.tangents.get(i).copied().unwrap_or(default_tangent);
                 [
                     p.x, p.y, p.z, n.x, n.y, n.z, uv[0], uv[1],
+                    t[0], t[1], t[2], t[3],
                 ]
             })
             .collect();
@@ -408,4 +479,97 @@ pub fn tri_indices_from_coord_index(coord_index: &[i32]) -> Vec<u32> {
         }
     }
     all_indices
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_edge_key_canonical_order() {
+        let k1 = EdgeKey::new(1, 2);
+        let k2 = EdgeKey::new(2, 1);
+        assert_eq!(k1, k2);
+        assert_eq!(k1.vertices(), (1, 2));
+    }
+
+    #[test]
+    fn test_from_tris_single_triangle() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let mesh = TriangleMesh::from_tris(&positions);
+        assert_eq!(mesh.positions.len(), 3);
+        assert_eq!(mesh.tri_indices.len(), 3);
+        assert_eq!(mesh.faces.len(), 1);
+        assert_eq!(mesh.edges.len(), 3);
+    }
+
+    #[test]
+    fn test_from_tris_deduplicates_shared_vertices() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0), // same as first
+            Vec3::new(1.0, 0.0, 0.0), // same as second
+            Vec3::new(1.0, 1.0, 0.0),
+        ];
+        let mesh = TriangleMesh::from_tris(&positions);
+        // Should have 4 unique vertices, not 6
+        assert_eq!(mesh.positions.len(), 4);
+    }
+
+    #[test]
+    fn test_tri_indices_fan_triangulation() {
+        // Quad fan: vertices 0,1,2,3,-1 = quad triangulated as 0-1-2, 0-2-3
+        let indices = tri_indices_from_coord_index(&[0, 1, 2, 3, -1]);
+        assert_eq!(indices.len(), 6);
+        assert_eq!(indices, vec![0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn test_tri_indices_multi_face() {
+        let indices = tri_indices_from_coord_index(&[0, 1, 2, -1, 0, 2, 3, -1]);
+        assert_eq!(indices.len(), 6);
+    }
+
+    #[test]
+    fn test_compute_tangents_simple_triangle() {
+        let mut mesh = TriangleMesh {
+            positions: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            normals: vec![Vec3::Z; 3],
+            texcoords: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            tri_indices: vec![0, 1, 2],
+            faces: Vec::new(),
+            edges: Vec::new(),
+            edge_map: HashMap::new(),
+            tangents: Vec::new(),
+        };
+        mesh.compute_tangents();
+        assert_eq!(mesh.tangents.len(), 3);
+        // Tangent should be roughly along the x-axis
+        assert!(mesh.tangents[0][0] > 0.5);
+    }
+
+    #[test]
+    fn test_phong_buffers_includes_tangent() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let mut mesh = TriangleMesh::from_tris(&positions);
+        mesh.compute_tangents();
+        let (verts, indices) = mesh.phong_buffers();
+        assert_eq!(verts.len(), 3);
+        assert_eq!(verts[0].len(), 12); // pos(3) + norm(3) + uv(2) + tangent(4) = 12
+        assert_eq!(indices.len(), 3);
+    }
 }

@@ -1,14 +1,16 @@
 const PI: f32 = 3.141592653589793;
+const MAX_LIGHTS: u32 = 16u;
+const CSM_CASCADE_COUNT: u32 = 4u;
 
 struct SceneUniforms {
     mvp: mat4x4<f32>,
     model: mat4x4<f32>,
     camera_pos: vec4<f32>,
-    light_dirs: array<vec4<f32>, 4>,
-    light_colors: array<vec4<f32>, 4>,
-    light_types: array<vec4<f32>, 4>,
-    light_positions: array<vec4<f32>, 4>,
-    spot_params: array<vec4<f32>, 4>,
+    light_dirs: array<vec4<f32>, MAX_LIGHTS>,
+    light_colors: array<vec4<f32>, MAX_LIGHTS>,
+    light_types: array<vec4<f32>, MAX_LIGHTS>,
+    light_positions: array<vec4<f32>, MAX_LIGHTS>,
+    spot_params: array<vec4<f32>, MAX_LIGHTS>,
     light_count: vec4<f32>,
     diffuse_color: vec4<f32>,
     ambient_color: vec4<f32>,
@@ -20,20 +22,36 @@ struct SceneUniforms {
     pbr_metallic_roughness: vec4<f32>,
     ibl_diffuse: vec4<f32>,
     ibl_specular: vec4<f32>,
-    light_view_proj: mat4x4<f32>,
+    csm_view_proj: array<mat4x4<f32>, CSM_CASCADE_COUNT>,
+    csm_split_depths: vec4<f32>,
     shadow_params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: SceneUniforms;
 @group(1) @binding(0) var t_albedo: texture_2d<f32>;
-@group(1) @binding(1) var s_albedo: sampler;
-@group(2) @binding(0) var t_shadow: texture_depth_2d;
+@group(1) @binding(1) var s_mat: sampler;
+@group(1) @binding(2) var t_normal: texture_2d<f32>;
+@group(2) @binding(0) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(1) var s_shadow: sampler_comparison;
+@group(3) @binding(0) var t_envmap: texture_2d<f32>;
+@group(3) @binding(1) var t_brdf_lut: texture_2d<f32>;
+@group(3) @binding(2) var s_ibl: sampler;
+
+struct InstanceData {
+    model: mat4x4<f32>,
+    mvp: mat4x4<f32>,
+    diffuse_color: vec4<f32>,
+    base_color: vec4<f32>,
+    metallic_roughness: vec4<f32>,
+}
+
+@group(3) @binding(3) var<storage, read> instances: array<InstanceData>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) texcoord: vec2<f32>,
+    @location(3) tangent: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -41,18 +59,28 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
-    @location(3) light_clip: vec4<f32>,
+    @location(3) view_pos: vec4<f32>,
+    @location(4) flat_instance_idx: u32,
+    @location(5) world_tangent: vec4<f32>,
 };
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
+fn vs_main(in: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = u.mvp * vec4<f32>(in.position, 1.0);
-    let wp = (u.model * vec4<f32>(in.position, 1.0)).xyz;
-    out.world_pos = wp;
-    out.world_normal = normalize((u.model * vec4<f32>(in.normal, 0.0)).xyz);
+    let inst = instances[instance_idx];
+    let world_pos4 = inst.model * vec4<f32>(in.position, 1.0);
+    out.clip_position = inst.mvp * vec4<f32>(in.position, 1.0);
+    out.world_pos = world_pos4.xyz;
+    out.world_normal = normalize((inst.model * vec4<f32>(in.normal, 0.0)).xyz);
     out.uv = in.texcoord;
-    out.light_clip = u.light_view_proj * vec4<f32>(wp, 1.0);
+    // Transform tangent (xyz) to world space; w carries handedness
+    out.world_tangent = vec4<f32>(
+        normalize((inst.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz),
+        in.tangent.w,
+    );
+    let view_pos4 = u.csm_view_proj[0] * world_pos4;
+    out.view_pos = view_pos4;
+    out.flat_instance_idx = instance_idx;
     return out;
 }
 
@@ -81,10 +109,21 @@ fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> v
     return f0 + (max(vec3<f32>(1.0 - roughness), f0) - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
-fn shadow_factor_dir(light_clip: vec4<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+// Select CSM cascade based on view-space depth
+fn select_cascade(view_depth: f32) -> u32 {
+    for (var i = 0u; i < CSM_CASCADE_COUNT - 1u; i = i + 1u) {
+        if view_depth < u.csm_split_depths[i] {
+            return i;
+        }
+    }
+    return CSM_CASCADE_COUNT - 1u;
+}
+
+fn shadow_factor_csm(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, cascade_idx: u32) -> f32 {
     if (u.shadow_params.w < 0.5) {
         return 1.0;
     }
+    let light_clip = u.csm_view_proj[cascade_idx] * vec4<f32>(world_pos, 1.0);
     let ndc = light_clip.xyz / max(light_clip.w, 1e-6);
     if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
         return 1.0;
@@ -93,21 +132,33 @@ fn shadow_factor_dir(light_clip: vec4<f32>, world_normal: vec3<f32>, light_dir: 
     let bias = u.shadow_params.y + (1.0 - dot(normalize(world_normal), normalize(light_dir))) * 0.01;
     let z_ref = ndc.z - bias;
     let hw = i32(floor(u.shadow_params.z + 0.5));
+    var inv = u.shadow_params.x;
+    if (hw <= 0) {
+        return textureSampleCompareLevel(t_shadow, s_shadow, uv, i32(cascade_idx), z_ref);
+    }
     var sum = 0.0;
     var cnt = 0.0;
-    let inv = u.shadow_params.x;
-    if (hw <= 0) {
-        sum = textureSampleCompare(t_shadow, s_shadow, uv, z_ref);
-        return sum;
-    }
     for (var y = -hw; y <= hw; y = y + 1) {
         for (var x = -hw; x <= hw; x = x + 1) {
             let off = vec2<f32>(f32(x), f32(y)) * inv;
-            sum += textureSampleCompare(t_shadow, s_shadow, uv + off, z_ref);
+            sum += textureSampleCompareLevel(t_shadow, s_shadow, uv + off, i32(cascade_idx), z_ref);
             cnt += 1.0;
         }
     }
     return sum / max(cnt, 1.0);
+}
+
+fn direction_to_uv(dir: vec3<f32>) -> vec2<f32> {
+    let d = normalize(dir);
+    let u = atan2(d.x, -d.z) / (2.0 * PI) + 0.5;
+    let v = asin(clamp(d.y, -1.0, 1.0)) / PI + 0.5;
+    return vec2<f32>(u, v);
+}
+
+fn sample_prefiltered_envmap(reflection: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let uv = direction_to_uv(reflection);
+    let r = max(roughness, 0.001);
+    return textureSampleLevel(t_envmap, s_ibl, uv, r * 3.0).rgb;
 }
 
 @fragment
@@ -121,19 +172,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    let n = normalize(in.world_normal);
     let v = normalize(u.camera_pos.xyz - in.world_pos);
+
+    let inst = instances[in.flat_instance_idx];
+    // Robust normal mapping: if tangent basis is invalid, fall back to geometry normal.
+    let N = normalize(in.world_normal);
+    var n = N;
+    let t_len2 = dot(in.world_tangent.xyz, in.world_tangent.xyz);
+    if (t_len2 > 1e-8) {
+        let T = normalize(in.world_tangent.xyz - dot(in.world_tangent.xyz, N) * N);
+        let B = cross(N, T) * in.world_tangent.w;
+        let TBN = mat3x3<f32>(T, B, N);
+        // Sample normal map and decode from [0,1] to [-1,1]
+        let tangent_normal_tex = textureSample(t_normal, s_mat, in.uv).rgb;
+        let tangent_normal = normalize(tangent_normal_tex * 2.0 - 1.0);
+        n = normalize(TBN * tangent_normal);
+    }
     let n_dot_v = max(dot(n, v), 0.0001);
 
-    let albedo_sample = textureSample(t_albedo, s_albedo, in.uv).rgb;
-    var albedo = albedo_sample * u.pbr_base_color.xyz;
-    let metallic = clamp(u.pbr_metallic_roughness.x, 0.0, 1.0);
-    let roughness = clamp(u.pbr_metallic_roughness.y, 0.04, 1.0);
+    let albedo_sample = textureSample(t_albedo, s_mat, in.uv).rgb;
+    var albedo = albedo_sample * inst.base_color.xyz;
+    let metallic = clamp(inst.metallic_roughness.x, 0.0, 1.0);
+    let roughness = clamp(inst.metallic_roughness.y, 0.04, 1.0);
     let f0 = mix(vec3<f32>(0.04), albedo, metallic);
 
+    // Compute view-space depth for CSM cascade selection
+    let view_depth = abs(in.view_pos.z);
+
     var lo = vec3<f32>(0.0);
-    let light_count = min(i32(u.light_count.x), 4);
-    for (var i = 0; i < light_count; i = i + 1) {
+    let light_count = min(u32(u.light_count.x), MAX_LIGHTS);
+    for (var i = 0u; i < light_count; i = i + 1u) {
         let light_type = i32(u.light_types[i].x + 0.5);
         let raw_dir = normalize(u.light_dirs[i].xyz);
         let point_to_light = u.light_positions[i].xyz - in.world_pos;
@@ -158,7 +226,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         var sh = 1.0;
         if (light_type == 0) {
-            sh = shadow_factor_dir(in.light_clip, in.world_normal, -light_dir);
+            let cascade_idx = select_cascade(view_depth);
+            sh = shadow_factor_csm(in.world_pos, in.world_normal, -light_dir, cascade_idx);
         }
         let light_color = u.light_colors[i].xyz * intensity_scale;
         let l = normalize(light_dir);
@@ -176,9 +245,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lo += (diffuse + spec) * light_color * n_dot_l * sh;
     }
 
-    let ibl_kd = (1.0 - fresnel_schlick_roughness(n_dot_v, f0, roughness)) * (1.0 - metallic);
-    let ambient = u.ibl_diffuse.xyz * albedo * ibl_kd;
-    let spec_amb = u.ibl_specular.xyz * fresnel_schlick_roughness(n_dot_v, f0, roughness);
-    let color = lo + ambient + spec_amb * 0.2;
+    let r = reflect(-v, n);
+    let f = fresnel_schlick_roughness(n_dot_v, f0, roughness);
+
+    let ibl_kd = (1.0 - f) * (1.0 - metallic);
+    let diffuse_ibl = u.ibl_diffuse.xyz * albedo * ibl_kd;
+
+    let prefiltered_color = sample_prefiltered_envmap(r, roughness);
+    let env_brdf = textureSample(t_brdf_lut, s_ibl, vec2<f32>(n_dot_v, roughness)).rg;
+    let specular_ibl = prefiltered_color * (f * env_brdf.x + env_brdf.y);
+
+    let color = lo + diffuse_ibl + specular_ibl;
     return vec4<f32>(color, 1.0);
 }

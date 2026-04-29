@@ -203,6 +203,9 @@ impl<'a> Parser<'a> {
     fn parse_node_fields(&mut self, type_name: &str) -> Result<NodeData, IvError> {
         match type_name {
             "Transform" => self.parse_transform(),
+            "Translation" => self.parse_translation(),
+            "Rotation" => self.parse_rotation(),
+            "Scale" => self.parse_scale(),
             "Material" => self.parse_material(),
             "Cube" => self.parse_cube(),
             "Sphere" => self.parse_sphere(),
@@ -221,6 +224,50 @@ impl<'a> Parser<'a> {
                 Ok(NodeData::Separator(SeparatorNode))
             }
         }
+    }
+
+    fn parse_translation(&mut self) -> Result<NodeData, IvError> {
+        let mut t = TransformNode::default();
+        while let Some(Token::Ident(field)) = self.peek().cloned() {
+            match field.as_str() {
+                "translation" => {
+                    self.pos += 1;
+                    t.translation = self.read_vec3()?;
+                }
+                _ => break,
+            }
+        }
+        Ok(NodeData::Transform(t))
+    }
+
+    fn parse_rotation(&mut self) -> Result<NodeData, IvError> {
+        let mut t = TransformNode::default();
+        while let Some(Token::Ident(field)) = self.peek().cloned() {
+            match field.as_str() {
+                "rotation" => {
+                    self.pos += 1;
+                    let axis = self.read_vec3()?;
+                    let angle = self.read_float()?;
+                    t.rotation = rc3d_core::math::Mat4::from_axis_angle(axis.normalize(), angle);
+                }
+                _ => break,
+            }
+        }
+        Ok(NodeData::Transform(t))
+    }
+
+    fn parse_scale(&mut self) -> Result<NodeData, IvError> {
+        let mut t = TransformNode::default();
+        while let Some(Token::Ident(field)) = self.peek().cloned() {
+            match field.as_str() {
+                "scaleFactor" => {
+                    self.pos += 1;
+                    t.scale = self.read_vec3()?;
+                }
+                _ => break,
+            }
+        }
+        Ok(NodeData::Transform(t))
     }
 
     fn parse_transform(&mut self) -> Result<NodeData, IvError> {
@@ -403,6 +450,11 @@ fn write_node(graph: &SceneGraph, node: rc3d_core::NodeId, out: &mut String, ind
         }
         NodeData::Group(_) => {
             out.push_str(&format!("{pad}Group {{\n"));
+            for &child in &entry.children { write_node(graph, child, out, indent + 1); }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        NodeData::HandlerNode(h) => {
+            out.push_str(&format!("{pad}HandlerNode /* {} */ {{\n", h.handler_name()));
             for &child in &entry.children { write_node(graph, child, out, indent + 1); }
             out.push_str(&format!("{pad}}}\n"));
         }

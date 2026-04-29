@@ -45,9 +45,9 @@ fn main() {
         .with_initial_display_mode(DisplayMode::ShadedWithEdges);
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
-        let (target, orbit_radius) = fit_camera_to_scene(&mut app.graph);
-        let controller_root = find_first_camera_node(&app.graph)
-            .or_else(|| app.graph.roots().first().copied())
+        let (target, orbit_radius) = fit_camera_to_scene(&mut app.world.graph);
+        let controller_root = find_first_camera_node(&app.world.graph)
+            .or_else(|| app.world.graph.roots().first().copied())
             .expect("non-empty graph after load");
         app.camera_controller = Some(CameraController::new(controller_root, target, orbit_radius));
     });
@@ -221,9 +221,7 @@ fn has_directional_light_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId)
 
 fn fit_camera_to_scene(graph: &mut rc3d_scene::SceneGraph) -> (Vec3, f32) {
     let mut bbox_action = GetBoundingBoxAction::new();
-    for &root in graph.roots() {
-        bbox_action.apply(graph, root);
-    }
+    rc3d_actions::apply_to_all_roots(&mut bbox_action, graph);
     let bbox = bbox_action.bounding_box;
     if !bbox.min.x.is_finite() || !bbox.max.x.is_finite() {
         return (Vec3::ZERO, 10.0);

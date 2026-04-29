@@ -1,5 +1,9 @@
-@group(0) @binding(0) var hdr_tex: texture_2d<f32>;
-@group(0) @binding(1) var hdr_samp: sampler;
+// Post-processing: ACES tonemapping, Bloom compositing, SSAO application, FXAA.
+
+@group(0) @binding(0) var t_hdr: texture_2d<f32>;
+@group(0) @binding(1) var t_bloom: texture_2d<f32>;
+@group(0) @binding(2) var t_ssao: texture_2d<f32>;
+@group(0) @binding(3) var s_point: sampler;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -24,8 +28,14 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return o;
 }
 
-fn reinhard(c: vec3<f32>) -> vec3<f32> {
-    return c / (c + vec3<f32>(1.0));
+fn tonemap_aces(hdr: vec3<f32>) -> vec3<f32> {
+    // ACES filmic (Narkowicz 2015 fit)
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((hdr * (a * hdr + b)) / (hdr * (c * hdr + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -34,22 +44,37 @@ fn luma(c: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
-    let dims = vec2<f32>(textureDimensions(hdr_tex));
+    let dims = vec2<f32>(textureDimensions(t_hdr));
     let r = 1.0 / max(dims, vec2<f32>(1.0));
-    let c_m = textureSampleLevel(hdr_tex, hdr_samp, i.uv, 0.0).rgb;
-    let c_l = textureSampleLevel(hdr_tex, hdr_samp, i.uv + vec2<f32>(-r.x, 0.0), 0.0).rgb;
-    let c_r = textureSampleLevel(hdr_tex, hdr_samp, i.uv + vec2<f32>(r.x, 0.0), 0.0).rgb;
-    let c_d = textureSampleLevel(hdr_tex, hdr_samp, i.uv + vec2<f32>(0.0, -r.y), 0.0).rgb;
-    let c_u = textureSampleLevel(hdr_tex, hdr_samp, i.uv + vec2<f32>(0.0, r.y), 0.0).rgb;
-    let l_m = luma(reinhard(c_m));
-    let l_l = luma(reinhard(c_l));
-    let l_r = luma(reinhard(c_r));
-    let l_d = luma(reinhard(c_d));
-    let l_u = luma(reinhard(c_u));
+
+    // Sample HDR scene (center + 4 neighbors for FXAA edge detection)
+    let c_m = textureSampleLevel(t_hdr, s_point, i.uv, 0.0).rgb;
+    let c_l = textureSampleLevel(t_hdr, s_point, i.uv + vec2<f32>(-r.x, 0.0), 0.0).rgb;
+    let c_r = textureSampleLevel(t_hdr, s_point, i.uv + vec2<f32>( r.x, 0.0), 0.0).rgb;
+    let c_d = textureSampleLevel(t_hdr, s_point, i.uv + vec2<f32>(0.0, -r.y), 0.0).rgb;
+    let c_u = textureSampleLevel(t_hdr, s_point, i.uv + vec2<f32>(0.0,  r.y), 0.0).rgb;
+
+    // FXAA edge detection on tonemapped luminance
+    let l_m = luma(tonemap_aces(c_m));
+    let l_l = luma(tonemap_aces(c_l));
+    let l_r = luma(tonemap_aces(c_r));
+    let l_d = luma(tonemap_aces(c_d));
+    let l_u = luma(tonemap_aces(c_u));
     let edge = max(max(abs(l_m - l_l), abs(l_m - l_r)), max(abs(l_m - l_d), abs(l_m - l_u)));
     let blend = clamp(edge * 8.0, 0.0, 1.0);
     let avg = (c_l + c_r + c_d + c_u) * 0.25;
-    let filtered = mix(c_m, avg, blend);
-    let ldr = reinhard(filtered);
+    var filtered = mix(c_m, avg, blend);
+
+    // Bloom compositing
+    let bloom_sample = textureSampleLevel(t_bloom, s_point, i.uv, 0.0).rgb;
+    filtered = filtered + bloom_sample * 0.8;
+
+    // SSAO application
+    let ao = textureSampleLevel(t_ssao, s_point, i.uv, 0.0).r;
+    filtered = filtered * mix(0.85, 1.0, ao);
+
+    // ACES tonemapping
+    let ldr = tonemap_aces(filtered);
+
     return vec4<f32>(ldr, 1.0);
 }

@@ -131,11 +131,6 @@ impl RayPickAction {
         }
     }
 
-    pub fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
-        self.traverse_node(graph, root);
-        self.hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-    }
-
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
         let Some(entry) = graph.get(node) else {
             return;
@@ -153,6 +148,9 @@ impl RayPickAction {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }
+            }
+            NodeData::HandlerNode(h) => {
+                h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
             }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
@@ -523,4 +521,15 @@ fn closest_edge_from_bary(bary: &Vec3) -> u32 {
         .map(|(i, _)| i)
         .unwrap_or(0);
     min_idx as u32
+}
+
+impl crate::Action for RayPickAction {
+    fn kind(&self) -> crate::ActionKind {
+        crate::ActionKind::RayPick
+    }
+
+    fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.traverse_node(graph, root);
+        self.hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    }
 }

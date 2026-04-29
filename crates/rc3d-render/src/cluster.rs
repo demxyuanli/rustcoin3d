@@ -13,10 +13,22 @@ pub struct ClusterSet {
     pub meshlet_count: u32,
     pub total_triangles: u32,
     pub total_indices: u32,
+    /// Pre-built static bind group for the cull pass (meshlet + bounds + visible buffers).
+    pub cull_static_bg: wgpu::BindGroup,
+    /// Pre-built bind group for the compact pass.
+    pub compact_bg: wgpu::BindGroup,
+    /// Pre-built bind group for the finalize pass.
+    pub finalize_bg: wgpu::BindGroup,
 }
 
 impl ClusterSet {
-    pub fn from_meshlet_data(device: &wgpu::Device, data: &MeshletData) -> Self {
+    pub fn from_meshlet_data(
+        device: &wgpu::Device,
+        data: &MeshletData,
+        cull_static_bgl: &wgpu::BindGroupLayout,
+        compact_bgl: &wgpu::BindGroupLayout,
+        finalize_bgl: &wgpu::BindGroupLayout,
+    ) -> Self {
         let meshlet_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Meshlet Buf"),
             contents: bytemuck::cast_slice(&data.meshlets),
@@ -60,9 +72,65 @@ impl ClusterSet {
 
         let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Indirect Args"),
-            size: 20,
+            size: 24,
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+
+        // Pre-build static bind groups
+        let cull_static_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cull Static BG"),
+            layout: cull_static_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: meshlet_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: bounds_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: visible_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let compact_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compact BG"),
+            layout: compact_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: visible_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: meshlet_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: index_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: compact_index_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: indirect_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Finalize BG"),
+            layout: finalize_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: indirect_buffer.as_entire_binding(),
+            }],
         });
 
         ClusterSet {
@@ -76,6 +144,9 @@ impl ClusterSet {
             meshlet_count: data.total_meshlets,
             total_triangles: data.total_triangles,
             total_indices: data.indices.len() as u32,
+            cull_static_bg,
+            compact_bg,
+            finalize_bg,
         }
     }
 }
@@ -99,8 +170,11 @@ pub struct CullUniforms {
 pub struct ClusterRenderer {
     cull_pipeline: wgpu::ComputePipeline,
     compact_pipeline: wgpu::ComputePipeline,
-    cull_bgl: wgpu::BindGroupLayout,
+    finalize_pipeline: wgpu::ComputePipeline,
+    cull_dynamic_bgl: wgpu::BindGroupLayout,
+    cull_static_bgl: wgpu::BindGroupLayout,
     compact_bgl: wgpu::BindGroupLayout,
+    finalize_bgl: wgpu::BindGroupLayout,
     cull_uniform_buffer: wgpu::Buffer,
 }
 
@@ -116,15 +190,27 @@ impl ClusterRenderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/cluster_compact.wgsl").into()),
         });
 
-        let cull_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Cull BGL"),
+        let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compact Finalize"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compact_finalize.wgsl").into()),
+        });
+
+        // Dynamic bind group (group 0): uniforms + HZB textures (per-frame)
+        let cull_dynamic_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Cull Dynamic BGL"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
@@ -134,7 +220,7 @@ impl ClusterRenderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 5,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
@@ -146,9 +232,46 @@ impl ClusterRenderer {
             ],
         });
 
+        // Static bind group (group 1): meshlet storage buffers (per-ClusterSet, pre-built once)
+        let cull_static_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Cull Static BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
         let cull_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cull PLL"),
-            bind_group_layouts: &[&cull_bgl],
+            bind_group_layouts: &[&cull_dynamic_bgl, &cull_static_bgl],
             push_constant_ranges: &[],
         });
 
@@ -164,11 +287,56 @@ impl ClusterRenderer {
         let compact_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compact BGL"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -187,6 +355,35 @@ impl ClusterRenderer {
             cache: None,
         });
 
+        let finalize_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Finalize BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let finalize_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Finalize PLL"),
+            bind_group_layouts: &[&finalize_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Finalize Pipe"),
+            layout: Some(&finalize_pll),
+            module: &finalize_shader,
+            entry_point: Some("finalize_args"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         let cull_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Uniforms"),
             size: std::mem::size_of::<CullUniforms>() as u64,
@@ -197,10 +394,18 @@ impl ClusterRenderer {
         Self {
             cull_pipeline,
             compact_pipeline,
-            cull_bgl,
+            finalize_pipeline,
+            cull_dynamic_bgl,
+            cull_static_bgl,
             compact_bgl,
+            finalize_bgl,
             cull_uniform_buffer,
         }
+    }
+
+    /// Returns the bind group layouts needed to construct ClusterSets.
+    pub fn bind_group_layouts(&self) -> (&wgpu::BindGroupLayout, &wgpu::BindGroupLayout, &wgpu::BindGroupLayout) {
+        (&self.cull_static_bgl, &self.compact_bgl, &self.finalize_bgl)
     }
 
     pub fn cull_and_compact(
@@ -227,76 +432,85 @@ impl ClusterRenderer {
             return;
         }
 
-        queue.write_buffer(&self.cull_uniform_buffer, 0, bytemuck::bytes_of(&CullUniforms {
-            view_proj,
-            view_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-            meshlet_count,
-            lod_stride: lod_stride.max(1),
-            meshlet_phase,
-            meshlet_stride_spatial: meshlet_stride_spatial as u32,
-            hzb_dims: [hzb_dims.0.max(1), hzb_dims.1.max(1), 0, 0],
-            hzb_mip_max,
-            hzb_enabled: hzb_enabled as u32,
-            depth_reversed_z: depth_reversed_z as u32,
-            orthographic_projection: orthographic_projection as u32,
-        }));
+        queue.write_buffer(
+            &self.cull_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CullUniforms {
+                view_proj,
+                view_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+                meshlet_count,
+                lod_stride: lod_stride.max(1),
+                meshlet_phase,
+                meshlet_stride_spatial: meshlet_stride_spatial as u32,
+                hzb_dims: [hzb_dims.0.max(1), hzb_dims.1.max(1), 0, 0],
+                hzb_mip_max,
+                hzb_enabled: hzb_enabled as u32,
+                depth_reversed_z: depth_reversed_z as u32,
+                orthographic_projection: orthographic_projection as u32,
+            }),
+        );
 
+        // Reset visible list atomic count
         queue.write_buffer(&cluster_set.visible_buffer, 0, bytemuck::bytes_of(&0u32));
 
-        let clear_indirect: [u32; 5] = [0, 1, 0, 0, 0];
+        // Reset indirect args
+        let clear_indirect: [u32; 6] = [0, 0, 1, 0, 0, 0];
         queue.write_buffer(&cluster_set.indirect_buffer, 0, bytemuck::cast_slice(&clear_indirect));
 
-        {
-            let cull_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Cull BG"),
-                layout: &self.cull_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.cull_uniform_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: cluster_set.meshlet_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: cluster_set.bounds_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: cluster_set.visible_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(hzb_max_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(hzb_min_view),
-                    },
-                ],
-            });
+        // Create per-frame dynamic bind group (uniform + HZB views)
+        let cull_dynamic_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cull Dynamic BG"),
+            layout: &self.cull_dynamic_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.cull_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(hzb_max_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(hzb_min_view),
+                },
+            ],
+        });
 
+        // Cull pass: group(0)=dynamic, group(1)=static (pre-built per ClusterSet)
+        {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Cull Pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.cull_pipeline);
-            pass.set_bind_group(0, &cull_bg, &[]);
+            pass.set_bind_group(0, &cull_dynamic_bg, &[]);
+            pass.set_bind_group(1, &cluster_set.cull_static_bg, &[]);
             let wg = meshlet_count.div_ceil(64);
             pass.dispatch_workgroups(wg, 1, 1);
         }
 
+        // Compact pass: uses pre-built compact_bg
         {
-            let compact_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Compact BG"),
-                layout: &self.compact_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: cluster_set.visible_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: cluster_set.meshlet_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: cluster_set.index_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: cluster_set.compact_index_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: cluster_set.indirect_buffer.as_entire_binding() },
-                ],
-            });
-
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compact Pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.compact_pipeline);
-            pass.set_bind_group(0, &compact_bg, &[]);
+            pass.set_bind_group(0, &cluster_set.compact_bg, &[]);
             let wg = meshlet_count.div_ceil(64);
             pass.dispatch_workgroups(wg, 1, 1);
+        }
+
+        // Finalize pass: uses pre-built finalize_bg
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Finalize Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.finalize_pipeline);
+            pass.set_bind_group(0, &cluster_set.finalize_bg, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
         }
     }
 
@@ -307,6 +521,6 @@ impl ClusterRenderer {
     ) {
         pass.set_vertex_buffer(0, cluster_set.vertex_buffer.slice(..));
         pass.set_index_buffer(cluster_set.compact_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed_indirect(&cluster_set.indirect_buffer, 0);
+        pass.draw_indexed_indirect(&cluster_set.indirect_buffer, 4);
     }
 }

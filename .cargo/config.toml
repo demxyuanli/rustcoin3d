@@ -1,0 +1,31 @@
+# rc3d engine build configuration
+#
+# NOTE: Building rc3d-render as a monolithic Windows DLL is blocked by
+# the MSVC linker's 65535-object limit (LNK1189). The dependency chain
+# (wgpu + glyphon + cosmic-text + image + meshopt + ...) unpacks too
+# many .rlib objects.
+#
+# Workable alternatives:
+#
+# 1) Static linking (default, always works):
+#      cargo build --workspace --examples
+#
+# 2) Release static (with LTO for smaller binaries):
+#      RUSTFLAGS="-C lto=fat" cargo build --workspace --examples --release
+#
+# 3) Dynamic linking via prefer-dynamic (requires Rust std DLLs on PATH):
+#      RUSTFLAGS="-C prefer-dynamic" cargo run --example cube
+#    Std DLLs are at: $(rustc --print sysroot)/bin
+#
+# 4) Build engine as cdylib with minimal deps (future):
+#    Requires splitting render into a thin C-API crate with fewer deps.
+
+[build]
+# Uncomment for dynamic linking (all deps become DLLs):
+# rustflags = ["-C", "prefer-dynamic"]
+
+[profile.release]
+# Smaller/faster release binaries
+lto = "thin"
+codegen-units = 1
+opt-level = 3

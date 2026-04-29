@@ -26,11 +26,12 @@ struct GpuMeshletBounds {
 };
 
 @group(0) @binding(0) var<uniform> u: CullUniforms;
-@group(0) @binding(1) var<storage, read> meshlets: array<GpuMeshlet>;
-@group(0) @binding(2) var<storage, read> bounds: array<GpuMeshletBounds>;
-@group(0) @binding(3) var<storage, read_write> visible: array<atomic<u32>>;
-@group(0) @binding(4) var hzb_max_tex: texture_2d<f32>;
-@group(0) @binding(5) var hzb_min_tex: texture_2d<f32>;
+@group(0) @binding(1) var hzb_max_tex: texture_2d<f32>;
+@group(0) @binding(2) var hzb_min_tex: texture_2d<f32>;
+
+@group(1) @binding(0) var<storage, read> meshlets: array<GpuMeshlet>;
+@group(1) @binding(1) var<storage, read> bounds: array<GpuMeshletBounds>;
+@group(1) @binding(2) var<storage, read_write> visible: array<atomic<u32>>;
 
 // WebGPU NDC: x,y in [-1,1] with +y up; UV [0,1] with v=0 at top texel row.
 // Matches depth attachment / HZB mip0 addressing used by textureLoad (origin top-left).

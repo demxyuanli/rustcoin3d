@@ -40,6 +40,7 @@ pub struct MeshletVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub texcoord: [f32; 2],
+    pub tangent: [f32; 4],
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +57,7 @@ pub fn build_meshlets_from_mesh(
     positions: &[Vec3],
     normals: &[Vec3],
     texcoords: &[[f32; 2]],
+    tangents: &[[f32; 4]],
     indices: &[u32],
 ) -> MeshletData {
     let vert_count = positions.len();
@@ -81,6 +83,12 @@ pub fn build_meshlets_from_mesh(
         texcoords.to_vec()
     } else {
         vec![default_uv; vert_count]
+    };
+    let default_tangent = [1.0f32, 0.0, 0.0, 1.0];
+    let tangents_flat: Vec<[f32; 4]> = if tangents.len() == vert_count {
+        tangents.to_vec()
+    } else {
+        vec![default_tangent; vert_count]
     };
 
     let vertex_adapter = VertexDataAdapter::new(
@@ -121,6 +129,7 @@ pub fn build_meshlets_from_mesh(
                 position: positions_flat[gi],
                 normal: normals_flat[gi],
                 texcoord: texcoords_flat[gi],
+                tangent: tangents_flat[gi],
             });
         }
 

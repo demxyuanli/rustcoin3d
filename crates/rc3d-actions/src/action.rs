@@ -13,3 +13,10 @@ pub trait Action {
     fn kind(&self) -> ActionKind;
     fn apply(&mut self, graph: &SceneGraph, root: NodeId);
 }
+
+/// Helper to run an action against all roots of a scene graph.
+pub fn apply_to_all_roots(action: &mut dyn Action, graph: &SceneGraph) {
+    for &root in graph.roots() {
+        action.apply(graph, root);
+    }
+}

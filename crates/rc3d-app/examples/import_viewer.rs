@@ -222,9 +222,7 @@ fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
 
 fn fit_camera_to_scene(graph: &mut rc3d_scene::SceneGraph) -> (Vec3, f32) {
     let mut bbox_action = GetBoundingBoxAction::new();
-    for &root in graph.roots() {
-        bbox_action.apply(graph, root);
-    }
+    rc3d_actions::apply_to_all_roots(&mut bbox_action, graph);
     let bbox = bbox_action.bounding_box;
     if !bbox.min.x.is_finite() || !bbox.max.x.is_finite() {
         return (Vec3::ZERO, 10.0);

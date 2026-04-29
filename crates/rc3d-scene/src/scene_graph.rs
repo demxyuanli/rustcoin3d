@@ -28,6 +28,7 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fields: rc3d_fields::FieldMap::new(),
         });
         self.roots.push(id);
         id
@@ -40,6 +41,7 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fields: rc3d_fields::FieldMap::new(),
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             entry.children.push(id);
@@ -54,6 +56,7 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fields: rc3d_fields::FieldMap::new(),
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             let idx = index.min(entry.children.len());
@@ -125,6 +128,30 @@ impl SceneGraph {
 
     pub fn selected_nodes(&self) -> &HashSet<NodeId> {
         &self.selected
+    }
+
+    /// Marks every field on each node in the subtree as dirty (e.g. after a structural edit).
+    pub fn mark_fields_dirty_subtree(&mut self, root: NodeId) {
+        let ids = self.subtree_preorder_ids(root);
+        for id in ids {
+            if let Some(e) = self.get_mut(id) {
+                e.fields.mark_all_dirty();
+            }
+        }
+    }
+
+    fn subtree_preorder_ids(&self, root: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            out.push(id);
+            if let Some(e) = self.get(id) {
+                for &c in e.children.iter().rev() {
+                    stack.push(c);
+                }
+            }
+        }
+        out
     }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::{HashSet, VecDeque};
+
 use rc3d_core::{FieldId, NodeId};
 use slotmap::SlotMap;
 
@@ -45,6 +47,7 @@ impl FieldMap {
             entry.value = value;
             entry.dirty = true;
         }
+        self.propagate_dirty_from(id);
     }
 
     pub fn is_dirty(&self, id: FieldId) -> bool {
@@ -63,16 +66,53 @@ impl FieldMap {
         }
     }
 
+    /// Copy `id`'s value along outgoing `connect` edges (transitive), marking targets dirty.
     pub fn propagate(&mut self, id: FieldId) {
         let value = self.entries.get(id).map(|e| e.value.clone());
         let Some(value) = value else { return };
-        let connections = self
-            .entries
-            .get(id)
-            .map(|e| e.connections.clone())
-            .unwrap_or_default();
-        for target in connections {
-            self.set(target, value.clone());
+        let mut q = VecDeque::new();
+        let mut seen = HashSet::new();
+        q.push_back(id);
+        seen.insert(id);
+        while let Some(fid) = q.pop_front() {
+            let conns = self.entries.get(fid).map(|e| e.connections.clone()).unwrap_or_default();
+            for target in conns {
+                if seen.insert(target) {
+                    if let Some(entry) = self.entries.get_mut(target) {
+                        entry.value = value.clone();
+                        entry.dirty = true;
+                    }
+                    q.push_back(target);
+                }
+            }
+        }
+    }
+
+    fn propagate_dirty_from(&mut self, start: FieldId) {
+        let mut q = VecDeque::new();
+        let mut visited = HashSet::new();
+        q.push_back(start);
+        visited.insert(start);
+        while let Some(fid) = q.pop_front() {
+            let conns = self.entries.get(fid).map(|e| e.connections.clone()).unwrap_or_default();
+            for target in conns {
+                if visited.insert(target) {
+                    if let Some(entry) = self.entries.get_mut(target) {
+                        entry.dirty = true;
+                    }
+                    q.push_back(target);
+                }
+            }
+        }
+    }
+
+    pub fn any_dirty(&self) -> bool {
+        self.entries.iter().any(|(_, e)| e.dirty)
+    }
+
+    pub fn mark_all_dirty(&mut self) {
+        for (_, e) in self.entries.iter_mut() {
+            e.dirty = true;
         }
     }
 }

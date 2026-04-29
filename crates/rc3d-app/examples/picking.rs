@@ -38,7 +38,7 @@ fn main() {
         sep1,
         NodeData::Transform(TransformNode::from_translation(Vec3::new(-2.5, 0.0, 0.0))),
     );
-    let mat1 = graph.add_child(
+    let _mat1 = graph.add_child(
         sep1,
         NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.9, 0.2, 0.2))),
     );
@@ -46,7 +46,7 @@ fn main() {
 
     // Green sphere
     let sep2 = graph.add_child(root, NodeData::Separator(SeparatorNode));
-    let mat2 = graph.add_child(
+    let _mat2 = graph.add_child(
         sep2,
         NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.2, 0.8, 0.2))),
     );
@@ -58,7 +58,7 @@ fn main() {
         sep3,
         NodeData::Transform(TransformNode::from_translation(Vec3::new(2.5, 0.0, 0.0))),
     );
-    let mat3 = graph.add_child(
+    let _mat3 = graph.add_child(
         sep3,
         NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.2, 0.3, 0.9))),
     );
@@ -76,7 +76,7 @@ fn main() {
         sep4,
         NodeData::Transform(TransformNode::from_translation(Vec3::new(-1.25, 0.0, -2.5))),
     );
-    let mat4 = graph.add_child(
+    let _mat4 = graph.add_child(
         sep4,
         NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.9, 0.8, 0.1))),
     );
@@ -94,7 +94,7 @@ fn main() {
         sep5,
         NodeData::Transform(TransformNode::from_translation(Vec3::new(1.25, 0.0, -2.5))),
     );
-    let mat5 = graph.add_child(
+    let _mat5 = graph.add_child(
         sep5,
         NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.7, 0.2, 0.8))),
     );

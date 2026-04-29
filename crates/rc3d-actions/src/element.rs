@@ -136,13 +136,13 @@ pub struct MaterialElement {
 impl Default for MaterialElement {
     fn default() -> Self {
         Self {
-            diffuse: Vec3::new(0.8, 0.8, 0.8),
-            ambient: Vec3::new(0.2, 0.2, 0.2),
+            diffuse: Vec3::new(0.9, 0.9, 0.9),
+            ambient: Vec3::new(0.25, 0.25, 0.25),
             specular: Vec3::new(0.0, 0.0, 0.0),
             shininess: 0.0,
-            base_color: Vec3::new(0.8, 0.8, 0.8),
+            base_color: Vec3::new(0.94, 0.94, 0.94),
             metallic: 0.0,
-            roughness: 0.5,
+            roughness: 0.35,
             albedo_texture: None,
         }
     }

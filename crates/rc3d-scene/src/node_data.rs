@@ -12,7 +12,11 @@
 //! If one frame mixes draw calls built from incompatible projections, `render_draw_calls` logs a
 //! warning and uses the first visible draw call for pipeline depth mode.
 
+use std::sync::Arc;
+
 use rc3d_core::math::{Mat4, Vec3, Vec4};
+
+use crate::node_handler::NodeHandler;
 
 /// Behavioral marker: saves/restores all state elements during traversal.
 #[derive(Clone, Debug, Default)]
@@ -422,6 +426,8 @@ pub enum NodeData {
     DirectionalLight(DirectionalLightNode),
     PointLight(PointLightNode),
     SpotLight(SpotLightNode),
+    /// User-defined behavior via [`NodeHandler`] (traversal / future collect hooks).
+    HandlerNode(Arc<dyn NodeHandler>),
 }
 
 impl NodeData {
@@ -445,6 +451,7 @@ impl NodeData {
             NodeData::DirectionalLight(_) => "DirectionalLight",
             NodeData::PointLight(_) => "PointLight",
             NodeData::SpotLight(_) => "SpotLight",
+            NodeData::HandlerNode(h) => h.handler_name(),
         }
     }
 }
