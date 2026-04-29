@@ -13,6 +13,7 @@ mod pass_selection;
 mod pass_shadow;
 mod pass_solid;
 mod pass_text;
+mod pass_viewport;
 mod pass_wireframe;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
@@ -83,6 +84,10 @@ pub(super) fn execute_passes(
 
     let output = match renderer.surface.get_current_texture() {
         Ok(o) => o,
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            renderer.surface.configure(&renderer.device, &renderer.config);
+            return FrameStats::default();
+        }
         Err(_) => return FrameStats::default(),
     };
     let view = output
@@ -375,6 +380,7 @@ pub(super) fn execute_passes(
     }
 
     // Transparent pass: iterate sorted draw calls with alpha blend pipeline
+    // Pending: wire draw_call_mesh() for alpha-blended transparent rendering
     if !ctx.transparent_order.is_empty() {
         for &idx in ctx.transparent_order {
             let dc = &draw_calls[idx];
