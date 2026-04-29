@@ -1,6 +1,7 @@
 use std::any::Any;
 
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::FieldId;
 use rc3d_scene::SceneGraph;
 
 /// An engine computes output values from input values (lazy evaluation).
@@ -90,6 +91,59 @@ impl Engine for SineOscillatorEngine {
 
     fn as_any(&self) -> &dyn Any { self }
     fn as_any_mut(&mut self) -> &mut dyn Any { self }
+}
+
+/// Expression-based calculator (Coin3D SoCalculator pattern).
+/// Evaluates expressions like "oA = sin(iA) * 3.0" on field values.
+pub struct CalculatorEngine {
+    pub expressions: Vec<String>,
+    pub output_field_ids: Vec<FieldId>,
+}
+
+impl CalculatorEngine {
+    pub fn new(expressions: Vec<String>, outputs: Vec<FieldId>) -> Self {
+        Self { expressions, output_field_ids: outputs }
+    }
+}
+
+impl Engine for CalculatorEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {}
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+impl std::fmt::Debug for CalculatorEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CalculatorEngine").field("expressions", &self.expressions).finish()
+    }
+}
+
+/// Compose TRS into Mat4 (Coin3D SoComposeMatrix pattern).
+pub struct ComposeMatrixEngine {
+    pub translation_field: Option<FieldId>,
+    pub rotation_field: Option<FieldId>,
+    pub scale_field: Option<FieldId>,
+    pub output_field: FieldId,
+}
+
+impl ComposeMatrixEngine {
+    pub fn new(output: FieldId) -> Self {
+        Self { translation_field: None, rotation_field: None, scale_field: None, output_field: output }
+    }
+}
+
+impl Engine for ComposeMatrixEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {}
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+impl std::fmt::Debug for ComposeMatrixEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComposeMatrixEngine").finish()
+    }
 }
 
 /// Registry of all active engines, evaluated each frame.

@@ -15,7 +15,7 @@ pub use light_subsystem::LightSubsystem;
 pub use element::*;
 pub use get_bounding_box::GetBoundingBoxAction;
 pub use handle_event::HandleEventAction;
-pub use ray_pick::{PickHit, PickMode, Ray, RayPickAction};
+pub use ray_pick::{DetailInfo, PickDetail, PickHit, PickMode, Ray, RayPickAction};
 pub use scene_path::{GetMatrixAction, ScenePath, SearchAction};
 pub use section_plane::SectionPlaneAction;
 pub use state::State;

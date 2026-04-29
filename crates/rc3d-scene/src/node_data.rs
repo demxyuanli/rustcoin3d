@@ -557,7 +557,38 @@ pub enum NodeData {
     Text3(Text3Node),
 }
 
+/// Describes a named field on a node type.
+#[derive(Clone, Debug)]
+pub struct FieldDescriptor {
+    pub name: &'static str,
+    pub field_index: u16,
+}
+
 impl NodeData {
+    /// Returns the fields exposed by this node type.
+    pub fn field_descriptors(&self) -> Vec<FieldDescriptor> {
+        match self {
+            NodeData::Transform(_) => vec![
+                FieldDescriptor { name: "translation", field_index: 0 },
+                FieldDescriptor { name: "rotation", field_index: 1 },
+                FieldDescriptor { name: "scale", field_index: 2 },
+                FieldDescriptor { name: "center", field_index: 3 },
+            ],
+            NodeData::Material(_) => vec![
+                FieldDescriptor { name: "diffuseColor", field_index: 0 },
+                FieldDescriptor { name: "specularColor", field_index: 1 },
+                FieldDescriptor { name: "shininess", field_index: 2 },
+                FieldDescriptor { name: "opacity", field_index: 3 },
+            ],
+            NodeData::DirectionalLight(_) => vec![
+                FieldDescriptor { name: "direction", field_index: 0 },
+                FieldDescriptor { name: "color", field_index: 1 },
+                FieldDescriptor { name: "intensity", field_index: 2 },
+            ],
+            _ => vec![],
+        }
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             NodeData::Separator(_) => "Separator",

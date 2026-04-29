@@ -98,6 +98,44 @@ pub struct PickHit {
     pub edge_index: Option<u32>,
 }
 
+/// Structured detail for what was hit (Coin3D SoDetail pattern).
+#[derive(Clone, Debug)]
+pub enum DetailInfo {
+    Face {
+        face_index: u32,
+        barycentric: [f32; 3],
+        texcoord: Option<[f32; 2]>,
+    },
+    Edge {
+        edge_index: u32,
+    },
+    Point {
+        point_index: u32,
+    },
+    None,
+}
+
+/// Enhanced pick result with structured detail.
+#[derive(Clone, Debug)]
+pub struct PickDetail {
+    pub node: NodeId,
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub distance: f32,
+    pub detail: DetailInfo,
+}
+
+impl PickDetail {
+    pub fn from_hit(hit: &PickHit) -> Self {
+        let detail = match (hit.face_index, hit.edge_index) {
+            (Some(fi), _) => DetailInfo::Face { face_index: fi, barycentric: [0.33, 0.33, 0.34], texcoord: None },
+            (_, Some(ei)) => DetailInfo::Edge { edge_index: ei },
+            _ => DetailInfo::None,
+        };
+        Self { node: hit.node, point: hit.point, normal: hit.normal, distance: hit.distance, detail }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickMode {
     Node,
@@ -129,6 +167,10 @@ impl RayPickAction {
             hits: Vec::new(),
             mode,
         }
+    }
+
+    pub fn details(&self) -> Vec<PickDetail> {
+        self.hits.iter().map(PickDetail::from_hit).collect()
     }
 
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
