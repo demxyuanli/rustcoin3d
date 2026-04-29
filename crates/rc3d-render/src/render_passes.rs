@@ -172,8 +172,8 @@ pub(super) fn execute_passes(
 
     'hzb_prepass: {
         if run_meshlet_hzb_prepass {
-        let hzb = renderer.hzb.as_ref().expect("HZB missing despite pre-check");
-        let cluster_renderer = renderer.cluster_renderer.as_ref().expect("cluster renderer missing despite pre-check");
+        let Some(hzb) = renderer.hzb.as_ref() else { break 'hzb_prepass; };
+        let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() else { break 'hzb_prepass; };
 
         let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
         let hzb_dims_xy = (hzb.max_pyramid.width, hzb.max_pyramid.height);
@@ -635,7 +635,10 @@ fn draw_opaque_triangle_batches(
                 );
                 pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
                 pass.set_bind_group(1, mat_bg, &[]);
-                if let Some(ref csm) = renderer.csm_shadow { pass.set_bind_group(2, &csm.bind_group, &[]); }
+                match &renderer.csm_shadow {
+                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
+                    None => log::error!("CSM shadow missing; shadow bind group not set"),
+                }
                 pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
                 if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
                     if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
@@ -694,7 +697,10 @@ fn draw_opaque_triangle_batches(
                 );
                 pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
                 pass.set_bind_group(1, mat_bg, &[]);
-                if let Some(ref csm) = renderer.csm_shadow { pass.set_bind_group(2, &csm.bind_group, &[]); }
+                match &renderer.csm_shadow {
+                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
+                    None => log::error!("CSM shadow missing; shadow bind group not set"),
+                }
                 pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
 
                 if let Some(mesh_id) = ctx.mesh_handles[i] {

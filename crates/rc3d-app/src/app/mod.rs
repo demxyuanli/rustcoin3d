@@ -2,7 +2,7 @@ mod measurement;
 mod streaming_lod;
 
 use rc3d_core::{math::{Mat4, Vec3}, DisplayMode};
-use rc3d_render::{DrawCall, FrameStats, Renderer};
+use rc3d_render::{AdaptiveControl, DrawCall, FrameStats, Renderer};
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use rc3d_scene::SceneGraph;
 use std::sync::mpsc::TryRecvError;
@@ -27,6 +27,7 @@ struct FpsTracker {
     samples: std::collections::VecDeque<f32>,
     sum: f32,
     capacity: usize,
+    ema_fps: f32,
     last_log: Instant,
 }
 
@@ -36,6 +37,7 @@ impl FpsTracker {
             samples: std::collections::VecDeque::with_capacity(capacity),
             sum: 0.0,
             capacity,
+            ema_fps: 0.0,
             last_log: Instant::now(),
         }
     }
@@ -48,6 +50,13 @@ impl FpsTracker {
         }
         self.samples.push_back(frame_time_ms);
         self.sum += frame_time_ms;
+        let inst_fps = if frame_time_ms > 0.0 { 1000.0 / frame_time_ms } else { 0.0 };
+        if self.ema_fps <= 0.0 {
+            self.ema_fps = inst_fps;
+        } else {
+            let alpha = 0.08_f32;
+            self.ema_fps += (inst_fps - self.ema_fps) * alpha;
+        }
     }
 
     fn average_frame_ms(&self) -> f32 {
@@ -61,6 +70,10 @@ impl FpsTracker {
     fn fps(&self) -> f32 {
         let avg = self.average_frame_ms();
         if avg > 0.0 { 1000.0 / avg } else { 0.0 }
+    }
+
+    fn smoothed_fps(&self) -> f32 {
+        if self.ema_fps > 0.0 { self.ema_fps } else { self.fps() }
     }
 
     fn maybe_log(&mut self, stats: FrameStats, quality: &str) {
@@ -101,6 +114,19 @@ pub struct App {
     fps_tracker: FpsTracker,
     pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
     graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
+    panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
+    panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
+    panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
+    adaptive_quality_mode: AdaptiveQualityMode,
+    adaptive_last_interaction: Instant,
+    continuous_redraw: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveQualityMode {
+    Off,
+    On,
+    AutoIdleLock,
 }
 
 impl App {
@@ -135,9 +161,15 @@ impl App {
             initial_display_mode: DisplayMode::ShadedWithEdges,
             enable_hdr_post_processing: false,
             last_frame_time: Instant::now(),
-            fps_tracker: FpsTracker::new(60),
+            fps_tracker: FpsTracker::new(120),
             pending_graph_rx: None,
             graph_load_hook: None,
+            panel_overlay_text_hook: None,
+            panel_overlay_key_hook: None,
+            panel_overlay_mouse_hook: None,
+            adaptive_quality_mode: AdaptiveQualityMode::On,
+            adaptive_last_interaction: Instant::now(),
+            continuous_redraw: true,
         }
     }
 
@@ -156,6 +188,7 @@ impl App {
         match rx.try_recv() {
             Ok(Ok(graph)) => {
                 self.world.graph = graph;
+                self.viewport_cameras.cameras.clear();
                 self.pending_graph_rx = None;
                 if let Some(renderer) = &mut self.renderer {
                     self.world.invalidate_caches(renderer);
@@ -214,6 +247,40 @@ impl App {
         self.enable_hdr_post_processing = enabled;
         self
     }
+
+    pub fn with_panel_overlay_text_hook(
+        mut self,
+        hook: impl Fn() -> String + 'static,
+    ) -> Self {
+        self.panel_overlay_text_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_panel_overlay_key_hook(
+        mut self,
+        hook: impl FnMut(winit::keyboard::KeyCode) + 'static,
+    ) -> Self {
+        self.panel_overlay_key_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_panel_overlay_mouse_hook(
+        mut self,
+        hook: impl FnMut(f32, f32, u32, u32) -> bool + 'static,
+    ) -> Self {
+        self.panel_overlay_mouse_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_adaptive_quality_mode(mut self, mode: AdaptiveQualityMode) -> Self {
+        self.adaptive_quality_mode = mode;
+        self
+    }
+
+    pub fn with_continuous_redraw(mut self, enabled: bool) -> Self {
+        self.continuous_redraw = enabled;
+        self
+    }
 }
 
 impl ApplicationHandler for App {
@@ -255,6 +322,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
+                self.adaptive_last_interaction = Instant::now();
                 let size = *physical_size;
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
@@ -264,6 +332,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.adaptive_last_interaction = Instant::now();
                 self.cursor_pos = (position.x, position.y);
             }
             WindowEvent::KeyboardInput {
@@ -274,6 +343,12 @@ impl ApplicationHandler for App {
                 },
                 ..
             } => {
+                if let winit::keyboard::PhysicalKey::Code(code) = key {
+                    self.adaptive_last_interaction = Instant::now();
+                    if let Some(hook) = &mut self.panel_overlay_key_hook {
+                        hook(*code);
+                    }
+                }
                 match key {
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
                         if let Some(renderer) = &mut self.renderer {
@@ -332,6 +407,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::ModifiersChanged(mods) => {
+                self.adaptive_last_interaction = Instant::now();
                 self.shift_pressed = mods.state().shift_key();
             }
             WindowEvent::MouseInput {
@@ -339,11 +415,26 @@ impl ApplicationHandler for App {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                self.adaptive_last_interaction = Instant::now();
+                if let Some(hook) = &mut self.panel_overlay_mouse_hook {
+                    if let Some(window) = self.window.as_ref() {
+                        let size = window.inner_size();
+                        if hook(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32, size.width, size.height) {
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
+                            return;
+                        }
+                    }
+                }
                 if self.measurement_mode {
                     self.do_measure_pick();
                 } else if self.camera_controller.is_none() || self.shift_pressed {
                     self.do_pick();
                 }
+            }
+            WindowEvent::MouseWheel { .. } => {
+                self.adaptive_last_interaction = Instant::now();
             }
             WindowEvent::RedrawRequested => {
                 self.poll_pending_graph_load();
@@ -428,11 +519,33 @@ impl ApplicationHandler for App {
                             now.duration_since(self.last_frame_time).as_secs_f32() * 1000.0;
                         self.last_frame_time = now;
                         self.fps_tracker.push(frame_time_ms);
-                        renderer.report_frame_time_ms(frame_time_ms);
-                        let mode_name = format!("{:?} | IBL:{}", renderer.display_mode(), renderer.ibl_preset_name());
+                        let idle_for_secs = self.adaptive_last_interaction.elapsed().as_secs_f32();
+                        let has_dynamic_scene = self.world.engines.is_some();
+                        let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
+                        let lock_idle = idle_for_secs >= 2.0 && !has_dynamic_scene;
+                        let adaptive_control = match self.adaptive_quality_mode {
+                            AdaptiveQualityMode::Off => AdaptiveControl::Disabled,
+                            AdaptiveQualityMode::On => AdaptiveControl::Dynamic { allow_downgrade },
+                            AdaptiveQualityMode::AutoIdleLock => {
+                                if lock_idle {
+                                    AdaptiveControl::Locked
+                                } else {
+                                    AdaptiveControl::Dynamic { allow_downgrade }
+                                }
+                            }
+                        };
+                        renderer.report_frame_time_ms(frame_time_ms, adaptive_control);
+                        let mut mode_name = format!("{:?} | IBL:{}", renderer.display_mode(), renderer.ibl_preset_name());
+                        if let Some(text_hook) = &self.panel_overlay_text_hook {
+                            let overlay = text_hook();
+                            if !overlay.is_empty() {
+                                mode_name.push('\n');
+                                mode_name.push_str(&overlay);
+                            }
+                        }
                         renderer.update_hud(
-                            self.fps_tracker.fps(),
-                            frame_time_ms,
+                            self.fps_tracker.smoothed_fps(),
+                            self.fps_tracker.average_frame_ms(),
                             stats,
                             &mode_name,
                         );
@@ -453,9 +566,15 @@ impl ApplicationHandler for App {
                             window.set_title("rustcoin3d [Stream mesh]");
                         }
                     } else {
-                        drop(renderer.surface.get_current_texture());
+                        match renderer.surface.get_current_texture() {
+                            Ok(tex) => drop(tex),
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                // Surface needs reconfiguration — handled on next resize event
+                            }
+                            Err(e) => log::warn!("Surface error during no-op frame: {:?}", e),
+                        }
                     }
-                    if self.world.engines.is_some() {
+                    if self.continuous_redraw && self.world.engines.is_some() {
                         window.request_redraw();
                     }
                 }
@@ -655,9 +774,8 @@ impl App {
     fn do_pick(&mut self) {
         let Some(window) = self.window.as_ref() else { return };
         let size = window.inner_size();
-        let Some(ray) = measurement::build_pick_ray(&self.world.graph, self.cursor_pos, (size.width, size.height)) else {
-            return;
-        };
+        let (view, proj) = self.active_camera_matrices(size.width as f32, size.height as f32);
+        let ray = measurement::build_pick_ray(self.cursor_pos, (size.width, size.height), view, proj);
 
         let mut picker = rc3d_actions::RayPickAction::new(ray);
         rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
@@ -682,9 +800,8 @@ impl App {
     fn do_measure_pick(&mut self) {
         let Some(window) = self.window.as_ref() else { return };
         let size = window.inner_size();
-        let Some(ray) = measurement::build_pick_ray(&self.world.graph, self.cursor_pos, (size.width, size.height)) else {
-            return;
-        };
+        let (view, proj) = self.active_camera_matrices(size.width as f32, size.height as f32);
+        let ray = measurement::build_pick_ray(self.cursor_pos, (size.width, size.height), view, proj);
 
         let mut picker = rc3d_actions::RayPickAction::new(ray);
         rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
@@ -703,6 +820,19 @@ impl App {
                     log::info!("Measurement: A={:?} B={:?} distance={:.4}", first, point, dist);
                 }
             }
+        }
+    }
+
+    fn active_camera_matrices(&self, width: f32, height: f32) -> (Mat4, Mat4) {
+        let aspect = width / height.max(1.0);
+        let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+        if let Some(vc) = self.viewport_cameras.active() {
+            (vc.controller.view_matrix(), proj)
+        } else if let Some(ctrl) = &self.camera_controller {
+            (ctrl.view_matrix(), proj)
+        } else {
+            // Fallback: look from +Z towards origin
+            (Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y), proj)
         }
     }
 }
