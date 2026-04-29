@@ -464,6 +464,10 @@ impl ApplicationHandler for App {
                     }
                     _ => {}
                 }
+                // Ensure keyboard events always trigger a redraw (even without camera)
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
                 // Dispatch non-pointer events to scene-graph EventCallback nodes
                 if let WindowEvent::KeyboardInput { event, .. } = &event {
                     if event.state == winit::event::ElementState::Pressed {
@@ -528,6 +532,17 @@ impl ApplicationHandler for App {
                     self.stream_next_tick = Some(Instant::now() + Duration::from_millis(stream_step_ms()));
                 }
                 self.tick_mesh_stream();
+
+                // Legacy camera controller: update scene-graph camera node
+                if let Some(ref ctrl) = self.camera_controller {
+                    let aspect = self.renderer.as_ref()
+                        .map(|r| r.config.width as f32 / r.config.height.max(1) as f32)
+                        .unwrap_or(1.0);
+                    let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
+                    for &root in &roots {
+                        Self::update_camera_recursive(ctrl, &mut self.world.graph, root, aspect);
+                    }
+                }
 
                 // Snapshot viewport layout for camera updates (before renderer is mutably borrowed)
                 if !self.viewport_cameras.cameras.is_empty() {
@@ -878,6 +893,23 @@ impl App {
                 window.set_title("rustcoin3d");
                 window.request_redraw();
             }
+        }
+    }
+
+    fn update_camera_recursive(
+        ctrl: &CameraController,
+        graph: &mut SceneGraph,
+        node: NodeId,
+        aspect: f32,
+    ) {
+        let Some(entry) = graph.get(node) else { return };
+        if matches!(entry.data, rc3d_scene::NodeData::PerspectiveCamera(_) | rc3d_scene::NodeData::OrthographicCamera(_)) {
+            ctrl.update_camera_node(graph, node, aspect);
+            return;
+        }
+        let children: Vec<NodeId> = entry.children.clone();
+        for child in children {
+            Self::update_camera_recursive(ctrl, graph, child, aspect);
         }
     }
 
