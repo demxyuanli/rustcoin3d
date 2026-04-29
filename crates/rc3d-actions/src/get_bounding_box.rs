@@ -127,6 +127,11 @@ impl GetBoundingBoxAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::Text2(_) | NodeData::Text3(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             _ => {}
         }
     }

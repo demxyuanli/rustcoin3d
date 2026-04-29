@@ -12,6 +12,7 @@ mod pass_post;
 mod pass_selection;
 mod pass_shadow;
 mod pass_solid;
+mod pass_text;
 mod pass_wireframe;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();

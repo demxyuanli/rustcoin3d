@@ -485,6 +485,36 @@ impl Default for MultipleCopyNode {
     }
 }
 
+/// Screen-space 2D text label (Coin3D SoText2 pattern).
+#[derive(Clone, Debug)]
+pub struct Text2Node {
+    pub string: String,
+    pub position: [f32; 2],
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+impl Default for Text2Node {
+    fn default() -> Self {
+        Self { string: String::new(), position: [0.0, 0.0], size: 16.0, color: [1.0, 1.0, 1.0, 1.0] }
+    }
+}
+
+/// World-space 3D text label (Coin3D SoText3 pattern).
+#[derive(Clone, Debug)]
+pub struct Text3Node {
+    pub string: String,
+    pub position: Vec3,
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+impl Default for Text3Node {
+    fn default() -> Self {
+        Self { string: String::new(), position: Vec3::ZERO, size: 16.0, color: [1.0, 1.0, 1.0, 1.0] }
+    }
+}
+
 /// Central node type enum.
 #[derive(Clone, Debug)]
 pub enum NodeData {
@@ -521,6 +551,10 @@ pub enum NodeData {
     MultipleCopy(MultipleCopyNode),
     /// Section/cutting plane (Coin3D SoClipPlane pattern).
     SectionPlane(SectionPlaneNode),
+    /// Screen-space 2D text label (Coin3D SoText2 pattern).
+    Text2(Text2Node),
+    /// World-space 3D text label (Coin3D SoText3 pattern).
+    Text3(Text3Node),
 }
 
 impl NodeData {
@@ -550,6 +584,8 @@ impl NodeData {
             NodeData::Switch(_) => "Switch",
             NodeData::MultipleCopy(_) => "MultipleCopy",
             NodeData::SectionPlane(_) => "SectionPlane",
+            NodeData::Text2(_) => "Text2",
+            NodeData::Text3(_) => "Text3",
         }
     }
 }

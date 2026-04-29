@@ -197,6 +197,11 @@ impl RayPickAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::Text2(_) | NodeData::Text3(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
                 self.state.set_model_matrix(current * t.to_matrix());
