@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use slotmap::Key;
@@ -41,6 +41,31 @@ use rc3d_scene::SceneGraph;
 
 const PERFORMANCE_MODE_TRIANGLE_THRESHOLD: u64 = 2_000_000;
 const CLUSTER_PIPELINE_GENERATION: u32 = 5;
+
+fn resolve_studio_hdr_path() -> PathBuf {
+    if let Ok(custom) = std::env::var("RC3D_STUDIO_HDR") {
+        let custom_path = PathBuf::from(custom);
+        if custom_path.is_file() {
+            return custom_path;
+        }
+    }
+
+    let cwd_candidate = PathBuf::from("test_data").join("studio.hdr");
+    if cwd_candidate.is_file() {
+        return cwd_candidate;
+    }
+
+    let repo_candidate = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("test_data")
+        .join("studio.hdr");
+    if repo_candidate.is_file() {
+        return repo_candidate;
+    }
+
+    PathBuf::new()
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStats {
@@ -301,7 +326,7 @@ impl Renderer {
         });
 
         // IBL: load envmap + BRDF LUT, compute diffuse/specular constants
-        let ibl_path = Path::new("test_data/studio.hdr");
+        let ibl_path = resolve_studio_hdr_path();
         let ibl_preset = IblPreset::Studio;
         // Create IBL resources (envmap + BRDF LUT textures)
         let ibl_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -316,7 +341,7 @@ impl Renderer {
         let ibl_res = crate::ibl::IblResources::new(
             &device, &queue,
             &crate::ibl::create_ibl_bind_group_layout(&device),
-            &ibl_sampler, ibl_path, ibl_preset,
+            &ibl_sampler, ibl_path.as_path(), ibl_preset,
         );
         let ibl_diffuse = ibl_res.ibl_diffuse;
         let ibl_specular = ibl_res.ibl_specular;
@@ -524,7 +549,7 @@ impl Renderer {
 
     pub fn set_ibl_preset(&mut self, preset: IblPreset) {
         self.ibl_preset = preset;
-        let ibl_path = Path::new("test_data/studio.hdr");
+        let ibl_path = resolve_studio_hdr_path();
         let ibl_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("IBL sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -539,7 +564,7 @@ impl Renderer {
             &self.queue,
             &crate::ibl::create_ibl_bind_group_layout(&self.device),
             &ibl_sampler,
-            ibl_path,
+            ibl_path.as_path(),
             preset,
         );
         self.ibl_diffuse = ibl_res.ibl_diffuse;
@@ -791,13 +816,13 @@ impl Renderer {
         });
 
     let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-    let mut transparent_order: Vec<usize> = (0..draw_calls.len())
-        .filter(|&i| draw_calls[i].opacity < 1.0)
+    let mut transparent_order: Vec<usize> = (0..visible.len())
+        .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
         .collect();
 
     transparent_order.sort_unstable_by(|&a, &b| {
-        let pos_a = draw_calls[a].model_matrix.w_axis.truncate();
-        let pos_b = draw_calls[b].model_matrix.w_axis.truncate();
+        let pos_a = visible[a].model_matrix.w_axis.truncate();
+        let pos_b = visible[b].model_matrix.w_axis.truncate();
         let da = pos_a.distance(camera_pos_vec);
         let db = pos_b.distance(camera_pos_vec);
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)

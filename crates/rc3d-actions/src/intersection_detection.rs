@@ -216,12 +216,39 @@ impl IntersectionDetectionAction {
                         aabb.min = aabb.min.min(*p);
                         aabb.max = aabb.max.max(*p);
                     }
+                    // Fan-triangulate polygon faces (split on -1 separators)
+                    let mut indices = Vec::new();
+                    let mut face_start = 0;
+                    for (k, &ci) in ifs.coord_index.iter().enumerate() {
+                        if ci == -1 {
+                            let face: Vec<u32> = ifs.coord_index[face_start..k]
+                                .iter().map(|&x| x as u32).collect();
+                            if face.len() >= 3 {
+                                for m in 1..face.len() - 1 {
+                                    indices.push(face[0]);
+                                    indices.push(face[m]);
+                                    indices.push(face[m + 1]);
+                                }
+                            }
+                            face_start = k + 1;
+                        }
+                    }
+                    // Handle last face (no trailing -1)
+                    let tail: Vec<u32> = ifs.coord_index[face_start..]
+                        .iter().filter(|&&x| x >= 0).map(|&x| x as u32).collect();
+                    if tail.len() >= 3 {
+                        for m in 1..tail.len() - 1 {
+                            indices.push(tail[0]);
+                            indices.push(tail[m]);
+                            indices.push(tail[m + 1]);
+                        }
+                    }
                     self.shapes.push(ShapeData {
                         node,
                         world_transform: self.model(),
                         local_aabb: aabb,
                         vertices: self.current_coords.clone(),
-                        indices: ifs.coord_index.iter().filter(|&&x| x >= 0).map(|&x| x as u32).collect(),
+                        indices,
                     });
                 }
             }
@@ -258,12 +285,13 @@ fn test_shape_pair(a: &ShapeData, b: &ShapeData) -> Vec<Vec3> {
     let tri_count_a = a.indices.len() / 3;
     let tri_count_b = b.indices.len() / 3;
 
-    // Limit checks for performance
+    // Uniform sampling step to stay within max_checks budget
     let max_checks = 1000;
-    let step_a = (tri_count_a as f32 / (max_checks as f32 / tri_count_b as f32).min(tri_count_b as f32).max(1.0) as f32).max(1.0) as usize;
-    let step_b = (tri_count_b as f32 / (max_checks as f32 / tri_count_a as f32).min(tri_count_a as f32).max(1.0) as f32).max(1.0) as usize;
+    let step = ((tri_count_a * tri_count_b) as f32 / max_checks as f32).sqrt().ceil().max(1.0) as usize;
+    let offset = (step / 2).max(1) * 3; // start offset avoids always testing index 0
 
-    for ti in (0..a.indices.len()).step_by(step_a.max(1) * 3) {
+    let step_bytes = step.max(1) * 3;
+    for ti in (offset..a.indices.len()).step_by(step_bytes) {
         if ti + 2 >= a.indices.len() { break; }
         let ai0 = a.indices[ti] as usize;
         let ai1 = a.indices[ti + 1] as usize;
@@ -271,7 +299,7 @@ fn test_shape_pair(a: &ShapeData, b: &ShapeData) -> Vec<Vec3> {
         if ai0 >= wa.len() || ai1 >= wa.len() || ai2 >= wa.len() { continue; }
         let ta = [wa[ai0], wa[ai1], wa[ai2]];
 
-        for tj in (0..b.indices.len()).step_by(step_b.max(1) * 3) {
+        for tj in (offset..b.indices.len()).step_by(step_bytes) {
             if tj + 2 >= b.indices.len() { break; }
             let bi0 = b.indices[tj] as usize;
             let bi1 = b.indices[tj + 1] as usize;
@@ -282,7 +310,7 @@ fn test_shape_pair(a: &ShapeData, b: &ShapeData) -> Vec<Vec3> {
             if triangles_intersect(ta, tb) {
                 let mid = (ta[0] + ta[1] + ta[2] + tb[0] + tb[1] + tb[2]) / 6.0;
                 contacts.push(mid);
-                if contacts.len() >= 8 { return contacts; } // cap contact points
+                if contacts.len() >= 8 { return contacts; }
             }
         }
     }
@@ -323,20 +351,51 @@ fn triangles_intersect(t1: [Vec3; 3], t2: [Vec3; 3]) -> bool {
     }
 
     // Compute intersection line direction
-    let dir = n1.cross(n2).normalize();
-    if dir.length() < 1e-6 {
+    let dir = n1.cross(n2);
+    let dir_len = dir.length();
+    if dir_len < 1e-12 {
         return false; // parallel planes
     }
+    let dir = dir / dir_len;
 
-    // Project onto the intersection line and check overlap
-    let project = |p: Vec3| p.dot(dir);
-    let a_vals = [project(t1[0]), project(t1[1]), project(t1[2])];
-    let b_vals = [project(t2[0]), project(t2[1]), project(t2[2])];
+    // Compute the two intersection points where triangle 2's edges cross plane 1
+    let interval_a = compute_interval(t2, n1, d1, dir);
+    let interval_b = compute_interval(t1, n2, d2, dir);
 
-    let a_min = a_vals[0].min(a_vals[1]).min(a_vals[2]);
-    let a_max = a_vals[0].max(a_vals[1]).max(a_vals[2]);
-    let b_min = b_vals[0].min(b_vals[1]).min(b_vals[2]);
-    let b_max = b_vals[0].max(b_vals[1]).max(b_vals[2]);
+    interval_a[0] <= interval_b[1] + 1e-6 && interval_b[0] <= interval_a[1] + 1e-6
+}
 
-    a_min <= b_max && b_min <= a_max
+/// Compute the intersection interval of a triangle with a plane, projected onto dir.
+fn compute_interval(tri: [Vec3; 3], plane_n: Vec3, plane_d: f32, dir: Vec3) -> [f32; 2] {
+    let ds: [f32; 3] = [
+        plane_n.dot(tri[0]) + plane_d,
+        plane_n.dot(tri[1]) + plane_d,
+        plane_n.dot(tri[2]) + plane_d,
+    ];
+
+    let mut interval = [f32::NEG_INFINITY, f32::INFINITY];
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        let d_i = ds[i];
+        let d_j = ds[j];
+
+        // Edge crosses the plane
+        if d_i * d_j < 0.0 {
+            let t = d_i / (d_i - d_j);
+            let p = tri[i] + (tri[j] - tri[i]) * t;
+            let proj = p.dot(dir);
+            interval[0] = interval[0].max(proj);
+            interval[1] = interval[1].min(proj);
+        } else if d_i.abs() < 1e-8 {
+            // Vertex lies on the plane
+            let proj = tri[i].dot(dir);
+            interval[0] = interval[0].max(proj);
+            interval[1] = interval[1].min(proj);
+        }
+    }
+
+    if interval[0] > interval[1] {
+        interval.swap(0, 1);
+    }
+    interval
 }

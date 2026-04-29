@@ -132,6 +132,39 @@ impl GetBoundingBoxAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::Measurement(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::Markup(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::Triangle(_) => {
+                let model = self.state.model_matrix();
+                let coords = self.state.coordinate();
+                for p in &coords.points {
+                    let wp = model.transform_point3(*p);
+                    self.bounding_box = self.bounding_box.union(&Aabb::from_point(wp));
+                }
+            }
+            NodeData::IndexedFaceSet(ifs) => {
+                let model = self.state.model_matrix();
+                let coords = self.state.coordinate();
+                for &ci in &ifs.coord_index {
+                    if ci >= 0 && (ci as usize) < coords.points.len() {
+                        let wp = model.transform_point3(coords.points[ci as usize]);
+                        self.bounding_box = self.bounding_box.union(&Aabb::from_point(wp));
+                    }
+                }
+            }
+            NodeData::EventCallback(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             _ => {}
         }
     }
