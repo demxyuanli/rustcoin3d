@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use rc3d_core::math::{Mat4, Vec3, Vec4};
+use rc3d_core::NodeId;
 
 use crate::node_handler::NodeHandler;
 
@@ -400,6 +401,46 @@ impl Default for SpotLightNode {
     }
 }
 
+/// Event callback node: marker for scene-graph event routing.
+///
+/// When HandleEventAction encounters this node during traversal,
+/// the application-level handler decides whether to consume the event.
+/// The `enabled` flag controls whether the node participates in routing.
+#[derive(Clone, Debug)]
+pub struct EventCallbackNode {
+    pub enabled: bool,
+}
+
+impl Default for EventCallbackNode {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// One LOD level: a group of children rendered at this detail level.
+#[derive(Clone, Debug)]
+pub struct LodLevel {
+    pub children: Vec<NodeId>,
+    pub max_distance: f32,
+}
+
+/// LOD switch node (Coin3D SoLOD / SoLevelOfDetail pattern).
+/// Selects one child group based on camera distance.
+#[derive(Clone, Debug)]
+pub struct LodNode {
+    pub levels: Vec<LodLevel>,
+    pub current_level: usize,
+}
+
+impl Default for LodNode {
+    fn default() -> Self {
+        Self {
+            levels: Vec::new(),
+            current_level: 0,
+        }
+    }
+}
+
 /// Central node type enum.
 #[derive(Clone, Debug)]
 pub enum NodeData {
@@ -428,6 +469,10 @@ pub enum NodeData {
     SpotLight(SpotLightNode),
     /// User-defined behavior via [`NodeHandler`] (traversal / future collect hooks).
     HandlerNode(Arc<dyn NodeHandler>),
+    /// Event routing callback (Coin3D SoEventCallback pattern).
+    EventCallback(EventCallbackNode),
+    /// Level-of-detail switch (Coin3D SoLOD pattern).
+    Lod(LodNode),
 }
 
 impl NodeData {
@@ -452,6 +497,8 @@ impl NodeData {
             NodeData::PointLight(_) => "PointLight",
             NodeData::SpotLight(_) => "SpotLight",
             NodeData::HandlerNode(h) => h.handler_name(),
+            NodeData::EventCallback(_) => "EventCallback",
+            NodeData::Lod(_) => "Lod",
         }
     }
 }

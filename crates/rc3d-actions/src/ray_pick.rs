@@ -149,8 +149,21 @@ impl RayPickAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::Lod(lod) => {
+                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
+                if let Some(level_data) = lod.levels.get(level) {
+                    for &child in &level_data.children {
+                        self.traverse_node(graph, child);
+                    }
+                }
+            }
             NodeData::HandlerNode(h) => {
                 h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
+            }
+            NodeData::EventCallback(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
             }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
