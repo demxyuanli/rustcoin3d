@@ -7,6 +7,8 @@ pub enum ActionKind {
     GetBoundingBox,
     RayPick,
     Search,
+    HandleEvent,
+    GetMatrix,
 }
 
 pub trait Action {
