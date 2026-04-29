@@ -1,11 +1,12 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
-use crate::vertex::{InstanceData, SceneUniforms, CSM_CASCADE_COUNT};
+use crate::vertex::{FlatUniforms, InstanceData, SceneUniforms, CSM_CASCADE_COUNT};
 use crate::FrameStats;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 use std::sync::OnceLock;
+use wgpu::util::DeviceExt;
 
 mod pass_edge;
 mod pass_post;
@@ -504,6 +505,71 @@ pub(super) fn execute_passes(
     renderer.phong_pool.flush(&renderer.queue);
     renderer.shadow_pool.flush(&renderer.queue);
     renderer.flat_pool.flush(&renderer.queue);
+
+    // Viewport border overlay
+    {
+        let geom = pass_viewport::ViewportBorderGeometry::build(
+            &renderer.viewport_layout,
+            renderer.config.width,
+            renderer.config.height,
+        );
+        let has_splits = !geom.split_lines.is_empty();
+        let has_active = !geom.active_lines.is_empty();
+        if has_splits || has_active {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Viewport Borders"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&scene_pl.edge_overlay);
+            let ident = Mat4::IDENTITY.to_cols_array_2d();
+            // Split borders
+            if has_splits {
+                let uniforms = FlatUniforms { mvp: ident, color: [0.4, 0.4, 0.4, 1.0] };
+                if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
+                    for chunk in geom.split_lines.chunks(2) {
+                        if chunk.len() < 2 { break; }
+                        let verts = [chunk[0], chunk[1]];
+                        let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("split border vb"),
+                            contents: bytemuck::cast_slice(&verts),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                        pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        pass.draw(0..2, 0..1);
+                    }
+                }
+            }
+            // Active viewport highlight
+            if has_active {
+                let uniforms = FlatUniforms { mvp: ident, color: [1.0, 0.85, 0.1, 1.0] };
+                if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
+                    for chunk in geom.active_lines.chunks(2) {
+                        if chunk.len() < 2 { break; }
+                        let verts = [chunk[0], chunk[1]];
+                        let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("active border vb"),
+                            contents: bytemuck::cast_slice(&verts),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                        pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        pass.draw(0..2, 0..1);
+                    }
+                }
+            }
+        }
+    }
 
     if renderer.hud_enabled {
         if let Some(hud) = renderer.hud.as_ref() {
