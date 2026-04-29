@@ -128,7 +128,15 @@ impl Gizmo {
         for handle in handles {
             let dist = match handle {
                 GizmoHandle::TranslateArrow(axis) => {
-                    ray_intersect_cylinder(ray, self.position, axis_vector(axis), handle_size)
+                    let av = axis_vector(axis);
+                    let cyl = ray_intersect_cylinder(ray, self.position, av, handle_size);
+                    let cone = ray_intersect_cone(ray, self.position + av * handle_size * 4.0 * 0.7, av, handle_size * 4.0 * 0.3, handle_size * 0.12);
+                    match (cyl, cone) {
+                        (Some(c), Some(k)) => Some(c.min(k)),
+                        (Some(c), None) => Some(c),
+                        (None, Some(k)) => Some(k),
+                        (None, None) => None,
+                    }
                 }
                 GizmoHandle::RotateRing(axis) => {
                     ray_intersect_torus(ray, self.position, axis_vector(axis), handle_size * 4.0)
@@ -309,7 +317,8 @@ fn plane_handle_lines(origin: Vec3, plane: GizmoAxis, size: f32) -> Vec<LineVert
 fn bbox_of_node(graph: &SceneGraph, node: NodeId) -> Aabb {
     let mut action = rc3d_actions::GetBoundingBoxAction::new();
     action.apply(graph, node);
-    if action.bounding_box.min != action.bounding_box.max {
+    let extent = (action.bounding_box.min - action.bounding_box.max).length();
+    if extent > 1e-8 {
         action.bounding_box
     } else {
         Aabb { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) }
@@ -329,6 +338,17 @@ fn ray_intersect_cylinder(ray: &Ray, origin: Vec3, axis: Vec3, size: f32) -> Opt
     let a = rd.dot(rd) - rd.dot(axis) * rd.dot(axis);
     let b = 2.0 * (ro.dot(rd) - ro.dot(axis) * rd.dot(axis));
     let c = ro.dot(ro) - ro.dot(axis) * ro.dot(axis) - radius * radius;
+
+    if a.abs() < 1e-12 {
+        // Ray nearly parallel to cylinder axis: test perpendicular distance
+        let ro_perp = ro - axis * ro.dot(axis);
+        if ro_perp.length_squared() > radius * radius {
+            return None;
+        }
+        // Project onto axis to find entry/exit t
+        let t = ro.dot(axis).abs() / rd.dot(axis).abs().max(1e-6);
+        return if t > 0.0 { Some(t) } else { None };
+    }
 
     let disc = b * b - 4.0 * a * c;
     if disc < 0.0 {
@@ -416,6 +436,49 @@ fn ray_intersect_plane_rect(ray: &Ray, origin: Vec3, normal: Vec3, half: f32) ->
     } else {
         None
     }
+}
+
+/// Cone intersection (arrow tip). Cone apex at origin, extending along axis.
+/// Tested as a cylinder with linearly decreasing radius toward apex.
+fn ray_intersect_cone(ray: &Ray, base: Vec3, axis: Vec3, height: f32, base_radius: f32) -> Option<f32> {
+    let apex = base + axis * height;
+    // Transform: treat cone as a tapered cylinder from base (radius=r) to apex (radius=0)
+    // Use the infinite cone equation: (p·axis)² = cos²α * (p·p) where cosα = h/√(h²+r²)
+    let h2 = height * height;
+    let r2 = base_radius * base_radius;
+    let cos2 = h2 / (h2 + r2);
+
+    let ro = ray.origin - apex;
+    let rd = ray.direction;
+    let a = rd.dot(axis);
+    // Quadratic: a² * (rd·rd - cos²*rd·rd) + ...
+    let rd_dot_rd = rd.dot(rd);
+    let quad_a = a * a - cos2 * rd_dot_rd;
+    let b = ro.dot(axis);
+    let quad_b = 2.0 * (a * b - cos2 * ro.dot(rd));
+    let ro_dot_ro = ro.dot(ro);
+    let quad_c = b * b - cos2 * ro_dot_ro;
+
+    let disc = quad_b * quad_b - 4.0 * quad_a * quad_c;
+    if disc < 0.0 || quad_a.abs() < 1e-12 {
+        return None;
+    }
+
+    let sqrt_disc = disc.sqrt();
+    let t0 = (-quad_b - sqrt_disc) / (2.0 * quad_a);
+    let t1 = (-quad_b + sqrt_disc) / (2.0 * quad_a);
+
+    for &t in &[t0, t1] {
+        if t > 0.001 {
+            let hit = ray.origin + rd * t;
+            // Verify hit is within cone segment [apex, base]
+            let h = (hit - apex).dot(axis);
+            if h >= 0.0 && h <= height {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
 /// Ray-sphere intersection.
