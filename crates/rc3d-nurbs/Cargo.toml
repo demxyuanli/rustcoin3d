@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+glam = { workspace = true }
 rc3d-core = { workspace = true }
 rc3d-mesh = { workspace = true }
