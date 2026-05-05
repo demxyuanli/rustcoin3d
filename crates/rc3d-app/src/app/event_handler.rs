@@ -45,7 +45,7 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     renderer.set_hdr_post_processing(true);
                 }
                 if app.editor_ui_enabled {
-                    renderer.hud_enabled = false;
+                    renderer.set_hud_enabled(false);
                 }
             }
             if let Some(window) = &app.window {
@@ -218,7 +218,7 @@ pub(crate) fn window_event(
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyN) => {
                             app.grid_enabled = !app.grid_enabled;
                             if let Some(renderer) = &mut app.renderer {
-                                renderer.grid_enabled = app.grid_enabled;
+                                renderer.set_grid_enabled(app.grid_enabled);
                             }
                             log::info!("Grid: {}", if app.grid_enabled { "on" } else { "off" });
                         }
@@ -535,7 +535,7 @@ pub(crate) fn window_event(
                     app.world.evaluate_engines();
 
                     renderer.set_materials(app.world.materials.clone());
-                    renderer.grid_enabled = app.grid_enabled;
+                    renderer.set_grid_enabled(app.grid_enabled);
                     app.world.collector.draw_calls.clear();
                     app.world.collector.state = rc3d_actions::State::new();
                     app.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
