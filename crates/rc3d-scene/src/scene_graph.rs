@@ -29,12 +29,16 @@ impl SceneGraph {
             name: None,
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
+            attributes: std::collections::HashMap::new(),
         });
         self.roots.push(id);
         id
     }
 
     pub fn add_child(&mut self, parent: NodeId, data: NodeData) -> NodeId {
+        if !self.nodes.contains_key(parent) {
+            return NodeId::from(slotmap::KeyData::default());
+        }
         let id = self.nodes.insert(NodeEntry {
             data,
             parent: Some(parent),
@@ -42,6 +46,7 @@ impl SceneGraph {
             name: None,
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
+            attributes: std::collections::HashMap::new(),
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             entry.children.push(id);
@@ -50,6 +55,9 @@ impl SceneGraph {
     }
 
     pub fn insert_child(&mut self, parent: NodeId, index: usize, data: NodeData) -> NodeId {
+        if !self.nodes.contains_key(parent) {
+            return NodeId::from(slotmap::KeyData::default());
+        }
         let id = self.nodes.insert(NodeEntry {
             data,
             parent: Some(parent),
@@ -57,6 +65,7 @@ impl SceneGraph {
             name: None,
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
+            attributes: std::collections::HashMap::new(),
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             let idx = index.min(entry.children.len());
@@ -104,11 +113,8 @@ impl SceneGraph {
         self.nodes.get_mut(id)
     }
 
-    pub fn children(&self, id: NodeId) -> &[NodeId] {
-        self.nodes
-            .get(id)
-            .map(|e| e.children.as_slice())
-            .unwrap_or(&[])
+    pub fn children(&self, id: NodeId) -> Option<&[NodeId]> {
+        self.nodes.get(id).map(|e| e.children.as_slice())
     }
 
     pub fn roots(&self) -> &[NodeId] {
@@ -135,6 +141,15 @@ impl SceneGraph {
 
     pub fn clear_selection(&mut self) {
         self.selected.clear();
+    }
+
+    /// Add all existing nodes from `ids` to the selection.
+    pub fn select_many(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        for id in ids {
+            if self.nodes.contains_key(id) {
+                self.selected.insert(id);
+            }
+        }
     }
 
     pub fn is_selected(&self, id: NodeId) -> bool {
