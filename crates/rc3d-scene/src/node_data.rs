@@ -17,6 +17,7 @@ use std::sync::Arc;
 use rc3d_core::math::{Mat4, Vec3, Vec4};
 use rc3d_core::NodeId;
 
+use crate::animation::{AnimationClip, Skeleton, VertexSkinData};
 use crate::node_handler::NodeHandler;
 
 /// Behavioral marker: saves/restores all state elements during traversal.
@@ -63,7 +64,7 @@ impl NormalNode {
     }
 }
 
-/// Stores material properties.
+/// Stores material properties with full PBR support.
 #[derive(Clone, Debug)]
 pub struct MaterialNode {
     pub diffuse_color: Vec3,
@@ -74,7 +75,30 @@ pub struct MaterialNode {
     pub metallic: f32,
     pub roughness: f32,
     pub albedo_texture: Option<String>,
+    pub normal_texture: Option<String>,
     pub opacity: f32,
+    pub emissive_color: Vec3,
+    pub emissive_texture: Option<String>,
+    /// Packed Occlusion/Roughness/Metallic texture (glTF ORM convention).
+    pub metallic_roughness_texture: Option<String>,
+    pub occlusion_texture: Option<String>,
+    pub alpha_mode: AlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
+}
+
+/// Alpha rendering mode following glTF conventions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlphaMode {
+    Opaque,
+    Mask,
+    Blend,
+}
+
+impl Default for AlphaMode {
+    fn default() -> Self {
+        Self::Opaque
+    }
 }
 
 impl MaterialNode {
@@ -88,7 +112,15 @@ impl MaterialNode {
             metallic: 0.0,
             roughness: 0.5,
             albedo_texture: None,
+            normal_texture: None,
             opacity: 1.0,
+            emissive_color: Vec3::ZERO,
+            emissive_texture: None,
+            metallic_roughness_texture: None,
+            occlusion_texture: None,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
         }
     }
 }
@@ -104,7 +136,15 @@ impl Default for MaterialNode {
             metallic: 0.0,
             roughness: 0.5,
             albedo_texture: None,
+            normal_texture: None,
             opacity: 1.0,
+            emissive_color: Vec3::ZERO,
+            emissive_texture: None,
+            metallic_roughness_texture: None,
+            occlusion_texture: None,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
         }
     }
 }
@@ -216,6 +256,38 @@ impl Default for CylinderNode {
 #[derive(Clone, Debug, Default)]
 pub struct IndexedFaceSetNode {
     pub coord_index: Vec<i32>,
+}
+
+/// Skeletal skinning data for mesh geometry under the same separator (Coin-style sidecar).
+/// Place before [`Coordinate3`](Coordinate3Node) / [`IndexedFaceSet`](IndexedFaceSetNode) so the
+/// render collector can attach weights to the generated draw call.
+#[derive(Clone, Debug)]
+pub struct SkinnedMeshNode {
+    pub skeleton: Skeleton,
+    pub skin_data: Vec<VertexSkinData>,
+    pub clip: Option<AnimationClip>,
+}
+
+/// A single morph target (blend shape) storing per-vertex deltas.
+#[derive(Clone, Debug)]
+pub struct MorphTarget {
+    pub name: String,
+    /// Per-vertex position deltas (same length as Coordinate3Node::point).
+    pub position_deltas: Vec<Vec3>,
+    /// Per-vertex normal deltas (same length as NormalNode::vector, if present).
+    pub normal_deltas: Option<Vec<Vec3>>,
+    /// Per-vertex tangent deltas (same length as the tangent array, if present).
+    pub tangent_deltas: Option<Vec<[f32; 4]>>,
+}
+
+/// Stores morph target (blend shape) data and per-instance weights.
+/// Parent this node alongside the geometry it affects within a Separator.
+#[derive(Clone, Debug, Default)]
+pub struct MorphTargetNode {
+    /// The morph targets (blend shapes) for this mesh.
+    pub targets: Vec<MorphTarget>,
+    /// Current weight for each target (same length as targets).
+    pub weights: Vec<f32>,
 }
 
 /// Camera with perspective projection.
@@ -422,6 +494,18 @@ impl Default for EventCallbackNode {
     }
 }
 
+/// Pick style: controls whether this node (and its children) can be picked.
+#[derive(Clone, Debug)]
+pub struct PickStyleNode {
+    pub pickable: bool,
+}
+
+impl Default for PickStyleNode {
+    fn default() -> Self {
+        Self { pickable: true }
+    }
+}
+
 /// One LOD level: a group of children rendered at this detail level.
 #[derive(Clone, Debug)]
 pub struct LodLevel {
@@ -577,6 +661,20 @@ pub enum MarkupElement {
         size: f32,
         color: [f32; 4],
     },
+    /// Dimension line with extension lines and arrowheads.
+    Dimension {
+        start: [f32; 2],
+        end: [f32; 2],
+        /// Offset direction (normalized) for extension lines.
+        offset_dir: [f32; 2],
+        /// Extension line length.
+        extension_len: f32,
+        /// Arrowhead size.
+        arrow_size: f32,
+        /// Measurement label (e.g., "12.34 m").
+        label: String,
+        color: [f32; 4],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -615,6 +713,8 @@ pub enum NodeData {
     Cone(ConeNode),
     Cylinder(CylinderNode),
     IndexedFaceSet(IndexedFaceSetNode),
+    SkinnedMesh(SkinnedMeshNode),
+    MorphTarget(MorphTargetNode),
     // Cameras
     PerspectiveCamera(PerspectiveCameraNode),
     OrthographicCamera(OrthographicCameraNode),
@@ -626,6 +726,8 @@ pub enum NodeData {
     HandlerNode(Arc<dyn NodeHandler>),
     /// Event routing callback (Coin3D SoEventCallback pattern).
     EventCallback(EventCallbackNode),
+    /// Pick style: controls node pickability (Coin3D SoPickStyle pattern).
+    PickStyle(PickStyleNode),
     /// Level-of-detail switch (Coin3D SoLOD pattern).
     Lod(LodNode),
     Switch(SwitchNode),
@@ -668,7 +770,85 @@ impl NodeData {
                 FieldDescriptor { name: "color", field_index: 1 },
                 FieldDescriptor { name: "intensity", field_index: 2 },
             ],
-            _ => vec![],
+            NodeData::PointLight(_) => vec![
+                FieldDescriptor { name: "location", field_index: 0 },
+                FieldDescriptor { name: "color", field_index: 1 },
+                FieldDescriptor { name: "intensity", field_index: 2 },
+                FieldDescriptor { name: "cutoff_distance", field_index: 3 },
+            ],
+            NodeData::SpotLight(_) => vec![
+                FieldDescriptor { name: "location", field_index: 0 },
+                FieldDescriptor { name: "direction", field_index: 1 },
+                FieldDescriptor { name: "color", field_index: 2 },
+                FieldDescriptor { name: "intensity", field_index: 3 },
+                FieldDescriptor { name: "cut_off_angle", field_index: 4 },
+                FieldDescriptor { name: "drop_off_rate", field_index: 5 },
+            ],
+            NodeData::PerspectiveCamera(_) => vec![
+                FieldDescriptor { name: "fov", field_index: 0 },
+                FieldDescriptor { name: "near", field_index: 1 },
+                FieldDescriptor { name: "far", field_index: 2 },
+                FieldDescriptor { name: "reverse_depth", field_index: 3 },
+            ],
+            NodeData::OrthographicCamera(_) => vec![
+                FieldDescriptor { name: "height", field_index: 0 },
+                FieldDescriptor { name: "near", field_index: 1 },
+                FieldDescriptor { name: "far", field_index: 2 },
+                FieldDescriptor { name: "reverse_depth", field_index: 3 },
+            ],
+            NodeData::SectionPlane(_) => vec![
+                FieldDescriptor { name: "plane", field_index: 0 },
+                FieldDescriptor { name: "enabled", field_index: 1 },
+            ],
+            NodeData::Lod(_) => vec![
+                FieldDescriptor { name: "current_level", field_index: 0 },
+            ],
+            NodeData::Switch(_) => vec![
+                FieldDescriptor { name: "which_child", field_index: 0 },
+            ],
+            NodeData::Text2(_) => vec![
+                FieldDescriptor { name: "string", field_index: 0 },
+                FieldDescriptor { name: "position", field_index: 1 },
+                FieldDescriptor { name: "size", field_index: 2 },
+                FieldDescriptor { name: "color", field_index: 3 },
+            ],
+            NodeData::Text3(_) => vec![
+                FieldDescriptor { name: "string", field_index: 0 },
+                FieldDescriptor { name: "position", field_index: 1 },
+                FieldDescriptor { name: "size", field_index: 2 },
+                FieldDescriptor { name: "color", field_index: 3 },
+            ],
+            NodeData::EventCallback(_) => vec![
+                FieldDescriptor { name: "enabled", field_index: 0 },
+            ],
+            NodeData::PickStyle(_) => vec![
+                FieldDescriptor { name: "pickable", field_index: 0 },
+            ],
+            NodeData::Markup(_) => vec![
+                FieldDescriptor { name: "visible", field_index: 0 },
+                FieldDescriptor { name: "layer_name", field_index: 1 },
+            ],
+            NodeData::Measurement(_) => vec![
+                FieldDescriptor { name: "value", field_index: 0 },
+                FieldDescriptor { name: "label", field_index: 1 },
+                FieldDescriptor { name: "color", field_index: 2 },
+            ],
+            // Nodes with no runtime fields
+            NodeData::Separator(_)
+            | NodeData::Group(_)
+            | NodeData::Coordinate3(_)
+            | NodeData::TextureCoordinate2(_)
+            | NodeData::Normal(_)
+            | NodeData::Triangle(_)
+            | NodeData::Cube(_)
+            | NodeData::Sphere(_)
+            | NodeData::Cone(_)
+            | NodeData::Cylinder(_)
+            | NodeData::IndexedFaceSet(_)
+            | NodeData::SkinnedMesh(_)
+            | NodeData::MorphTarget(_)
+            | NodeData::HandlerNode(_)
+            | NodeData::MultipleCopy(_) => vec![],
         }
     }
 
@@ -687,6 +867,8 @@ impl NodeData {
             NodeData::Cone(_) => "Cone",
             NodeData::Cylinder(_) => "Cylinder",
             NodeData::IndexedFaceSet(_) => "IndexedFaceSet",
+            NodeData::SkinnedMesh(_) => "SkinnedMesh",
+            NodeData::MorphTarget(_) => "MorphTarget",
             NodeData::PerspectiveCamera(_) => "PerspectiveCamera",
             NodeData::OrthographicCamera(_) => "OrthographicCamera",
             NodeData::DirectionalLight(_) => "DirectionalLight",
@@ -694,6 +876,7 @@ impl NodeData {
             NodeData::SpotLight(_) => "SpotLight",
             NodeData::HandlerNode(h) => h.handler_name(),
             NodeData::EventCallback(_) => "EventCallback",
+            NodeData::PickStyle(_) => "PickStyle",
             NodeData::Lod(_) => "Lod",
             NodeData::Switch(_) => "Switch",
             NodeData::MultipleCopy(_) => "MultipleCopy",
