@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use wgpu::util::DeviceExt;
+
 #[path = "renderer_types.rs"]
 mod renderer_types;
 #[path = "renderer_helpers.rs"]
@@ -233,6 +235,46 @@ impl Renderer {
             driver,
             has_indirect
         );
+    }
+
+    pub fn create_vertex_buffer<T: bytemuck::Pod>(&self, data: &[T], label: &str) -> wgpu::Buffer {
+        self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(data),
+            usage: wgpu::BufferUsages::VERTEX,
+        })
+    }
+
+    pub fn device_limits(&self) -> wgpu::Limits {
+        self.device.limits()
+    }
+
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    pub fn device_clone(&self) -> wgpu::Device {
+        self.device.clone()
+    }
+
+    pub fn queue_clone(&self) -> wgpu::Queue {
+        self.queue.clone()
+    }
+
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    pub fn acquire_surface_texture(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+        self.surface.get_current_texture()
+    }
+
+    pub fn last_diagnostics(&self) -> Option<&FrameDiagnostics> {
+        self.last_diagnostics.as_ref()
+    }
+
+    pub fn frame_counter(&self) -> u64 {
+        self.frame_counter
     }
 
     pub async fn new(window: &winit::window::Window) -> Self {
