@@ -38,6 +38,7 @@ use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::gpu_skinning::{GpuSkinningPass, GpuSkinningResources};
 use crate::ibl::IblPreset;
+use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 
@@ -74,6 +75,8 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
+    /// Runtime render settings (replaces scattered feature toggles).
+    settings: RenderSettings,
     pub pipelines: PipelineSet,
     pub phong_pool: GpuUniformPool,
     pub flat_pool: GpuUniformPool,
@@ -403,6 +406,7 @@ impl Renderer {
             queue,
             surface,
             config,
+            settings: RenderSettings::default(),
             pipelines,
             phong_pool,
             shadow_pool,
@@ -599,6 +603,50 @@ impl Renderer {
         self.enable_ldr_fxaa = enabled;
         self.ldr_shade_tex = None;
         self.ldr_shade_view = None;
+    }
+
+    /// Batch-apply render settings (HOOPS HPS::RenderingMode style).
+    pub fn apply_settings(&mut self, settings: RenderSettings) {
+        self.hdr_post_processing = settings.post_effect.hdr;
+        self.enable_taa = settings.post_effect.taa;
+        self.enable_motion_blur = settings.post_effect.motion_blur;
+        self.enable_ssr = settings.post_effect.ssr;
+        self.enable_color_grading = settings.post_effect.color_grading;
+        self.enable_dof = settings.post_effect.dof;
+        self.enable_volumetric_fog = settings.post_effect.volumetric_fog;
+        self.enable_ldr_fxaa = settings.post_effect.ldr_fxaa;
+        self.enable_cluster_lights = settings.lighting.cluster_lights;
+        self.enable_omni_shadows = settings.lighting.omni_shadows;
+        self.set_ibl_preset(settings.lighting.ibl_preset);
+        self.global_display_mode = settings.display.display_mode;
+        self.grid_enabled = settings.display.grid_enabled;
+        self.hud_enabled = settings.display.hud_enabled;
+        self.outline_width = settings.display.outline_width;
+        self.outline_color = settings.display.outline_color;
+        self.xray_mode = settings.display.xray_mode;
+        self.screen_space_selection_outline = settings.display.screen_space_selection_outline;
+        if settings.display.vsync_enabled != self.is_vsync_enabled() {
+            self.set_vsync(settings.display.vsync_enabled);
+        }
+        if !self.hdr_post_processing {
+            self.post_fx = None;
+        } else {
+            self.ensure_post_fx_targets();
+        }
+        if !self.enable_ldr_fxaa {
+            self.ldr_shade_tex = None;
+            self.ldr_shade_view = None;
+        }
+        self.settings = settings;
+    }
+
+    /// Read-only snapshot of current settings.
+    pub fn settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    fn is_vsync_enabled(&self) -> bool {
+        matches!(self.config.present_mode, wgpu::PresentMode::AutoVsync)
     }
 
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
