@@ -4,7 +4,7 @@ use rc3d_core::{DisplayMode, NodeId};
 use rc3d_scene::{NodeData, SceneGraph};
 use slotmap::Key;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::material_library::MaterialLibrary;
@@ -29,7 +29,15 @@ fn material_element_for_node(
         metallic: src.metallic,
         roughness: src.roughness,
         albedo_texture: src.albedo_texture.clone(),
+        normal_texture: src.normal_texture.clone(),
         opacity: src.opacity,
+        emissive_color: src.emissive_color,
+        emissive_texture: src.emissive_texture.clone(),
+        metallic_roughness_texture: src.metallic_roughness_texture.clone(),
+        occlusion_texture: src.occlusion_texture.clone(),
+        alpha_mode: src.alpha_mode,
+        alpha_cutoff: src.alpha_cutoff,
+        double_sided: src.double_sided,
     }
 }
 
@@ -47,6 +55,9 @@ enum ShapeKey {
         index_sig: [i32; 2],
         tex_len: u32,
         tex_sig: [u32; 4],
+        /// Explicit normals from `NormalNode` (len must match coord when used); 0 = use computed only.
+        normal_len: u32,
+        normal_sig: [u32; 6],
     },
 }
 
@@ -62,6 +73,14 @@ type PackedLights = (
 
 const MAX_EDGE_POSITIONS: usize = 2_000_000;
 const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
+
+/// GPU skinning inputs carried on a draw call (`SkinnedMeshNode` in the scene graph).
+#[derive(Clone, Debug)]
+pub struct SkinnedMeshDrawPayload {
+    pub skeleton: rc3d_scene::animation::Skeleton,
+    pub skin_data: Arc<Vec<rc3d_scene::animation::VertexSkinData>>,
+    pub clip: Option<rc3d_scene::animation::AnimationClip>,
+}
 
 /// Collected draw data from scene graph traversal.
 #[derive(Clone, Debug)]
@@ -87,6 +106,14 @@ pub struct DrawCall {
     pub roughness: f32,
     pub opacity: f32,
     pub albedo_path: Option<Arc<str>>,
+    pub normal_path: Option<Arc<str>>,
+    pub emissive_color: Vec3,
+    pub emissive_path: Option<Arc<str>>,
+    pub metallic_roughness_path: Option<Arc<str>>,
+    pub occlusion_path: Option<Arc<str>>,
+    pub alpha_mode: rc3d_scene::AlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
     pub selected: bool,
@@ -97,6 +124,19 @@ pub struct DrawCall {
     /// Align with camera projection (e.g. `PerspectiveCameraNode::reverse_depth` in `rc3d-scene`) and
     /// renderer depth ops; inferred via `rc3d_core::depth_reversed_z_from_projection`.
     pub depth_reversed_z: bool,
+    pub node_type_label: Arc<str>,
+    /// Instance transforms for GPU instancing (e.g., MultipleCopy).
+    /// If set, the draw call is instanced with these model matrices.
+    pub instance_transforms: Option<Arc<Vec<Mat4>>>,
+    /// Morph target (blend shape) weights. Empty = no morph targets.
+    /// When non-empty, the renderer allocates a storage buffer with per-target
+    /// position deltas (and optional normal deltas) for the vertex shader.
+    pub morph_weights: Vec<f32>,
+    /// Packed morph target deltas: each target has [position_deltas, normal_deltas_opt].
+    /// Length = targets.len(); each position_deltas.len() = vertex_count.
+    pub morph_target_deltas: Option<Arc<rc3d_scene::MorphTargetNode>>,
+    /// Skeletal skinning: compute pass writes animated vertices into the mesh vertex buffer.
+    pub skinning: Option<Arc<SkinnedMeshDrawPayload>>,
 }
 
 impl Default for DrawCall {
@@ -123,6 +163,14 @@ impl Default for DrawCall {
             roughness: 0.5,
             opacity: 1.0,
             albedo_path: None,
+            normal_path: None,
+            emissive_color: Vec3::ZERO,
+            emissive_path: None,
+            metallic_roughness_path: None,
+            occlusion_path: None,
+            alpha_mode: rc3d_scene::AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
             aabb: None,
             display_mode: DisplayMode::ShadedWithEdges,
             selected: false,
@@ -131,6 +179,11 @@ impl Default for DrawCall {
             meshlet_data: None,
             projection_orthographic: false,
             depth_reversed_z: false,
+            node_type_label: Arc::from("Unknown"),
+            instance_transforms: None,
+            morph_weights: Vec::new(),
+            morph_target_deltas: None,
+            skinning: None,
         }
     }
 }
@@ -146,6 +199,7 @@ pub struct RenderCollector {
     pub global_display_mode: DisplayMode,
     pub material_library: Option<MaterialLibrary>,
     mesh_cache: HashMap<ShapeKey, CachedShapeData>,
+    hidden_nodes: HashSet<NodeId>,
 }
 
 impl RenderCollector {
@@ -160,6 +214,7 @@ impl RenderCollector {
             global_display_mode: DisplayMode::ShadedWithEdges,
             material_library: None,
             mesh_cache: HashMap::new(),
+            hidden_nodes: HashSet::new(),
         }
     }
 
@@ -171,12 +226,20 @@ impl RenderCollector {
         self.mesh_cache.clear();
     }
 
+    pub fn set_hidden_nodes(&mut self, hidden_nodes: &HashSet<NodeId>) {
+        self.hidden_nodes = hidden_nodes.clone();
+    }
+
     fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
+        if self.hidden_nodes.contains(&node) {
+            return;
+        }
         let Some(entry) = graph.get(node) else {
             return;
         };
         let is_selected = graph.is_selected(node);
         let node_display_mode = entry.display_mode;
+        let node_type_label = entry.data.type_name();
 
         match &entry.data {
             NodeData::Separator(_) => {
@@ -234,6 +297,11 @@ impl RenderCollector {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::PickStyle(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::SectionPlane(_) => {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
@@ -243,6 +311,29 @@ impl RenderCollector {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }
+            }
+            NodeData::Measurement(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::Markup(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::MorphTarget(mt) => {
+                self.state.set_morph_targets(mt.clone());
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::SkinnedMesh(sm) => {
+                self.state.set_skinned_mesh(sm.clone());
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+                self.state.clear_skinned_mesh();
             }
             NodeData::Transform(t) => {
                 let current = self.state.model_matrix();
@@ -322,9 +413,9 @@ impl RenderCollector {
                 let face_n = if normals.vectors.len() >= 3 {
                     normals.vectors[..3].to_vec()
                 } else {
-                    let n = (coord.points[1] - coord.points[0])
-                        .cross(coord.points[2] - coord.points[0])
-                        .normalize();
+                    let c = (coord.points[1] - coord.points[0])
+                        .cross(coord.points[2] - coord.points[0]);
+                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                     vec![n, n, n]
                 };
                 let positions = vec![coord.points[0], coord.points[1], coord.points[2]];
@@ -341,7 +432,14 @@ impl RenderCollector {
                     });
                 }
                 let edge_positions = Vec::new();
-                self.emit_draw_call_with_edges(vertices, Some((0..3u32).collect()), edge_positions, is_selected, node_display_mode);
+                self.emit_draw_call_with_edges(
+                    vertices,
+                    Some((0..3u32).collect()),
+                    edge_positions,
+                    is_selected,
+                    node_display_mode,
+                    node_type_label,
+                );
             }
             NodeData::Cube(cube) => {
                 self.emit_cached_shape(
@@ -353,6 +451,7 @@ impl RenderCollector {
                     || rc3d_mesh::tessellate_cube(cube.width, cube.height, cube.depth),
                     is_selected,
                     node_display_mode,
+                    node_type_label,
                 );
             }
             NodeData::Sphere(sphere) => {
@@ -367,6 +466,7 @@ impl RenderCollector {
                     || rc3d_mesh::tessellate_sphere(sphere.radius, SLICES, STACKS),
                     is_selected,
                     node_display_mode,
+                    node_type_label,
                 );
             }
             NodeData::Cone(cone) => {
@@ -380,6 +480,7 @@ impl RenderCollector {
                     || rc3d_mesh::tessellate_cone(cone.bottom_radius, cone.height, SEGMENTS),
                     is_selected,
                     node_display_mode,
+                    node_type_label,
                 );
             }
             NodeData::Cylinder(cyl) => {
@@ -393,6 +494,7 @@ impl RenderCollector {
                     || rc3d_mesh::tessellate_cylinder(cyl.radius, cyl.height, SEGMENTS),
                     is_selected,
                     node_display_mode,
+                    node_type_label,
                 );
             }
             NodeData::IndexedFaceSet(ifs) => {
@@ -445,6 +547,26 @@ impl RenderCollector {
                         ],
                     )
                 };
+                let norm_el = self.state.normal();
+                let (normal_len, normal_sig) =
+                    if norm_el.vectors.len() == coord.points.len() && !norm_el.vectors.is_empty()
+                    {
+                        let first = norm_el.vectors[0].to_array();
+                        let last = norm_el.vectors[norm_el.vectors.len() - 1].to_array();
+                        (
+                            norm_el.vectors.len() as u32,
+                            [
+                                first[0].to_bits(),
+                                first[1].to_bits(),
+                                first[2].to_bits(),
+                                last[0].to_bits(),
+                                last[1].to_bits(),
+                                last[2].to_bits(),
+                            ],
+                        )
+                    } else {
+                        (0u32, [0u32; 6])
+                    };
                 let key = ShapeKey::IndexedFaceSet {
                     node: node.data().as_ffi(),
                     coord_len: coord.points.len() as u32,
@@ -453,6 +575,8 @@ impl RenderCollector {
                     index_sig,
                     tex_len,
                     tex_sig,
+                    normal_len,
+                    normal_sig,
                 };
                 #[allow(clippy::map_entry)]
                 if !self.mesh_cache.contains_key(&key) {
@@ -468,6 +592,20 @@ impl RenderCollector {
                             rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index)
                         }
                     };
+                    if norm_el.vectors.len() == mesh.positions.len() && !norm_el.vectors.is_empty() {
+                        let computed_backup = mesh.normals.clone();
+                        mesh.normals.clone_from(&norm_el.vectors);
+                        for (i, n) in mesh.normals.iter_mut().enumerate() {
+                            let len = n.length();
+                            if len > 1e-20 {
+                                *n /= len;
+                            } else {
+                                let fb = computed_backup.get(i).copied().unwrap_or(Vec3::Y);
+                                let l = fb.length();
+                                *n = if l > 1e-20 { fb / l } else { Vec3::Y };
+                            }
+                        }
+                    }
                     mesh.compute_tangents();
                     if !mesh.positions.is_empty() {
                         let (phong_verts, indices) = mesh.phong_buffers();
@@ -483,7 +621,9 @@ impl RenderCollector {
                             })
                             .collect();
                         let tri_count = indices.len() / 3;
-                        let meshlet_data = if tri_count > MESHLET_TRIANGLE_THRESHOLD {
+                        let meshlet_data = if tri_count > MESHLET_TRIANGLE_THRESHOLD
+                            && self.state.skinned_mesh().is_none()
+                        {
                             let md = rc3d_mesh::build_meshlets_from_mesh(
                                 &mesh.positions,
                                 &mesh.normals,
@@ -516,6 +656,7 @@ impl RenderCollector {
                         meshlet_data.clone(),
                         is_selected,
                         node_display_mode,
+                        node_type_label,
                     );
                 }
             }
@@ -528,6 +669,7 @@ impl RenderCollector {
         build_mesh: F,
         selected: bool,
         node_display_mode: Option<DisplayMode>,
+        node_type_label: &str,
     ) where
         F: FnOnce() -> rc3d_mesh::TriangleMesh,
     {
@@ -536,6 +678,7 @@ impl RenderCollector {
             Entry::Vacant(vacant) => {
                 let mut mesh = build_mesh();
                 if mesh.positions.is_empty() {
+                    vacant.insert((Arc::new(Vec::new()), Arc::new(Vec::new()), Arc::new(Vec::new()), rc3d_core::Aabb::empty(), None));
                     return;
                 }
                 mesh.compute_tangents();
@@ -569,6 +712,7 @@ impl RenderCollector {
                 meshlet_data.clone(),
                 selected,
                 node_display_mode,
+                node_type_label,
             );
         }
     }
@@ -582,6 +726,7 @@ impl RenderCollector {
         meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
         selected: bool,
         node_display_mode: Option<DisplayMode>,
+        node_type_label: &str,
     ) {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
@@ -615,6 +760,26 @@ impl RenderCollector {
                 .albedo_texture
                 .as_ref()
                 .map(|s| Arc::from(s.as_str())),
+            normal_path: mat
+                .normal_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            emissive_color: mat.emissive_color,
+            emissive_path: mat
+                .emissive_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            metallic_roughness_path: mat
+                .metallic_roughness_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            occlusion_path: mat
+                .occlusion_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            alpha_mode: mat.alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff,
+            double_sided: mat.double_sided,
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
@@ -625,6 +790,11 @@ impl RenderCollector {
             depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
                 self.state.projection_matrix(),
             ),
+            node_type_label: Arc::from(node_type_label),
+            instance_transforms: None,
+            morph_weights: self.state.morph_targets().map(|mt| mt.weights.clone()).unwrap_or_default(),
+            morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
+            skinning: self.skinning_payload_for_draw(),
         });
     }
 
@@ -635,6 +805,7 @@ impl RenderCollector {
         edge_positions: Vec<[f32; 3]>,
         selected: bool,
         node_display_mode: Option<DisplayMode>,
+        node_type_label: &str,
     ) {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
@@ -679,6 +850,26 @@ impl RenderCollector {
                 .albedo_texture
                 .as_ref()
                 .map(|s| Arc::from(s.as_str())),
+            normal_path: mat
+                .normal_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            emissive_color: mat.emissive_color,
+            emissive_path: mat
+                .emissive_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            metallic_roughness_path: mat
+                .metallic_roughness_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            occlusion_path: mat
+                .occlusion_texture
+                .as_ref()
+                .map(|s| Arc::from(s.as_str())),
+            alpha_mode: mat.alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff,
+            double_sided: mat.double_sided,
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
@@ -689,7 +880,22 @@ impl RenderCollector {
             depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
                 self.state.projection_matrix(),
             ),
+            node_type_label: Arc::from(node_type_label),
+            instance_transforms: None,
+            morph_weights: self.state.morph_targets().map(|mt| mt.weights.clone()).unwrap_or_default(),
+            morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
+            skinning: self.skinning_payload_for_draw(),
         });
+    }
+
+    fn skinning_payload_for_draw(&self) -> Option<Arc<SkinnedMeshDrawPayload>> {
+        self.state.skinned_mesh().map(|sm| {
+            Arc::new(SkinnedMeshDrawPayload {
+                skeleton: sm.skeleton.clone(),
+                skin_data: Arc::new(sm.skin_data.clone()),
+                clip: sm.clip.clone(),
+            })
+        })
     }
 
     fn collect_lights(&self) -> PackedLights {
@@ -699,6 +905,8 @@ impl RenderCollector {
         let mut positions = [[0.0f32; 4]; MAX_LIGHTS];
         let mut spot_params = [[0.0f32; 4]; MAX_LIGHTS];
         let mut count = 0u32;
+        let mut warned = false;
+        let total_lights = self.state.lights().len();
         for light in self.state.lights() {
             if (count as usize) < MAX_LIGHTS {
                 let idx = count as usize;
@@ -713,7 +921,13 @@ impl RenderCollector {
                 };
                 spot_params[idx] = [light.cut_off_angle.cos(), light.drop_off_rate, 0.0, 0.0];
                 count += 1;
+            } else {
+                warned = true;
+                break;
             }
+        }
+        if warned {
+            log::warn!("MAX_LIGHTS ({}) exceeded; {} lights truncated", MAX_LIGHTS, total_lights.saturating_sub(MAX_LIGHTS));
         }
         if count == 0 {
             dirs[0] = [0.0, 0.0, -1.0, 0.0];

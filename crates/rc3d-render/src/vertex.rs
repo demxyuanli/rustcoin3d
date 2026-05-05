@@ -1,5 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
+pub const MAX_MORPH_WEIGHTS: usize = 8;
+
 /// Per-instance data stored in a read-only SSBO for instanced rendering.
 /// One entry per instance; the vertex shader reads model/mvp/material from here.
 #[repr(C)]
@@ -10,6 +12,12 @@ pub struct InstanceData {
     pub diffuse_color: [f32; 4],
     pub base_color: [f32; 4],
     pub metallic_roughness: [f32; 4],
+    /// xyz = emissive color, w = alpha_cutoff
+    pub emissive_alpha: [f32; 4],
+    /// Morph target weights (up to MAX_MORPH_WEIGHTS targets).
+    pub morph_weights: [f32; MAX_MORPH_WEIGHTS],
+    /// x = morph target count, yzw = unused.
+    pub morph_count: [f32; 4],
 }
 
 pub const MAX_INSTANCES: usize = 4096;
@@ -77,6 +85,10 @@ pub struct SceneUniforms {
     pub clip_count: [f32; 4],
     pub pbr_base_color: [f32; 4],
     pub pbr_metallic_roughness: [f32; 4],
+    /// xyz = emissive color, w = alpha cutoff
+    pub pbr_emissive_alpha: [f32; 4],
+    /// x = alpha_mode (0=opaque, 1=mask, 2=blend), y = opacity, z = double_sided, w = unused
+    pub pbr_alpha_flags: [f32; 4],
     pub ibl_diffuse: [f32; 4],
     pub ibl_specular: [f32; 4],
     /// 4 CSM cascade view-projection matrices (16 vec4s = 4×4×4 f32s)

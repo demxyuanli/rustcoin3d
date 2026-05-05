@@ -54,6 +54,34 @@ impl OffscreenTarget {
         }
     }
 
+    /// Reuses a [`Device`](wgpu::Device) / [`Queue`](wgpu::Queue) (e.g. from [`Renderer::device`](crate::Renderer::device)) so
+    /// the texture is compatible for copy/resolve with the main pass.
+    pub fn new_with_device(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("Offscreen target (shared device)"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        Self {
+            device: device.clone(),
+            queue: queue.clone(),
+            texture,
+            view,
+            width,
+            height,
+        }
+    }
+
     /// Read rendered pixels into a CPU buffer.
     pub fn read_pixels(&self) -> Vec<u8> {
         let bpr = ((self.width * 4).saturating_add(255)) & !255;

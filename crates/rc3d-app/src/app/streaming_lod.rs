@@ -26,8 +26,9 @@ fn normal_cdf(x: f64) -> f64 {
 
 const STREAM_SIGMA: f64 = 0.22;
 const STREAM_DURATION_S: f64 = 2.2;
-const STREAM_LOD_TARGETS: &[usize] =
-    &[12_000, 30_000, 60_000, 110_000, 180_000, 280_000, 430_000, 660_000, 1_000_000, 1_600_000];
+const STREAM_LOD_TARGETS: &[usize] = &[
+    12_000, 30_000, 60_000, 110_000, 180_000, 280_000, 430_000, 660_000, 1_000_000, 1_600_000,
+];
 const STREAM_STEP_MS: u64 = 180;
 
 pub(super) struct FullResPatch {
@@ -145,8 +146,12 @@ pub(super) fn apply_decimated_preview(graph: &mut SceneGraph) -> Vec<FullResPatc
     patches
 }
 
-fn collect_preview_patches(graph: &mut SceneGraph, node: rc3d_core::NodeId, patches: &mut Vec<FullResPatch>) {
-    let children: Vec<rc3d_core::NodeId> = graph.children(node).to_vec();
+fn collect_preview_patches(
+    graph: &mut SceneGraph,
+    node: rc3d_core::NodeId,
+    patches: &mut Vec<FullResPatch>,
+) {
+    let children: Vec<rc3d_core::NodeId> = graph.children(node).unwrap_or(&[]).to_vec();
     if children.len() >= 3 {
         for trip in children.windows(3) {
             let coord_id = trip[0];
@@ -157,8 +162,11 @@ fn collect_preview_patches(graph: &mut SceneGraph, node: rc3d_core::NodeId, patc
             else {
                 continue;
             };
-            let (NodeData::Coordinate3(coord), NodeData::TextureCoordinate2(tex), NodeData::IndexedFaceSet(ifs)) =
-                (&coord_entry.data, &tex_entry.data, &ifs_entry.data)
+            let (
+                NodeData::Coordinate3(coord),
+                NodeData::TextureCoordinate2(tex),
+                NodeData::IndexedFaceSet(ifs),
+            ) = (&coord_entry.data, &tex_entry.data, &ifs_entry.data)
             else {
                 continue;
             };
@@ -198,7 +206,8 @@ fn collect_preview_patches(graph: &mut SceneGraph, node: rc3d_core::NodeId, patc
         for pair in children.windows(2) {
             let coord_id = pair[0];
             let ifs_id = pair[1];
-            let (Some(coord_entry), Some(ifs_entry)) = (graph.get(coord_id), graph.get(ifs_id)) else {
+            let (Some(coord_entry), Some(ifs_entry)) = (graph.get(coord_id), graph.get(ifs_id))
+            else {
                 continue;
             };
             let (NodeData::Coordinate3(coord), NodeData::IndexedFaceSet(ifs)) =
@@ -212,7 +221,8 @@ fn collect_preview_patches(graph: &mut SceneGraph, node: rc3d_core::NodeId, patc
             }
             let full_points = coord.point.clone();
             let full_coord_index = ifs.coord_index.clone();
-            let stream_stages = build_stream_stages(&full_points, None, &full_coord_index, tri_count);
+            let stream_stages =
+                build_stream_stages(&full_points, None, &full_coord_index, tri_count);
             let stage_tri_counts: Vec<usize> = stream_stages
                 .iter()
                 .map(|s| s.2.iter().filter(|&&v| v == -1).count())

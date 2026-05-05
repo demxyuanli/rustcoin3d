@@ -165,6 +165,16 @@ impl GetBoundingBoxAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::MorphTarget(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::SkinnedMesh(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             _ => {}
         }
     }

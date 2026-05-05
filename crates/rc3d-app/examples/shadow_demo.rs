@@ -9,28 +9,20 @@
 //!   +/-: Adjust shadow bias
 //!   Mouse drag: orbit camera
 
-use rc3d_app::App;
 use rc3d_app::camera_controller::CameraController;
+use rc3d_app::App;
 use rc3d_core::{math::Vec3, DisplayMode};
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
-
-    println!("Shadow Demo — CSM + Point + Spot lights");
-    println!("  1: Toggle CSM  2: Toggle point shadow  3: Toggle spot shadow");
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
+    print_shadow_demo_help();
 
     let scene = build_shadow_scene();
 
-    let ctrl = CameraController::new(
-        scene.roots()[0],
-        Vec3::new(0.0, 2.0, 5.0),
-        8.0,
-    );
+    let ctrl = CameraController::new(Vec3::new(0.0, 2.0, 5.0), 8.0);
 
     let mut app = App::new(scene)
         .with_camera_controller(ctrl)
@@ -41,6 +33,20 @@ fn main() {
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_shadow_demo_help() {
+    println!("Shadow demo");
+    println!("Usage: cargo run -p rc3d-app --example shadow_demo");
+    println!("Controls:");
+    println!("  1: Toggle directional shadow (CSM)");
+    println!("  2: Toggle point-light shadow");
+    println!("  3: Toggle spot-light shadow");
+    println!("  +/-: Adjust shadow bias");
+    println!("  Mouse drag: orbit camera");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Directional + point + spot shadow types in one scene");
 }
 
 fn build_shadow_scene() -> SceneGraph {
@@ -94,7 +100,8 @@ fn build_shadow_scene() -> SceneGraph {
             base_color: Vec3::new(1.0, 0.5, 0.2),
             metallic: 0.0,
             roughness: 0.1,
-            albedo_texture: None,
+            opacity: 1.0,
+            ..Default::default()
         }),
     );
     graph.add_child(pt_light_sep, NodeData::Sphere(SphereNode { radius: 0.15 }));
@@ -145,7 +152,8 @@ fn build_shadow_scene() -> SceneGraph {
             base_color: Vec3::new(0.7, 0.6, 0.5),
             metallic: 0.2,
             roughness: 0.3,
-            albedo_texture: None,
+            opacity: 1.0,
+            ..Default::default()
         }),
     );
     graph.add_child(center_sep, NodeData::Sphere(SphereNode { radius: 1.2 }));
@@ -173,7 +181,8 @@ fn build_shadow_scene() -> SceneGraph {
                 base_color: Vec3::new(0.5, 0.7, 0.6),
                 metallic: 0.05,
                 roughness: 0.5,
-                albedo_texture: None,
+                opacity: 1.0,
+                ..Default::default()
             }),
         );
         graph.add_child(small_sep, NodeData::Sphere(SphereNode { radius: 0.5 }));
@@ -194,12 +203,16 @@ fn add_shadow_floor(graph: &mut SceneGraph, parent: rc3d_core::NodeId) {
             base_color: Vec3::new(0.8, 0.8, 0.8),
             metallic: 0.0,
             roughness: 0.9,
-            albedo_texture: None,
+            opacity: 1.0,
+            ..Default::default()
         }),
     );
-    graph.add_child(sep, NodeData::Cube(CubeNode {
-        width: 16.0,
-        height: 0.2,
-        depth: 16.0,
-    }));
+    graph.add_child(
+        sep,
+        NodeData::Cube(CubeNode {
+            width: 16.0,
+            height: 0.2,
+            depth: 16.0,
+        }),
+    );
 }

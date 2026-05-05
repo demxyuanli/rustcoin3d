@@ -33,19 +33,27 @@ pub(super) fn pass_wireframe(
         occlusion_query_set: None,
     });
 
-    pass.set_pipeline(&pl.wireframe);
-    let line_color = [0.2, 1.0, 0.4, 1.0];
-    let mut last_bound_mesh = None;
+    pass.set_stencil_reference(0);
+    // Line list per topological edge (same as edge overlay). PolygonMode::Line draws each
+    // triangle edge twice with near-identical depth and no depth write, causing z-fighting
+    // and broken-looking segments on shared edges.
+    pass.set_pipeline(&pl.edge_overlay);
+    let mut last_bound_edge_mesh = None;
     for &i in ctx.solid_order {
         let dc = ctx.visible[i];
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
-            color: line_color,
+            color: ctx.outline_color,
         };
         if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
+            let drawn = if let Some(mesh_id) = ctx.mesh_handles[i] {
+                renderer.draw_edges_batched(&mut pass, mesh_id, &mut last_bound_edge_mesh)
+            } else {
+                false
+            };
+            if !drawn {
+                renderer.bind_and_draw_edges(&mut pass, dc, ctx.mesh_handles[i]);
             }
         }
     }

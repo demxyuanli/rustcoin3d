@@ -5,6 +5,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    print_rotating_cube_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();
 
@@ -45,7 +46,7 @@ fn main() {
     let mut engines = EngineRegistry::new();
     engines.add(ElapsedTimeEngine::new(transform_id, 1.0, Vec3::Y));
 
-    let ctrl = CameraController::new(camera_id, Vec3::ZERO, 7.0);
+    let ctrl = CameraController::new(Vec3::ZERO, 7.0);
 
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
@@ -55,4 +56,14 @@ fn main() {
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_rotating_cube_help() {
+    println!("Rotating cube example");
+    println!("Usage: cargo run -p rc3d-app --example rotating_cube");
+    println!("Controls:");
+    println!("  Mouse drag: orbit camera");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Engine-driven transform animation is enabled by default");
 }

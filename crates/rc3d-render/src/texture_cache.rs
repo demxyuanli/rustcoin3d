@@ -81,7 +81,7 @@ pub struct TextureCache {
     flat_normal: TextureHandle,
     textures: SlotMap<TextureHandle, GpuTexture2d>,
     albedo_bind_groups: HashMap<TextureHandle, wgpu::BindGroup>,
-    pbr_bind_groups: HashMap<(TextureHandle, TextureHandle), wgpu::BindGroup>,
+    pbr_bind_groups: HashMap<(TextureHandle, TextureHandle, TextureHandle, TextureHandle, TextureHandle), wgpu::BindGroup>,
     path_to_handle: HashMap<String, TextureHandle>,
     mip_pipeline: Option<wgpu::ComputePipeline>,
     mip_bgl: Option<wgpu::BindGroupLayout>,
@@ -327,18 +327,29 @@ impl TextureCache {
         self.flat_normal
     }
 
+    pub fn white_handle_ref(&self) -> TextureHandle {
+        self.white
+    }
+
     pub fn pbr_material_bind_group(
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         albedo_handle: TextureHandle,
         normal_handle: TextureHandle,
+        metallic_roughness_handle: TextureHandle,
+        emissive_handle: TextureHandle,
+        occlusion_handle: TextureHandle,
     ) -> &wgpu::BindGroup {
+        let key = (albedo_handle, normal_handle, metallic_roughness_handle, emissive_handle, occlusion_handle);
         self.pbr_bind_groups
-            .entry((albedo_handle, normal_handle))
+            .entry(key)
             .or_insert_with(|| {
                 let albedo_view = self.textures.get(albedo_handle).map(|t| &t.view).expect("albedo handle");
                 let normal_view = self.textures.get(normal_handle).map(|t| &t.view).expect("normal handle");
+                let mr_view = self.textures.get(metallic_roughness_handle).map(|t| &t.view).expect("mr handle");
+                let emissive_view = self.textures.get(emissive_handle).map(|t| &t.view).expect("emissive handle");
+                let occ_view = self.textures.get(occlusion_handle).map(|t| &t.view).expect("occlusion handle");
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("PBR material BG"),
                     layout,
@@ -346,6 +357,9 @@ impl TextureCache {
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(albedo_view) },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(normal_view) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(mr_view) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(emissive_view) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(occ_view) },
                     ],
                 })
             })

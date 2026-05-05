@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::cluster::ClusterSet;
 use crate::gpu_resource::{GpuResourceManager, MeshId};
+use crate::gpu_skinning::GpuSkinningResources;
 
 pub const MESH_CACHE_MAX: usize = 256;
 pub const MESH_CACHE_IDLE_FRAMES: u64 = 120;
@@ -26,7 +27,12 @@ impl GpuAssetManager {
         self.cluster_cache.clear();
     }
 
-    pub fn prune_stale_meshes(&mut self, frame_counter: u64, gpu_meshes: &mut GpuResourceManager) {
+    pub fn prune_stale_meshes(
+        &mut self,
+        frame_counter: u64,
+        gpu_meshes: &mut GpuResourceManager,
+        mut skinned_mesh_resources: Option<&mut HashMap<MeshId, GpuSkinningResources>>,
+    ) {
         let stale_keys: Vec<u64> = self
             .mesh_cache
             .iter()
@@ -36,6 +42,9 @@ impl GpuAssetManager {
         for key in stale_keys {
             if let Some((mesh_id, _)) = self.mesh_cache.remove(&key) {
                 gpu_meshes.remove(mesh_id);
+                if let Some(map) = skinned_mesh_resources.as_mut() {
+                    map.remove(&mesh_id);
+                }
             }
         }
     }

@@ -71,7 +71,7 @@ impl HudRenderer {
         queue: &wgpu::Queue,
         fps: f32,
         frame_time_ms: f32,
-        stats: FrameStats,
+        stats: &FrameStats,
         mode_name: &str,
     ) {
         let mut text = format!(
@@ -107,7 +107,7 @@ impl HudRenderer {
             custom_glyphs: &[],
         }];
 
-        let _ = self.text_renderer.prepare(
+        if let Err(e) = self.text_renderer.prepare(
             device,
             queue,
             &mut self.font_system,
@@ -115,10 +115,14 @@ impl HudRenderer {
             &self.viewport,
             areas,
             &mut self.swash_cache,
-        );
+        ) {
+            log::error!("HUD prepare: {:?}", e);
+        }
     }
 
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
-        let _ = self.text_renderer.render(&self.atlas, &self.viewport, pass);
+        if let Err(e) = self.text_renderer.render(&self.atlas, &self.viewport, pass) {
+            log::error!("HUD render: {:?}", e);
+        }
     }
 }

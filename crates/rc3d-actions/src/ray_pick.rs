@@ -99,6 +99,8 @@ pub struct PickHit {
     pub distance: f32,
     pub face_index: Option<u32>,
     pub edge_index: Option<u32>,
+    /// Barycentric coordinates for triangle hits (when available).
+    pub barycentric: Option<[f32; 3]>,
 }
 
 /// Structured detail for what was hit (Coin3D SoDetail pattern).
@@ -130,8 +132,13 @@ pub struct PickDetail {
 
 impl PickDetail {
     pub fn from_hit(hit: &PickHit) -> Self {
+        let bary0 = [0.33, 0.33, 0.34];
         let detail = match (hit.face_index, hit.edge_index) {
-            (Some(fi), _) => DetailInfo::Face { face_index: fi, barycentric: [0.33, 0.33, 0.34], texcoord: None },
+            (Some(fi), _) => DetailInfo::Face {
+                face_index: fi,
+                barycentric: hit.barycentric.unwrap_or(bary0),
+                texcoord: None,
+            },
             (_, Some(ei)) => DetailInfo::Edge { edge_index: ei },
             _ => DetailInfo::None,
         };
@@ -151,6 +158,15 @@ pub struct RayPickAction {
     pub ray: Ray,
     pub hits: Vec<PickHit>,
     pub mode: PickMode,
+    /// Screen-space pick tolerance in pixels. Hits beyond this radius from
+    /// the cursor are filtered out. 0 = exact ray intersection only.
+    pub tolerance_px: f32,
+    /// Cursor position (used with tolerance_px for hit filtering).
+    pub cursor_pos: Option<(f32, f32)>,
+    /// View/projection matrices (used with tolerance_px for hit filtering).
+    pub pick_vp: Option<(Mat4, Mat4)>,
+    /// Stack tracking current pickability.
+    pickable_stack: Vec<bool>,
 }
 
 impl RayPickAction {
@@ -160,6 +176,10 @@ impl RayPickAction {
             ray,
             hits: Vec::new(),
             mode: PickMode::Node,
+            tolerance_px: 0.0,
+            cursor_pos: None,
+            pick_vp: None,
+            pickable_stack: vec![true],
         }
     }
 
@@ -169,7 +189,15 @@ impl RayPickAction {
             ray,
             hits: Vec::new(),
             mode,
+            tolerance_px: 0.0,
+            cursor_pos: None,
+            pick_vp: None,
+            pickable_stack: vec![true],
         }
+    }
+
+    fn is_pickable(&self) -> bool {
+        self.pickable_stack.last().copied().unwrap_or(true)
     }
 
     pub fn details(&self) -> Vec<PickDetail> {
@@ -237,6 +265,13 @@ impl RayPickAction {
                     self.traverse_node(graph, child);
                 }
             }
+            NodeData::PickStyle(ps) => {
+                self.pickable_stack.push(ps.pickable);
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+                self.pickable_stack.pop();
+            }
             NodeData::SectionPlane(_) => {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
@@ -248,6 +283,16 @@ impl RayPickAction {
                 }
             }
             NodeData::Measurement(_) | NodeData::Markup(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::MorphTarget(_) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::SkinnedMesh(_) => {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }
@@ -273,6 +318,7 @@ impl RayPickAction {
             | NodeData::SpotLight(_) => {}
             // Shape nodes: do intersection test
             NodeData::Triangle(_) => {
+                if !self.is_pickable() { return; }
                 let coord = self.state.coordinate();
                 if coord.points.len() >= 3 {
                     let model = self.state.model_matrix();
@@ -281,7 +327,8 @@ impl RayPickAction {
                     let v2 = model.transform_point3(coord.points[2]);
                     if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
                         let point = self.ray.origin + self.ray.direction * t;
-                        let normal = (v1 - v0).cross(v2 - v0).normalize();
+                        let c = (v1 - v0).cross(v2 - v0);
+                        let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                         let face_index = if self.mode != PickMode::Node { Some(0) } else { None };
                         let edge_index = if self.mode == PickMode::Edge {
                             Some(closest_edge_from_bary(&bary))
@@ -295,6 +342,7 @@ impl RayPickAction {
                             distance: t,
                             face_index,
                             edge_index,
+                            barycentric: Some(bary.to_array()),
                         });
                     }
                 }
@@ -318,6 +366,7 @@ impl RayPickAction {
     }
 
     fn pick_cube(&mut self, node: NodeId, w: f32, h: f32, d: f32) {
+        if !self.is_pickable() { return; }
         let model = self.state.model_matrix();
         let hw = w / 2.0;
         let hh = h / 2.0;
@@ -412,6 +461,7 @@ impl RayPickAction {
     }
 
     fn pick_sphere_with_radius(&mut self, node: NodeId, radius: f32) {
+        if !self.is_pickable() { return; }
         let model = self.state.model_matrix();
         let center = model.transform_point3(Vec3::ZERO);
         let sx = model.transform_vector3(Vec3::X).length();
@@ -426,6 +476,7 @@ impl RayPickAction {
     }
 
     fn pick_indexed_face_set(&mut self, node: NodeId, coord_index: &[i32]) {
+        if !self.is_pickable() { return; }
         let coord = self.state.coordinate();
         if coord.points.is_empty() {
             return;
@@ -455,7 +506,8 @@ impl RayPickAction {
                             if t > 0.001 && t < best_t {
                                 best_t = t;
                                 let point = self.ray.origin + self.ray.direction * t;
-                                let normal = (v1 - v0).cross(v2 - v0).normalize();
+                                let c = (v1 - v0).cross(v2 - v0);
+                                let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                                 best_hit = Some((point, normal, tri_idx, bary));
                             }
                         }
@@ -500,10 +552,12 @@ impl RayPickAction {
             distance,
             face_index,
             edge_index,
+            barycentric: Some([bary.x, bary.y, bary.z]),
         });
     }
 
     fn pick_cone(&mut self, node: NodeId, radius: f32, height: f32) {
+        if !self.is_pickable() { return; }
         let model = self.state.model_matrix();
         let half_h = height / 2.0;
         let segments = 24u32;
@@ -522,7 +576,8 @@ impl RayPickAction {
                 if t > 0.001 && t < best_t {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
-                    let normal = (br - bl).cross(tip - bl).normalize();
+                    let c = (br - bl).cross(tip - bl);
+                    let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                     best_hit = Some((point, normal, tri_idx, bary));
                 }
             }
@@ -550,6 +605,7 @@ impl RayPickAction {
     }
 
     fn pick_cylinder(&mut self, node: NodeId, radius: f32, height: f32) {
+        if !self.is_pickable() { return; }
         let model = self.state.model_matrix();
         let half_h = height / 2.0;
         let segments = 24u32;
@@ -569,7 +625,8 @@ impl RayPickAction {
                 if t > 0.001 && t < best_t {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
-                    let n = (br - bl).cross(tl - bl).normalize();
+                    let c = (br - bl).cross(tl - bl);
+                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                     best_hit = Some((point, n, tri_idx, bary));
                 }
             }
@@ -578,7 +635,8 @@ impl RayPickAction {
                 if t > 0.001 && t < best_t {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
-                    let n = (tr - br).cross(tl - br).normalize();
+                    let c = (tr - br).cross(tl - br);
+                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
                     best_hit = Some((point, n, tri_idx, bary));
                 }
             }

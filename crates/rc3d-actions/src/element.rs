@@ -131,7 +131,15 @@ pub struct MaterialElement {
     pub metallic: f32,
     pub roughness: f32,
     pub albedo_texture: Option<String>,
+    pub normal_texture: Option<String>,
     pub opacity: f32,
+    pub emissive_color: Vec3,
+    pub emissive_texture: Option<String>,
+    pub metallic_roughness_texture: Option<String>,
+    pub occlusion_texture: Option<String>,
+    pub alpha_mode: rc3d_scene::AlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
 }
 
 impl Default for MaterialElement {
@@ -145,7 +153,15 @@ impl Default for MaterialElement {
             metallic: 0.0,
             roughness: 0.35,
             albedo_texture: None,
+            normal_texture: None,
             opacity: 1.0,
+            emissive_color: Vec3::ZERO,
+            emissive_texture: None,
+            metallic_roughness_texture: None,
+            occlusion_texture: None,
+            alpha_mode: rc3d_scene::AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
         }
     }
 }

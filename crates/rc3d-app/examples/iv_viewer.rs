@@ -8,6 +8,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    print_iv_viewer_help();
 
     let args: Vec<String> = env::args().collect();
     let iv_content = if args.len() > 1 {
@@ -47,6 +48,16 @@ fn main() {
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_iv_viewer_help() {
+    println!("IV viewer example");
+    println!("Usage: cargo run -p rc3d-app --example iv_viewer -- <file.iv>");
+    println!("Controls:");
+    println!("  Mouse drag: orbit (if camera controller is enabled by app defaults)");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  IV parse + round-trip serialization output");
 }
 
 fn builtin_scene() -> String {

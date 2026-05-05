@@ -60,11 +60,27 @@ pub enum LayoutMode {
     TopBottom,
 }
 
+/// Which split parameter is adjusted when dragging a layout divider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewportSplitAxis {
+    /// `quad_h_split`: vertical bar (Quad, LeftRight).
+    HorizontalFraction,
+    /// `quad_v_split`: horizontal bar (Quad, TopBottom).
+    VerticalFraction,
+}
+
+/// Pixel half-width for splitter hit-testing (total grab strip ≈ 2× this).
+pub const VIEWPORT_SPLITTER_HIT_PX: f32 = 5.0;
+
 /// Manages viewport rect computation and active viewport tracking.
 pub struct ViewportLayout {
     pub viewports: Vec<Viewport>,
     pub layout_mode: LayoutMode,
     pub active_id: ViewportId,
+    /// Quad layout: vertical split position as fraction of width (0.1 - 0.9).
+    pub quad_h_split: f32,
+    /// Quad layout: horizontal split position as fraction of height (0.1 - 0.9).
+    pub quad_v_split: f32,
     next_id: u32,
 }
 
@@ -74,8 +90,15 @@ impl ViewportLayout {
             viewports: Vec::new(),
             layout_mode: LayoutMode::Single,
             active_id: ViewportId(0),
+            quad_h_split: 0.5,
+            quad_v_split: 0.5,
             next_id: 0,
         }
+    }
+
+    pub fn set_quad_splits(&mut self, h: f32, v: f32) {
+        self.quad_h_split = h.clamp(0.1, 0.9);
+        self.quad_v_split = v.clamp(0.1, 0.9);
     }
 
     fn alloc_id(&mut self) -> ViewportId {
@@ -86,6 +109,10 @@ impl ViewportLayout {
 
     /// Rebuild viewports for the current layout mode at the given surface size.
     pub fn rebuild(&mut self, surface_width: u32, surface_height: u32) {
+        let preserved_active_idx = self
+            .viewports
+            .iter()
+            .position(|v| v.id == self.active_id);
         self.next_id = 0;
         self.viewports.clear();
 
@@ -102,10 +129,10 @@ impl ViewportLayout {
                 });
             }
             LayoutMode::Quad => {
-                let hw = surface_width / 2;
-                let hh = surface_height / 2;
-                let rw = (surface_width - hw).max(1);
-                let rh = (surface_height - hh).max(1);
+                let hw = ((surface_width as f32) * self.quad_h_split) as u32;
+                let hh = ((surface_height as f32) * self.quad_v_split) as u32;
+                let rw = (surface_width.saturating_sub(hw)).max(1);
+                let rh = (surface_height.saturating_sub(hh)).max(1);
                 let vps = [
                     ("Top",     hw, 0,  rw, hh, ProjectionType::Orthographic),
                     ("Front",   0,  hh, hw, rh, ProjectionType::Orthographic),
@@ -131,7 +158,8 @@ impl ViewportLayout {
                 }
             }
             LayoutMode::LeftRight => {
-                let hw = surface_width / 2;
+                let hw = ((surface_width as f32) * self.quad_h_split) as u32;
+                let rw = surface_width.saturating_sub(hw).max(1);
                 let id0 = self.alloc_id();
                 self.viewports.push(Viewport {
                     id: id0,
@@ -145,14 +173,20 @@ impl ViewportLayout {
                 self.viewports.push(Viewport {
                     id: id1,
                     name: "Right".into(),
-                    rect: ViewportRect { x: hw, y: 0, width: (surface_width - hw).max(1), height: surface_height },
+                    rect: ViewportRect {
+                        x: hw,
+                        y: 0,
+                        width: rw,
+                        height: surface_height,
+                    },
                     camera_node: None,
                     projection_type: ProjectionType::Perspective,
                     is_active: false,
                 });
             }
             LayoutMode::TopBottom => {
-                let hh = surface_height / 2;
+                let hh = ((surface_height as f32) * self.quad_v_split) as u32;
+                let bh = surface_height.saturating_sub(hh).max(1);
                 let id0 = self.alloc_id();
                 self.viewports.push(Viewport {
                     id: id0,
@@ -166,7 +200,12 @@ impl ViewportLayout {
                 self.viewports.push(Viewport {
                     id: id1,
                     name: "Bottom".into(),
-                    rect: ViewportRect { x: 0, y: hh, width: surface_width, height: (surface_height - hh).max(1) },
+                    rect: ViewportRect {
+                        x: 0,
+                        y: hh,
+                        width: surface_width,
+                        height: bh,
+                    },
                     camera_node: None,
                     projection_type: ProjectionType::Perspective,
                     is_active: false,
@@ -174,11 +213,91 @@ impl ViewportLayout {
             }
         }
 
-        // Ensure active_id points to a real viewport
-        let active_exists = self.viewports.iter().any(|v| v.id == self.active_id);
-        if !active_exists {
-            if let Some(first) = self.viewports.first() {
-                self.active_id = first.id;
+        if let Some(i) = preserved_active_idx {
+            if i < self.viewports.len() {
+                self.set_active(self.viewports[i].id);
+            } else if let Some(first) = self.viewports.first() {
+                self.set_active(first.id);
+            }
+        } else {
+            let active_exists = self.viewports.iter().any(|v| v.id == self.active_id);
+            if !active_exists {
+                if let Some(first) = self.viewports.first() {
+                    self.set_active(first.id);
+                }
+            }
+        }
+    }
+
+    /// Hit-test a layout splitter near `(px, py)` in surface pixels.
+    pub fn splitter_hit(
+        &self,
+        px: f32,
+        py: f32,
+        surface_width: u32,
+        surface_height: u32,
+    ) -> Option<ViewportSplitAxis> {
+        let w = surface_width as f32;
+        let h = surface_height as f32;
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        match self.layout_mode {
+            LayoutMode::Single => None,
+            LayoutMode::Quad => {
+                let vx = w * self.quad_h_split;
+                let hy = h * self.quad_v_split;
+                let dx = (px - vx).abs();
+                let dy = (py - hy).abs();
+                let on_v = dx <= VIEWPORT_SPLITTER_HIT_PX;
+                let on_h = dy <= VIEWPORT_SPLITTER_HIT_PX;
+                match (on_v, on_h) {
+                    (true, true) => Some(if dx <= dy {
+                        ViewportSplitAxis::HorizontalFraction
+                    } else {
+                        ViewportSplitAxis::VerticalFraction
+                    }),
+                    (true, false) => Some(ViewportSplitAxis::HorizontalFraction),
+                    (false, true) => Some(ViewportSplitAxis::VerticalFraction),
+                    _ => None,
+                }
+            }
+            LayoutMode::LeftRight => {
+                let vx = w * self.quad_h_split;
+                if (px - vx).abs() <= VIEWPORT_SPLITTER_HIT_PX {
+                    Some(ViewportSplitAxis::HorizontalFraction)
+                } else {
+                    None
+                }
+            }
+            LayoutMode::TopBottom => {
+                let hy = h * self.quad_v_split;
+                if (py - hy).abs() <= VIEWPORT_SPLITTER_HIT_PX {
+                    Some(ViewportSplitAxis::VerticalFraction)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Update split fractions from cursor position during a drag.
+    pub fn apply_split_drag(
+        &mut self,
+        axis: ViewportSplitAxis,
+        px: f32,
+        py: f32,
+        surface_width: u32,
+        surface_height: u32,
+    ) {
+        let w = surface_width.max(1) as f32;
+        let h = surface_height.max(1) as f32;
+        match axis {
+            ViewportSplitAxis::HorizontalFraction => {
+                self.quad_h_split = (px / w).clamp(0.1, 0.9);
+            }
+            ViewportSplitAxis::VerticalFraction => {
+                self.quad_v_split = (py / h).clamp(0.1, 0.9);
             }
         }
     }

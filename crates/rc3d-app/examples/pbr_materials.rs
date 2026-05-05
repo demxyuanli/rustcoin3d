@@ -12,8 +12,8 @@
 //!   1-4: Change shadow cascade count
 //!   F: Cycle display mode
 
-use rc3d_app::App;
 use rc3d_app::camera_controller::CameraController;
+use rc3d_app::App;
 use rc3d_core::{math::Vec3, DisplayMode};
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
@@ -23,20 +23,13 @@ const GRID_SIZE: usize = 7;
 const SPACING: f32 = 2.5;
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
-
-    println!("PBR Material Showcase — {}×{} sphere grid", GRID_SIZE, GRID_SIZE);
-    println!("  Rows: roughness 0.0 → 1.0");
-    println!("  Cols: metallic 0.0 → 1.0");
-    println!("  Mouse drag: orbit  |  L: IBL preset  |  F: display mode");
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
+    print_pbr_materials_help();
 
     let graph = build_pbr_scene();
 
     let ctrl = CameraController::new(
-        graph.roots()[0],
         Vec3::new(
             GRID_SIZE as f32 * SPACING * 0.5,
             2.0,
@@ -56,6 +49,22 @@ fn main() {
         .expect("event loop error");
 }
 
+fn print_pbr_materials_help() {
+    println!("PBR material showcase");
+    println!("Usage: cargo run -p rc3d-app --example pbr_materials");
+    println!("Scene:");
+    println!("  {}x{} sphere grid", GRID_SIZE, GRID_SIZE);
+    println!("  Rows: roughness 0.0 -> 1.0");
+    println!("  Cols: metallic 0.0 -> 1.0");
+    println!("Controls:");
+    println!("  Mouse drag: orbit camera");
+    println!("  L: Cycle IBL preset");
+    println!("  F: Cycle display mode");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  HDR post-processing enabled by default");
+}
+
 fn build_pbr_scene() -> SceneGraph {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
@@ -63,19 +72,17 @@ fn build_pbr_scene() -> SceneGraph {
     // Camera
     graph.add_child(
         root,
-        NodeData::PerspectiveCamera(
-            PerspectiveCameraNode::look_at(
-                Vec3::new(-2.0, 8.0, 14.0),
-                Vec3::new(
-                    GRID_SIZE as f32 * SPACING * 0.5,
-                    0.5,
-                    GRID_SIZE as f32 * SPACING * 0.5,
-                ),
-                Vec3::Y,
-                std::f32::consts::FRAC_PI_4,
-                800.0 / 600.0,
+        NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
+            Vec3::new(-2.0, 8.0, 14.0),
+            Vec3::new(
+                GRID_SIZE as f32 * SPACING * 0.5,
+                0.5,
+                GRID_SIZE as f32 * SPACING * 0.5,
             ),
-        ),
+            Vec3::Y,
+            std::f32::consts::FRAC_PI_4,
+            800.0 / 600.0,
+        )),
     );
 
     // Key light (directional, casts shadow)
@@ -123,11 +130,7 @@ fn build_pbr_scene() -> SceneGraph {
             add_pbr_sphere(
                 &mut graph,
                 root,
-                Vec3::new(
-                    col as f32 * SPACING,
-                    1.2,
-                    row as f32 * SPACING,
-                ),
+                Vec3::new(col as f32 * SPACING, 1.2, row as f32 * SPACING),
                 metallic,
                 roughness,
             );
@@ -169,7 +172,8 @@ fn add_pbr_sphere(
             base_color: base,
             metallic,
             roughness,
-            albedo_texture: None,
+            opacity: 1.0,
+            ..Default::default()
         }),
     );
 
@@ -192,11 +196,14 @@ fn add_pbr_sphere(
         label_sep,
         NodeData::Material(MaterialNode::from_diffuse(label_color)),
     );
-    graph.add_child(label_sep, NodeData::Cube(CubeNode {
-        width: 1.0,
-        height: 0.05,
-        depth: 1.0,
-    }));
+    graph.add_child(
+        label_sep,
+        NodeData::Cube(CubeNode {
+            width: 1.0,
+            height: 0.05,
+            depth: 1.0,
+        }),
+    );
 }
 
 fn add_floor(graph: &mut SceneGraph, parent: rc3d_core::NodeId) -> rc3d_core::NodeId {
@@ -225,15 +232,19 @@ fn add_floor(graph: &mut SceneGraph, parent: rc3d_core::NodeId) -> rc3d_core::No
             base_color: Vec3::new(0.5, 0.5, 0.5),
             metallic: 0.0,
             roughness: 0.9,
-            albedo_texture: None,
+            opacity: 1.0,
+            ..Default::default()
         }),
     );
 
-    graph.add_child(sep, NodeData::Cube(CubeNode {
-        width: 2.0,
-        height: 1.0,
-        depth: 2.0,
-    }));
+    graph.add_child(
+        sep,
+        NodeData::Cube(CubeNode {
+            width: 2.0,
+            height: 1.0,
+            depth: 2.0,
+        }),
+    );
 
     sep
 }

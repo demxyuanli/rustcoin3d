@@ -90,19 +90,23 @@ pub(super) fn pass_selection_edge(
     });
 
     pass.set_stencil_reference(0);
-    pass.set_pipeline(&pl.wireframe);
-    let sel_color = [1.0, 0.5, 0.0, 1.0];
-    let mut last_bound_mesh = None;
+    pass.set_pipeline(&pl.edge_overlay);
+    let mut last_bound_edge_mesh = None;
     for &i in ctx.selected_order {
         let dc = ctx.visible[i];
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
-            color: sel_color,
+            color: ctx.outline_color,
         };
         if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
-            if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
+            let drawn = if let Some(mesh_id) = ctx.mesh_handles[i] {
+                renderer.draw_edges_batched(&mut pass, mesh_id, &mut last_bound_edge_mesh)
+            } else {
+                false
+            };
+            if !drawn {
+                renderer.bind_and_draw_edges(&mut pass, dc, ctx.mesh_handles[i]);
             }
         }
     }
@@ -145,7 +149,7 @@ pub(super) fn pass_selection_bbox(
     });
 
     rpass.set_pipeline(&scene_pl.edge_overlay);
-    let color = [1.0_f32, 0.8, 0.2, 1.0];
+    let color = ctx.outline_color;
 
     for &idx in ctx.selected_order {
         let dc = &ctx.visible[idx];
@@ -183,6 +187,7 @@ pub(super) fn pass_selection_bbox(
         if let Some(off) = offset {
             rpass.set_bind_group(0, flat_pool.bind_group(), &[off]);
         }
+        // Pending: upload lines to GPU buffer and issue draw call.
         // Note: vertex buffer upload for dynamic lines requires a GPU buffer.
         // This establishes the pass structure; full vertex upload can be fleshed out later.
         let _ = lines;

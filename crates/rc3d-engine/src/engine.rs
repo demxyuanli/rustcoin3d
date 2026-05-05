@@ -2,6 +2,7 @@ use std::any::Any;
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::FieldId;
+use rc3d_scene::node_data::NodeData;
 use rc3d_scene::SceneGraph;
 
 /// An engine computes output values from input values (lazy evaluation).
@@ -164,6 +165,37 @@ impl Engine for ComposeMatrixEngine {
 impl std::fmt::Debug for ComposeMatrixEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ComposeMatrixEngine").finish()
+    }
+}
+
+/// Interpolates a [`TransformNode`](rc3d_scene::node_data::TransformNode) translation (Coin3D SoInterpolate-style).
+#[derive(Debug)]
+pub struct InterpolateVec3Engine {
+    pub transform_node: rc3d_core::NodeId,
+    pub from: Vec3,
+    pub to: Vec3,
+    pub period_secs: f64,
+}
+
+impl Engine for InterpolateVec3Engine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        if self.period_secs <= 1e-6 {
+            return;
+        }
+        let u = (time % self.period_secs) / self.period_secs;
+        let p = self.from.lerp(self.to, u as f32);
+        if let Some(e) = graph.get_mut(self.transform_node) {
+            if let NodeData::Transform(t) = &mut e.data {
+                t.translation = p;
+            }
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

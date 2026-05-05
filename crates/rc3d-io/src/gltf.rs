@@ -101,6 +101,29 @@ fn build_scene(
 
             let material_node = build_material_node(&prim, images, base_dir);
             let material_id = graph.add_child(separator_id, material_node);
+
+            // Morph targets (blend shapes)
+            let morph_targets = build_morph_targets(&reader);
+            let mesh_weights: Vec<f32> = mesh.weights()
+                .map(|w| w.to_vec())
+                .unwrap_or_default();
+            if !morph_targets.is_empty() {
+                let weights = if mesh_weights.is_empty() {
+                    vec![0.0f32; morph_targets.len()]
+                } else {
+                    let mut w = mesh_weights;
+                    w.resize(morph_targets.len(), 0.0);
+                    w
+                };
+                graph.add_child(
+                    separator_id,
+                    NodeData::MorphTarget(rc3d_scene::MorphTargetNode {
+                        targets: morph_targets,
+                        weights,
+                    }),
+                );
+            }
+
             primitive_nodes.push(PrimitiveNodes {
                 separator: separator_id,
                 _material: material_id,
@@ -339,31 +362,115 @@ fn clone_node_recursive(
     }
 }
 
+fn resolve_texture_path(
+    texture: &gltf::texture::Texture,
+    images: &[gltf::image::Data],
+    base_dir: &Path,
+) -> Option<String> {
+    let source = texture.source();
+
+    // 1. Try source name as a file path hint
+    if let Some(name) = source.name().filter(|n| !n.is_empty()) {
+        let named_path = base_dir.join(name);
+        if named_path.is_file() {
+            return Some(named_path.to_string_lossy().to_string());
+        }
+        if Path::new(name).is_file() {
+            return Some(name.to_string());
+        }
+        return Some(name.to_string());
+    }
+
+    // 2. For embedded textures, extract to temp file
+    let source_index = source.index();
+    if source_index < images.len() {
+        let img_data = &images[source_index];
+
+        if let Ok(temp_dir) = std::env::temp_dir().canonicalize() {
+            let rc3d_temp = temp_dir.join("rc3d_gltf_textures");
+            let _ = std::fs::create_dir_all(&rc3d_temp);
+            let filename = format!("embedded_{}_{}.png", source_index, texture.index());
+            let temp_path = rc3d_temp.join(&filename);
+
+            if !temp_path.is_file() {
+                let rgba_data = match img_data.format {
+                    gltf::image::Format::R8G8B8 => {
+                        img_data.pixels.chunks_exact(3)
+                            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255u8])
+                            .collect::<Vec<u8>>()
+                    }
+                    gltf::image::Format::R8G8B8A8 => {
+                        img_data.pixels.clone()
+                    }
+                    _ => {
+                        img_data.pixels.clone()
+                    }
+                };
+
+                if let Some(img) = image::RgbaImage::from_raw(
+                    img_data.width,
+                    img_data.height,
+                    rgba_data,
+                ) {
+                    let _ = img.save(&temp_path);
+                }
+            }
+
+            if temp_path.is_file() {
+                return Some(temp_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    None
+}
+
 fn build_material_node(
     primitive: &gltf::Primitive,
-    _images: &[gltf::image::Data],
-    _base_dir: &Path,
+    images: &[gltf::image::Data],
+    base_dir: &Path,
 ) -> NodeData {
-    let pbr = primitive.material().pbr_metallic_roughness();
+    let mat = primitive.material();
+    let pbr = mat.pbr_metallic_roughness();
     let base_color = pbr.base_color_factor();
     let metallic = pbr.metallic_factor();
     let roughness = pbr.roughness_factor();
     let base = Vec3::new(base_color[0], base_color[1], base_color[2]);
+    let opacity = base_color[3];
 
     let albedo_texture = pbr
         .base_color_texture()
-        .and_then(|tex| {
-            let source = tex.texture().source();
-            let name = source.name().filter(|n| !n.is_empty());
-            name.map(|n: &str| n.to_string())
-        });
+        .and_then(|tex| resolve_texture_path(&tex.texture(), images, base_dir));
 
-    let emissive = primitive.material().emissive_factor();
+    let normal_texture = mat
+        .normal_texture()
+        .and_then(|tex| resolve_texture_path(&tex.texture(), images, base_dir));
+
+    let emissive_texture = mat
+        .emissive_texture()
+        .and_then(|tex| resolve_texture_path(&tex.texture(), images, base_dir));
+
+    let metallic_roughness_texture = pbr
+        .metallic_roughness_texture()
+        .and_then(|tex| resolve_texture_path(&tex.texture(), images, base_dir));
+
+    let occlusion_texture = mat
+        .occlusion_texture()
+        .and_then(|tex| resolve_texture_path(&tex.texture(), images, base_dir));
+
+    let emissive = mat.emissive_factor();
+    let emissive_color = Vec3::new(emissive[0], emissive[1], emissive[2]);
     let ambient = Vec3::new(
         emissive[0].max(base.x * 0.1),
         emissive[1].max(base.y * 0.1),
         emissive[2].max(base.z * 0.1),
     );
+
+    let alpha_mode = match mat.alpha_mode() {
+        gltf::material::AlphaMode::Opaque => rc3d_scene::AlphaMode::Opaque,
+        gltf::material::AlphaMode::Mask => rc3d_scene::AlphaMode::Mask,
+        gltf::material::AlphaMode::Blend => rc3d_scene::AlphaMode::Blend,
+    };
 
     NodeData::Material(MaterialNode {
         diffuse_color: base,
@@ -374,6 +481,45 @@ fn build_material_node(
         metallic,
         roughness,
         albedo_texture,
-        opacity: 1.0,
+        normal_texture,
+        opacity,
+        emissive_color,
+        emissive_texture,
+        metallic_roughness_texture,
+        occlusion_texture,
+        alpha_mode,
+        alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+        double_sided: mat.double_sided(),
     })
+}
+
+fn build_morph_targets<'a, 's, F>(
+    reader: &gltf::mesh::Reader<'a, 's, F>,
+) -> Vec<rc3d_scene::MorphTarget>
+where
+    F: Clone + Fn(gltf::buffer::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let mut targets = Vec::new();
+    for (i, (positions, normals, _tangents)) in reader.read_morph_targets().enumerate() {
+        let position_deltas: Vec<Vec3> = positions
+            .map(|p| p.map(|d| Vec3::new(d[0], d[1], d[2])).collect())
+            .unwrap_or_default();
+
+        if position_deltas.is_empty() {
+            continue;
+        }
+
+        let normal_deltas: Option<Vec<Vec3>> = normals
+            .map(|n| n.map(|d| Vec3::new(d[0], d[1], d[2])).collect());
+
+        let name = format!("morph_{i}");
+
+        targets.push(rc3d_scene::MorphTarget {
+            name,
+            position_deltas,
+            normal_deltas,
+            tangent_deltas: None,
+        });
+    }
+    targets
 }

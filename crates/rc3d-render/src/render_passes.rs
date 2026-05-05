@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 mod pass_edge;
 mod pass_grid;
-pub(super) mod pass_markup;
+pub(crate) mod pass_markup;
 mod pass_post;
 mod pass_selection;
 mod pass_shadow;
@@ -24,7 +24,7 @@ use draw_opaque::draw_opaque_triangle_batches;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
 
-pub(super) struct PassContext<'a> {
+pub(crate) struct PassContext<'a> {
     pub visible: &'a [&'a DrawCall],
     pub solid_order: &'a [usize],
     pub edge_order: &'a [usize],
@@ -97,6 +97,10 @@ pub(super) fn execute_passes(
     if renderer.hdr_post_processing {
         renderer.ensure_post_fx_targets();
     }
+    let use_ldr_fxaa = !renderer.hdr_post_processing && renderer.enable_ldr_fxaa;
+    if use_ldr_fxaa {
+        renderer.ensure_ldr_shade_target();
+    }
     let scene_pl = renderer
         .pipelines
         .for_shaded_target(ctx.depth_reversed_z, renderer.hdr_post_processing)
@@ -108,6 +112,12 @@ pub(super) fn execute_passes(
             log::warn!("hdr_post_processing is enabled but post_fx is missing; falling back to swapchain view");
             view.clone()
         }
+    } else if use_ldr_fxaa {
+        renderer
+            .ldr_shade_view
+            .as_ref()
+            .expect("LDR shade view")
+            .clone()
     } else {
         view.clone()
     };
@@ -430,7 +440,30 @@ pub(super) fn execute_passes(
     let has_selection = ctx.visible.iter().any(|dc| dc.selected);
     if has_selection && !ctx.performance_mode_active {
         pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
-        if ctx.wireframe_supported && ctx.adaptive_quality != AdaptiveQuality::Low {
+        let ss_outline = renderer.screen_space_selection_outline
+            && ctx.adaptive_quality != AdaptiveQuality::Low;
+        if ss_outline {
+            let shade_fmt = if renderer.hdr_post_processing {
+                wgpu::TextureFormat::Rgba16Float
+            } else {
+                renderer.config.format
+            };
+            let scene_tex_ptr: *const wgpu::Texture = if renderer.hdr_post_processing {
+                std::ptr::from_ref(&renderer.post_fx.as_ref().unwrap().hdr_tex)
+            } else if use_ldr_fxaa {
+                std::ptr::from_ref(renderer.ldr_shade_tex.as_ref().expect("LDR shade texture"))
+            } else {
+                std::ptr::from_ref(&output.texture)
+            };
+            crate::selection_outline::encode_selection_outline_pass(
+                renderer,
+                &mut encoder,
+                ctx,
+                shade_view,
+                shade_fmt,
+                scene_tex_ptr,
+            );
+        } else if ctx.wireframe_supported && ctx.adaptive_quality != AdaptiveQuality::Low {
             pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         }
         pass_selection::pass_selection_bbox(&mut encoder, shade_view, &depth_view, ctx, &scene_pl, &mut renderer.flat_pool, ctx.wireframe_supported);
@@ -449,6 +482,17 @@ pub(super) fn execute_passes(
             // For now this validates compilation of the pipeline/sort/pass chain.
             let _ = (dc, &scene_pl.solid_alpha);
         }
+    }
+
+    if use_ldr_fxaa {
+        pass_post::pass_fxaa_ldr_to_swapchain(
+            &renderer.device,
+            &mut encoder,
+            &renderer.post_fx_pipelines,
+            renderer.ldr_shade_view.as_ref().expect("LDR shade view"),
+            &view,
+            ctx.bg_color,
+        );
     }
 
     if renderer.hdr_post_processing {

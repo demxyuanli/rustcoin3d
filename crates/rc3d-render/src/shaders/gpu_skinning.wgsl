@@ -67,10 +67,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let b1 = skin_data[skin_base + 1u];
     let b2 = skin_data[skin_base + 2u];
     let b3 = skin_data[skin_base + 3u];
-    let w0 = f32(skin_data[skin_base + 4u]) / 65535.0;
-    let w1 = f32(skin_data[skin_base + 5u]) / 65535.0;
-    let w2 = f32(skin_data[skin_base + 6u]) / 65535.0;
-    let w3 = f32(skin_data[skin_base + 7u]) / 65535.0;
+    let w0 = bitcast<f32>(skin_data[skin_base + 4u]);
+    let w1 = bitcast<f32>(skin_data[skin_base + 5u]);
+    let w2 = bitcast<f32>(skin_data[skin_base + 6u]);
+    let w3 = bitcast<f32>(skin_data[skin_base + 7u]);
 
     // Apply skinning
     var animated_pos = vec4<f32>(0.0);

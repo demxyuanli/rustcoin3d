@@ -3,7 +3,7 @@ use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_engine::{EngineRegistry, SimulationScheduler, TimeManager};
 use rc3d_render::{MaterialLibrary, RenderCollector, Renderer};
-use rc3d_scene::SceneGraph;
+use rc3d_scene::{SceneGraph, SensorRegistry};
 
 pub struct World {
     pub graph: SceneGraph,
@@ -13,6 +13,7 @@ pub struct World {
     pub time: TimeManager,
     pub materials: MaterialLibrary,
     pub collector: RenderCollector,
+    pub sensor_registry: SensorRegistry,
 }
 
 impl World {
@@ -25,6 +26,7 @@ impl World {
             time: TimeManager::new(),
             materials: MaterialLibrary::new(),
             collector: RenderCollector::new(),
+            sensor_registry: SensorRegistry::new(),
         }
     }
 

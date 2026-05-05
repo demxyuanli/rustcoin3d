@@ -11,8 +11,15 @@ rc3d-actions = { workspace = true }
 rc3d-render = { workspace = true }
 rc3d-engine = { workspace = true }
 rc3d-io = { workspace = true }
+rc3d-gizmo = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+eframe = "0.31.1"
+egui = "0.31.1"
+egui-wgpu = "0.31.1"
+egui-winit = "0.31.1"
+rfd = "0.15.4"
+fbxcel = { version = "0.9", features = ["writer"] }

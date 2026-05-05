@@ -8,8 +8,10 @@ pub mod color_grading;
 pub mod dof_pass;
 pub mod frustum;
 pub mod gpu_resource;
+pub mod gpu_skinning;
 pub mod hud;
 pub mod hzb;
+pub mod offscreen;
 pub mod ibl;
 pub mod material_library;
 pub mod motion_blur;
@@ -20,6 +22,8 @@ pub mod render_action;
 pub mod render_graph;
 pub mod render_passes;
 pub mod renderer;
+pub mod selection_outline;
+pub mod shader_permutation;
 pub mod shader_reload;
 pub mod shadow_map;
 pub mod shadow_omni;
@@ -30,12 +34,14 @@ pub mod taa;
 pub mod texture_cache;
 pub mod texture_format;
 pub mod vertex;
+pub mod viewport;
 pub mod volumetric_fog;
 
 pub use asset_manager::GpuAssetManager;
 pub use async_loader::{AssetHandle, AsyncAssetManager};
 pub use auto_exposure::AutoExposure;
 pub use pipeline_cache::PipelineCacheManager;
+pub use shader_permutation::{ShaderFeatures, ShaderVariantCache, preprocess_wgsl};
 pub use shader_reload::ShaderHotReload;
 pub use ssr_pass::SsrPass;
 pub use taa::{TaaJitter, TaaPass};
@@ -48,8 +54,16 @@ pub use material_library::{MaterialId, MaterialLibrary};
 pub use volumetric_fog::VolumetricFogPass;
 pub use motion_blur::MotionBlurPass;
 pub use hud::HudRenderer;
+pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
-pub use render_action::{DrawCall, RenderCollector};
-pub use renderer::{FrameStats, Renderer};
+pub use render_action::{DrawCall, RenderCollector, SkinnedMeshDrawPayload};
+pub use renderer::{
+    AdaptiveControl, BatchAnalysis, FrameDiagnostics, FrameStats, MemoryBudget, NodeTypeDrawStat,
+    Renderer,
+};
 pub use texture_cache::{ibl_from_image_path, TextureCache, TextureHandle};
 pub use vertex::{FlatUniforms, InstanceData, LineVertex, SceneUniforms, ShadowDrawUniforms, Vertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT};
+pub use viewport::{
+    LayoutMode, ProjectionType, Viewport, ViewportId, ViewportLayout, ViewportRect, ViewportSplitAxis,
+    VIEWPORT_SPLITTER_HIT_PX,
+};

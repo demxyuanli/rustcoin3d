@@ -1,0 +1,2079 @@
+mod box_select;
+mod gizmo_support;
+mod measurement;
+mod streaming_lod;
+
+use rc3d_actions::{
+    update_all_lod_nodes, Action, CommandHistory, Ray, SectionPlaneAction, SetRotationCommand,
+    SetScaleCommand, SetTranslationCommand,
+};
+use rc3d_core::{
+    math::{Mat4, Quat, Vec3},
+    Aabb, DisplayMode,
+};
+use rc3d_gizmo::GizmoMode;
+use rc3d_render::{AdaptiveControl, DrawCall, FrameStats, Renderer};
+use rc3d_scene::SceneGraph;
+use std::sync::mpsc::TryRecvError;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
+use winit::{
+    application::ApplicationHandler, event_loop::ActiveEventLoop, window::WindowAttributes,
+};
+
+use crate::camera_controller::CameraController;
+use crate::editor_ui::{
+    EditorCommand, EditorDisplayMode, EditorUi, EditorUiContext, NodeDataType, RenderFeatureFlags,
+};
+use crate::viewport_camera::ViewportCameraSet;
+use crate::world::World;
+use rc3d_core::NodeId;
+use streaming_lod::{
+    apply_decimated_preview, gaussian_triangle_budget, stream_step_ms, FullResPatch,
+};
+
+type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
+const APPROX_VERTEX_BYTES: usize = 48;
+const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 240 * 1024 * 1024;
+
+struct FpsTracker {
+    samples: std::collections::VecDeque<f32>,
+    sum: f32,
+    capacity: usize,
+    ema_fps: f32,
+    last_log: Instant,
+}
+
+impl FpsTracker {
+    fn new(capacity: usize) -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(capacity),
+            sum: 0.0,
+            capacity,
+            ema_fps: 0.0,
+            last_log: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, frame_time_ms: f32) {
+        if self.samples.len() == self.capacity {
+            if let Some(old) = self.samples.pop_front() {
+                self.sum -= old;
+            }
+        }
+        self.samples.push_back(frame_time_ms);
+        self.sum += frame_time_ms;
+        let inst_fps = if frame_time_ms > 0.0 {
+            1000.0 / frame_time_ms
+        } else {
+            0.0
+        };
+        if self.ema_fps <= 0.0 {
+            self.ema_fps = inst_fps;
+        } else {
+            let alpha = 0.08_f32;
+            self.ema_fps += (inst_fps - self.ema_fps) * alpha;
+        }
+    }
+
+    fn average_frame_ms(&self) -> f32 {
+        if self.samples.is_empty() {
+            0.0
+        } else {
+            self.sum / self.samples.len() as f32
+        }
+    }
+
+    fn fps(&self) -> f32 {
+        let avg = self.average_frame_ms();
+        if avg > 0.0 {
+            1000.0 / avg
+        } else {
+            0.0
+        }
+    }
+
+    fn smoothed_fps(&self) -> f32 {
+        if self.ema_fps > 0.0 {
+            self.ema_fps
+        } else {
+            self.fps()
+        }
+    }
+
+    fn maybe_log(&mut self, stats: &FrameStats, quality: &str) {
+        if self.last_log.elapsed().as_secs() >= 1 {
+            self.last_log = Instant::now();
+            log::info!(
+                "FPS: {:.1} | frame: {:.2}ms | tris: {} | draws: {} | culled: {} | quality: {}",
+                self.fps(),
+                self.average_frame_ms(),
+                stats.visible_triangles,
+                stats.visible_draw_calls,
+                stats.culled_draw_calls,
+                quality,
+            );
+        }
+    }
+}
+
+pub struct App {
+    pub world: World,
+    pub renderer: Option<Renderer>,
+    pub window: Option<winit::window::Window>,
+    pub camera_controller: Option<CameraController>, // legacy; prefer viewport_cameras
+    pub viewport_cameras: ViewportCameraSet,
+    pub on_pick: Option<PickCallback>,
+    cursor_pos: (f64, f64),
+    shift_pressed: bool,
+    ctrl_pressed: bool,
+    measurement_mode: bool,
+    measurement_type: Option<rc3d_scene::node_data::MeasurementType>,
+    measurement_first_point: Option<Vec3>,
+    measurements: Vec<(Vec3, Vec3, f32)>,
+    perf_mode_last: bool,
+    full_res_patches: Vec<FullResPatch>,
+    preview_mode_active: bool,
+    stream_next_tick: Option<Instant>,
+    initial_display_mode: DisplayMode,
+    enable_hdr_post_processing: bool,
+    last_frame_time: Instant,
+    last_frame_time_ms: f32,
+    fps_tracker: FpsTracker,
+    last_render_stats: FrameStats,
+    pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
+    graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
+    panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
+    panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
+    panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
+    adaptive_quality_mode: AdaptiveQualityMode,
+    adaptive_last_interaction: Instant,
+    continuous_redraw: bool,
+    gizmo: rc3d_gizmo::Gizmo,
+    gizmo_dragging: bool,
+    gizmo_pending_transform: Option<(NodeId, Mat4)>,
+    command_history: CommandHistory,
+    /// Axis-aligned clip toggles (merged with `SectionPlane` from the graph each frame).
+    axis_clip: [bool; 3],
+    grid_enabled: bool,
+    box_select_drag: bool,
+    box_select_anchor: (f32, f32),
+    section_edit_mode: bool,
+    view_split_drag: bool,
+    hidden_nodes: std::collections::HashSet<NodeId>,
+    last_camera_eye: Vec3,
+    window_title: String,
+    editor_ui: Option<EditorUi>,
+    editor_ui_enabled: bool,
+    editor_commands: std::collections::VecDeque<EditorCommand>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveQualityMode {
+    Off,
+    On,
+    AutoIdleLock,
+}
+
+impl App {
+    pub fn new(graph: SceneGraph) -> Self {
+        let mut graph = graph;
+        let full_res_patches = apply_decimated_preview(&mut graph);
+        let preview_mode_active = !full_res_patches.is_empty();
+        if preview_mode_active {
+            log::warn!(
+                "Streaming mesh load: {} patch(es), Gaussian CDF sigma={}, duration={}s",
+                full_res_patches.len(),
+                0.22,
+                2.2,
+            );
+        }
+        Self {
+            world: World::new(graph),
+            renderer: None,
+            window: None,
+            camera_controller: None,
+            viewport_cameras: ViewportCameraSet::new(),
+            on_pick: None,
+            cursor_pos: (0.0, 0.0),
+            shift_pressed: false,
+            ctrl_pressed: false,
+            measurement_mode: false,
+            measurement_type: None,
+            measurement_first_point: None,
+            measurements: Vec::new(),
+            perf_mode_last: false,
+            full_res_patches,
+            preview_mode_active,
+            stream_next_tick: None,
+            initial_display_mode: DisplayMode::ShadedWithEdges,
+            enable_hdr_post_processing: false,
+            last_frame_time: Instant::now(),
+            last_frame_time_ms: 0.0,
+            fps_tracker: FpsTracker::new(120),
+            last_render_stats: FrameStats::default(),
+            pending_graph_rx: None,
+            graph_load_hook: None,
+            panel_overlay_text_hook: None,
+            panel_overlay_key_hook: None,
+            panel_overlay_mouse_hook: None,
+            adaptive_quality_mode: AdaptiveQualityMode::On,
+            adaptive_last_interaction: Instant::now(),
+            continuous_redraw: true,
+            gizmo: rc3d_gizmo::Gizmo::new(),
+            gizmo_dragging: false,
+            gizmo_pending_transform: None,
+            command_history: CommandHistory::new(128),
+            axis_clip: [false, false, false],
+            grid_enabled: false,
+            box_select_drag: false,
+            box_select_anchor: (0.0, 0.0),
+            section_edit_mode: false,
+            view_split_drag: false,
+            hidden_nodes: std::collections::HashSet::new(),
+            last_camera_eye: Vec3::new(0.0, 0.0, 5.0),
+            window_title: "rustcoin3d".into(),
+            editor_ui: None,
+            editor_ui_enabled: false,
+            editor_commands: std::collections::VecDeque::new(),
+        }
+    }
+
+    pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
+        self.window_title = title.into();
+        self
+    }
+
+    pub fn with_editor_ui(mut self, enabled: bool) -> Self {
+        self.editor_ui_enabled = enabled;
+        self
+    }
+
+    pub fn set_pending_graph_receiver(
+        &mut self,
+        rx: std::sync::mpsc::Receiver<Result<SceneGraph, String>>,
+    ) {
+        self.pending_graph_rx = Some(rx);
+    }
+
+    pub fn set_graph_load_hook(&mut self, hook: impl FnOnce(&mut App) + 'static) {
+        self.graph_load_hook = Some(Box::new(hook));
+    }
+
+    fn poll_pending_graph_load(&mut self) {
+        let Some(rx) = self.pending_graph_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(graph)) => {
+                self.world.graph = graph;
+                self.viewport_cameras.cameras.clear();
+                self.pending_graph_rx = None;
+                if let Some(renderer) = &mut self.renderer {
+                    self.world.invalidate_caches(renderer);
+                } else {
+                    self.world.collector.invalidate_mesh_cache();
+                }
+                log::info!("Async scene load applied");
+                if let Some(hook) = self.graph_load_hook.take() {
+                    hook(self);
+                }
+            }
+            Ok(Err(e)) => {
+                self.pending_graph_rx = None;
+                log::error!("Async scene load failed: {}", e);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.pending_graph_rx = None;
+                log::warn!("Async scene load channel disconnected");
+            }
+        }
+    }
+
+    pub fn with_camera_controller(mut self, controller: CameraController) -> Self {
+        self.camera_controller = Some(controller);
+        self
+    }
+
+    pub fn with_engines(mut self, engines: rc3d_engine::EngineRegistry) -> Self {
+        self.world.engines = Some(engines);
+        self
+    }
+
+    pub fn on_pick(
+        mut self,
+        f: impl FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3) + 'static,
+    ) -> Self {
+        self.on_pick = Some(Box::new(f));
+        self
+    }
+
+    pub fn scene_graph(&self) -> &SceneGraph {
+        &self.world.graph
+    }
+
+    pub fn scene_graph_mut(&mut self) -> &mut SceneGraph {
+        &mut self.world.graph
+    }
+
+    pub fn with_initial_display_mode(mut self, mode: DisplayMode) -> Self {
+        self.initial_display_mode = mode;
+        self
+    }
+
+    pub fn with_hdr_post_processing(mut self, enabled: bool) -> Self {
+        self.enable_hdr_post_processing = enabled;
+        self
+    }
+
+    pub fn with_panel_overlay_text_hook(mut self, hook: impl Fn() -> String + 'static) -> Self {
+        self.panel_overlay_text_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_panel_overlay_key_hook(
+        mut self,
+        hook: impl FnMut(winit::keyboard::KeyCode) + 'static,
+    ) -> Self {
+        self.panel_overlay_key_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_panel_overlay_mouse_hook(
+        mut self,
+        hook: impl FnMut(f32, f32, u32, u32) -> bool + 'static,
+    ) -> Self {
+        self.panel_overlay_mouse_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_grid_enabled(mut self, enabled: bool) -> Self {
+        self.grid_enabled = enabled;
+        self
+    }
+
+    pub fn with_adaptive_quality_mode(mut self, mode: AdaptiveQualityMode) -> Self {
+        self.adaptive_quality_mode = mode;
+        self
+    }
+
+    pub fn with_continuous_redraw(mut self, enabled: bool) -> Self {
+        self.continuous_redraw = enabled;
+        self
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            let window = event_loop
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title(self.window_title.clone())
+                        .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
+                        .with_resizable(true)
+                        .with_maximized(true)
+                        .with_visible(false),
+                )
+                .expect("failed to create window");
+            let renderer = pollster::block_on(Renderer::new(&window));
+            self.window = Some(window);
+            self.renderer = Some(renderer);
+            if self.editor_ui_enabled {
+                if let (Some(window), Some(renderer)) = (&self.window, &self.renderer) {
+                    self.editor_ui = Some(EditorUi::new(window, renderer));
+                }
+            }
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_display_mode(self.initial_display_mode);
+                if self.enable_hdr_post_processing {
+                    renderer.set_hdr_post_processing(true);
+                }
+                if self.editor_ui_enabled {
+                    renderer.hud_enabled = false;
+                }
+            }
+            if let Some(window) = &self.window {
+                window.set_visible(true);
+            }
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let ui_consumed = if self.editor_ui_enabled {
+            if let (Some(ui), Some(window)) = (&mut self.editor_ui, &self.window) {
+                ui.on_window_event(window, &event)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        match &event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(physical_size) => {
+                self.adaptive_last_interaction = Instant::now();
+                let size = *physical_size;
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(size.width, size.height);
+                }
+                if let Some(window) = &self.window {
+                    if let Some(ui) = &mut self.editor_ui {
+                        ui.resize(size.width, size.height, window.scale_factor() as f32);
+                    }
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.adaptive_last_interaction = Instant::now();
+                self.cursor_pos = (position.x, position.y);
+                if !self.measurement_mode {
+                    self.editor_on_cursor_moved();
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
+                if ui_consumed {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if key_event.state == winit::event::ElementState::Pressed && !key_event.repeat {
+                    let key = key_event.physical_key;
+                    if let winit::keyboard::PhysicalKey::Code(code) = key {
+                        self.adaptive_last_interaction = Instant::now();
+                        if let Some(hook) = &mut self.panel_overlay_key_hook {
+                            hook(code);
+                        }
+                    }
+                    match key {
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.set_display_mode(DisplayMode::Wireframe);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyS) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.set_display_mode(DisplayMode::Shaded);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyE) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.set_display_mode(DisplayMode::ShadedWithEdges);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyH) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.set_display_mode(DisplayMode::HiddenLine);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => {
+                            self.axis_clip[0] = !self.axis_clip[0];
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY) => {
+                            if self.ctrl_pressed {
+                                let _ = self.command_history.redo(&mut self.world.graph);
+                            } else {
+                                self.axis_clip[1] = !self.axis_clip[1];
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
+                            if self.ctrl_pressed {
+                                let _ = self.command_history.undo(&mut self.world.graph);
+                            } else {
+                                self.axis_clip[2] = !self.axis_clip[2];
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyF) => {
+                            self.fit_selection_to_view();
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyT) => {
+                            self.gizmo.mode = GizmoMode::Translate;
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyR) => {
+                            self.gizmo.mode = GizmoMode::Rotate;
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyG) => {
+                            self.gizmo.mode = GizmoMode::Scale;
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyP) => {
+                            self.section_edit_mode = !self.section_edit_mode;
+                        }
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::BracketLeft,
+                        ) => {
+                            if self.section_edit_mode {
+                                self.nudge_section_planes(-0.04);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::BracketRight,
+                        ) => {
+                            if self.section_edit_mode {
+                                self.nudge_section_planes(0.04);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) => {
+                            self.world.graph.clear_selection();
+                            self.measurements.clear();
+                            self.measurement_first_point = None;
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyM) => {
+                            self.measurement_mode = !self.measurement_mode;
+                            self.measurement_first_point = None;
+                            log::info!("Measurement mode: {}", self.measurement_mode);
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyN) => {
+                            self.grid_enabled = !self.grid_enabled;
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.grid_enabled = self.grid_enabled;
+                            }
+                            log::info!("Grid: {}", if self.grid_enabled { "on" } else { "off" });
+                        }
+                        // Camera bookmarks: Ctrl+Digit = save, Digit = recall
+                        k @ winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::Digit1
+                            | winit::keyboard::KeyCode::Digit2
+                            | winit::keyboard::KeyCode::Digit3
+                            | winit::keyboard::KeyCode::Digit4
+                            | winit::keyboard::KeyCode::Digit5
+                            | winit::keyboard::KeyCode::Digit6
+                            | winit::keyboard::KeyCode::Digit7
+                            | winit::keyboard::KeyCode::Digit8
+                            | winit::keyboard::KeyCode::Digit9,
+                        ) => {
+                            let code = match k {
+                                winit::keyboard::PhysicalKey::Code(c) => c,
+                                _ => winit::keyboard::KeyCode::Digit1,
+                            };
+                            let slot = bookmark_slot_from_key(code);
+                            if self.ctrl_pressed {
+                                if let Some(ctrl) = self.active_camera_controller_mut() {
+                                    ctrl.save_bookmark(slot, "bookmark");
+                                    log::info!("Saved camera bookmark to slot {}", slot + 1);
+                                }
+                            } else {
+                                if let Some(ctrl) = self.active_camera_controller_mut() {
+                                    ctrl.recall_bookmark(slot);
+                                    log::info!("Recalling camera bookmark {}", slot + 1);
+                                }
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyI) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.cycle_ibl_preset();
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                let w = renderer.config.width;
+                                let h = renderer.config.height;
+                                renderer.viewport_layout.cycle_layout(w, h);
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Tab) => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.viewport_layout.cycle_active();
+                                self.viewport_cameras.active_viewport =
+                                    renderer.viewport_layout.active_id;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+                if let WindowEvent::KeyboardInput { event: kb, .. } = &event {
+                    if kb.state == winit::event::ElementState::Pressed {
+                        let evt = rc3d_actions::Event::KeyPress {
+                            key: format!("{:?}", kb.logical_key),
+                        };
+                        if let (Some(_r), Some(active)) =
+                            (&self.renderer, self.viewport_cameras.active())
+                        {
+                            let view = active.controller.view_matrix();
+                            let proj =
+                                Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 1000.0);
+                            let ctx = rc3d_actions::EventContext::new(evt, view, proj);
+                            let mut action = rc3d_actions::HandleEventAction::new(ctx);
+                            action.apply_non_pointer_only(
+                                &self.world.graph,
+                                self.world
+                                    .graph
+                                    .roots()
+                                    .first()
+                                    .copied()
+                                    .unwrap_or(NodeId::default()),
+                            );
+                        }
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.adaptive_last_interaction = Instant::now();
+                self.shift_pressed = mods.state().shift_key();
+                self.ctrl_pressed = mods.state().control_key();
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if ui_consumed {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                if *button == MouseButton::Left {
+                    self.adaptive_last_interaction = Instant::now();
+                    if *state == winit::event::ElementState::Pressed {
+                        if let Some(hook) = &mut self.panel_overlay_mouse_hook {
+                            if let Some(window) = self.window.as_ref() {
+                                let size = window.inner_size();
+                                if hook(
+                                    self.cursor_pos.0 as f32,
+                                    self.cursor_pos.1 as f32,
+                                    size.width,
+                                    size.height,
+                                ) {
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        if self.measurement_mode {
+                            self.do_measure_pick();
+                        } else {
+                            self.editor_on_left_down();
+                        }
+                    } else if *state == winit::event::ElementState::Released {
+                        self.editor_on_left_up();
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { .. } => {
+                if ui_consumed {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                self.adaptive_last_interaction = Instant::now();
+            }
+            WindowEvent::RedrawRequested => {
+                self.poll_pending_graph_load();
+                if self.preview_mode_active
+                    && self.renderer.is_some()
+                    && self.stream_next_tick.is_none()
+                {
+                    self.stream_next_tick =
+                        Some(Instant::now() + Duration::from_millis(stream_step_ms()));
+                }
+                self.tick_mesh_stream();
+
+                // Legacy camera controller: update scene-graph camera node
+                if let Some(ref ctrl) = self.camera_controller {
+                    let aspect = self
+                        .renderer
+                        .as_ref()
+                        .map(|r| r.config.width as f32 / r.config.height.max(1) as f32)
+                        .unwrap_or(1.0);
+                    let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
+                    for &root in &roots {
+                        Self::update_camera_recursive(ctrl, &mut self.world.graph, root, aspect);
+                    }
+                }
+
+                // Snapshot viewport layout for camera updates (before renderer is mutably borrowed)
+                if !self.viewport_cameras.cameras.is_empty() {
+                    let viewports: Vec<_> = self
+                        .renderer
+                        .as_ref()
+                        .map(|r| {
+                            r.viewport_layout
+                                .viewports
+                                .iter()
+                                .map(|v| (v.id, v.rect.aspect()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    for vc in &self.viewport_cameras.cameras {
+                        if let Some(&(_, aspect)) =
+                            viewports.iter().find(|&&(id, _)| id == vc.viewport_id)
+                        {
+                            vc.controller.update_camera_node(
+                                &mut self.world.graph,
+                                vc.camera_node,
+                                aspect,
+                            );
+                        }
+                    }
+                }
+
+                let selected_set = self.world.graph.selected_nodes().clone();
+                let selected_count = selected_set.len();
+                // Snapshot bookmarks outside of renderer/editor borrow scope
+                let bookmarks: [(bool, &'static str); 9] = {
+                    let mut bm = [(false, ""); 9];
+                    if let Some(ctrl) = self.active_camera_controller_mut() {
+                        for (i, slot) in ctrl.bookmarks.iter().enumerate() {
+                            if slot.is_some() {
+                                bm[i] = (true, "saved");
+                            }
+                        }
+                    }
+                    bm
+                };
+                if self.editor_ui_enabled {
+                    if let (Some(ui), Some(window), Some(renderer)) =
+                        (&mut self.editor_ui, &self.window, &self.renderer)
+                    {
+                        let ui_ctx = EditorUiContext {
+                            selected: selected_set,
+                            display_mode_label: format!("{:?}", renderer.display_mode()),
+                            ibl_label: renderer.ibl_preset_name().to_string(),
+                            gizmo_mode: self.gizmo.mode,
+                            layout_mode_label: format!(
+                                "{:?}",
+                                renderer.viewport_layout.layout_mode
+                            ),
+                            active_viewport_label: format!(
+                                "{:?}",
+                                renderer.viewport_layout.active_id
+                            ),
+                            smoothed_fps: self.fps_tracker.smoothed_fps(),
+                            frame_time_ms: self.last_frame_time_ms,
+                            diagnostics: self.last_render_stats.diagnostics.clone(),
+                            hidden_nodes: self.hidden_nodes.clone(),
+                            render_features: RenderFeatureFlags {
+                                taa: renderer.enable_taa,
+                                motion_blur: renderer.enable_motion_blur,
+                                ssr: renderer.enable_ssr,
+                                color_grading: renderer.enable_color_grading,
+                                dof: renderer.enable_dof,
+                                volumetric_fog: renderer.enable_volumetric_fog,
+                                cluster_lights: renderer.enable_cluster_lights,
+                                omni_shadows: renderer.enable_omni_shadows,
+                                xray: renderer.xray_mode,
+                            },
+                            hdr_enabled: renderer.hdr_post_processing,
+                            vsync_enabled: matches!(
+                                renderer.config.present_mode,
+                                wgpu::PresentMode::AutoVsync
+                            ),
+                            grid_enabled: self.grid_enabled,
+                            hud_enabled: renderer.hud_enabled,
+                            outline_width: renderer.outline_width,
+                            outline_color: renderer.outline_color,
+                            xray_mode: renderer.xray_mode,
+                            adaptive_quality_mode: self.adaptive_quality_mode,
+                            adaptive_quality_name: renderer.adaptive_quality_name().to_string(),
+                            bookmarks,
+                            selected_count,
+                        };
+                        ui.run(window, &self.world.graph, &ui_ctx);
+                        for cmd in ui.take_commands() {
+                            self.editor_commands.push_back(cmd);
+                        }
+                    }
+                    self.apply_editor_commands();
+                }
+
+                if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
+                    let roots_lod: Vec<NodeId> = self.world.graph.roots().to_vec();
+                    for &r in &roots_lod {
+                        update_all_lod_nodes(&mut self.world.graph, r, self.last_camera_eye);
+                    }
+                    {
+                        let mut section = SectionPlaneAction::new();
+                        for &r in &roots_lod {
+                            section.apply(&self.world.graph, r);
+                        }
+                        let mut merged = section.planes;
+                        if self.axis_clip[0] {
+                            merged.push([1.0, 0.0, 0.0, 0.0]);
+                        }
+                        if self.axis_clip[1] {
+                            merged.push([0.0, 1.0, 0.0, 0.0]);
+                        }
+                        if self.axis_clip[2] {
+                            merged.push([0.0, 0.0, 1.0, 0.0]);
+                        }
+                        renderer.set_clip_planes(merged);
+                    }
+                    self.world.evaluate_engines();
+
+                    renderer.materials = self.world.materials.clone();
+                    renderer.grid_enabled = self.grid_enabled;
+                    self.world.collector.draw_calls.clear();
+                    self.world.collector.state = rc3d_actions::State::new();
+                    self.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
+                    self.world.collector.view_matrix = Mat4::IDENTITY;
+                    self.world.collector.projection_matrix = Mat4::IDENTITY;
+                    self.world.collector.projection_orthographic = false;
+                    self.world.collector.global_display_mode = renderer.display_mode();
+                    self.world.collector.material_library = Some(self.world.materials.clone());
+                    self.world.collector.set_hidden_nodes(&self.hidden_nodes);
+                    for &root in self.world.graph.roots() {
+                        self.world.collector.traverse(&self.world.graph, root);
+                    }
+                    self.last_camera_eye = self.world.collector.camera_pos;
+                    gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+
+                    if !self.measurements.is_empty() {
+                        let vp = self.world.collector.projection_matrix
+                            * self.world.collector.view_matrix;
+                        let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(
+                            self.world.collector.projection_matrix,
+                        );
+                        for &(p1, p2, _dist) in &self.measurements {
+                            self.world.collector.draw_calls.push(DrawCall {
+                                vertices: Arc::new(Vec::new()),
+                                indices: None,
+                                edge_positions: Arc::new(vec![p1.to_array(), p2.to_array()]),
+                                mvp: vp,
+                                model_matrix: Mat4::IDENTITY,
+                                camera_pos: self.world.collector.camera_pos,
+                                light_dirs: [[0.0; 4]; 16],
+                                light_colors: [[0.0; 4]; 16],
+                                light_types: [[0.0; 4]; 16],
+                                light_positions: [[0.0; 4]; 16],
+                                spot_params: [[0.0; 4]; 16],
+                                light_count: 0,
+                                diffuse_color: Vec3::ZERO,
+                                ambient_color: Vec3::ZERO,
+                                specular_color: Vec3::ZERO,
+                                shininess: 1.0,
+                                base_color: Vec3::ZERO,
+                                metallic: 0.0,
+                                roughness: 0.5,
+                                opacity: 1.0,
+                                albedo_path: None,
+                                normal_path: None,
+                                aabb: None,
+                                display_mode: DisplayMode::ShadedWithEdges,
+                                selected: false,
+                                overlay_color: Some([1.0, 1.0, 0.0, 1.0]),
+                                mesh_hash: None,
+                                meshlet_data: None,
+                                projection_orthographic: self
+                                    .world
+                                    .collector
+                                    .projection_orthographic,
+                                depth_reversed_z,
+                                node_type_label: Arc::from("Measurement"),
+                                instance_transforms: None,
+                            });
+                        }
+                    }
+                    if self.gizmo.visible {
+                        let vp = self.world.collector.projection_matrix
+                            * self.world.collector.view_matrix;
+                        let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(
+                            self.world.collector.projection_matrix,
+                        );
+                        for (line_verts, color) in self.gizmo.generate_lines() {
+                            let mut ep: Vec<[f32; 3]> = Vec::new();
+                            for c in line_verts.chunks_exact(2) {
+                                ep.push(c[0].position);
+                                ep.push(c[1].position);
+                            }
+                            if !ep.is_empty() {
+                                self.world.collector.draw_calls.push(DrawCall {
+                                    vertices: Arc::new(Vec::new()),
+                                    indices: None,
+                                    edge_positions: Arc::new(ep),
+                                    mvp: vp,
+                                    model_matrix: Mat4::IDENTITY,
+                                    camera_pos: self.world.collector.camera_pos,
+                                    light_dirs: [[0.0; 4]; 16],
+                                    light_colors: [[0.0; 4]; 16],
+                                    light_types: [[0.0; 4]; 16],
+                                    light_positions: [[0.0; 4]; 16],
+                                    spot_params: [[0.0; 4]; 16],
+                                    light_count: 0,
+                                    diffuse_color: Vec3::ZERO,
+                                    ambient_color: Vec3::ZERO,
+                                    specular_color: Vec3::ZERO,
+                                    shininess: 1.0,
+                                    base_color: Vec3::ZERO,
+                                    metallic: 0.0,
+                                    roughness: 0.5,
+                                    opacity: 1.0,
+                                    albedo_path: None,
+                                    normal_path: None,
+                                    aabb: None,
+                                    display_mode: DisplayMode::ShadedWithEdges,
+                                    selected: false,
+                                    overlay_color: Some(color),
+                                    mesh_hash: None,
+                                    meshlet_data: None,
+                                    projection_orthographic: self
+                                        .world
+                                        .collector
+                                        .projection_orthographic,
+                                    depth_reversed_z,
+                                    node_type_label: Arc::from("Gizmo"),
+                                    instance_transforms: None,
+                                });
+                            }
+                        }
+                    }
+
+                    if !self.world.collector.draw_calls.is_empty() {
+                        let mut overlay = None;
+                        if let Some(ui) = &mut self.editor_ui {
+                            overlay = Some(ui as *mut EditorUi);
+                        }
+                        let stats = if let Some(ui_ptr) = overlay {
+                            let device = renderer.device.clone();
+                            let queue = renderer.queue.clone();
+                            renderer.render_draw_calls_with_overlay(
+                                &self.world.collector.draw_calls,
+                                &self.world.graph,
+                                Some(&mut |encoder, view| {
+                                    // SAFETY: ui_ptr points to self.editor_ui and is valid for this frame scope.
+                                    let ui = unsafe { &mut *ui_ptr };
+                                    ui.paint(&device, &queue, encoder, view);
+                                }),
+                            )
+                        } else {
+                            renderer.render_draw_calls(
+                                &self.world.collector.draw_calls,
+                                &self.world.graph,
+                            )
+                        };
+                        let now = Instant::now();
+                        let frame_time_ms =
+                            now.duration_since(self.last_frame_time).as_secs_f32() * 1000.0;
+                        self.last_frame_time = now;
+                        self.last_frame_time_ms = frame_time_ms;
+                        self.fps_tracker.push(frame_time_ms);
+                        self.last_render_stats = stats;
+                        let idle_for_secs = self.adaptive_last_interaction.elapsed().as_secs_f32();
+                        let has_dynamic_scene = self.world.engines.is_some();
+                        let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
+                        let lock_idle = idle_for_secs >= 2.0 && !has_dynamic_scene;
+                        let adaptive_control = match self.adaptive_quality_mode {
+                            AdaptiveQualityMode::Off => AdaptiveControl::Disabled,
+                            AdaptiveQualityMode::On => AdaptiveControl::Dynamic { allow_downgrade },
+                            AdaptiveQualityMode::AutoIdleLock => {
+                                if lock_idle {
+                                    AdaptiveControl::Locked
+                                } else {
+                                    AdaptiveControl::Dynamic { allow_downgrade }
+                                }
+                            }
+                        };
+                        renderer.report_frame_time_ms(frame_time_ms, adaptive_control);
+                        let mut mode_name = format!(
+                            "{:?} | IBL:{}",
+                            renderer.display_mode(),
+                            renderer.ibl_preset_name()
+                        );
+                        if let Some(text_hook) = &self.panel_overlay_text_hook {
+                            let overlay = text_hook();
+                            if !overlay.is_empty() {
+                                mode_name.push('\n');
+                                mode_name.push_str(&overlay);
+                            }
+                        }
+                        renderer.update_hud(
+                            self.fps_tracker.smoothed_fps(),
+                            self.fps_tracker.average_frame_ms(),
+                            &self.last_render_stats,
+                            &mode_name,
+                        );
+                        let quality = renderer.adaptive_quality_name().to_string();
+                        self.fps_tracker.maybe_log(&self.last_render_stats, &quality);
+                        let perf_active = renderer.performance_mode_active();
+                        if perf_active != self.perf_mode_last {
+                            self.perf_mode_last = perf_active;
+                            if perf_active {
+                                window.set_title("rustcoin3d [Performance Mode]");
+                                log::warn!("Performance mode is enabled");
+                            } else {
+                                window.set_title("rustcoin3d");
+                                log::info!("Performance mode is disabled");
+                            }
+                        }
+                        if self.preview_mode_active {
+                            window.set_title("rustcoin3d [Stream mesh]");
+                        }
+                    } else {
+                        match renderer.surface.get_current_texture() {
+                            Ok(tex) => drop(tex),
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                // Surface needs reconfiguration — handled on next resize event
+                            }
+                            Err(e) => log::warn!("Surface error during no-op frame: {:?}", e),
+                        }
+                    }
+                    if self.continuous_redraw && self.world.engines.is_some() {
+                        window.request_redraw();
+                    }
+                }
+                if self.preview_mode_active {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Tick fly-to camera animation (outside renderer borrow scope)
+        {
+            let dt_s = self.last_frame_time_ms / 1000.0;
+            let mut flying = false;
+            if let Some(ref mut ctrl) = self.camera_controller {
+                flying = ctrl.tick_fly(dt_s);
+            }
+            if !flying {
+                if let Some(vc) = self.viewport_cameras.active_mut() {
+                    vc.controller.tick_fly(dt_s);
+                }
+            }
+        }
+
+        // Camera control (legacy single-camera path)
+        let block_orbit = self.gizmo_dragging || self.box_select_drag || self.view_split_drag;
+        if !ui_consumed {
+            if let Some(ref mut ctrl) = self.camera_controller {
+                if !self.measurement_mode && !block_orbit {
+                    Self::dispatch_camera_event(ctrl, &event, &self.cursor_pos);
+                    if let Some(window) = &self.window {
+                        match event {
+                            WindowEvent::CursorMoved { .. }
+                            | WindowEvent::MouseInput { .. }
+                            | WindowEvent::MouseWheel { .. }
+                            | WindowEvent::KeyboardInput { .. } => window.request_redraw(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Viewport camera set (new multi-viewport path)
+            if !self.viewport_cameras.cameras.is_empty() && !self.measurement_mode && !block_orbit {
+                if let Some(vc) = self.viewport_cameras.active_mut() {
+                    Self::dispatch_camera_event(&mut vc.controller, &event, &self.cursor_pos);
+                }
+            }
+        }
+    }
+}
+
+impl App {
+    fn tick_mesh_stream(&mut self) {
+        if self.full_res_patches.is_empty() {
+            return;
+        }
+        let Some(fire_at) = self.stream_next_tick else {
+            return;
+        };
+        let now = Instant::now();
+        if now < fire_at {
+            return;
+        }
+        self.stream_next_tick = Some(now + Duration::from_millis(stream_step_ms()));
+
+        let mut remaining = Vec::new();
+        let mut any_change = false;
+        let mut finished_patches: Vec<FullResPatch> = Vec::new();
+
+        for mut patch in self.full_res_patches.drain(..) {
+            let start = *patch.stream_start.get_or_insert(now);
+            let t_s = start.elapsed().as_secs_f64();
+
+            let budget = gaussian_triangle_budget(t_s, patch.total_full_tris);
+            let estimated_vertex_bytes =
+                patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
+            let skip_full_restore = estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES;
+
+            if budget >= patch.total_full_tris || t_s >= 2.2 {
+                if skip_full_restore {
+                    // Do not restore full-res mesh for very large models, but still
+                    // advance to the highest available streamed stage before finishing.
+                    if let Some(last_stage) = patch.stream_stages.len().checked_sub(1) {
+                        if last_stage > patch.current_stage {
+                            patch.apply_stage_to_graph(&mut self.world.graph, last_stage);
+                            let tris = patch.stage_tri_counts[last_stage];
+                            log::info!(
+                                "Mesh stream [Gaussian]: ~{}K tris at t={:.2}s (max staged LOD)",
+                                tris / 1000,
+                                t_s,
+                            );
+                            any_change = true;
+                        }
+                    }
+                    log::warn!(
+                        "Skip full-resolution restore (estimated_vertex_bytes={} > limit={}), keep max staged LOD",
+                        estimated_vertex_bytes,
+                        MAX_SAFE_VERTEX_BUFFER_BYTES,
+                    );
+                    continue;
+                }
+                finished_patches.push(patch);
+                continue;
+            }
+
+            if let Some(target_stage) = patch.stage_for_budget(budget) {
+                if target_stage > patch.current_stage {
+                    patch.apply_stage_to_graph(&mut self.world.graph, target_stage);
+                    let tris = patch.stage_tri_counts[target_stage];
+                    log::info!(
+                        "Mesh stream [Gaussian]: ~{}K tris at t={:.2}s (budget={})",
+                        tris / 1000,
+                        t_s,
+                        budget,
+                    );
+                    patch.current_stage = target_stage;
+                    any_change = true;
+                }
+            }
+            remaining.push(patch);
+        }
+
+        let n_finished = finished_patches.len();
+        for patch in finished_patches {
+            let total_points = patch.full_points.len();
+            let total_indices = patch.full_coord_index.len();
+            let total_tris = total_indices / 4;
+            let estimated_vertex_bytes =
+                patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
+            if estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES {
+                log::warn!(
+                    "Skip full-resolution restore (estimated_vertex_bytes={} > limit={}), keep streamed LOD",
+                    estimated_vertex_bytes,
+                    MAX_SAFE_VERTEX_BUFFER_BYTES,
+                );
+            } else {
+                patch.apply_full_to_graph(&mut self.world.graph);
+                log::warn!(
+                    "Full-resolution mesh restored: points={}, indices={}, ~{}K triangles",
+                    total_points,
+                    total_indices,
+                    total_tris / 1000,
+                );
+            }
+        }
+
+        self.full_res_patches = remaining;
+
+        if any_change || n_finished > 0 {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.invalidate_mesh_cache();
+            }
+            self.world.collector.invalidate_mesh_cache();
+        }
+
+        if self.full_res_patches.is_empty() {
+            self.preview_mode_active = false;
+            self.stream_next_tick = None;
+            if let Some(window) = &self.window {
+                window.set_title("rustcoin3d");
+                window.request_redraw();
+            }
+        }
+    }
+
+    fn update_camera_recursive(
+        ctrl: &CameraController,
+        graph: &mut SceneGraph,
+        node: NodeId,
+        aspect: f32,
+    ) {
+        let Some(entry) = graph.get(node) else { return };
+        if matches!(
+            entry.data,
+            rc3d_scene::NodeData::PerspectiveCamera(_)
+                | rc3d_scene::NodeData::OrthographicCamera(_)
+        ) {
+            ctrl.update_camera_node(graph, node, aspect);
+            return;
+        }
+        let children: Vec<NodeId> = entry.children.clone();
+        for child in children {
+            Self::update_camera_recursive(ctrl, graph, child, aspect);
+        }
+    }
+
+    fn dispatch_camera_event(
+        ctrl: &mut CameraController,
+        event: &WindowEvent,
+        cursor_pos: &(f64, f64),
+    ) {
+        match event {
+            WindowEvent::MouseInput { state, button, .. } => match (button, state) {
+                (MouseButton::Middle, winit::event::ElementState::Pressed) => {
+                    ctrl.orbiting = true;
+                }
+                (MouseButton::Middle, winit::event::ElementState::Released) => {
+                    ctrl.orbiting = false;
+                }
+                (MouseButton::Right, winit::event::ElementState::Pressed) => {
+                    ctrl.panning = true;
+                }
+                (MouseButton::Right, winit::event::ElementState::Released) => {
+                    ctrl.panning = false;
+                }
+                _ => {}
+            },
+            WindowEvent::CursorMoved { position, .. } => {
+                let dx = (position.x - cursor_pos.0) as f32 * 0.005;
+                let dy = (position.y - cursor_pos.1) as f32 * 0.005;
+                if ctrl.orbiting {
+                    ctrl.orbit(dx, dy);
+                }
+                if ctrl.panning {
+                    // Mouse delta in pixels, scaled for pan
+                    let dx = (position.x - cursor_pos.0) as f32;
+                    let dy = (position.y - cursor_pos.1) as f32;
+                    ctrl.pan(dx, dy);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+                };
+                ctrl.zoom(scroll);
+            }
+            _ => {}
+        }
+    }
+
+    fn do_pick(&mut self) {
+        let Some(ray) = self.build_pick_ray() else {
+            return;
+        };
+        let mut picker = rc3d_actions::RayPickAction::new(ray);
+        rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
+
+        if let Some(hit) = picker.hits.first() {
+            self.world.graph.toggle_selection(hit.node);
+            log::info!(
+                "Pick hit: node={:?}, point={:?}, selected={}",
+                hit.node,
+                hit.point,
+                self.world.graph.is_selected(hit.node)
+            );
+            if let Some(cb) = &mut self.on_pick {
+                cb(&mut self.world.graph, hit.node, hit.point);
+            }
+        } else {
+            log::info!("Pick miss (no hit)");
+            if !self.shift_pressed {
+                self.world.graph.clear_selection();
+            }
+        }
+    }
+
+    fn do_measure_pick(&mut self) {
+        let Some(ray) = self.build_pick_ray() else {
+            return;
+        };
+        let mut picker = rc3d_actions::RayPickAction::new(ray);
+        rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
+
+        if let Some(hit) = picker.hits.first() {
+            let point = hit.point;
+            match self.measurement_first_point {
+                None => {
+                    self.measurement_first_point = Some(point);
+                    log::info!("Measurement point A: {:?}", point);
+                }
+                Some(first) => {
+                    let dist = (point - first).length();
+                    self.measurements.push((first, point, dist));
+                    self.measurement_first_point = None;
+                    log::info!(
+                        "Measurement: A={:?} B={:?} distance={:.4}",
+                        first,
+                        point,
+                        dist
+                    );
+                }
+            }
+        }
+    }
+
+    fn build_pick_ray(&self) -> Option<Ray> {
+        let w = self.window.as_ref()?;
+        let s = w.inner_size();
+        if !self.viewport_cameras.cameras.is_empty() {
+            if let (Some(r), Some(vc)) = (self.renderer.as_ref(), self.viewport_cameras.active()) {
+                if let Some(avp) = r
+                    .viewport_layout
+                    .viewports
+                    .iter()
+                    .find(|v| v.id == vc.viewport_id)
+                {
+                    let (v, p) = gizmo_support::pick_view_proj(&self.world.graph, vc, avp);
+                    return Some(gizmo_support::pick_ray_in_viewport(
+                        self.cursor_pos,
+                        avp,
+                        v,
+                        p,
+                    ));
+                }
+            }
+        }
+        if let Some(c) = &self.camera_controller {
+            return Some(gizmo_support::pick_ray_full_window(
+                self.cursor_pos,
+                (s.width, s.height),
+                c,
+            ));
+        }
+        let (v, p) = self.active_camera_matrices(s.width as f32, s.height as f32);
+        Some(Ray::from_screen_point(
+            self.cursor_pos.0 as f32,
+            self.cursor_pos.1 as f32,
+            s.width as f32,
+            s.height as f32,
+            v,
+            p,
+        ))
+    }
+
+    fn editor_on_left_down(&mut self) {
+        if let (Some(r), _w) = (&mut self.renderer, &self.window) {
+            if r.viewport_layout.viewports.len() > 1 {
+                if let Some(vp) = r
+                    .viewport_layout
+                    .viewport_at(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32)
+                {
+                    self.viewport_cameras
+                        .set_active(vp.id, &mut r.viewport_layout);
+                }
+            }
+        }
+        if self.ctrl_pressed {
+            self.box_select_drag = true;
+            self.box_select_anchor = (self.cursor_pos.0 as f32, self.cursor_pos.1 as f32);
+            return;
+        }
+        if let Some(ray) = self.build_pick_ray() {
+            gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+            if self.gizmo.visible {
+                if let Some((h, _)) = self.gizmo.hit_test(&ray) {
+                    if let Some(n) = self.gizmo.target_node {
+                        if let Some(e) = self.world.graph.get(n) {
+                            if let rc3d_scene::NodeData::Transform(t) = &e.data {
+                                let old = Mat4::from_scale_rotation_translation(
+                                    t.scale,
+                                    Quat::from_mat4(&t.rotation),
+                                    t.translation,
+                                );
+                                self.gizmo_pending_transform = Some((n, old));
+                            }
+                        }
+                    }
+                    self.gizmo.start_drag(&ray, h);
+                    self.gizmo_dragging = true;
+                    return;
+                }
+            }
+        }
+        let can_pick = true;
+        if can_pick {
+            self.do_pick();
+            gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+        }
+    }
+
+    fn editor_on_left_up(&mut self) {
+        if self.view_split_drag {
+            self.view_split_drag = false;
+        }
+        if self.box_select_drag {
+            self.box_select_drag = false;
+            if let (Some(r), Some(w)) = (self.renderer.as_ref(), self.window.as_ref()) {
+                let s = w.inner_size();
+                let roots = self.world.graph.roots().to_vec();
+                if !self.viewport_cameras.cameras.is_empty() {
+                    if let (Some(vc), Some(_)) =
+                        (self.viewport_cameras.active(), self.build_pick_ray())
+                    {
+                        if let Some(avp) = r
+                            .viewport_layout
+                            .viewports
+                            .iter()
+                            .find(|v| v.id == vc.viewport_id)
+                        {
+                            let (v, p) = gizmo_support::pick_view_proj(&self.world.graph, vc, avp);
+                            for &root in &roots {
+                                box_select::select_nodes_in_viewport_box(
+                                    &mut self.world.graph,
+                                    root,
+                                    self.box_select_anchor,
+                                    (self.cursor_pos.0 as f32, self.cursor_pos.1 as f32),
+                                    avp,
+                                    v,
+                                    p,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    let (v, p) = self.active_camera_matrices(s.width as f32, s.height as f32);
+                    for &root in &roots {
+                        box_select::select_nodes_in_screen_box(
+                            &mut self.world.graph,
+                            root,
+                            self.box_select_anchor,
+                            (self.cursor_pos.0 as f32, self.cursor_pos.1 as f32),
+                            s.width as f32,
+                            s.height as f32,
+                            v,
+                            p,
+                        );
+                    }
+                }
+                gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+            }
+            return;
+        }
+        if self.gizmo_dragging {
+            self.gizmo.end_drag();
+            if let Some((n, old_mat)) = self.gizmo_pending_transform.take() {
+                if let Some(e) = self.world.graph.get(n) {
+                    if let rc3d_scene::NodeData::Transform(t) = &e.data {
+                        let new_mat = Mat4::from_scale_rotation_translation(
+                            t.scale,
+                            Quat::from_mat4(&t.rotation),
+                            t.translation,
+                        );
+                        let (old_scale, _old_rot, old_trans) =
+                            old_mat.to_scale_rotation_translation();
+                        let (new_scale, _new_rot, new_trans) =
+                            new_mat.to_scale_rotation_translation();
+                        if (new_trans - old_trans).length_squared() > 1e-8 {
+                            self.command_history.execute(
+                                Box::new(SetTranslationCommand {
+                                    node: n,
+                                    old_value: old_trans,
+                                    new_value: new_trans,
+                                }),
+                                &mut self.world.graph,
+                            );
+                        }
+                        if (new_scale - old_scale).length_squared() > 1e-8 {
+                            self.command_history.execute(
+                                Box::new(SetScaleCommand {
+                                    node: n,
+                                    old_value: old_scale,
+                                    new_value: new_scale,
+                                }),
+                                &mut self.world.graph,
+                            );
+                        }
+                        let old_rot_cols = Mat4::from_quat(_old_rot).to_cols_array_2d();
+                        let new_rot_cols = Mat4::from_quat(_new_rot).to_cols_array_2d();
+                        if old_rot_cols != new_rot_cols {
+                            self.command_history.execute(
+                                Box::new(SetRotationCommand {
+                                    node: n,
+                                    old_value: Mat4::from_quat(_old_rot),
+                                    new_value: Mat4::from_quat(_new_rot),
+                                }),
+                                &mut self.world.graph,
+                            );
+                        }
+                    }
+                }
+            }
+            self.gizmo_dragging = false;
+        }
+    }
+
+    fn fit_selection_to_view(&mut self) {
+        if self.world.graph.selected_nodes().is_empty() {
+            return;
+        }
+        use rc3d_actions::GetBoundingBoxAction;
+        let mut aabb: Option<Aabb> = None;
+        for &id in self.world.graph.selected_nodes() {
+            let mut a = GetBoundingBoxAction::new();
+            a.apply(&self.world.graph, id);
+            if a.bounding_box.min.x <= a.bounding_box.max.x {
+                aabb = Some(match aabb {
+                    Some(p) => p.union(&a.bounding_box),
+                    None => a.bounding_box,
+                });
+            }
+        }
+        if let Some(b) = aabb {
+            if let Some(cc) = &mut self.camera_controller {
+                cc.fit_bounds(&b, 60.0f32.to_radians());
+            } else if let Some(vc) = self.viewport_cameras.active_mut() {
+                vc.controller.fit_bounds(&b, 60.0f32.to_radians());
+            }
+        }
+    }
+
+    fn nudge_section_planes(&mut self, d: f32) {
+        for &root in &self.world.graph.roots().to_vec() {
+            nudge_sp_rec(&mut self.world.graph, root, d);
+        }
+    }
+
+    fn editor_on_cursor_moved(&mut self) {
+        if self.gizmo_dragging {
+            if let Some(ray) = self.build_pick_ray() {
+                if let Some((n, old_mat)) = &self.gizmo_pending_transform {
+                    if let Some(d) = self.gizmo.drag_delta(
+                        &ray,
+                        Mat4::IDENTITY,
+                        Mat4::IDENTITY,
+                        1.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                    ) {
+                        let new_mat = d * *old_mat;
+                        let (scale, rot, trans) = new_mat.to_scale_rotation_translation();
+                        if let Some(e) = self.world.graph.get_mut(*n) {
+                            if let rc3d_scene::NodeData::Transform(t) = &mut e.data {
+                                t.translation = trans;
+                                t.rotation = Mat4::from_quat(rot);
+                                t.scale = scale;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        }
+        if !self.gizmo.visible {
+            return;
+        }
+        if self.renderer.is_some() {
+            if let (Some(ray), Some(_r)) = (self.build_pick_ray(), self.renderer.as_ref()) {
+                gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+                self.gizmo.hovered = self.gizmo.hit_test(&ray).map(|(h, _)| h);
+            }
+        }
+    }
+
+    fn active_camera_controller_mut(&mut self) -> Option<&mut CameraController> {
+        if let Some(vc) = self.viewport_cameras.active_mut() {
+            Some(&mut vc.controller)
+        } else if let Some(ref mut ctrl) = self.camera_controller {
+            Some(ctrl)
+        } else {
+            None
+        }
+    }
+
+    fn active_camera_matrices(&self, width: f32, height: f32) -> (Mat4, Mat4) {
+        let aspect = width / height.max(1.0);
+        let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+        if let Some(vc) = self.viewport_cameras.active() {
+            (vc.controller.view_matrix(), proj)
+        } else if let Some(ctrl) = &self.camera_controller {
+            (ctrl.view_matrix(), proj)
+        } else {
+            (
+                Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y),
+                proj,
+            )
+        }
+    }
+
+    fn apply_editor_commands(&mut self) {
+        while let Some(cmd) = self.editor_commands.pop_front() {
+            match cmd {
+                EditorCommand::Undo => {
+                    let _ = self.command_history.undo(&mut self.world.graph);
+                }
+                EditorCommand::Redo => {
+                    let _ = self.command_history.redo(&mut self.world.graph);
+                }
+                EditorCommand::FitSelection => self.fit_selection_to_view(),
+                EditorCommand::ToggleMeasurement => {
+                    self.measurement_mode = !self.measurement_mode;
+                    self.measurement_first_point = None;
+                }
+                EditorCommand::ToggleSectionEdit => {
+                    self.section_edit_mode = !self.section_edit_mode;
+                }
+                EditorCommand::CycleIbl => {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.cycle_ibl_preset();
+                    }
+                }
+                EditorCommand::CycleViewportLayout => {
+                    if let Some(renderer) = &mut self.renderer {
+                        let w = renderer.config.width;
+                        let h = renderer.config.height;
+                        renderer.viewport_layout.cycle_layout(w, h);
+                    }
+                }
+                EditorCommand::CycleActiveViewport => {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.viewport_layout.cycle_active();
+                        self.viewport_cameras.active_viewport = renderer.viewport_layout.active_id;
+                    }
+                }
+                EditorCommand::SetDisplayMode(mode) => {
+                    if let Some(renderer) = &mut self.renderer {
+                        let mode = match mode {
+                            EditorDisplayMode::Wireframe => DisplayMode::Wireframe,
+                            EditorDisplayMode::Shaded => DisplayMode::Shaded,
+                            EditorDisplayMode::ShadedWithEdges => DisplayMode::ShadedWithEdges,
+                            EditorDisplayMode::HiddenLine => DisplayMode::HiddenLine,
+                        };
+                        renderer.set_display_mode(mode);
+                    }
+                }
+                EditorCommand::SetSelection(id) => {
+                    self.world.graph.clear_selection();
+                    if let Some(id) = id {
+                        self.world.graph.select(id);
+                    }
+                    gizmo_support::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+                }
+                EditorCommand::SetNodeVisibility(id, visible) => {
+                    if let Some(entry) = self.world.graph.get_mut(id) {
+                        match &mut entry.data {
+                            rc3d_scene::NodeData::Transform(_)
+                            | rc3d_scene::NodeData::Group(_)
+                            | rc3d_scene::NodeData::Separator(_) => {
+                                if visible {
+                                    self.hidden_nodes.remove(&id);
+                                } else {
+                                    self.hidden_nodes.insert(id);
+                                }
+                            }
+                            rc3d_scene::NodeData::Switch(sw) => {
+                                sw.which_child = if visible { -1 } else { -2 };
+                            }
+                            rc3d_scene::NodeData::SectionPlane(sp) => {
+                                sp.enabled = visible;
+                            }
+                            rc3d_scene::NodeData::Markup(m) => {
+                                m.visible = visible;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::PreviewTransformTranslation(node, t) => {
+                    if let Some(entry) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
+                            tf.translation = Vec3::new(t[0], t[1], t[2]);
+                        }
+                    }
+                }
+                EditorCommand::CommitTransformTranslation { node, old, new } => {
+                    let old_value = Vec3::new(old[0], old[1], old[2]);
+                    let new_value = Vec3::new(new[0], new[1], new[2]);
+                    if (new_value - old_value).length_squared() > 1e-10 {
+                        self.command_history.execute(
+                            Box::new(SetTranslationCommand {
+                                node,
+                                old_value,
+                                new_value,
+                            }),
+                            &mut self.world.graph,
+                        );
+                    }
+                }
+                EditorCommand::PreviewTransformScale(node, s) => {
+                    if let Some(entry) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
+                            tf.scale = Vec3::new(s[0], s[1], s[2]);
+                        }
+                    }
+                }
+                EditorCommand::CommitTransformScale { node, old, new } => {
+                    let old_value = Vec3::new(old[0], old[1], old[2]);
+                    let new_value = Vec3::new(new[0], new[1], new[2]);
+                    if (new_value - old_value).length_squared() > 1e-10 {
+                        self.command_history.execute(
+                            Box::new(SetScaleCommand {
+                                node,
+                                old_value,
+                                new_value,
+                            }),
+                            &mut self.world.graph,
+                        );
+                    }
+                }
+                EditorCommand::PreviewTransformRotationQuat(node, quat) => {
+                    if let Some(entry) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
+                            tf.rotation = Mat4::from_quat(Quat::from_xyzw(
+                                quat[0], quat[1], quat[2], quat[3],
+                            ));
+                        }
+                    }
+                }
+                EditorCommand::CommitTransformRotationQuat { node, old, new } => {
+                    let old_value =
+                        Mat4::from_quat(Quat::from_xyzw(old[0], old[1], old[2], old[3]));
+                    let new_value =
+                        Mat4::from_quat(Quat::from_xyzw(new[0], new[1], new[2], new[3]));
+                    if old_value.to_cols_array_2d() != new_value.to_cols_array_2d() {
+                        self.command_history.execute(
+                            Box::new(SetRotationCommand {
+                                node,
+                                old_value,
+                                new_value,
+                            }),
+                            &mut self.world.graph,
+                        );
+                    }
+                }
+                EditorCommand::ImportPath(path) => match rc3d_io::import_file(path.as_path()) {
+                    Ok(graph) => {
+                        self.world.graph = graph;
+                        if let Some(renderer) = &mut self.renderer {
+                            self.world.invalidate_caches(renderer);
+                        } else {
+                            self.world.collector.invalidate_mesh_cache();
+                        }
+                        self.world.graph.clear_selection();
+                        self.measurements.clear();
+                        self.measurement_first_point = None;
+                        gizmo_support::sync_gizmo_from_selection(
+                            &mut self.gizmo,
+                            &self.world.graph,
+                        );
+                        log::info!("Imported scene: {}", path.display());
+                    }
+                    Err(err) => {
+                        log::error!("Import failed: {}", err);
+                    }
+                },
+                EditorCommand::ExportIvPath(path) => {
+                    let content = rc3d_io::write_iv(&self.world.graph);
+                    if let Err(err) = std::fs::write(path.as_path(), content) {
+                        log::error!("Export IV failed ({}): {}", path.display(), err);
+                    } else {
+                        log::info!("Exported IV: {}", path.display());
+                    }
+                }
+                EditorCommand::ExportDiagnosticsJsonPath(path) => {
+                    if let Some(diag) = self.last_render_stats.diagnostics.as_ref() {
+                        let content = diag.to_json_pretty();
+                        if let Err(err) = std::fs::write(path.as_path(), content) {
+                            log::error!(
+                                "Export diagnostics JSON failed ({}): {}",
+                                path.display(),
+                                err
+                            );
+                        } else {
+                            log::info!("Exported diagnostics JSON: {}", path.display());
+                        }
+                    } else {
+                        log::warn!("No diagnostics available to export");
+                    }
+                }
+                EditorCommand::SetGizmoMode(mode) => {
+                    self.gizmo.mode = mode;
+                }
+                // ── Render feature toggles ──
+                EditorCommand::SetRenderFeature { feature_name, enabled } => {
+                    if let Some(r) = &mut self.renderer {
+                        match feature_name {
+                            "taa" => r.enable_taa = enabled,
+                            "motion_blur" => r.enable_motion_blur = enabled,
+                            "ssr" => r.enable_ssr = enabled,
+                            "color_grading" => r.enable_color_grading = enabled,
+                            "dof" => r.enable_dof = enabled,
+                            "volumetric_fog" => r.enable_volumetric_fog = enabled,
+                            "cluster_lights" => r.enable_cluster_lights = enabled,
+                            "omni_shadows" => r.enable_omni_shadows = enabled,
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetHdrPostProcessing(enabled) => {
+                    if let Some(r) = &mut self.renderer { r.hdr_post_processing = enabled; }
+                }
+                EditorCommand::SetIblPreset(preset) => {
+                    if let Some(r) = &mut self.renderer { r.set_ibl_preset(preset); }
+                }
+                EditorCommand::SetAdaptiveQualityMode(mode) => {
+                    self.adaptive_quality_mode = mode;
+                }
+                EditorCommand::SetOutlineWidth(w) => {
+                    if let Some(r) = &mut self.renderer { r.outline_width = w; }
+                }
+                EditorCommand::SetOutlineColor(c) => {
+                    if let Some(r) = &mut self.renderer { r.outline_color = c; }
+                }
+                EditorCommand::SetXrayMode(enabled) => {
+                    if let Some(r) = &mut self.renderer { r.xray_mode = enabled; }
+                }
+                // ── Viewport / display ──
+                EditorCommand::SetViewportLayoutMode(lm) => {
+                    if let Some(r) = &mut self.renderer {
+                        r.viewport_layout.layout_mode = lm;
+                        let w = r.config.width;
+                        let h = r.config.height;
+                        r.viewport_layout.rebuild(w, h);
+                    }
+                }
+                EditorCommand::SetViewPreset(preset) => {
+                    if let Some(ctrl) = self.active_camera_controller_mut() {
+                        ctrl.set_view_preset(preset);
+                    }
+                }
+                EditorCommand::SetGridEnabled(enabled) => {
+                    self.grid_enabled = enabled;
+                    if let Some(r) = &mut self.renderer { r.grid_enabled = enabled; }
+                }
+                EditorCommand::SetHudEnabled(enabled) => {
+                    if let Some(r) = &mut self.renderer { r.hud_enabled = enabled; }
+                }
+                EditorCommand::SetVsyncEnabled(enabled) => {
+                    if let Some(r) = &mut self.renderer {
+                        r.set_vsync(enabled);
+                    }
+                }
+                // ── Material ──
+                EditorCommand::SetBaseColor(node, color) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Material(m) = &mut e.data {
+                            m.base_color = Vec3::new(color[0], color[1], color[2]);
+                        }
+                    }
+                }
+                EditorCommand::SetMetallic(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Material(m) = &mut e.data {
+                            m.metallic = v;
+                        }
+                    }
+                }
+                EditorCommand::SetRoughness(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Material(m) = &mut e.data {
+                            m.roughness = v;
+                        }
+                    }
+                }
+                EditorCommand::SetOpacity(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::Material(m) = &mut e.data {
+                            m.opacity = v;
+                        }
+                    }
+                }
+                // ── Light ──
+                EditorCommand::SetLightColor(node, color) => {
+                    let c = Vec3::new(color[0], color[1], color[2]);
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::DirectionalLight(l) => l.color = c,
+                            rc3d_scene::NodeData::PointLight(l) => l.color = c,
+                            rc3d_scene::NodeData::SpotLight(l) => l.color = c,
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetLightIntensity(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::DirectionalLight(l) => l.intensity = v,
+                            rc3d_scene::NodeData::PointLight(l) => l.intensity = v,
+                            rc3d_scene::NodeData::SpotLight(l) => l.intensity = v,
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetLightDirection(node, dir) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::DirectionalLight(l) => {
+                                l.direction = Vec3::new(dir[0], dir[1], dir[2]).normalize();
+                            }
+                            rc3d_scene::NodeData::SpotLight(l) => {
+                                l.direction = Vec3::new(dir[0], dir[1], dir[2]).normalize();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // ── Camera ──
+                EditorCommand::SetCameraFov(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::PerspectiveCamera(c) = &mut e.data {
+                            c.fov = v.clamp(0.01, std::f32::consts::PI - 0.01);
+                        }
+                    }
+                }
+                EditorCommand::SetCameraNear(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::PerspectiveCamera(c) => c.near = v.max(0.001),
+                            rc3d_scene::NodeData::OrthographicCamera(c) => c.near = v.max(0.001),
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetCameraFar(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::PerspectiveCamera(c) => c.far = v.max(1.0),
+                            rc3d_scene::NodeData::OrthographicCamera(c) => c.far = v.max(1.0),
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetCameraReverseDepth(node, enabled) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        match &mut e.data {
+                            rc3d_scene::NodeData::PerspectiveCamera(c) => c.reverse_depth = enabled,
+                            rc3d_scene::NodeData::OrthographicCamera(c) => c.reverse_depth = enabled,
+                            _ => {}
+                        }
+                    }
+                }
+                EditorCommand::SetOrthoHeight(node, v) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::OrthographicCamera(c) = &mut e.data {
+                            c.height = v.max(0.01);
+                        }
+                    }
+                }
+                // ── Section plane ──
+                EditorCommand::SetSectionPlaneEnabled(node, enabled) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::SectionPlane(sp) = &mut e.data {
+                            sp.enabled = enabled;
+                        }
+                    }
+                }
+                EditorCommand::SetSectionPlaneEquation(node, eq) => {
+                    if let Some(e) = self.world.graph.get_mut(node) {
+                        if let rc3d_scene::NodeData::SectionPlane(sp) = &mut e.data {
+                            sp.plane = eq;
+                        }
+                    }
+                }
+                // ── Node lifecycle ──
+                EditorCommand::CreateNode { node_type, parent } => {
+                    let data = node_type_to_node_data(node_type);
+                    let id = if let Some(p) = parent {
+                        self.world.graph.add_child(p, data)
+                    } else {
+                        self.world.graph.add_root(data)
+                    };
+                    self.world.graph.clear_selection();
+                    self.world.graph.select(id);
+                }
+                EditorCommand::DeleteNode(node) => {
+                    self.world.graph.remove(node);
+                }
+                EditorCommand::DuplicateNode(node) => {
+                    if let Some(entry) = self.world.graph.get(node) {
+                        let cloned_data = entry.data.clone();
+                        if let Some(parent) = entry.parent {
+                            let new_id = self.world.graph.add_child(parent, cloned_data);
+                            self.world.graph.clear_selection();
+                            self.world.graph.select(new_id);
+                        }
+                    }
+                }
+                EditorCommand::RenameNode(_node, _name) => {
+                    // NodeEntry.name is not yet exposed for mutation; no-op for now.
+                }
+                // ── Measurement ──
+                EditorCommand::SetMeasurementMode(mode) => {
+                    let is_active = mode.is_some();
+                    self.measurement_type = mode;
+                    self.measurement_mode = is_active;
+                    self.measurement_first_point = None;
+                    self.measurements.clear();
+                }
+                // ── Bookmarks ──
+                EditorCommand::SaveBookmark(slot) => {
+                    if let Some(ctrl) = self.active_camera_controller_mut() {
+                        ctrl.save_bookmark(slot, "");
+                    }
+                }
+                EditorCommand::RecallBookmark(slot) => {
+                    if let Some(ctrl) = self.active_camera_controller_mut() {
+                        ctrl.recall_bookmark(slot);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn node_type_to_node_data(node_type: NodeDataType) -> rc3d_scene::NodeData {
+    use rc3d_scene::node_data::*;
+    match node_type {
+        NodeDataType::Cube => NodeData::Cube(CubeNode::default()),
+        NodeDataType::Sphere => NodeData::Sphere(SphereNode::default()),
+        NodeDataType::Cylinder => NodeData::Cylinder(CylinderNode::default()),
+        NodeDataType::Cone => NodeData::Cone(ConeNode::default()),
+        NodeDataType::Separator => NodeData::Separator(SeparatorNode),
+        NodeDataType::DirectionalLight => NodeData::DirectionalLight(DirectionalLightNode::default()),
+        NodeDataType::PointLight => NodeData::PointLight(PointLightNode::default()),
+        NodeDataType::SpotLight => NodeData::SpotLight(SpotLightNode::default()),
+        NodeDataType::PerspectiveCamera => NodeData::PerspectiveCamera(PerspectiveCameraNode::default()),
+        NodeDataType::OrthographicCamera => NodeData::OrthographicCamera(OrthographicCameraNode::default()),
+        NodeDataType::Text2 => NodeData::Text2(Text2Node::default()),
+        NodeDataType::Text3 => NodeData::Text3(Text3Node::default()),
+    }
+}
+
+fn nudge_sp_rec(graph: &mut rc3d_scene::SceneGraph, id: NodeId, d: f32) {
+    use rc3d_scene::node_data::NodeData;
+    let children: Vec<_> = graph
+        .get(id)
+        .map(|e| e.children.to_vec())
+        .unwrap_or_default();
+    if let Some(e) = graph.get_mut(id) {
+        if let NodeData::SectionPlane(sp) = &mut e.data {
+            sp.plane[3] += d;
+        }
+    }
+    for c in children {
+        nudge_sp_rec(graph, c, d);
+    }
+}
+
+fn bookmark_slot_from_key(code: winit::keyboard::KeyCode) -> usize {
+    use winit::keyboard::KeyCode;
+    match code {
+        KeyCode::Digit1 => 0,
+        KeyCode::Digit2 => 1,
+        KeyCode::Digit3 => 2,
+        KeyCode::Digit4 => 3,
+        KeyCode::Digit5 => 4,
+        KeyCode::Digit6 => 5,
+        KeyCode::Digit7 => 6,
+        KeyCode::Digit8 => 7,
+        KeyCode::Digit9 => 8,
+        _ => 0,
+    }
+}

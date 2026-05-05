@@ -299,3 +299,327 @@ impl Command for CompoundCommand {
         &self.desc
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rc3d_scene::node_data::{MaterialNode, TransformNode};
+
+    fn make_graph() -> SceneGraph {
+        SceneGraph::new()
+    }
+
+    fn add_material(graph: &mut SceneGraph) -> NodeId {
+        graph.add_root(NodeData::Material(MaterialNode::default()))
+    }
+
+    fn add_transform(graph: &mut SceneGraph) -> NodeId {
+        graph.add_root(NodeData::Transform(TransformNode::default()))
+    }
+
+    // ── CommandHistory basics ──
+
+    #[test]
+    fn test_history_new_is_empty() {
+        let h = CommandHistory::new(64);
+        assert!(!h.can_undo());
+        assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn test_history_undo_redo_translation() {
+        let mut g = make_graph();
+        let mut h = CommandHistory::new(64);
+        let n = add_transform(&mut g);
+
+        h.execute(
+            Box::new(SetTranslationCommand {
+                node: n,
+                old_value: rc3d_core::math::Vec3::ZERO,
+                new_value: rc3d_core::math::Vec3::X,
+            }),
+            &mut g,
+        );
+        assert!(h.can_undo());
+        assert!(!h.can_redo());
+
+        assert!(h.undo(&mut g));
+        if let Some(e) = g.get(n) {
+            if let NodeData::Transform(t) = &e.data {
+                assert!((t.translation - rc3d_core::math::Vec3::ZERO).length() < 1e-5);
+            }
+        }
+        assert!(!h.can_undo());
+        assert!(h.can_redo());
+
+        assert!(h.redo(&mut g));
+        if let Some(e) = g.get(n) {
+            if let NodeData::Transform(t) = &e.data {
+                assert!((t.translation - rc3d_core::math::Vec3::X).length() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn test_history_redo_cleared_by_new_execute() {
+        let mut g = make_graph();
+        let mut h = CommandHistory::new(64);
+        let n = add_transform(&mut g);
+
+        h.execute(
+            Box::new(SetTranslationCommand {
+                node: n,
+                old_value: rc3d_core::math::Vec3::ZERO,
+                new_value: rc3d_core::math::Vec3::X,
+            }),
+            &mut g,
+        );
+        h.undo(&mut g);
+        assert!(h.can_redo());
+
+        h.execute(
+            Box::new(SetTranslationCommand {
+                node: n,
+                old_value: rc3d_core::math::Vec3::ZERO,
+                new_value: rc3d_core::math::Vec3::Y,
+            }),
+            &mut g,
+        );
+        assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn test_history_max_depth() {
+        let mut g = make_graph();
+        let mut h = CommandHistory::new(3);
+        let n = add_transform(&mut g);
+
+        for i in 0..5 {
+            h.execute(
+                Box::new(SetTranslationCommand {
+                    node: n,
+                    old_value: rc3d_core::math::Vec3::splat(i as f32),
+                    new_value: rc3d_core::math::Vec3::splat((i + 1) as f32),
+                }),
+                &mut g,
+            );
+        }
+        let mut count = 0;
+        while h.undo(&mut g) {
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+
+    // ── SetFieldCommand ──
+
+    #[test]
+    fn test_set_field_material_opacity() {
+        let mut g = make_graph();
+        let n = add_material(&mut g);
+
+        let mut cmd = SetFieldCommand::new(n, 1.0f32, 0.5f32, "SetOpacity", |entry, v| {
+            if let NodeData::Material(m) = &mut entry.data {
+                m.opacity = v;
+            }
+        });
+        cmd.execute(&mut g);
+        if let Some(e) = g.get(n) {
+            if let NodeData::Material(m) = &e.data {
+                assert!((m.opacity - 0.5).abs() < 1e-5);
+            }
+        }
+        cmd.undo(&mut g);
+        if let Some(e) = g.get(n) {
+            if let NodeData::Material(m) = &e.data {
+                assert!((m.opacity - 1.0).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn test_set_field_command_description() {
+        let cmd = SetFieldCommand::new(
+            rc3d_core::NodeId::default(),
+            0u32,
+            1u32,
+            "TestDesc",
+            |_, _| {},
+        );
+        assert_eq!(cmd.description(), "TestDesc");
+    }
+
+    // ── AddChildCommand ──
+
+    #[test]
+    fn test_add_child_execute_undo() {
+        let mut g = make_graph();
+        let parent = add_transform(&mut g);
+        let child = add_material(&mut g);
+
+        let mut cmd = AddChildCommand::new(parent, child);
+        cmd.execute(&mut g);
+        assert!(g.children(parent).unwrap().contains(&child));
+
+        cmd.undo(&mut g);
+        assert!(!g.children(parent).unwrap().contains(&child));
+    }
+
+    #[test]
+    fn test_add_child_idempotent() {
+        let mut g = make_graph();
+        let parent = add_transform(&mut g);
+        let child = add_material(&mut g);
+
+        let mut cmd = AddChildCommand::new(parent, child);
+        cmd.execute(&mut g);
+        cmd.execute(&mut g);
+        assert_eq!(
+            g.children(parent).unwrap().iter().filter(|&&c| c == child).count(),
+            1
+        );
+    }
+
+    // ── RemoveChildCommand ──
+
+    #[test]
+    fn test_remove_child_execute_undo() {
+        let mut g = make_graph();
+        let parent = add_transform(&mut g);
+        let child = g.add_child(parent, NodeData::Material(MaterialNode::default()));
+
+        assert!(g.children(parent).unwrap().contains(&child));
+
+        let mut cmd = RemoveChildCommand::new(parent, child, &g);
+        cmd.execute(&mut g);
+        assert!(!g.children(parent).unwrap().contains(&child));
+
+        cmd.undo(&mut g);
+        assert!(g.children(parent).unwrap().contains(&child));
+    }
+
+    #[test]
+    fn test_remove_child_preserves_index_on_undo() {
+        let mut g = make_graph();
+        let parent = add_transform(&mut g);
+        let a = g.add_child(parent, NodeData::Material(MaterialNode::default()));
+        let b = g.add_child(parent, NodeData::Material(MaterialNode::default()));
+        let c = g.add_child(parent, NodeData::Material(MaterialNode::default()));
+
+        let mut cmd = RemoveChildCommand::new(parent, b, &g);
+        cmd.execute(&mut g);
+        cmd.undo(&mut g);
+
+        let children = g.children(parent).unwrap();
+        assert_eq!(children[0], a);
+        assert_eq!(children[1], b);
+        assert_eq!(children[2], c);
+    }
+
+    // ── CompoundCommand ──
+
+    #[test]
+    fn test_compound_execute_undo_atomic() {
+        let mut g = make_graph();
+        let n = add_transform(&mut g);
+
+        let cmd1: Box<dyn Command> = Box::new(SetTranslationCommand {
+            node: n,
+            old_value: rc3d_core::math::Vec3::ZERO,
+            new_value: rc3d_core::math::Vec3::X,
+        });
+        let cmd2: Box<dyn Command> = Box::new(SetScaleCommand {
+            node: n,
+            old_value: rc3d_core::math::Vec3::ONE,
+            new_value: rc3d_core::math::Vec3::splat(2.0),
+        });
+
+        let mut compound = CompoundCommand::new(vec![cmd1, cmd2], "Move+Scale");
+        assert_eq!(compound.description(), "Move+Scale");
+
+        compound.execute(&mut g);
+        if let Some(e) = g.get(n) {
+            if let NodeData::Transform(t) = &e.data {
+                assert!((t.translation - rc3d_core::math::Vec3::X).length() < 1e-5);
+                assert!((t.scale - rc3d_core::math::Vec3::splat(2.0)).length() < 1e-5);
+            }
+        }
+
+        compound.undo(&mut g);
+        if let Some(e) = g.get(n) {
+            if let NodeData::Transform(t) = &e.data {
+                assert!((t.translation - rc3d_core::math::Vec3::ZERO).length() < 1e-5);
+                assert!((t.scale - rc3d_core::math::Vec3::ONE).length() < 1e-5);
+            }
+        }
+    }
+
+    // ── SceneGraph structural ──
+
+    #[test]
+    fn test_graph_remove_subtree() {
+        let mut g = make_graph();
+        let root = add_transform(&mut g);
+        let child = g.add_child(root, NodeData::Material(MaterialNode::default()));
+        g.add_child(child, NodeData::Material(MaterialNode::default()));
+
+        g.remove(root);
+        assert!(g.get(root).is_none());
+        assert!(g.get(child).is_none());
+    }
+
+    #[test]
+    fn test_graph_remove_root_clears_roots_vec() {
+        let mut g = make_graph();
+        let n = add_transform(&mut g);
+        assert_eq!(g.roots().len(), 1);
+        g.remove(n);
+        assert!(g.roots().is_empty());
+    }
+
+    #[test]
+    fn test_selection_basic_ops() {
+        let mut g = make_graph();
+        let n = add_transform(&mut g);
+
+        assert!(!g.is_selected(n));
+        g.select(n);
+        assert!(g.is_selected(n));
+        g.deselect(n);
+        assert!(!g.is_selected(n));
+
+        g.toggle_selection(n);
+        assert!(g.is_selected(n));
+        g.toggle_selection(n);
+        assert!(!g.is_selected(n));
+
+        g.select(n);
+        g.clear_selection();
+        assert!(g.selected_nodes().is_empty());
+    }
+
+    #[test]
+    fn test_select_many_multiple() {
+        let mut g = make_graph();
+        let a = add_transform(&mut g);
+        let b = add_material(&mut g);
+
+        g.select_many([a, b]);
+        assert!(g.is_selected(a));
+        assert!(g.is_selected(b));
+        assert_eq!(g.selected_nodes().len(), 2);
+    }
+
+    #[test]
+    fn test_mark_fields_dirty_subtree() {
+        let mut g = make_graph();
+        let root = add_transform(&mut g);
+        if let Some(e) = g.get_mut(root) {
+            e.fields.insert(root, 0, rc3d_fields::FieldValue::Float(1.0));
+        }
+        assert!(!g.get(root).unwrap().fields.any_dirty());
+
+        g.mark_fields_dirty_subtree(root);
+        assert!(g.get(root).unwrap().fields.any_dirty());
+    }
+}

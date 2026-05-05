@@ -190,3 +190,139 @@ impl Default for SceneGraph {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node_data::{MaterialNode, TransformNode, GroupNode};
+
+    fn make_material() -> NodeData {
+        NodeData::Material(MaterialNode::default())
+    }
+
+    fn make_group() -> NodeData {
+        NodeData::Group(GroupNode)
+    }
+
+    // ── Root ops ──
+
+    #[test]
+    fn test_add_root_has_no_parent() {
+        let mut g = SceneGraph::new();
+        let id = g.add_root(make_group());
+        assert_eq!(g.roots(), &[id]);
+        assert!(g.get(id).unwrap().parent.is_none());
+    }
+
+    #[test]
+    fn test_multiple_roots() {
+        let mut g = SceneGraph::new();
+        let a = g.add_root(make_group());
+        let b = g.add_root(make_material());
+        assert_eq!(g.roots().len(), 2);
+        assert!(g.roots().contains(&a));
+        assert!(g.roots().contains(&b));
+    }
+
+    // ── Child ops ──
+
+    #[test]
+    fn test_add_child_to_nonexistent_parent_returns_default() {
+        let mut g = SceneGraph::new();
+        let bad_parent = NodeId::default();
+        let id = g.add_child(bad_parent, make_group());
+        assert_eq!(id, NodeId::default());
+    }
+
+    #[test]
+    fn test_insert_child_at_index() {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(make_group());
+        let a = g.add_child(root, make_material());
+        let b = g.insert_child(root, 0, make_material());
+        let children = g.children(root).unwrap();
+        assert_eq!(children[0], b); // inserted at 0, before a
+        assert_eq!(children[1], a);
+    }
+
+    #[test]
+    fn test_insert_child_index_clamped() {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(make_group());
+        let a = g.add_child(root, make_material());
+        // index 999 should clamp to children.len()
+        let b = g.insert_child(root, 999, make_material());
+        let children = g.children(root).unwrap();
+        assert_eq!(children[children.len() - 1], b);
+        assert!(children.contains(&a));
+    }
+
+    // ── Attributes ──
+
+    #[test]
+    fn test_node_attributes_empty_by_default() {
+        let mut g = SceneGraph::new();
+        let id = g.add_root(make_group());
+        assert!(g.get(id).unwrap().attributes.is_empty());
+    }
+
+    #[test]
+    fn test_node_attributes_set_and_read() {
+        let mut g = SceneGraph::new();
+        let id = g.add_root(make_material());
+        if let Some(e) = g.get_mut(id) {
+            e.attributes.insert("part_number".into(), "PN-001".into());
+        }
+        assert_eq!(
+            g.get(id).unwrap().attributes.get("part_number"),
+            Some(&"PN-001".to_string())
+        );
+    }
+
+    #[test]
+    fn test_attributes_survive_node_operations() {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(make_group());
+        if let Some(e) = g.get_mut(root) {
+            e.attributes.insert("key".into(), "val".into());
+        }
+        let child = g.add_child(root, make_material());
+        // Child has independent (empty) attributes
+        assert!(g.get(child).unwrap().attributes.is_empty());
+        // Root's attributes unchanged
+        assert_eq!(
+            g.get(root).unwrap().attributes.get("key"),
+            Some(&"val".to_string())
+        );
+    }
+
+    // ── Hierarchical containment ──
+
+    #[test]
+    fn test_root_is_not_child() {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(make_group());
+        let child = g.add_child(root, make_material());
+        assert_eq!(g.roots(), &[root]);
+        assert!(g.children(root).unwrap().contains(&child));
+    }
+
+    #[test]
+    fn test_subtree_mark_dirty_reaches_all_nodes() {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(make_group());
+        let a = g.add_child(root, make_material());
+        let b = g.add_child(root, make_material());
+        // Add a field to each node so any_dirty() can detect dirtiness
+        for &id in &[root, a, b] {
+            if let Some(e) = g.get_mut(id) {
+                e.fields.insert(id, 0, rc3d_fields::FieldValue::Bool(false));
+            }
+        }
+
+        g.mark_fields_dirty_subtree(root);
+        assert!(g.get(root).unwrap().fields.any_dirty());
+        assert!(g.get(a).unwrap().fields.any_dirty());
+        assert!(g.get(b).unwrap().fields.any_dirty());
+    }
+}

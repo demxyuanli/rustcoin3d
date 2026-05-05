@@ -44,7 +44,7 @@ fn is_likely_binary(data: &[u8]) -> bool {
         return false;
     }
     let count = u32::from_le_bytes([data[80], data[81], data[82], data[83]]) as usize;
-    data.len() == 84 + count * 50
+    data.len() >= 84 + count * 50
 }
 
 fn parse_stl_binary(data: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
@@ -59,13 +59,13 @@ fn parse_stl_binary(data: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
     let mut triangles = Vec::with_capacity(count);
     let mut offset = 84;
     for _ in 0..count {
-        let normal = read_f32_3(data, offset);
+        let normal = read_f32_3(data, offset)?;
         offset += 12;
-        let v0 = read_f32_3(data, offset);
+        let v0 = read_f32_3(data, offset)?;
         offset += 12;
-        let v1 = read_f32_3(data, offset);
+        let v1 = read_f32_3(data, offset)?;
         offset += 12;
-        let v2 = read_f32_3(data, offset);
+        let v2 = read_f32_3(data, offset)?;
         offset += 12;
         offset += 2; // attribute byte count
         triangles.push(StlTriangle { normal, vertices: [v0, v1, v2] });
@@ -73,12 +73,15 @@ fn parse_stl_binary(data: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
     Ok(triangles)
 }
 
-fn read_f32_3(data: &[u8], offset: usize) -> [f32; 3] {
-    [
+fn read_f32_3(data: &[u8], offset: usize) -> Result<[f32; 3], StlError> {
+    if offset + 12 > data.len() {
+        return Err(StlError::InvalidBinary(format!("offset {} out of bounds", offset)));
+    }
+    Ok([
         f32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]),
         f32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]),
         f32::from_le_bytes([data[offset + 8], data[offset + 9], data[offset + 10], data[offset + 11]]),
-    ]
+    ])
 }
 
 fn parse_stl_ascii(text: &str) -> Result<Vec<StlTriangle>, StlError> {
@@ -106,7 +109,7 @@ fn parse_stl_ascii(text: &str) -> Result<Vec<StlTriangle>, StlError> {
         }
 
         let mut normal = [0.0f32; 3];
-        parse_facet_normal(trimmed, &mut normal);
+        parse_facet_normal(trimmed, &mut normal)?;
 
         lines.next(); // consume 'facet normal ...'
         skip_line(&mut lines, "outer"); // 'outer loop'
@@ -114,7 +117,7 @@ fn parse_stl_ascii(text: &str) -> Result<Vec<StlTriangle>, StlError> {
         let mut vertices = [[0.0f32; 3]; 3];
         for vertex in &mut vertices {
             if let Some(vline) = lines.next() {
-                parse_vertex(vline.trim(), vertex);
+                parse_vertex(vline.trim(), vertex)?;
             }
         }
 
@@ -127,24 +130,26 @@ fn parse_stl_ascii(text: &str) -> Result<Vec<StlTriangle>, StlError> {
     Ok(triangles)
 }
 
-fn parse_facet_normal(line: &str, normal: &mut [f32; 3]) {
+fn parse_facet_normal(line: &str, normal: &mut [f32; 3]) -> Result<(), StlError> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     // facet normal ni nj nk
     if parts.len() >= 5 {
-        normal[0] = parts[2].parse().unwrap_or(0.0);
-        normal[1] = parts[3].parse().unwrap_or(0.0);
-        normal[2] = parts[4].parse().unwrap_or(0.0);
+        normal[0] = parts[2].parse().map_err(|_| StlError::InvalidAscii(format!("invalid normal x in: {}", line)))?;
+        normal[1] = parts[3].parse().map_err(|_| StlError::InvalidAscii(format!("invalid normal y in: {}", line)))?;
+        normal[2] = parts[4].parse().map_err(|_| StlError::InvalidAscii(format!("invalid normal z in: {}", line)))?;
     }
+    Ok(())
 }
 
-fn parse_vertex(line: &str, vertex: &mut [f32; 3]) {
+fn parse_vertex(line: &str, vertex: &mut [f32; 3]) -> Result<(), StlError> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     // vertex x y z
     if parts.len() >= 4 {
-        vertex[0] = parts[1].parse().unwrap_or(0.0);
-        vertex[1] = parts[2].parse().unwrap_or(0.0);
-        vertex[2] = parts[3].parse().unwrap_or(0.0);
+        vertex[0] = parts[1].parse().map_err(|_| StlError::InvalidAscii(format!("invalid vertex x in: {}", line)))?;
+        vertex[1] = parts[2].parse().map_err(|_| StlError::InvalidAscii(format!("invalid vertex y in: {}", line)))?;
+        vertex[2] = parts[3].parse().map_err(|_| StlError::InvalidAscii(format!("invalid vertex z in: {}", line)))?;
     }
+    Ok(())
 }
 
 fn skip_line<'a, I: Iterator<Item = &'a str>>(lines: &mut std::iter::Peekable<I>, _expected: &str) {
@@ -186,8 +191,8 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
             base_color: Vec3::new(0.94, 0.94, 0.94),
             metallic: 0.0,
             roughness: 0.35,
-            albedo_texture: None,
             opacity: 1.0,
+            ..Default::default()
         }),
     );
     const MAX_VERTICES_PER_CHUNK: usize = 4_000_000;

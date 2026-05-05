@@ -1,0 +1,94 @@
+//! HandleEventAction — traverses the scene graph routing events to nodes.
+//!
+//! Follows the Coin3D SoHandleEventAction pattern: pick-first traversal for pointer
+//! events; full-tree discovery of `EventCallback` nodes for keyboard/scroll/touch.
+
+use rc3d_core::NodeId;
+use rc3d_scene::{NodeData, SceneGraph};
+
+use crate::action::{Action, ActionKind};
+use crate::event::{Event, EventContext};
+use crate::ray_pick::{PickHit, RayPickAction};
+
+/// Traverses the scene graph and routes events to nodes.
+pub struct HandleEventAction {
+    pub ctx: EventContext,
+    pub hit_node: Option<NodeId>,
+    pub hit_point: Option<rc3d_core::math::Vec3>,
+    pub pick_hits: Vec<PickHit>,
+    /// `EventCallback` node ids (for non-pointer events or custom dispatch).
+    pub event_callback_nodes: Vec<NodeId>,
+}
+
+impl HandleEventAction {
+    pub fn new(ctx: EventContext) -> Self {
+        Self {
+            ctx,
+            hit_node: None,
+            hit_point: None,
+            pick_hits: Vec::new(),
+            event_callback_nodes: Vec::new(),
+        }
+    }
+
+    fn pick_first(&mut self, graph: &SceneGraph, root: NodeId, screen_x: f32, screen_y: f32, vp_w: f32, vp_h: f32) {
+        let ray = self.ctx.pick_ray(screen_x, screen_y, vp_w, vp_h);
+        let mut picker = RayPickAction::new(ray);
+        picker.apply(graph, root);
+        self.pick_hits = picker.hits;
+
+        if let Some(hit) = self.pick_hits.first() {
+            self.hit_node = Some(hit.node);
+            self.hit_point = Some(hit.point);
+        }
+    }
+
+    fn collect_event_callback_nodes(&mut self, graph: &SceneGraph, node: NodeId) {
+        let Some(entry) = graph.get(node) else {
+            return;
+        };
+        if let NodeData::EventCallback(ec) = &entry.data {
+            if ec.enabled {
+                self.event_callback_nodes.push(node);
+            }
+        }
+        for &c in &entry.children {
+            self.collect_event_callback_nodes(graph, c);
+        }
+    }
+}
+
+impl Action for HandleEventAction {
+    fn kind(&self) -> ActionKind {
+        ActionKind::HandleEvent
+    }
+
+    fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.event_callback_nodes.clear();
+        self.hit_node = None;
+        self.hit_point = None;
+        self.pick_hits.clear();
+
+        match &self.ctx.event {
+            Event::KeyPress { .. } | Event::KeyRelease { .. } | Event::Scroll { .. } | Event::Touch { .. } => {
+                self.collect_event_callback_nodes(graph, root);
+            }
+            Event::MouseMove { x, y, .. } => {
+                let (pw, ph) = self.ctx.pointer_pick_viewport.unwrap_or((1.0, 1.0));
+                self.pick_first(graph, root, *x, *y, pw, ph);
+            }
+            Event::ButtonPress { x, y, .. } | Event::ButtonRelease { x, y, .. } => {
+                let (pw, ph) = self.ctx.pointer_pick_viewport.unwrap_or((1.0, 1.0));
+                self.pick_first(graph, root, *x, *y, pw, ph);
+            }
+        }
+    }
+}
+
+/// Optional API: only collect `EventCallback` nodes without picking (same as non-pointer path).
+impl HandleEventAction {
+    pub fn apply_non_pointer_only(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.event_callback_nodes.clear();
+        self.collect_event_callback_nodes(graph, root);
+    }
+}

@@ -18,3 +18,57 @@ pub enum FieldValue {
     String(String),
     Binary(Vec<u8>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_float64_roundtrip() {
+        let v = FieldValue::Float64(42.0);
+        assert_eq!(v, FieldValue::Float64(42.0));
+        assert_ne!(v, FieldValue::Float(42.0));
+        assert_ne!(v, FieldValue::Float64(43.0));
+    }
+
+    #[test]
+    fn test_string_roundtrip() {
+        let v = FieldValue::String("hello".to_string());
+        assert_eq!(v, FieldValue::String("hello".to_string()));
+        assert_ne!(v, FieldValue::String("world".to_string()));
+    }
+
+    #[test]
+    fn test_string_clone() {
+        let v = FieldValue::String("part_number".to_string());
+        assert_eq!(v.clone(), v);
+    }
+
+    #[test]
+    fn test_binary_roundtrip() {
+        let data = vec![0u8, 1, 2, 255];
+        let v = FieldValue::Binary(data.clone());
+        assert_eq!(v, FieldValue::Binary(data));
+    }
+
+    #[test]
+    fn test_binary_empty() {
+        let v = FieldValue::Binary(vec![]);
+        assert_eq!(v, FieldValue::Binary(vec![]));
+    }
+
+    #[test]
+    fn test_string_debug_format() {
+        let v = FieldValue::String("test".into());
+        let s = format!("{:?}", v);
+        assert!(s.contains("String"));
+        assert!(s.contains("test"));
+    }
+
+    #[test]
+    fn test_binary_debug_format() {
+        let v = FieldValue::Binary(vec![1, 2, 3]);
+        let s = format!("{:?}", v);
+        assert!(s.contains("Binary"));
+    }
+}

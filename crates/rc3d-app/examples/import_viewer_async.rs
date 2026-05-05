@@ -7,8 +7,8 @@ use std::sync::mpsc;
 use std::thread;
 
 use rc3d_actions::GetBoundingBoxAction;
-use rc3d_app::App;
 use rc3d_app::camera_controller::CameraController;
+use rc3d_app::App;
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_core::NodeId;
@@ -16,7 +16,9 @@ use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
+    print_import_viewer_async_help();
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -41,21 +43,34 @@ fn main() {
 
     println!("Loading in background: {}", path);
 
-    let mut app = App::new(SceneGraph::new())
-        .with_initial_display_mode(DisplayMode::ShadedWithEdges);
+    let mut app =
+        App::new(SceneGraph::new()).with_initial_display_mode(DisplayMode::ShadedWithEdges);
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
         let (target, orbit_radius) = fit_camera_to_scene(&mut app.world.graph);
         let controller_root = find_first_camera_node(&app.world.graph)
             .or_else(|| app.world.graph.roots().first().copied())
             .expect("non-empty graph after load");
-        app.camera_controller = Some(CameraController::new(controller_root, target, orbit_radius));
+        app.camera_controller = Some(CameraController::new(target, orbit_radius));
     });
 
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_import_viewer_async_help() {
+    println!("Async import viewer example");
+    println!(
+        "Usage: cargo run -p rc3d-app --example import_viewer_async -- <file.stl|file.obj|file.iv>"
+    );
+    println!("Controls:");
+    println!("  Mouse drag: orbit camera after scene is loaded");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Background loading + deferred graph apply");
+    println!("  STL input enables high-contrast light preset by default");
 }
 
 fn find_geometry_root(graph: &rc3d_scene::SceneGraph) -> NodeId {
@@ -126,7 +141,10 @@ fn has_material_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool 
     false
 }
 
-fn ensure_camera_and_light(mut graph: rc3d_scene::SceneGraph, high_contrast: bool) -> rc3d_scene::SceneGraph {
+fn ensure_camera_and_light(
+    mut graph: rc3d_scene::SceneGraph,
+    high_contrast: bool,
+) -> rc3d_scene::SceneGraph {
     let has_camera = graph
         .roots()
         .iter()
@@ -247,7 +265,7 @@ fn apply_camera_fit_recursive(
     near: f32,
     far: f32,
 ) {
-    let children = graph.children(node).to_vec();
+    let children = graph.children(node).unwrap_or(&[]).to_vec();
     if let Some(entry) = graph.get_mut(node) {
         match &mut entry.data {
             NodeData::PerspectiveCamera(cam) => {

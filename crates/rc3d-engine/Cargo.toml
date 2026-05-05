@@ -7,4 +7,6 @@ rust-version.workspace = true
 [dependencies]
 rc3d-core = { workspace = true }
 rc3d-scene = { workspace = true }
+rapier3d = "0.22"
+log = { workspace = true }
 

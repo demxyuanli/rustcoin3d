@@ -234,7 +234,7 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetOutlineColor(c) => {
                 if let Some(r) = &mut app.renderer {
-                    r.outline_color = c;
+                    r.set_outline_color(c);
                 }
             }
             EditorCommand::SetXrayMode(enabled) => {

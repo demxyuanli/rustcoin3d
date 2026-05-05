@@ -45,13 +45,20 @@ enum Token {
 fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, IvError> {
     let mut tokens = Vec::new();
     let mut chars = input.char_indices().peekable();
-    while let Some(&(i, ch)) = chars.peek() {
+    let mut line = 1usize;
+    while let Some(&(_i, ch)) = chars.peek() {
         match ch {
-            '{' => { tokens.push((Token::LBrace, i)); chars.next(); }
-            '}' => { tokens.push((Token::RBrace, i)); chars.next(); }
-            '[' => { tokens.push((Token::LBracket, i)); chars.next(); }
-            ']' => { tokens.push((Token::RBracket, i)); chars.next(); }
-            '#' => { while chars.next_if(|&(_, c)| c != '\n').is_some() {} }
+            '{' => { tokens.push((Token::LBrace, line)); chars.next(); }
+            '}' => { tokens.push((Token::RBrace, line)); chars.next(); }
+            '[' => { tokens.push((Token::LBracket, line)); chars.next(); }
+            ']' => { tokens.push((Token::RBracket, line)); chars.next(); }
+            '#' => {
+                while let Some(&(_, c)) = chars.peek() {
+                    if c == '\n' { break; }
+                    chars.next();
+                }
+            }
+            '\n' => { line += 1; chars.next(); }
             c if c.is_whitespace() => { chars.next(); }
             c if c == '-' || c == '+' || c == '.' || c.is_ascii_digit() => {
                 let mut num_str = String::new();
@@ -61,19 +68,18 @@ fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, IvError> {
                         num_str.push(c); chars.next();
                     } else { break; }
                 }
-                let line = input[..i].lines().count();
                 if num_str.contains('.') || num_str.contains('e') || num_str.contains('E') {
                     let v: f32 = num_str.parse().map_err(|_| IvError::Parse {
                         line, message: format!("invalid float: {num_str}"),
                     })?;
-                    tokens.push((Token::Number(v), i));
+                    tokens.push((Token::Number(v), line));
                 } else if num_str == "-" || num_str == "+" {
-                    tokens.push((Token::Ident(num_str), i));
+                    tokens.push((Token::Ident(num_str), line));
                 } else {
                     let v: i32 = num_str.parse().map_err(|_| IvError::Parse {
                         line, message: format!("invalid int: {num_str}"),
                     })?;
-                    tokens.push((Token::Int(v), i));
+                    tokens.push((Token::Int(v), line));
                 }
             }
             c if c.is_alphabetic() || c == '_' => {
@@ -82,9 +88,9 @@ fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, IvError> {
                     if c.is_alphanumeric() || c == '_' { ident.push(c); chars.next(); }
                     else { break; }
                 }
-                tokens.push((Token::Ident(ident), i));
+                tokens.push((Token::Ident(ident), line));
             }
-            _ => { chars.next(); }
+            _ => { return Err(IvError::Parse { line, message: format!("unexpected character: {:?}", ch) }); }
         }
     }
     Ok(tokens)
@@ -95,33 +101,37 @@ fn tokenize(input: &str) -> Result<Vec<(Token, usize)>, IvError> {
 struct Parser<'a> {
     tokens: &'a [(Token, usize)],
     pos: usize,
+    line: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn new(tokens: &'a [(Token, usize)]) -> Self { Self { tokens, pos: 0 } }
+    fn new(tokens: &'a [(Token, usize)]) -> Self { Self { tokens, pos: 0, line: 1 } }
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.pos).map(|(t, _)| t)
     }
 
-    fn next_tok(&mut self) -> Result<&Token, IvError> {
+    fn next_tok(&mut self) -> Result<(Token, usize), IvError> {
         if self.pos >= self.tokens.len() { return Err(IvError::UnexpectedEof); }
-        let tok = &self.tokens[self.pos].0;
+        let (tok, tok_line) = (self.tokens[self.pos].0.clone(), self.tokens[self.pos].1);
+        self.line = tok_line;
         self.pos += 1;
-        Ok(tok)
+        Ok((tok, tok_line))
     }
 
     fn expect(&mut self, expected: &Token) -> Result<(), IvError> {
-        let tok = self.next_tok()?;
-        if tok == expected { Ok(()) }
-        else { Err(IvError::Parse { line: 0, message: format!("expected {expected:?}, got {tok:?}") }) }
+        let (tok, line) = self.next_tok()?;
+        if &tok == expected { Ok(()) }
+        else { Err(IvError::Parse { line, message: format!("expected {expected:?}, got {tok:?}") }) }
     }
 
     fn read_float(&mut self) -> Result<f32, IvError> {
         match self.next_tok()? {
-            Token::Number(f) => Ok(*f),
-            Token::Int(i) => Ok(*i as f32),
-            other => Err(IvError::Parse { line: 0, message: format!("expected number, got {other:?}") }),
+            (Token::Number(f), _) => Ok(f),
+            (Token::Int(i), _) => Ok(i as f32),
+            (other, line) => {
+                Err(IvError::Parse { line, message: format!("expected number, got {other:?}") })
+            }
         }
     }
 
@@ -131,18 +141,18 @@ impl<'a> Parser<'a> {
 
     fn read_bool_field(&mut self) -> Result<bool, IvError> {
         match self.next_tok()? {
-            Token::Number(f) => Ok(*f != 0.0),
-            Token::Int(i) => Ok(*i != 0),
-            Token::Ident(s) => match s.as_str() {
+            (Token::Number(f), _) => Ok(f != 0.0),
+            (Token::Int(i), _) => Ok(i != 0),
+            (Token::Ident(s), line) => match s.as_str() {
                 "TRUE" | "True" | "true" => Ok(true),
                 "FALSE" | "False" | "false" => Ok(false),
                 _ => Err(IvError::Parse {
-                    line: 0,
+                    line,
                     message: format!("expected boolean field value, got ident `{s}`"),
                 }),
             },
-            other => Err(IvError::Parse {
-                line: 0,
+            (other, line) => Err(IvError::Parse {
+                line,
                 message: format!("expected boolean field value, got {other:?}"),
             }),
         }
@@ -171,13 +181,13 @@ impl<'a> Parser<'a> {
     ) -> Result<rc3d_core::NodeId, IvError> {
         if depth > Self::MAX_IV_DEPTH {
             return Err(IvError::Parse {
-                line: 0,
+                line: self.line,
                 message: "max nesting depth exceeded".into(),
             });
         }
         let name = match self.peek() {
             Some(Token::Ident(s)) => s.clone(),
-            _ => return Err(IvError::Parse { line: 0, message: "expected node name".into() }),
+            _ => return Err(IvError::Parse { line: self.line, message: "expected node name".into() }),
         };
         self.pos += 1; // skip ident
         self.expect(&Token::LBrace)?;
@@ -263,7 +273,7 @@ impl<'a> Parser<'a> {
                     let angle = self.read_float()?;
                     if axis.length_squared() < f32::EPSILON {
                         return Err(IvError::Parse {
-                            line: 0,
+                            line: self.line,
                             message: "zero-length rotation axis".into(),
                         });
                     }
@@ -301,7 +311,7 @@ impl<'a> Parser<'a> {
                     let angle = self.read_float()?;
                     if axis.length_squared() < f32::EPSILON {
                         return Err(IvError::Parse {
-                            line: 0,
+                            line: self.line,
                             message: "zero-length rotation axis".into(),
                         });
                     }

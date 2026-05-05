@@ -1,6 +1,5 @@
 use super::PassContext;
 use crate::vertex::OutlineUniforms;
-use rc3d_core::DisplayMode;
 
 pub(super) fn pass_depth_prepass(
     renderer: &mut crate::renderer::Renderer,
@@ -96,11 +95,6 @@ pub(super) fn pass_solid_and_outline(
             ctx.meshlet_indices.iter().copied().collect();
         pass.set_pipeline(&outline_pipeline);
         pass.set_stencil_reference(0);
-        let outline_color = if ctx.mode == DisplayMode::HiddenLine {
-            [0.5, 0.7, 1.0, 1.0]
-        } else {
-            ctx.outline_color
-        };
         let mut last_bound_mesh = None;
         for &i in ctx.solid_order {
             if meshlet_set.contains(&i) {
@@ -111,7 +105,7 @@ pub(super) fn pass_solid_and_outline(
                 mvp: dc.mvp.to_cols_array_2d(),
                 outline_width: ctx.outline_width,
                 _pad: [0.0; 3],
-                color: outline_color,
+                color: ctx.outline_color,
             };
             if let Some(offset) = renderer.outline_pool.push_outline(&uniforms) {
                 pass.set_bind_group(0, renderer.outline_pool.bind_group(), &[offset]);

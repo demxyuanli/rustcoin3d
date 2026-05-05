@@ -84,6 +84,52 @@ impl GpuResourceManager {
         })
     }
 
+    /// Mesh whose vertex buffer is the skinning compute output (same layout as [`Vertex`]).
+    pub fn insert_skinned_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        vertex_buffer: wgpu::Buffer,
+        vertex_count: u32,
+        indices: Option<&[u32]>,
+        edge_positions: &[[f32; 3]],
+    ) -> MeshId {
+        let (index_buffer, index_count) = if let Some(idx) = indices {
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Skinned mesh indices"),
+                contents: bytemuck::cast_slice(idx),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            (Some(buf), idx.len() as u32)
+        } else {
+            (None, 0)
+        };
+
+        let (edge_vertex_buffer, edge_vertex_count) = if !edge_positions.is_empty() {
+            let line_verts: Vec<LineVertex> = edge_positions
+                .iter()
+                .map(|&p| LineVertex { position: p })
+                .collect();
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Skinned mesh edges"),
+                contents: bytemuck::cast_slice(&line_verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            (Some(buf), line_verts.len() as u32)
+        } else {
+            (None, 0)
+        };
+
+        self.meshes.insert(GpuMesh {
+            vertex_buffer,
+            vertex_count,
+            index_buffer,
+            index_count,
+            edge_vertex_buffer,
+            edge_vertex_count,
+            generation: 0,
+        })
+    }
+
     pub fn get(&self, id: MeshId) -> Option<&GpuMesh> {
         self.meshes.get(id)
     }
@@ -199,6 +245,14 @@ impl GpuUniformPool {
             staging: vec![0; size as usize],
             written_end: 0,
         }
+    }
+
+    pub fn stride(&self) -> u64 {
+        self.stride
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Pool for per-draw shadow MVP; `layout` must match [PipelineSet::shadow_draw_bgl].

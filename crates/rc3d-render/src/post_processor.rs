@@ -17,6 +17,8 @@ pub struct PostFxPipelines {
     pub tonemap_bgl: wgpu::BindGroupLayout,
     pub tonemap_sampler: wgpu::Sampler,
     pub tonemap_pipeline: wgpu::RenderPipeline,
+    pub fxaa_ldr_bgl: wgpu::BindGroupLayout,
+    pub fxaa_ldr_pipeline: wgpu::RenderPipeline,
     pub blit_bgl: wgpu::BindGroupLayout,
     pub blit_pipeline: wgpu::RenderPipeline,
     pub bloom_bgl: wgpu::BindGroupLayout,
@@ -48,6 +50,10 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     let ssao_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("SSAO blur"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/ssao_blur.wgsl").into()),
+    });
+    let fxaa_ldr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("FXAA LDR"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fxaa_ldr.wgsl").into()),
     });
 
     let tonemap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -243,10 +249,80 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(),         multiview: None, cache: None,
     });
 
-    PostFxPipelines { tonemap_bgl, tonemap_sampler, tonemap_pipeline, blit_bgl, blit_pipeline, bloom_bgl, bloom_prefilter, ssao_sampler, ssao_bgl, ssao_blur_bgl, ssao_pipeline, ssao_blur_pipeline }
+    let fxaa_ldr_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("FXAA LDR BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let fxaa_ldr_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("FXAA LDR PLL"),
+        bind_group_layouts: &[&fxaa_ldr_bgl],
+        push_constant_ranges: &[],
+    });
+    let fxaa_ldr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("FXAA LDR"),
+        layout: Some(&fxaa_ldr_pll),
+        vertex: wgpu::VertexState {
+            module: &fxaa_ldr_shader,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &fxaa_ldr_shader,
+            entry_point: Some("fs_fxaa"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    PostFxPipelines {
+        tonemap_bgl,
+        tonemap_sampler,
+        tonemap_pipeline,
+        fxaa_ldr_bgl,
+        fxaa_ldr_pipeline,
+        blit_bgl,
+        blit_pipeline,
+        bloom_bgl,
+        bloom_prefilter,
+        ssao_sampler,
+        ssao_bgl,
+        ssao_blur_bgl,
+        ssao_pipeline,
+        ssao_blur_pipeline,
+    }
 }
 
 pub struct PostFxTextures {
@@ -278,7 +354,10 @@ pub fn ensure_post_fx_textures(
     let hdr_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("HDR scene"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
     });
     let hdr_view = hdr_tex.create_view(&wgpu::TextureViewDescriptor::default());
 

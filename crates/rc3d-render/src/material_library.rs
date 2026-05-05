@@ -122,8 +122,28 @@ impl MaterialLibrary {
             None => texture_cache.white_handle(),
         };
 
-        let normal_handle = texture_cache.default_normal_handle();
-        let bg = texture_cache.pbr_material_bind_group(device, bgl, albedo_handle, normal_handle);
+        let normal_path = entry.material.normal_texture.clone();
+        let normal_handle = match &normal_path {
+            Some(p) => texture_cache.load_path(device, queue, p.as_str()),
+            None => texture_cache.default_normal_handle(),
+        };
+
+        let mr_handle = match &entry.material.metallic_roughness_texture {
+            Some(p) => texture_cache.load_path(device, queue, p.as_str()),
+            None => texture_cache.white_handle(),
+        };
+        let emissive_handle = match &entry.material.emissive_texture {
+            Some(p) => texture_cache.load_path(device, queue, p.as_str()),
+            None => texture_cache.white_handle(),
+        };
+        let occlusion_handle = match &entry.material.occlusion_texture {
+            Some(p) => texture_cache.load_path(device, queue, p.as_str()),
+            None => texture_cache.white_handle(),
+        };
+
+        let bg = texture_cache.pbr_material_bind_group(
+            device, bgl, albedo_handle, normal_handle, mr_handle, emissive_handle, occlusion_handle,
+        );
 
         if let Some(entry) = self.entries.get_mut(&name) {
             entry.bind_group = Some(bg.clone());

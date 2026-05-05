@@ -888,3 +888,123 @@ impl NodeData {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── field_descriptors completeness ──
+
+    #[test]
+    fn test_material_descriptors() {
+        let d = NodeData::Material(MaterialNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"diffuseColor"));
+        assert!(names.contains(&"opacity"));
+        assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn test_directional_light_descriptors() {
+        let d = NodeData::DirectionalLight(DirectionalLightNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"direction"));
+        assert!(names.contains(&"color"));
+        assert!(names.contains(&"intensity"));
+    }
+
+    #[test]
+    fn test_spot_light_descriptors() {
+        let d = NodeData::SpotLight(SpotLightNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"cut_off_angle"));
+        assert!(names.contains(&"drop_off_rate"));
+    }
+
+    #[test]
+    fn test_perspective_camera_descriptors() {
+        let d = NodeData::PerspectiveCamera(PerspectiveCameraNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"fov"));
+        assert!(names.contains(&"near"));
+        assert!(names.contains(&"far"));
+        assert!(names.contains(&"reverse_depth"));
+    }
+
+    #[test]
+    fn test_section_plane_descriptors() {
+        let d = NodeData::SectionPlane(SectionPlaneNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"plane"));
+        assert!(names.contains(&"enabled"));
+    }
+
+    #[test]
+    fn test_markup_descriptors() {
+        let d = NodeData::Markup(MarkupNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"visible"));
+        assert!(names.contains(&"layer_name"));
+    }
+
+    #[test]
+    fn test_measurement_descriptors() {
+        let d = NodeData::Measurement(MeasurementNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"value"));
+        assert!(names.contains(&"label"));
+        assert!(names.contains(&"color"));
+    }
+
+    #[test]
+    fn test_shape_nodes_have_no_descriptors() {
+        // Structural/geometry nodes should return empty field lists
+        assert!(NodeData::Separator(SeparatorNode).field_descriptors().is_empty());
+        assert!(NodeData::Group(GroupNode).field_descriptors().is_empty());
+        assert!(NodeData::Cube(CubeNode::default()).field_descriptors().is_empty());
+        assert!(NodeData::Cylinder(CylinderNode::default()).field_descriptors().is_empty());
+        assert!(NodeData::IndexedFaceSet(IndexedFaceSetNode::default())
+            .field_descriptors()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_transform_descriptors() {
+        let d = NodeData::Transform(TransformNode::default()).field_descriptors();
+        let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
+        assert!(names.contains(&"translation"));
+        assert!(names.contains(&"rotation"));
+        assert!(names.contains(&"scale"));
+    }
+
+    // ── type_name completeness ──
+
+    #[test]
+    fn test_type_name_is_consistent() {
+        // Each variant's type_name should match the variant name
+        assert_eq!(NodeData::Separator(SeparatorNode).type_name(), "Separator");
+        assert_eq!(NodeData::Material(MaterialNode::default()).type_name(), "Material");
+        assert_eq!(
+            NodeData::PerspectiveCamera(PerspectiveCameraNode::default()).type_name(),
+            "PerspectiveCamera"
+        );
+        assert_eq!(
+            NodeData::DirectionalLight(DirectionalLightNode::default()).type_name(),
+            "DirectionalLight"
+        );
+        assert_eq!(NodeData::SectionPlane(SectionPlaneNode::default()).type_name(), "SectionPlane");
+        assert_eq!(NodeData::Markup(MarkupNode::default()).type_name(), "Markup");
+        assert_eq!(
+            NodeData::Measurement(MeasurementNode::default()).type_name(),
+            "Measurement"
+        );
+    }
+
+    #[test]
+    fn test_field_descriptor_indices_are_sequential() {
+        let d = NodeData::SpotLight(SpotLightNode::default()).field_descriptors();
+        for (i, fd) in d.iter().enumerate() {
+            assert_eq!(fd.field_index, i as u16, "field {} should have index {}", fd.name, i);
+        }
+    }
+}

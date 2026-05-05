@@ -613,11 +613,10 @@ pub(crate) fn window_event(
                         }
                     }
 
-                    if !app.world.collector.draw_calls.is_empty() {
-                        // Populate markup overlay vertices from scene graph
-                        let markup_root = app.world.graph.roots().first().copied().unwrap_or_default();
-                        renderer.collect_markup_vertices(&app.world.graph, markup_root);
+                    let markup_root = app.world.graph.roots().first().copied().unwrap_or_default();
+                    renderer.collect_markup_vertices(&app.world.graph, markup_root);
 
+                    if !app.world.collector.draw_calls.is_empty() {
                         let mut overlay = None;
                         if let Some(ui) = &mut app.editor_ui {
                             overlay = Some(ui as *mut EditorUi);

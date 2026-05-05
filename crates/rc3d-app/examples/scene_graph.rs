@@ -1,9 +1,10 @@
 use rc3d_app::{App, CameraController};
-use rc3d_scene::node_data::*;
 use rc3d_core::math::Vec3;
+use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    print_scene_graph_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();
 
@@ -40,7 +41,7 @@ fn main() {
             800.0 / 600.0,
         )),
     );
-    let ctrl = CameraController::new(camera_id, Vec3::ZERO, 10.0);
+    let ctrl = CameraController::new(Vec3::ZERO, 10.0);
 
     // --- Red cube at (-2.5, 0, 0) ---
     {
@@ -124,9 +125,25 @@ fn main() {
         graph.add_child(sep, NodeData::Cube(CubeNode::default()));
     }
 
+    graph.add_child(
+        root,
+        NodeData::EventCallback(EventCallbackNode::default()),
+    );
+
     let mut app = App::new(graph).with_camera_controller(ctrl);
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_scene_graph_help() {
+    println!("Scene graph example");
+    println!("Usage: cargo run -p rc3d-app --example scene_graph");
+    println!("Controls:");
+    println!("  Mouse drag: orbit camera");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Trace: RUST_LOG=rc3d_app=trace — wheel logs HandleEventAction EventCallback discovery.");
+    println!("  Multiple node hierarchy with per-node material and transform");
 }

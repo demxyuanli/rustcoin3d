@@ -1,6 +1,5 @@
 use super::PassContext;
 use crate::vertex::FlatUniforms;
-use rc3d_core::DisplayMode;
 
 pub(super) fn pass_edge_overlay(
     renderer: &mut crate::renderer::Renderer,
@@ -40,19 +39,13 @@ pub(super) fn pass_edge_overlay(
     pass.set_stencil_reference(0);
     pass.set_pipeline(&pl.edge_overlay);
 
-    let default_edge_color = if ctx.mode == DisplayMode::HiddenLine {
-        [0.6, 0.8, 1.0, 0.8]
-    } else {
-        [0.0, 0.0, 0.0, 0.5]
-    };
-
     let mut last_bound_edge_mesh = None;
     for &i in ctx.edge_order {
         let dc = ctx.visible[i];
         if !edge_worthy && dc.overlay_color.is_none() {
             continue;
         }
-        let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
+        let edge_color = dc.overlay_color.unwrap_or(ctx.outline_color);
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color: edge_color,

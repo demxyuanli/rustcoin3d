@@ -4,6 +4,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    print_picking_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();
 
@@ -100,39 +101,54 @@ fn main() {
     );
     graph.add_child(sep5, NodeData::Cube(CubeNode::default()));
 
-    let ctrl = CameraController::new(camera_id, Vec3::ZERO, 8.0);
+    let ctrl = CameraController::new(Vec3::ZERO, 8.0);
 
-    let mut app = App::new(graph)
-        .with_camera_controller(ctrl)
-        .on_pick(move |graph, hit_node, _point| {
-            // Find the material sibling of the shape's separator
-            fn find_material_in_parent(graph: &rc3d_scene::SceneGraph, node: rc3d_core::NodeId) -> Option<rc3d_core::NodeId> {
-                let parent = graph.get(node)?.parent?;
-                let entry = graph.get(parent)?;
-                for &child in &entry.children {
-                    if let Some(ce) = graph.get(child) {
-                        if matches!(ce.data, NodeData::Material(_)) {
-                            return Some(child);
+    let mut app =
+        App::new(graph)
+            .with_camera_controller(ctrl)
+            .on_pick(move |graph, hit_node, _point| {
+                // Find the material sibling of the shape's separator
+                fn find_material_in_parent(
+                    graph: &rc3d_scene::SceneGraph,
+                    node: rc3d_core::NodeId,
+                ) -> Option<rc3d_core::NodeId> {
+                    let parent = graph.get(node)?.parent?;
+                    let entry = graph.get(parent)?;
+                    for &child in &entry.children {
+                        if let Some(ce) = graph.get(child) {
+                            if matches!(ce.data, NodeData::Material(_)) {
+                                return Some(child);
+                            }
+                        }
+                    }
+                    None
+                }
+
+                if let Some(mat_id) = find_material_in_parent(graph, hit_node) {
+                    if let Some(entry) = graph.get_mut(mat_id) {
+                        if let NodeData::Material(mat) = &mut entry.data {
+                            // Highlight: set to white
+                            mat.diffuse_color = Vec3::ONE;
+                            mat.base_color = Vec3::ONE;
+                            log::info!("Picked node, highlighted material");
                         }
                     }
                 }
-                None
-            }
-
-            if let Some(mat_id) = find_material_in_parent(graph, hit_node) {
-                if let Some(entry) = graph.get_mut(mat_id) {
-                    if let NodeData::Material(mat) = &mut entry.data {
-                        // Highlight: set to white
-                        mat.diffuse_color = Vec3::ONE;
-                        mat.base_color = Vec3::ONE;
-                        log::info!("Picked node, highlighted material");
-                    }
-                }
-            }
-        });
+            });
 
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_picking_help() {
+    println!("Picking example");
+    println!("Usage: cargo run -p rc3d-app --example picking");
+    println!("Controls:");
+    println!("  Left click: pick object and highlight material");
+    println!("  Middle mouse drag: orbit camera (right: pan, wheel: zoom)");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Picking callback is enabled by default");
 }

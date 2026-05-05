@@ -1,8 +1,10 @@
+pub mod fbx;
 pub mod gltf;
 pub mod iv;
 pub mod obj;
 pub mod stl;
 
+pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
 pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
@@ -23,6 +25,8 @@ pub enum ImportError {
     Obj(#[from] ObjError),
     #[error("glTF error: {0}")]
     Gltf(#[from] GltfError),
+    #[error("FBX error: {0}")]
+    Fbx(#[from] FbxError),
     #[error("Unknown format: {0}")]
     UnknownFormat(String),
 }
@@ -46,6 +50,9 @@ pub fn import_file(path: &Path) -> Result<SceneGraph, ImportError> {
         }
         "gltf" | "glb" => {
             Ok(parse_gltf_file(path)?)
+        }
+        "fbx" => {
+            Ok(parse_fbx_file(path)?)
         }
         _ => Err(ImportError::UnknownFormat(ext)),
     }

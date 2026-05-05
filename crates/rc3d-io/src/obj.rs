@@ -3,7 +3,9 @@ use std::path::Path;
 
 use rc3d_core::math::Vec3;
 use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_data::{Coordinate3Node, IndexedFaceSetNode, SeparatorNode, TextureCoordinate2Node};
+use rc3d_scene::node_data::{
+    Coordinate3Node, IndexedFaceSetNode, MaterialNode, SeparatorNode, TextureCoordinate2Node,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct FaceCorner {
@@ -55,6 +57,20 @@ pub fn parse_obj(text: &str) -> Result<SceneGraph, ObjError> {
 
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
+    graph.add_child(
+        root,
+        NodeData::Material(MaterialNode {
+            diffuse_color: Vec3::new(0.9, 0.9, 0.9),
+            ambient_color: Vec3::new(0.25, 0.25, 0.25),
+            specular_color: Vec3::new(0.04, 0.04, 0.04),
+            shininess: 64.0,
+            base_color: Vec3::new(0.94, 0.94, 0.94),
+            metallic: 0.0,
+            roughness: 0.45,
+            opacity: 1.0,
+            ..Default::default()
+        }),
+    );
     graph.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(exp_positions)));
     graph.add_child(
         root,
@@ -84,7 +100,7 @@ fn expand_faces_with_uv(
         let i = exp_pos.len() as i32;
         exp_pos.push(positions[v as usize]);
         let uv = match vt {
-            Some(ti) => texcoords[ti as usize],
+            Some(ti) => texcoords.get(ti as usize).copied().unwrap_or([0.0, 0.0]),
             None => [0.0, 0.0],
         };
         exp_tex.push(uv);

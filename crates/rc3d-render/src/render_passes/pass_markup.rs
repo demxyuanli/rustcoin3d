@@ -137,8 +137,7 @@ pub fn pass_markup(
         occlusion_query_set: None,
     });
 
-    // Reuse viewport_border_lines pipeline (same config: no depth, alpha blend, line list)
-    pass.set_pipeline(&renderer.pipelines.viewport_border_lines);
+    pass.set_pipeline(&renderer.pipelines.markup_lines);
 
     let ident = glam::Mat4::IDENTITY.to_cols_array_2d();
     let uniforms = crate::vertex::FlatUniforms {
@@ -155,5 +154,253 @@ pub fn pass_markup(
         pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
         pass.set_vertex_buffer(0, vb.slice(..));
         pass.draw(0..renderer.markup_vertices.len() as u32, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rc3d_scene::node_data::{MarkupElement, MarkupNode, NodeData};
+    use rc3d_scene::SceneGraph;
+
+    fn make_markup_graph(elements: Vec<MarkupElement>, visible: bool) -> (SceneGraph, NodeId) {
+        let mut g = SceneGraph::new();
+        let markup = MarkupNode {
+            elements,
+            visible,
+            ..Default::default()
+        };
+        let id = g.add_root(NodeData::Markup(markup));
+        (g, id)
+    }
+
+    // ── Empty / hidden ──
+
+    #[test]
+    fn test_empty_scene_yields_no_vertices() {
+        let g = SceneGraph::new();
+        let v = collect_markup_lines(&g, NodeId::default(), 800, 600);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn test_hidden_markup_yields_no_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Line {
+                start: [0.0, 0.0],
+                end: [10.0, 10.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+                width: 1.0,
+            }],
+            false,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert!(v.is_empty());
+    }
+
+    // ── Line ──
+
+    #[test]
+    fn test_line_element_produces_two_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Line {
+                start: [10.0, 20.0],
+                end: [30.0, 40.0],
+                color: [1.0, 0.0, 0.0, 0.8],
+                width: 2.0,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].position, [10.0, 20.0, 0.0]);
+        assert_eq!(v[1].position, [30.0, 40.0, 0.0]);
+    }
+
+    // ── Rect ──
+
+    #[test]
+    fn test_rect_element_produces_eight_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Rect {
+                origin: [0.0, 0.0],
+                size: [100.0, 50.0],
+                color: [1.0, 0.0, 0.0, 0.6],
+                filled: false,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // 4 edges × 2 vertices = 8
+        assert_eq!(v.len(), 8);
+    }
+
+    #[test]
+    fn test_rect_covers_correct_corners() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Rect {
+                origin: [50.0, 50.0],
+                size: [100.0, 100.0],
+                color: [1.0, 0.0, 0.0, 0.6],
+                filled: false,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // Should have corners at (50,50), (150,50), (150,150), (50,150)
+        let positions: Vec<[f32; 2]> = v.iter().map(|lv| [lv.position[0], lv.position[1]]).collect();
+        assert!(positions.contains(&[50.0, 50.0]));
+        assert!(positions.contains(&[150.0, 50.0]));
+        assert!(positions.contains(&[150.0, 150.0]));
+        assert!(positions.contains(&[50.0, 150.0]));
+    }
+
+    // ── Circle ──
+
+    #[test]
+    fn test_circle_produces_64_segment_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Circle {
+                center: [400.0, 300.0],
+                radius: 50.0,
+                color: [1.0, 0.0, 0.0, 0.6],
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // 64 segments × 2 = 128 vertices
+        assert_eq!(v.len(), 128);
+    }
+
+    #[test]
+    fn test_circle_vertices_near_center_radius() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Circle {
+                center: [0.0, 0.0],
+                radius: 10.0,
+                color: [1.0, 0.0, 0.0, 0.6],
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        for lv in &v {
+            let dist = (lv.position[0].powi(2) + lv.position[1].powi(2)).sqrt();
+            assert!((dist - 10.0).abs() < 0.2, "distance {} not ≈ 10", dist);
+        }
+    }
+
+    // ── Freehand ──
+
+    #[test]
+    fn test_freehand_two_points_produces_two_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Freehand {
+                points: vec![[0.0, 0.0], [10.0, 10.0]],
+                color: [0.0, 1.0, 0.0, 0.8],
+                width: 2.0,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_freehand_polyline_connects_points() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Freehand {
+                points: vec![[0.0, 0.0], [5.0, 5.0], [10.0, 0.0]],
+                color: [0.0, 1.0, 0.0, 0.8],
+                width: 2.0,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // 2 segments * 2 = 4 vertices
+        assert_eq!(v.len(), 4);
+        // First segment
+        assert_eq!(v[0].position, [0.0, 0.0, 0.0]);
+        assert_eq!(v[1].position, [5.0, 5.0, 0.0]);
+        // Second segment
+        assert_eq!(v[2].position, [5.0, 5.0, 0.0]);
+        assert_eq!(v[3].position, [10.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_freehand_single_point_no_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Freehand {
+                points: vec![[0.0, 0.0]],
+                color: [0.0, 1.0, 0.0, 0.8],
+                width: 2.0,
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // windows(2) on a single element gives empty iterator
+        assert!(v.is_empty());
+    }
+
+    // ── Dimension ──
+
+    #[test]
+    fn test_dimension_produces_six_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Dimension {
+                start: [10.0, 10.0],
+                end: [110.0, 10.0],
+                offset_dir: [0.0, -1.0],
+                extension_len: 20.0,
+                arrow_size: 5.0,
+                label: String::new(),
+                color: [1.0, 1.0, 0.0, 1.0],
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        // 3 lines × 2 = 6 vertices
+        assert_eq!(v.len(), 6);
+    }
+
+    // ── Text (deferred) ──
+
+    #[test]
+    fn test_text_element_no_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Text {
+                position: [0.0, 0.0],
+                string: "hello".into(),
+                size: 14.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert!(v.is_empty());
+    }
+
+    // ── Multiple elements ──
+
+    #[test]
+    fn test_multiple_elements_combined() {
+        let (g, root) = make_markup_graph(
+            vec![
+                MarkupElement::Line {
+                    start: [0.0, 0.0],
+                    end: [10.0, 10.0],
+                    color: [1.0, 0.0, 0.0, 0.8],
+                    width: 1.0,
+                },
+                MarkupElement::Line {
+                    start: [10.0, 10.0],
+                    end: [20.0, 20.0],
+                    color: [1.0, 0.0, 0.0, 0.8],
+                    width: 1.0,
+                },
+            ],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert_eq!(v.len(), 4);
     }
 }

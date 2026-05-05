@@ -20,6 +20,8 @@ struct SceneUniforms {
     clip_count: vec4<f32>,
     pbr_base_color: vec4<f32>,
     pbr_metallic_roughness: vec4<f32>,
+    pbr_emissive_alpha: vec4<f32>,
+    pbr_alpha_flags: vec4<f32>,
     ibl_diffuse: vec4<f32>,
     ibl_specular: vec4<f32>,
     csm_view_proj: array<mat4x4<f32>, CSM_CASCADE_COUNT>,
@@ -31,6 +33,9 @@ struct SceneUniforms {
 @group(1) @binding(0) var t_albedo: texture_2d<f32>;
 @group(1) @binding(1) var s_mat: sampler;
 @group(1) @binding(2) var t_normal: texture_2d<f32>;
+@group(1) @binding(3) var t_metallic_roughness: texture_2d<f32>;
+@group(1) @binding(4) var t_emissive: texture_2d<f32>;
+@group(1) @binding(5) var t_occlusion: texture_2d<f32>;
 @group(2) @binding(0) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(1) var s_shadow: sampler_comparison;
 @group(3) @binding(0) var t_envmap: texture_2d<f32>;
@@ -43,9 +48,20 @@ struct InstanceData {
     diffuse_color: vec4<f32>,
     base_color: vec4<f32>,
     metallic_roughness: vec4<f32>,
+    emissive_alpha: vec4<f32>,
+    morph_weights: array<f32, 8>,
+    morph_count: vec4<f32>,
 }
 
 @group(3) @binding(3) var<storage, read> instances: array<InstanceData>;
+
+// Morph target position deltas: flat vec3 array indexed as
+//   target_stride * target_index + vertex_index
+// where target_stride = array_length / morph_target_count.
+@group(3) @binding(4) var<storage, read> morph_position_deltas: array<vec4<f32>>;
+@group(3) @binding(5) var<storage, read> morph_normal_deltas: array<vec4<f32>>;
+// x = vertex_count (stride per morph target)
+@group(3) @binding(6) var<uniform> morph_params: vec4<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -60,27 +76,52 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) view_pos: vec4<f32>,
-    @location(4) flat_instance_idx: u32,
-    @location(5) world_tangent: vec4<f32>,
+    @location(4) world_tangent: vec4<f32>,
 };
 
 @vertex
-fn vs_main(in: VertexInput, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
+fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_idx: u32, @builtin(instance_index) instance_idx: u32) -> VertexOutput {
     var out: VertexOutput;
     let inst = instances[instance_idx];
-    let world_pos4 = inst.model * vec4<f32>(in.position, 1.0);
-    out.clip_position = inst.mvp * vec4<f32>(in.position, 1.0);
+
+    // Apply morph target blending (weights still per-instance in SSBO)
+    var pos = in.position;
+    var nrm = in.normal;
+    let mt_count = i32(inst.morph_count.x + 0.5);
+    if (mt_count > 0) {
+        let stride = i32(morph_params.x + 0.5);
+        for (var t = 0; t < mt_count; t = t + 1) {
+            let w = inst.morph_weights[t];
+            if (abs(w) > 0.0001) {
+                let base_idx = t * stride + i32(vertex_idx);
+                pos = pos + morph_position_deltas[base_idx].xyz * w;
+                if (base_idx < i32(arrayLength(&morph_normal_deltas))) {
+                    nrm = nrm + morph_normal_deltas[base_idx].xyz * w;
+                }
+            }
+        }
+    }
+
+    // World / clip from per-draw uniforms so solid pass matches edge pass (flat MVP) reliably.
+    let world_pos4 = u.model * vec4<f32>(pos, 1.0);
+    out.clip_position = u.mvp * vec4<f32>(pos, 1.0);
     out.world_pos = world_pos4.xyz;
-    out.world_normal = normalize((inst.model * vec4<f32>(in.normal, 0.0)).xyz);
+    let world_normal = normalize((u.model * vec4<f32>(nrm, 0.0)).xyz);
+    out.world_normal = world_normal;
     out.uv = in.texcoord;
-    // Transform tangent (xyz) to world space; w carries handedness
+    var tangent_w = in.tangent.w;
+    // Flip tangent-space handedness when geometry normal faces away from camera
+    // so that the TBN basis and normal mapping stay consistent for back-facing surfaces.
+    let view_dir = normalize(u.camera_pos.xyz - world_pos4.xyz);
+    if (dot(world_normal, view_dir) < 0.0) {
+        tangent_w = -tangent_w;
+    }
     out.world_tangent = vec4<f32>(
-        normalize((inst.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz),
-        in.tangent.w,
+        normalize((u.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz),
+        tangent_w,
     );
     let view_pos4 = u.csm_view_proj[0] * world_pos4;
     out.view_pos = view_pos4;
-    out.flat_instance_idx = instance_idx;
     return out;
 }
 
@@ -174,10 +215,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let v = normalize(u.camera_pos.xyz - in.world_pos);
 
-    let inst = instances[in.flat_instance_idx];
-    // Robust normal mapping: if tangent basis is invalid, fall back to geometry normal.
-    let N = normalize(in.world_normal);
+    // Two-sided lighting: flip geometry normal when facing away from camera.
+    let N_raw = normalize(in.world_normal);
+    let front_facing = dot(N_raw, v) >= 0.0;
+    let N = select(-N_raw, N_raw, front_facing);
     var n = N;
+#ifdef HAS_NORMAL_MAP
     let t_len2 = dot(in.world_tangent.xyz, in.world_tangent.xyz);
     if (t_len2 > 1e-8) {
         let T = normalize(in.world_tangent.xyz - dot(in.world_tangent.xyz, N) * N);
@@ -188,13 +231,45 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let tangent_normal = normalize(tangent_normal_tex * 2.0 - 1.0);
         n = normalize(TBN * tangent_normal);
     }
+#endif
     let n_dot_v = max(dot(n, v), 0.0001);
 
-    let albedo_sample = textureSample(t_albedo, s_mat, in.uv).rgb;
-    var albedo = albedo_sample * inst.base_color.xyz;
-    let metallic = clamp(inst.metallic_roughness.x, 0.0, 1.0);
-    let roughness = clamp(inst.metallic_roughness.y, 0.04, 1.0);
+#ifdef HAS_ALBEDO_TEX
+    let albedo_sample = textureSample(t_albedo, s_mat, in.uv).rgba;
+    var albedo = albedo_sample.rgb * u.pbr_base_color.xyz;
+    let alpha_sample = albedo_sample.a * u.pbr_alpha_flags.y;
+#else
+    var albedo = u.pbr_base_color.xyz;
+    let alpha_sample = u.pbr_alpha_flags.y;
+#endif
+
+    // Alpha mode handling
+    let alpha_mode = i32(u.pbr_alpha_flags.x + 0.5);
+    if (alpha_mode == 1) {
+        // Mask mode: discard fragments below cutoff
+        if (alpha_sample < u.pbr_emissive_alpha.w) {
+            discard;
+        }
+    }
+
+    // Sample ORM textures (Occlusion/Roughness/Metallic)
+#ifdef HAS_MR_TEX
+    let mr_sample = textureSample(t_metallic_roughness, s_mat, in.uv);
+    // glTF convention: B=metallic, G=roughness
+    let metallic = clamp(mr_sample.b * u.pbr_metallic_roughness.x, 0.0, 1.0);
+    let roughness = clamp(mr_sample.g * u.pbr_metallic_roughness.y, 0.04, 1.0);
+#else
+    let metallic = clamp(u.pbr_metallic_roughness.x, 0.0, 1.0);
+    let roughness = clamp(u.pbr_metallic_roughness.y, 0.04, 1.0);
+#endif
     let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+
+    // Occlusion
+#ifdef HAS_OCCLUSION_TEX
+    let ao = textureSample(t_occlusion, s_mat, in.uv).r;
+#else
+    let ao = 1.0;
+#endif
 
     // Compute view-space depth for CSM cascade selection
     let view_depth = abs(in.view_pos.z);
@@ -224,11 +299,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let spot_factor = pow(spot_cos, max(drop_off, 0.0));
             intensity_scale = attenuation * spot_factor;
         }
+#ifdef HAS_SHADOW
         var sh = 1.0;
         if (light_type == 0) {
             let cascade_idx = select_cascade(view_depth);
             sh = shadow_factor_csm(in.world_pos, in.world_normal, -light_dir, cascade_idx);
         }
+#else
+        let sh = 1.0;
+#endif
         let light_color = u.light_colors[i].xyz * intensity_scale;
         let l = normalize(light_dir);
         let h = normalize(v + l);
@@ -245,6 +324,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lo += (diffuse + spec) * light_color * n_dot_l * sh;
     }
 
+#ifdef HAS_IBL
     let r = reflect(-v, n);
     let f = fresnel_schlick_roughness(n_dot_v, f0, roughness);
 
@@ -255,6 +335,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let env_brdf = textureSample(t_brdf_lut, s_ibl, vec2<f32>(n_dot_v, roughness)).rg;
     let specular_ibl = prefiltered_color * (f * env_brdf.x + env_brdf.y);
 
-    let color = lo + diffuse_ibl + specular_ibl;
-    return vec4<f32>(color, 1.0);
+    var color = lo + diffuse_ibl + specular_ibl;
+#else
+    var color = lo;
+#endif
+
+    // Emissive contribution
+#ifdef HAS_EMISSIVE_TEX
+    let emissive = textureSample(t_emissive, s_mat, in.uv).rgb * u.pbr_emissive_alpha.xyz;
+#else
+    let emissive = u.pbr_emissive_alpha.xyz;
+#endif
+    color = color + emissive;
+
+    // Apply ambient occlusion
+    color = color * ao;
+
+    let final_alpha = select(alpha_sample, 1.0, alpha_mode == 0);
+    return vec4<f32>(color, final_alpha);
 }

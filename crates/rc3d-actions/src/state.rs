@@ -4,9 +4,14 @@ use crate::element::{
     ViewMatrixElement, NUM_ELEMENT_TYPES,
 };
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_scene::{MorphTargetNode, SkinnedMeshNode};
 
 pub struct State {
     stacks: Vec<Vec<Box<dyn Element>>>,
+    /// Current morph target data (set by MorphTargetNode traversal).
+    pub morph_targets: Option<MorphTargetNode>,
+    /// Current skinning payload (set by SkinnedMeshNode traversal).
+    pub skinned_mesh: Option<SkinnedMeshNode>,
 }
 
 impl State {
@@ -21,7 +26,11 @@ impl State {
             vec![Box::new(LightElement::default()) as Box<dyn Element>],
             vec![Box::new(TextureCoordinate2Element::default()) as Box<dyn Element>],
         ];
-        Self { stacks }
+        Self {
+            stacks,
+            morph_targets: None,
+            skinned_mesh: None,
+        }
     }
 
     pub fn push(&mut self, element_id: ElementId) {
@@ -55,7 +64,7 @@ impl State {
     // --- Typed accessors ---
 
     pub fn model_matrix(&self) -> Mat4 {
-        self.get_el::<ModelMatrixElement>(ElementId(0)).matrix
+        self.get_el::<ModelMatrixElement>(ElementId(0)).expect("element type mismatch").matrix
     }
 
     pub fn set_model_matrix(&mut self, matrix: Mat4) {
@@ -63,7 +72,7 @@ impl State {
     }
 
     pub fn view_matrix(&self) -> Mat4 {
-        self.get_el::<ViewMatrixElement>(ElementId(1)).matrix
+        self.get_el::<ViewMatrixElement>(ElementId(1)).expect("element type mismatch").matrix
     }
 
     pub fn set_view_matrix(&mut self, matrix: Mat4) {
@@ -71,7 +80,7 @@ impl State {
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        self.get_el::<ProjectionMatrixElement>(ElementId(2)).matrix
+        self.get_el::<ProjectionMatrixElement>(ElementId(2)).expect("element type mismatch").matrix
     }
 
     pub fn set_projection_matrix(&mut self, matrix: Mat4) {
@@ -118,16 +127,39 @@ impl State {
         self.get_el_mut::<TextureCoordinate2Element>(ElementId(7)).coords = coords;
     }
 
-    fn get_el<T: 'static>(&self, id: ElementId) -> &T {
+    pub fn morph_targets(&self) -> Option<&MorphTargetNode> {
+        self.morph_targets.as_ref()
+    }
+
+    pub fn set_morph_targets(&mut self, mt: MorphTargetNode) {
+        self.morph_targets = Some(mt);
+    }
+
+    pub fn clear_morph_targets(&mut self) {
+        self.morph_targets = None;
+    }
+
+    pub fn skinned_mesh(&self) -> Option<&SkinnedMeshNode> {
+        self.skinned_mesh.as_ref()
+    }
+
+    pub fn set_skinned_mesh(&mut self, sm: SkinnedMeshNode) {
+        self.skinned_mesh = Some(sm);
+    }
+
+    pub fn clear_skinned_mesh(&mut self) {
+        self.skinned_mesh = None;
+    }
+
+    fn get_el<T: 'static>(&self, id: ElementId) -> Option<&T> {
         self.stacks
             .get(id.0 as usize)
             .and_then(|s| s.last())
             .and_then(|e| e.as_any().downcast_ref::<T>())
-            .expect("element type mismatch")
     }
 
     fn get_el_ref<T: 'static>(&self, id: ElementId) -> &T {
-        self.get_el(id)
+        self.get_el(id).expect("element type mismatch")
     }
 
     fn get_el_mut<T: 'static>(&mut self, id: ElementId) -> &mut T {

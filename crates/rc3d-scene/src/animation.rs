@@ -6,7 +6,7 @@
 //! Animation clips store per-joint keyframe tracks with linear interpolation.
 //! Skinning data attaches vertex bone indices + weights for GPU skinning.
 
-use glam::{Mat4, Quat, Vec3};
+use rc3d_core::math::{Mat4, Quat, Vec3, Vec4};
 
 /// One joint (bone) in a skeleton.
 #[derive(Clone, Debug)]
@@ -31,7 +31,6 @@ pub struct Skeleton {
 impl Skeleton {
     pub fn new(mut joints: Vec<Joint>) -> Self {
         let n = joints.len();
-        let sentinel = n;
         let mut global_bind_poses = vec![Mat4::IDENTITY; n];
 
         // Compute global bind poses via iteration over topological order.
@@ -162,9 +161,14 @@ pub struct AnimationClip {
 
 impl AnimationClip {
     /// Sample all joint tracks at the given time.
-    /// Returns `[joint_count]` local transform matrices (identity for untracked joints).
-    pub fn sample_all(&self, time: f32, joint_count: usize) -> Vec<Mat4> {
-        let mut poses = vec![Mat4::IDENTITY; joint_count];
+    /// Untracked joints use [`Joint::bind_transform`] from `skeleton` (rest/bind local pose).
+    pub fn sample_all(&self, time: f32, skeleton: &Skeleton) -> Vec<Mat4> {
+        let joint_count = skeleton.joint_count();
+        let mut poses: Vec<Mat4> = skeleton
+            .joints
+            .iter()
+            .map(|j| j.bind_transform)
+            .collect();
         for track in &self.tracks {
             if track.joint_index < joint_count {
                 poses[track.joint_index] = track.sample(time);
@@ -245,16 +249,20 @@ impl AnimationPlayer {
         }
     }
 
-    /// Sample the current pose for `joint_count` joints.
+    /// Sample the current pose. Untracked joints use bind pose from `skeleton`.
     /// If blending, mixes current and next clip.
-    pub fn sample_pose(&self, joint_count: usize) -> Vec<Mat4> {
+    pub fn sample_pose(&self, skeleton: &Skeleton) -> Vec<Mat4> {
         let mut pose = match &self.clip {
-            Some(clip) => clip.sample_all(self.current_time, joint_count),
-            None => vec![Mat4::IDENTITY; joint_count],
+            Some(clip) => clip.sample_all(self.current_time, skeleton),
+            None => skeleton
+                .joints
+                .iter()
+                .map(|j| j.bind_transform)
+                .collect(),
         };
 
         if let (Some(next), true) = (&self.next_clip, self.blend_factor > 0.0) {
-            let next_pose = next.sample_all(self.current_time, joint_count);
+            let next_pose = next.sample_all(self.current_time, skeleton);
             let a = self.blend_factor;
             for (p, np) in pose.iter_mut().zip(next_pose.iter()) {
                 // Blend: lerp translation, slerp rotation, lerp scale
@@ -295,7 +303,12 @@ fn decompose_matrix(m: Mat4) -> (Vec3, Quat, Vec3) {
     let r02 = m.z_axis.x / scale.z;
     let r12 = m.z_axis.y / scale.z;
     let r22 = m.z_axis.z / scale.z;
-    let rot_mat = glam::Mat3::from_cols_array(&[r00, r10, r20, r01, r11, r21, r02, r12, r22]);
-    let rotation = Quat::from_mat3(&rot_mat);
+    let rot_mat = Mat4::from_cols(
+        Vec4::new(r00, r10, r20, 0.0),
+        Vec4::new(r01, r11, r21, 0.0),
+        Vec4::new(r02, r12, r22, 0.0),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    );
+    let rotation = Quat::from_mat4(&rot_mat);
     (translation, rotation, scale)
 }

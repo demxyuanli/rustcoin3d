@@ -1,41 +1,45 @@
-//! Editor example — demonstrates gizmo, multi-viewport, undo/redo, and section planes.
+//! Editor — Unity-style UI (menu, toolbar, Hierarchy, Inspector, status) plus gizmo, viewports, undo, clipping, measurement.
 //!
-//! Keys:
-//!   T/R/G: Gizmo Translate/Rotate/Scale
-//!   Ctrl+Z/Y: Undo/Redo
-//!   C: Cycle viewport layout (Single→Quad→Left+Right→TopBottom)
-//!   Tab: Cycle active viewport
-//!   P: Toggle section edit, [/]: nudge
-//!   X/Y/Z: Toggle axis clip
-//!   F: Fit selection
-//!   Ctrl+Left-drag: Box select
-//!   M: Measurement mode, Left-click place points
-//!   Escape: Clear selection + measurements
-//!   W/S/E/H: Cycle display mode
-//!   I: Cycle IBL preset
+//! Camera: middle drag = orbit | right drag = pan | wheel = zoom — in multi-viewport layouts, wheel zoom targets the viewport under the cursor; middle/right drag locks orbit/pan to the viewport where the button was pressed until release.  
+//! (Left click is reserved for selection / gizmo — not orbit.)
+//!
+//! Gizmo: toolbar Move / Rotate / Scale, or T / R / G, then drag handles in the view.  
+//! Ctrl+Z / Ctrl+Y: undo / redo (also under Edit in the menu bar).  
+//! C: cycle layout (Single -> Quad -> Left/Right -> Top/Bottom)  
+//! Tab: cycle active viewport (when multi-viewport)  
+//! P: section edit on/off, [ / ]: nudge planes  
+//! X / Y / Z: axis clip toggles (without Ctrl)  
+//! F: fit camera to selection  
+//! Ctrl + left drag: box select  
+//! M: measurement mode, click two points  
+//! Escape: clear selection and measurements  
+//! W / S / E / H: wireframe / shaded / shaded+edges / hidden-line (also View menu)  
+//! I: cycle IBL preset
 
-use rc3d_app::App;
 use rc3d_app::camera_controller::CameraController;
+use rc3d_app::App;
 use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
 
-    println!("rustcoin3d Editor");
-    println!("  T/R/G: Gizmo  |  Ctrl+Z/Y: Undo/Redo  |  C: Viewport layout");
-    println!("  F: Fit  |  P+[/]: Section  |  M: Measure  |  Escape: Clear");
+    println!("rustcoin3d Editor (egui in-viewport, Unity-style layout)");
+    println!("  Menu bar, tools row, Hierarchy / Inspector, bottom status.");
+    println!("  Open Help from the Help menu for shortcuts.");
+
+    println!("  Debug: RUST_LOG=rc3d_app=trace logs HandleEventAction / EventCallback discovery on wheel or pointer.");
 
     let graph = build_demo_scene();
 
     let ctrl = CameraController::new(Vec3::ZERO, 10.0);
 
     let mut app = App::new(graph)
+        .with_window_title("rustcoin3d Editor")
+        .with_editor_ui(true)
         .with_camera_controller(ctrl)
         .with_initial_display_mode(DisplayMode::ShadedWithEdges);
 
@@ -91,8 +95,8 @@ fn build_demo_scene() -> SceneGraph {
             base_color: Vec3::new(0.4, 0.4, 0.45),
             metallic: 0.0,
             roughness: 0.9,
-            albedo_texture: None,
             opacity: 1.0,
+            ..Default::default()
         }),
     );
     graph.add_child(
@@ -143,13 +147,18 @@ fn build_demo_scene() -> SceneGraph {
                     base_color: base,
                     metallic,
                     roughness,
-                    albedo_texture: None,
                     opacity: 1.0,
+                    ..Default::default()
                 }),
             );
             graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.8 }));
         }
     }
+
+    graph.add_child(
+        root,
+        NodeData::EventCallback(EventCallbackNode::default()),
+    );
 
     graph
 }

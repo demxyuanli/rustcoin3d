@@ -20,3 +20,4 @@ winit = { workspace = true }
 glyphon = { workspace = true }
 twox-hash = "1.6.3"
 image = { workspace = true }
+half = "2"

@@ -94,24 +94,35 @@ fn load_equirectangular_hdr(
     preset: IblPreset,
 ) -> (wgpu::Texture, wgpu::TextureView, [f32; 4], [f32; 4]) {
     // Prefer external HDR file; fallback to built-in generic environment map.
-    let (width, height, pixels, ibl_diffuse, ibl_specular) = match image::open(path) {
-        Ok(img) => {
+    let try_external = !path.as_os_str().is_empty() && path.is_file();
+    let (width, height, pixels, ibl_diffuse, ibl_specular) = match try_external.then(|| image::open(path)) {
+        Some(Ok(img)) => {
             let rgba = img.to_rgba32f();
             let dims = rgba.dimensions();
             let (diffuse, specular) = compute_ibl_factors_from_rgb32f(&img.to_rgb32f());
             (dims.0, dims.1, rgba.into_raw(), diffuse, specular)
         }
-        Err(e) => {
+        Some(Err(e)) => {
             log::warn!("Failed to load env map {:?}: {e}", path);
             let (w, h, px, diffuse, specular) = create_builtin_env_map(preset);
             log::warn!("Using built-in HDR preset: {}", preset.name());
+            (w, h, px, diffuse, specular)
+        }
+        None => {
+            log::info!("External env map not found, using built-in HDR preset: {}", preset.name());
+            let (w, h, px, diffuse, specular) = create_builtin_env_map(preset);
             (w, h, px, diffuse, specular)
         }
     };
 
     let w = width.max(1);
     let h = height.max(1);
-    let pixel_bytes: &[u8] = bytemuck::cast_slice(&pixels);
+    let _pixel_bytes: &[u8] = bytemuck::cast_slice(&pixels);
+
+    // Use Rgba16Float for the env map: supports filtering on all devices and
+    // provides sufficient HDR range (±65504) for IBL specular prefiltering.
+    let env_format = wgpu::TextureFormat::Rgba16Float;
+    let mip_level_count = (w.max(h) as f32).log2().floor() as u32 + 1;
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("IBL Env Map"),
@@ -120,33 +131,187 @@ fn load_equirectangular_hdr(
             height: h,
             depth_or_array_layers: 1,
         },
-        mip_level_count: 1,
+        mip_level_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba32Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        format: env_format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
 
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        pixel_bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(16 * w), // 4 * f32
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
+    // Convert f32 pixels to f16 and upload to mip 0
+    {
+        let pixels_f16: Vec<u16> = pixels
+            .chunks_exact(4)
+            .flat_map(|rgba| {
+                [
+                    half::f16::from_f32(rgba[0]).to_bits(),
+                    half::f16::from_f32(rgba[1]).to_bits(),
+                    half::f16::from_f32(rgba[2]).to_bits(),
+                    half::f16::from_f32(rgba[3]).to_bits(),
+                ]
+            })
+            .collect();
+        let pixel_bytes_f16: &[u8] = bytemuck::cast_slice(&pixels_f16);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixel_bytes_f16,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8 * w), // 4 * f16 = 8 bytes per pixel
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    // Generate mipmaps via blit passes for roughness-varying specular IBL
+    if mip_level_count > 1 {
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("IBL Mip Blit"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit_tex.wgsl").into()),
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("IBL Mip Blit BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("IBL Mip Blit PLL"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("IBL Mip Blit Pipeline"),
+            layout: Some(&pll),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: env_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("IBL Mip Blit Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let mut mip_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("IBL Mipmap Gen"),
+        });
+
+        let mut src_w = w;
+        let mut src_h = h;
+        for mip in 1..mip_level_count {
+            let dst_w = (src_w + 1) / 2;
+            let dst_h = (src_h + 1) / 2;
+
+            let src_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("IBL Mip Src"),
+                base_mip_level: mip - 1,
+                mip_level_count: Some(1),
+                ..Default::default()
+            });
+
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("IBL Mip Blit BG"),
+                layout: &bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&src_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+
+            let dst_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("IBL Mip Dst"),
+                base_mip_level: mip,
+                mip_level_count: Some(1),
+                ..Default::default()
+            });
+
+            let mut pass = mip_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("IBL Mip Blit Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dst_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+            drop(pass);
+
+            src_w = dst_w;
+            src_h = dst_h;
+        }
+
+        queue.submit(std::iter::once(mip_encoder.finish()));
+    }
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("IBL Env Map View"),
@@ -335,7 +500,7 @@ pub fn create_ibl_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
                 ty: wgpu::BindingType::Texture {
                     multisampled: false,
                     view_dimension: wgpu::TextureViewDimension::D2,
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                 },
                 count: None,
             },
@@ -352,7 +517,7 @@ pub fn create_ibl_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
         ],

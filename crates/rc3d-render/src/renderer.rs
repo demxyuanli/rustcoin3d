@@ -154,6 +154,14 @@ pub struct Renderer {
     pub enable_omni_shadows: bool,
     pub xray_mode: bool,
     pub last_diagnostics: Option<FrameDiagnostics>,
+    pub selection_outline_pipelines: Option<crate::selection_outline::SelectionOutlinePipelines>,
+    pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
+    /// three.js `OutlinePass`-style screen-space selection outline.
+    pub screen_space_selection_outline: bool,
+    /// When HDR is off, render 3D to `ldr_shade_*` then FXAA into the swapchain (whole-frame AA).
+    pub enable_ldr_fxaa: bool,
+    pub(crate) ldr_shade_tex: Option<wgpu::Texture>,
+    pub(crate) ldr_shade_view: Option<wgpu::TextureView>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,7 +308,7 @@ impl Renderer {
 
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -313,6 +321,8 @@ impl Renderer {
 
         let mut shader_cache = ShaderVariantCache::new();
         let pipelines = PipelineSet::create(&device, config.format, &mut shader_cache);
+        let selection_outline_pipelines =
+            crate::selection_outline::SelectionOutlinePipelines::new(&device, &pipelines.flat_bgl);
         let phong_pool = GpuUniformPool::new_phong(&device, 1024);
         let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 1024);
         let flat_pool = GpuUniformPool::new_flat(&device, 2048);
@@ -417,7 +427,7 @@ impl Renderer {
             adaptive_switch_cooldown_frames: 0,
             last_hud_update_frame: 0,
             outline_width: 0.022,
-            outline_color: [0.0, 0.0, 0.0, 1.0],
+            outline_color: [1.0, 0.5, 0.0, 1.0],
             cluster_renderer: None,
             hzb: None,
             hzb_baker: None,
@@ -470,6 +480,12 @@ impl Renderer {
             enable_cluster_lights: true,
             enable_omni_shadows: true,
             xray_mode: false,
+            selection_outline_pipelines: Some(selection_outline_pipelines),
+            selection_outline_targets: None,
+            screen_space_selection_outline: true,
+            enable_ldr_fxaa: true,
+            ldr_shade_tex: None,
+            ldr_shade_view: None,
             last_diagnostics: None,
         };
         renderer.hud = Some(HudRenderer::new(
@@ -560,6 +576,9 @@ impl Renderer {
             self.surface.configure(&self.device, &self.config);
             self.viewport_layout.rebuild(width, height);
             self.create_depth_texture();
+            self.selection_outline_targets = None;
+            self.ldr_shade_tex = None;
+            self.ldr_shade_view = None;
             self.hzb_baker = Some(HzbBaker::new(&self.device));
             let ds_bgl = &self.hzb_baker.as_ref().unwrap().downsample_bgl;
             self.hzb = Some(HzbPyramids::new(&self.device, ds_bgl, width, height));
@@ -572,8 +591,23 @@ impl Renderer {
         }
     }
 
+    pub fn set_screen_space_selection_outline(&mut self, enabled: bool) {
+        self.screen_space_selection_outline = enabled;
+    }
+
+    pub fn set_ldr_fxaa(&mut self, enabled: bool) {
+        self.enable_ldr_fxaa = enabled;
+        self.ldr_shade_tex = None;
+        self.ldr_shade_view = None;
+    }
+
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
         self.global_display_mode = mode;
+    }
+
+    /// RGBA for mesh outline pass, wireframe/edge-overlay defaults, and selection edge/bbox lines.
+    pub fn set_outline_color(&mut self, rgba: [f32; 4]) {
+        self.outline_color = rgba;
     }
 
     pub fn ibl_preset_name(&self) -> &'static str {
@@ -694,6 +728,15 @@ impl Renderer {
         self.clip_planes = planes;
     }
 
+    pub fn collect_markup_vertices(&mut self, graph: &rc3d_scene::SceneGraph, root: rc3d_core::NodeId) {
+        self.markup_vertices = crate::render_passes::pass_markup::collect_markup_lines(
+            graph,
+            root,
+            self.config.width,
+            self.config.height,
+        );
+    }
+
     pub fn set_vsync(&mut self, enabled: bool) {
         self.config.present_mode = if enabled {
             wgpu::PresentMode::AutoVsync
@@ -705,17 +748,6 @@ impl Renderer {
 
     pub fn clip_planes(&self) -> &[[f32; 4]] {
         &self.clip_planes
-    }
-
-    /// Collect markup line vertices from the scene graph for the next frame's overlay pass.
-    pub fn collect_markup_vertices(
-        &mut self,
-        graph: &rc3d_scene::SceneGraph,
-        root: rc3d_core::NodeId,
-    ) {
-        self.markup_vertices = crate::render_passes::pass_markup::collect_markup_lines(
-            graph, root, self.config.width, self.config.height,
-        );
     }
 
     /// Shared-device RGBA8 offscreen target for screenshots or readback (same `Device` / `Queue` as the main surface).

@@ -1,9 +1,10 @@
 use rc3d_app::App;
-use rc3d_scene::node_data::*;
 use rc3d_core::math::Vec3;
+use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    print_cube_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();
 
@@ -43,4 +44,14 @@ fn main() {
         .unwrap()
         .run_app(&mut app)
         .expect("event loop error");
+}
+
+fn print_cube_help() {
+    println!("Cube example");
+    println!("Usage: cargo run -p rc3d-app --example cube");
+    println!("Controls:");
+    println!("  Mouse drag: orbit (if camera controller is enabled by app defaults)");
+    println!("  ESC: exit");
+    println!("Feature switches:");
+    println!("  Single directional light + single material baseline");
 }

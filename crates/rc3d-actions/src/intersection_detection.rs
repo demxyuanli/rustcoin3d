@@ -107,7 +107,9 @@ impl IntersectionDetectionAction {
             | NodeData::Text2(_)
             | NodeData::Text3(_)
             | NodeData::Markup(_)
-            | NodeData::Measurement(_) => {
+            | NodeData::Measurement(_)
+            | NodeData::MorphTarget(_)
+            | NodeData::SkinnedMesh(_) => {
                 for &child in &entry.children {
                     self.traverse(graph, child);
                 }

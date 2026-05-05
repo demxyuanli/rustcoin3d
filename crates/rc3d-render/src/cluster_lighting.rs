@@ -34,7 +34,7 @@ impl ClusterLightResources {
         let light_grid = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("LightGrid SSBO"),
             size: (CLUSTER_COUNT * 2 * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -42,7 +42,7 @@ impl ClusterLightResources {
         let light_index_list = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("LightIndexList SSBO"),
             size: (CLUSTER_COUNT * MAX_LIGHTS_PER_CLUSTER * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
