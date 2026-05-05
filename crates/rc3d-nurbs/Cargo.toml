@@ -1,0 +1,10 @@
+[package]
+name = "rc3d-nurbs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rc3d-core = { workspace = true }
+rc3d-mesh = { workspace = true }
