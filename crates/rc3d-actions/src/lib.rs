@@ -26,4 +26,8 @@ pub use scene_path::{GetMatrixAction, ScenePath, SearchAction};
 pub use section_plane::SectionPlaneAction;
 pub use measurement::{MeasurementAction, MeasurementMode};
 pub use state::State;
-pub use undo::{Command, CommandHistory, SetRotationCommand, SetScaleCommand, SetTranslationCommand};
+pub use undo::{
+    AddChildCommand, Command, CommandHistory, CompoundCommand,
+    RemoveChildCommand, SetFieldCommand,
+    SetRotationCommand, SetScaleCommand, SetTranslationCommand,
+};
