@@ -23,6 +23,7 @@ pub mod render_graph;
 pub mod render_passes;
 pub mod renderer;
 pub mod selection_outline;
+pub mod settings;
 pub mod shader_permutation;
 pub mod shader_reload;
 pub mod shadow_map;
@@ -61,6 +62,7 @@ pub use renderer::{
     AdaptiveControl, BatchAnalysis, FrameDiagnostics, FrameStats, MemoryBudget, NodeTypeDrawStat,
     Renderer,
 };
+pub use settings::{DisplaySettings, LightingSettings, PostEffectSettings, RenderSettings};
 pub use texture_cache::{ibl_from_image_path, TextureCache, TextureHandle};
 pub use vertex::{FlatUniforms, InstanceData, LineVertex, SceneUniforms, ShadowDrawUniforms, Vertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT};
 pub use viewport::{
