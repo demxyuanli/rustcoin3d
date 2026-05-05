@@ -1,2 +1,3 @@
-// rc3d-nurbs — NURBS curve and surface evaluation
-// Modules will be added as they are implemented.
+pub mod knot;
+
+pub use knot::{find_span, open_uniform_knots, uniform_knots};
