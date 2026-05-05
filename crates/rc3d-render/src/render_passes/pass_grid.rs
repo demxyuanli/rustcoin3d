@@ -134,9 +134,9 @@ pub fn pass_grid(
     });
 
     let grid_pl = if depth_reversed_z {
-        &renderer.pipelines.grid_lines_reverse
+        &renderer.gpu.pipelines.grid_lines_reverse
     } else {
-        &renderer.pipelines.grid_lines_forward
+        &renderer.gpu.pipelines.grid_lines_forward
     };
     pass.set_pipeline(grid_pl);
 
@@ -146,8 +146,8 @@ pub fn pass_grid(
             mvp,
             color: [0.25, 0.25, 0.25, 0.35],
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             draw_lines(&renderer.device, &mut pass, &geom.minor_lines);
         }
     }
@@ -158,8 +158,8 @@ pub fn pass_grid(
             mvp,
             color: [0.35, 0.35, 0.35, 0.55],
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             draw_lines(&renderer.device, &mut pass, &geom.major_lines);
         }
     }
@@ -170,8 +170,8 @@ pub fn pass_grid(
             mvp,
             color: [0.9, 0.2, 0.2, 0.8],
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             draw_lines(&renderer.device, &mut pass, &geom.axis_x);
         }
     }
@@ -182,8 +182,8 @@ pub fn pass_grid(
             mvp,
             color: [0.2, 0.3, 0.9, 0.8],
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             draw_lines(&renderer.device, &mut pass, &geom.axis_z);
         }
     }

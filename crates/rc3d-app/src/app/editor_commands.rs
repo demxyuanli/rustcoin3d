@@ -34,16 +34,16 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::CycleViewportLayout => {
                 if let Some(renderer) = &mut app.renderer {
-                    let w = renderer.config.width;
-                    let h = renderer.config.height;
-                    renderer.viewport_layout.cycle_layout(w, h);
+                    let (w, h) = renderer.surface_size();
+                    
+                    renderer.viewport_layout_mut().cycle_layout(w, h);
                 }
                 app.sync_viewport_camera_ids();
             }
             EditorCommand::CycleActiveViewport => {
                 if let Some(renderer) = &mut app.renderer {
-                    renderer.viewport_layout.cycle_active();
-                    app.viewport_cameras.active_viewport = renderer.viewport_layout.active_id;
+                    renderer.viewport_layout_mut().cycle_active();
+                    app.viewport_cameras.active_viewport = renderer.viewport_layout().active_id;
                 }
             }
             EditorCommand::SetDisplayMode(mode) => {
@@ -244,10 +244,9 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetViewportLayoutMode(lm) => {
                 if let Some(r) = &mut app.renderer {
-                    r.viewport_layout.layout_mode = lm;
-                    let w = r.config.width;
-                    let h = r.config.height;
-                    r.viewport_layout.rebuild(w, h);
+                    r.viewport_layout_mut().layout_mode = lm;
+                    let (w, h) = r.surface_size();
+                    r.viewport_layout_mut().rebuild(w, h);
                 }
                 app.sync_viewport_camera_ids();
             }

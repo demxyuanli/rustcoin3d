@@ -689,7 +689,7 @@ pub(crate) fn encode_selection_outline_pass(
     shade_format: wgpu::TextureFormat,
     scene_source_tex: *const wgpu::Texture,
 ) {
-    let Some(ref pl) = renderer.selection_outline_pipelines else {
+    let Some(ref pl) = renderer.gpu.selection_outline_pipelines else {
         return;
     };
     let w = renderer.config.width.max(1);
@@ -702,7 +702,7 @@ pub(crate) fn encode_selection_outline_pass(
         h,
         shade_format,
         ctx.depth_reversed_z,
-        renderer.selection_outline_targets.take(),
+        renderer.gpu.selection_outline_targets.take(),
     );
 
     // SAFETY: Caller provides a pointer to a texture that outlives this encode; copy uses it read-only.
@@ -816,8 +816,8 @@ pub(crate) fn encode_selection_outline_pass(
                 mvp: dc.mvp.to_cols_array_2d(),
                 color: [0.0; 4],
             };
-            let Some(off) = renderer.flat_pool.push_flat(&dum) else { break };
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[off]);
+            let Some(off) = renderer.gpu.flat_pool.push_flat(&dum) else { break };
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);
             if let Some(mid) = ctx.mesh_handles[i] {
                 renderer.draw_mesh_batched(&mut pass, mid, &mut last_mesh);
             }
@@ -855,8 +855,8 @@ pub(crate) fn encode_selection_outline_pass(
                 mvp: dc.mvp.to_cols_array_2d(),
                 color: [0.0; 4],
             };
-            let Some(off) = renderer.flat_pool.push_flat(&dum) else { break };
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[off]);
+            let Some(off) = renderer.gpu.flat_pool.push_flat(&dum) else { break };
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);
             pass.set_bind_group(1, &tg.mask_aux_bg, &[]);
             if let Some(mid) = ctx.mesh_handles[i] {
                 renderer.draw_mesh_batched(&mut pass, mid, &mut last_mesh);
@@ -906,5 +906,5 @@ pub(crate) fn encode_selection_outline_pass(
         pass.draw(0..3, 0..1);
     }
 
-    renderer.selection_outline_targets = Some(tg);
+    renderer.gpu.selection_outline_targets = Some(tg);
 }

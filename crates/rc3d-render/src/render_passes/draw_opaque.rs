@@ -62,12 +62,12 @@ pub(super) fn draw_opaque_triangle_batches(
     pass.set_stencil_reference(1);
 
     let mut clip_arr = [[0.0f32; 4]; 6];
-    for (i, cp) in renderer.clip_planes.iter().enumerate() {
+    for (i, cp) in renderer.frame.clip_planes.iter().enumerate() {
         if i < 6 {
             clip_arr[i] = *cp;
         }
     }
-    let clip_count = [renderer.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
+    let clip_count = [renderer.frame.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
 
     let meshlet_set: std::collections::HashSet<usize> = ctx.meshlet_indices.iter().copied().collect();
 
@@ -106,7 +106,7 @@ pub(super) fn draw_opaque_triangle_batches(
             let dc = ctx.visible[i];
             let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
             let ptr = std::sync::Arc::as_ptr(md) as u64;
-            if !(renderer.cluster_renderer.is_some() && renderer.assets.cluster_cache.contains_key(&ptr)) { continue; }
+            if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_cache.contains_key(&ptr)) { continue; }
             let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                 [0.08, 0.08, 0.08, 1.0]
             } else {
@@ -129,25 +129,25 @@ pub(super) fn draw_opaque_triangle_batches(
                 pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
                 pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
                 pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
+                ibl_diffuse: renderer.gpu.ibl_diffuse, ibl_specular: renderer.gpu.ibl_specular,
                 csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
                 csm_split_depths: ctx.csm_split_depths,
                 shadow_params: ctx.shadow_params,
             };
-            if let Some(offset) = renderer.phong_pool.push_scene(&uniforms) {
+            if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
                 let mat_bg = albedo_material_bind_group(
-                    &mut renderer.texture_cache, &renderer.device,
-                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                    &mut renderer.gpu.texture_cache, &renderer.device,
+                    &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
                 );
-                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
+                pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
                 pass.set_bind_group(1, mat_bg, &[]);
-                match &renderer.csm_shadow {
+                match &renderer.gpu.csm_shadow {
                     Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
                     None => log::error!("CSM shadow missing; shadow bind group not set"),
                 }
-                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
-                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
-                    if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
+                pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
+                    if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
                         cluster_renderer.draw_clustered(pass, cluster_set);
                     }
                 }
@@ -179,12 +179,12 @@ pub(super) fn draw_opaque_triangle_batches(
                     pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
                     pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
                     pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                    ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
+                    ibl_diffuse: renderer.gpu.ibl_diffuse, ibl_specular: renderer.gpu.ibl_specular,
                     csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
                     csm_split_depths: ctx.csm_split_depths,
                     shadow_params: ctx.shadow_params,
                 };
-                let Some(offset) = renderer.phong_pool.push_scene(&uniforms) else { continue };
+                let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else { continue };
 
                 let one = [InstanceData {
                     model: dc.model_matrix.to_cols_array_2d(),
@@ -196,19 +196,19 @@ pub(super) fn draw_opaque_triangle_batches(
                     morph_weights: pack_morph_weights(&dc.morph_weights),
                     morph_count: [dc.morph_weights.len().min(crate::vertex::MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
                 }];
-                renderer.queue.write_buffer(&renderer.instance_buffer, 0, bytemuck::cast_slice(&one));
+                renderer.queue.write_buffer(&renderer.gpu.instance_buffer, 0, bytemuck::cast_slice(&one));
 
                 let mat_bg = albedo_material_bind_group(
-                    &mut renderer.texture_cache, &renderer.device,
-                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                    &mut renderer.gpu.texture_cache, &renderer.device,
+                    &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
                 );
-                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
+                pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
                 pass.set_bind_group(1, mat_bg, &[]);
-                match &renderer.csm_shadow {
+                match &renderer.gpu.csm_shadow {
                     Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
                     None => log::error!("CSM shadow missing; shadow bind group not set"),
                 }
-                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
+                pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
 
                 if let Some(mesh_id) = ctx.mesh_handles[i] {
                     renderer.draw_mesh_batched(pass, mesh_id, &mut last_bound_mesh);

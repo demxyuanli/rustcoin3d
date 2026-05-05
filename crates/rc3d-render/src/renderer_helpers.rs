@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use wgpu::util::DeviceExt;
 
-use crate::gpu_resource::{GpuMesh, GpuUniformPool};
+use crate::gpu_resource::{EdgeLineKind, GpuMesh, GpuUniformPool};
 use crate::render_action::DrawCall;
 use crate::vertex::LineVertex;
 use super::renderer_types::{BatchAnalysis, FrameDiagnostics, MemoryBudget, NodeTypeDrawStat};
@@ -10,7 +10,7 @@ use super::Renderer;
 
 impl Renderer {
     pub(crate) fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
-        self.gpu_meshes.get(mesh_id)
+        self.gpu.gpu_meshes.get(mesh_id)
     }
 
     pub(crate) fn draw_mesh_batched(
@@ -39,14 +39,25 @@ impl Renderer {
         pass: &mut wgpu::RenderPass<'_>,
         mesh_id: crate::gpu_resource::MeshId,
         last_bound: &mut Option<crate::gpu_resource::MeshId>,
+        kind: EdgeLineKind,
     ) -> bool {
         let Some(mesh) = self.get_mesh(mesh_id) else { return false };
-        let Some(edge_buffer) = &mesh.edge_vertex_buffer else { return false };
+        let (buf, count) = match kind {
+            EdgeLineKind::Feature => (&mesh.edge_vertex_buffer, mesh.edge_vertex_count),
+            EdgeLineKind::WireframeFull => (
+                &mesh.wireframe_edge_vertex_buffer,
+                mesh.wireframe_edge_vertex_count,
+            ),
+        };
+        let Some(edge_buffer) = buf else { return false };
+        if count == 0 {
+            return false;
+        }
         if last_bound.map_or(true, |id| id != mesh_id) {
             pass.set_vertex_buffer(0, edge_buffer.slice(..));
             *last_bound = Some(mesh_id);
         }
-        pass.draw(0..mesh.edge_vertex_count, 0..1);
+        pass.draw(0..count, 0..1);
         true
     }
 
@@ -55,18 +66,35 @@ impl Renderer {
         pass: &mut wgpu::RenderPass<'_>,
         dc: &DrawCall,
         handle: Option<crate::gpu_resource::MeshId>,
+        kind: EdgeLineKind,
     ) {
         if let Some(mesh_id) = handle {
             if let Some(mesh) = self.get_mesh(mesh_id) {
-                if let Some(edge_buffer) = &mesh.edge_vertex_buffer {
-                    pass.set_vertex_buffer(0, edge_buffer.slice(..));
-                    pass.draw(0..mesh.edge_vertex_count, 0..1);
-                    return;
+                let (buf, count) = match kind {
+                    EdgeLineKind::Feature => (&mesh.edge_vertex_buffer, mesh.edge_vertex_count),
+                    EdgeLineKind::WireframeFull => (
+                        &mesh.wireframe_edge_vertex_buffer,
+                        mesh.wireframe_edge_vertex_count,
+                    ),
+                };
+                if let Some(edge_buffer) = buf {
+                    if count > 0 {
+                        pass.set_vertex_buffer(0, edge_buffer.slice(..));
+                        pass.draw(0..count, 0..1);
+                        return;
+                    }
                 }
             }
         }
-        if !dc.edge_positions.is_empty() {
-            let line_verts: Vec<LineVertex> = dc.edge_positions.iter().map(|&p| LineVertex { position: p }).collect();
+        let cpu_edges = match kind {
+            EdgeLineKind::Feature => &dc.edge_positions,
+            EdgeLineKind::WireframeFull => &dc.wireframe_edge_positions,
+        };
+        if !cpu_edges.is_empty() {
+            let line_verts: Vec<LineVertex> = cpu_edges
+                .iter()
+                .map(|&p| LineVertex { position: p })
+                .collect();
             let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Edge VB"),
                 contents: bytemuck::cast_slice(&line_verts),
@@ -78,25 +106,25 @@ impl Renderer {
     }
 
     pub(crate) fn prune_mesh_cache(&mut self) {
-        self.assets.prune_stale_meshes(
-            self.frame_counter,
-            &mut self.gpu_meshes,
-            Some(&mut self.skinned_mesh_resources),
+        self.gpu.assets.prune_stale_meshes(
+            self.frame.frame_counter,
+            &mut self.gpu.gpu_meshes,
+            Some(&mut self.gpu.skinned_mesh_resources),
         );
     }
 
     pub(crate) fn write_gpu_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let Some(ref qs) = self.gpu_query_set {
-            if self.gpu_query_slots < 16 {
-                encoder.write_timestamp(qs, self.gpu_query_slots);
-                self.gpu_query_slots += 1;
+        if let Some(ref qs) = self.gpu.gpu_query_set {
+            if self.gpu.gpu_query_slots < 16 {
+                encoder.write_timestamp(qs, self.gpu.gpu_query_slots);
+                self.gpu.gpu_query_slots += 1;
             }
         }
     }
 
     pub(crate) fn resolve_gpu_timestamps(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let (Some(ref qs), Some(ref qb)) = (&self.gpu_query_set, &self.gpu_query_buffer) {
-            let written = self.gpu_query_slots.min(16);
+        if let (Some(ref qs), Some(ref qb)) = (&self.gpu.gpu_query_set, &self.gpu.gpu_query_buffer) {
+            let written = self.gpu.gpu_query_slots.min(16);
             if written > 0 {
                 encoder.resolve_query_set(qs, 0..written, qb, 0);
             }
@@ -104,10 +132,10 @@ impl Renderer {
     }
 
     pub(crate) fn read_gpu_timestamps(&mut self) -> Option<[f64; 4]> {
-        let qb = self.gpu_query_buffer.as_ref()?;
-        let written = (self.gpu_query_slots.min(16)) as usize;
+        let qb = self.gpu.gpu_query_buffer.as_ref()?;
+        let written = (self.gpu.gpu_query_slots.min(16)) as usize;
         if written < 8 {
-            self.gpu_query_slots = 0;
+            self.gpu.gpu_query_slots = 0;
             return None;
         }
         let size = (written as u64) * 8;
@@ -132,19 +160,19 @@ impl Renderer {
         let _ = self.device.poll(wgpu::Maintain::Wait);
         let mapped = rx.recv().ok().unwrap_or(false);
         if !mapped {
-            self.gpu_query_slots = 0;
+            self.gpu.gpu_query_slots = 0;
             return None;
         }
         let data = slice.get_mapped_range();
         let ticks: Vec<u64> = bytemuck::cast_slice::<u8, u64>(&data).to_vec();
         drop(data);
         staging.unmap();
-        self.gpu_query_slots = 0;
+        self.gpu.gpu_query_slots = 0;
         if ticks.len() < 8 {
             return None;
         }
         let to_us = |a: u64, b: u64| -> f64 {
-            let ns = (b.saturating_sub(a) as f64) * self.gpu_query_period as f64;
+            let ns = (b.saturating_sub(a) as f64) * self.gpu.gpu_query_period as f64;
             ns / 1000.0
         };
         let shadow = to_us(ticks[0], ticks[1]);
@@ -230,7 +258,8 @@ impl Renderer {
                         .as_ref()
                         .map(|i| i.len() * std::mem::size_of::<u32>())
                         .unwrap_or(0)
-                    + (dc.edge_positions.len() * std::mem::size_of::<[f32; 3]>())
+                    + (dc.edge_positions.len() + dc.wireframe_edge_positions.len())
+                        * std::mem::size_of::<[f32; 3]>()
             })
             .sum::<usize>() as u64;
 
@@ -246,7 +275,7 @@ impl Renderer {
         missed_vec.sort_by(|a, b| b.1.cmp(&a.1));
 
         FrameDiagnostics {
-            frame_index: self.frame_counter,
+            frame_index: self.frame.frame_counter,
             gpu_pass_timings_us,
             cpu_memory: vec![
                 MemoryBudget {
@@ -256,7 +285,7 @@ impl Renderer {
                 },
                 MemoryBudget {
                     label: "material_library".to_string(),
-                    used_bytes: (self.materials.len() as u64) * 512,
+                    used_bytes: (self.gpu.materials.len() as u64) * 512,
                     budget_bytes: 64 * 1024 * 1024,
                 },
             ],
@@ -279,7 +308,7 @@ impl Renderer {
                 estimated_batch_count,
                 missed_reasons: missed_vec,
             },
-            timestamp_supported: self.timing_supported,
+            timestamp_supported: self.gpu.timing_supported,
         }
     }
 
@@ -287,10 +316,10 @@ impl Renderer {
         fn pool_bytes(pool: &GpuUniformPool) -> u64 {
             (pool.stride() * pool.capacity() as u64) as u64
         }
-        pool_bytes(&self.phong_pool)
-            + pool_bytes(&self.shadow_pool)
-            + pool_bytes(&self.flat_pool)
-            + pool_bytes(&self.outline_pool)
+        pool_bytes(&self.gpu.phong_pool)
+            + pool_bytes(&self.gpu.shadow_pool)
+            + pool_bytes(&self.gpu.flat_pool)
+            + pool_bytes(&self.gpu.outline_pool)
     }
 
     fn estimate_gpu_mesh_bytes(&self, visible: &[&DrawCall]) -> u64 {
@@ -302,7 +331,8 @@ impl Renderer {
                         .as_ref()
                         .map(|v| v.len() * std::mem::size_of::<u32>())
                         .unwrap_or(0)
-                    + dc.edge_positions.len() * std::mem::size_of::<[f32; 3]>()) as u64
+                    + (dc.edge_positions.len() + dc.wireframe_edge_positions.len())
+                        * std::mem::size_of::<[f32; 3]>()) as u64
             })
             .sum()
     }
@@ -311,7 +341,7 @@ impl Renderer {
         let w = self.config.width.max(1);
         let h = self.config.height.max(1);
         let fmt = self.config.format;
-        let need_new = self.ldr_shade_tex.as_ref().map_or(true, |t| {
+        let need_new = self.gpu.ldr_shade_tex.as_ref().map_or(true, |t| {
             let s = t.size();
             s.width != w || s.height != h || t.format() != fmt
         });
@@ -333,8 +363,8 @@ impl Renderer {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.ldr_shade_tex = Some(texture);
-            self.ldr_shade_view = Some(view);
+            self.gpu.ldr_shade_tex = Some(texture);
+            self.gpu.ldr_shade_view = Some(view);
         }
     }
 }

@@ -107,8 +107,8 @@ pub(super) fn pass_solid_and_outline(
                 _pad: [0.0; 3],
                 color: ctx.outline_color,
             };
-            if let Some(offset) = renderer.outline_pool.push_outline(&uniforms) {
-                pass.set_bind_group(0, renderer.outline_pool.bind_group(), &[offset]);
+            if let Some(offset) = renderer.gpu.outline_pool.push_outline(&uniforms) {
+                pass.set_bind_group(0, renderer.gpu.outline_pool.bind_group(), &[offset]);
                 if let Some(mesh_id) = ctx.mesh_handles[i] {
                     renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
                 }

@@ -258,17 +258,17 @@ pub(crate) fn window_event(
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
                             if let Some(renderer) = &mut app.renderer {
-                                let w = renderer.config.width;
-                                let h = renderer.config.height;
-                                renderer.viewport_layout.cycle_layout(w, h);
+                                let (w, h) = renderer.surface_size();
+                                
+                                renderer.viewport_layout_mut().cycle_layout(w, h);
                             }
                             app.sync_viewport_camera_ids();
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Tab) => {
                             if let Some(renderer) = &mut app.renderer {
-                                renderer.viewport_layout.cycle_active();
+                                renderer.viewport_layout_mut().cycle_active();
                                 app.viewport_cameras.active_viewport =
-                                    renderer.viewport_layout.active_id;
+                                    renderer.viewport_layout().active_id;
                             }
                         }
                         _ => {}
@@ -419,7 +419,7 @@ pub(crate) fn window_event(
                         .renderer
                         .as_ref()
                         .map(|r| {
-                            r.viewport_layout
+                            r.viewport_layout()
                                 .viewports
                                 .iter()
                                 .map(|v| (v.id, v.rect.aspect()))
@@ -463,14 +463,14 @@ pub(crate) fn window_event(
                             ibl_label: renderer.ibl_preset_name().to_string(),
                             ibl_preset: renderer.ibl_preset,
                             gizmo_mode: app.gizmo.mode,
-                            layout_mode: renderer.viewport_layout.layout_mode,
+                            layout_mode: renderer.viewport_layout().layout_mode,
                             layout_mode_label: format!(
                                 "{:?}",
-                                renderer.viewport_layout.layout_mode
+                                renderer.viewport_layout().layout_mode
                             ),
                             active_viewport_label: format!(
                                 "{:?}",
-                                renderer.viewport_layout.active_id
+                                renderer.viewport_layout().active_id
                             ),
                             smoothed_fps: app.fps_tracker.smoothed_fps(),
                             frame_time_ms: app.last_frame_time_ms,
@@ -534,7 +534,7 @@ pub(crate) fn window_event(
                     }
                     app.world.evaluate_engines();
 
-                    renderer.materials = app.world.materials.clone();
+                    renderer.set_materials(app.world.materials.clone());
                     renderer.grid_enabled = app.grid_enabled;
                     app.world.collector.draw_calls.clear();
                     app.world.collector.state = rc3d_actions::State::new();

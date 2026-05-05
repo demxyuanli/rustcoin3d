@@ -1,6 +1,7 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
+use crate::viewport::LayoutMode;
 use crate::vertex::{FlatUniforms, CSM_CASCADE_COUNT};
 use crate::FrameStats;
 use glam::{Mat4, Vec3};
@@ -85,10 +86,10 @@ pub(super) fn execute_passes(
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
 
-    if renderer.depth_texture.is_none() {
+    if renderer.gpu.depth_texture.is_none() {
         renderer.create_depth_texture();
     }
-    let Some((_, depth_view, depth_read_view)) = renderer.depth_texture.as_ref() else {
+    let Some((_, depth_view, depth_read_view)) = renderer.gpu.depth_texture.as_ref() else {
         return FrameStats::default();
     };
     let depth_view = depth_view.clone();
@@ -102,11 +103,11 @@ pub(super) fn execute_passes(
         renderer.ensure_ldr_shade_target();
     }
     let scene_pl = renderer
-        .pipelines
+        .gpu.pipelines
         .for_shaded_target(ctx.depth_reversed_z, renderer.hdr_post_processing)
         .clone();
     let shade_color_view = if renderer.hdr_post_processing {
-        if let Some(fx) = renderer.post_fx.as_ref() {
+        if let Some(fx) = renderer.gpu.post_fx.as_ref() {
             fx.hdr_view.clone()
         } else {
             log::warn!("hdr_post_processing is enabled but post_fx is missing; falling back to swapchain view");
@@ -114,7 +115,7 @@ pub(super) fn execute_passes(
         }
     } else if use_ldr_fxaa {
         renderer
-            .ldr_shade_view
+            .gpu.ldr_shade_view
             .as_ref()
             .expect("LDR shade view")
             .clone()
@@ -159,17 +160,17 @@ pub(super) fn execute_passes(
 
     let requested_meshlet_hzb_prepass = solid_mode
         && !ctx.meshlet_indices.is_empty()
-        && renderer.cluster_renderer.is_some()
-        && renderer.hzb.is_some()
-        && renderer.hzb_baker.is_some();
+        && renderer.gpu.cluster_renderer.is_some()
+        && renderer.gpu.hzb.is_some()
+        && renderer.gpu.hzb_baker.is_some();
     let run_meshlet_hzb_prepass = if requested_meshlet_hzb_prepass {
         true
     } else {
         if solid_mode
             && !ctx.meshlet_indices.is_empty()
-            && (renderer.cluster_renderer.is_none()
-                || renderer.hzb.is_none()
-                || renderer.hzb_baker.is_none())
+            && (renderer.gpu.cluster_renderer.is_none()
+                || renderer.gpu.hzb.is_none()
+                || renderer.gpu.hzb_baker.is_none())
         {
             log::warn!("meshlet HZB prepass requested but resources are incomplete; using fallback meshlet cull path");
         }
@@ -180,8 +181,8 @@ pub(super) fn execute_passes(
 
     'hzb_prepass: {
         if run_meshlet_hzb_prepass {
-        let Some(hzb) = renderer.hzb.as_ref() else { break 'hzb_prepass; };
-        let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() else { break 'hzb_prepass; };
+        let Some(hzb) = renderer.gpu.hzb.as_ref() else { break 'hzb_prepass; };
+        let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() else { break 'hzb_prepass; };
 
         let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
         let hzb_dims_xy = (hzb.max_pyramid.width, hzb.max_pyramid.height);
@@ -211,7 +212,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -240,7 +241,7 @@ pub(super) fn execute_passes(
         pass_solid::pass_depth_prepass(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
 
         // Build HZB from depth
-        if let (Some(baker), Some(hzb)) = (renderer.hzb_baker.as_mut(), renderer.hzb.as_ref()) {
+        if let (Some(baker), Some(hzb)) = (renderer.gpu.hzb_baker.as_mut(), renderer.gpu.hzb.as_ref()) {
             baker.build_from_depth(
                 &renderer.device,
                 &mut encoder,
@@ -256,7 +257,7 @@ pub(super) fn execute_passes(
         }
 
         // Second cull pass (with HZB)
-        if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
+        if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
             let max_bind: &wgpu::TextureView = &max_bind_owned;
             let min_bind: &wgpu::TextureView = &min_bind_owned;
             for &vis_idx in ctx.meshlet_indices {
@@ -265,7 +266,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -299,7 +300,7 @@ pub(super) fn execute_passes(
 
     if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() {
         if let (Some(cluster_renderer), Some(hzb)) =
-            (renderer.cluster_renderer.as_ref(), renderer.hzb.as_ref())
+            (renderer.gpu.cluster_renderer.as_ref(), renderer.gpu.hzb.as_ref())
         {
             let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
             let max_bind: &wgpu::TextureView = if hzb_need_max {
@@ -322,7 +323,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -350,7 +351,7 @@ pub(super) fn execute_passes(
 
     if solid_mode && renderer.enable_cluster_lights {
         if let (Some(ref culler), Some(ref resources)) =
-            (renderer.cluster_light_culler.as_ref(), renderer.cluster_lights.as_ref())
+            (renderer.gpu.cluster_light_culler.as_ref(), renderer.gpu.cluster_lights.as_ref())
         {
             use crate::cluster_lighting::{GpuPointLight, GpuSpotLight};
 
@@ -429,19 +430,26 @@ pub(super) fn execute_passes(
         pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
     }
 
+    let has_selection = ctx.visible.iter().any(|dc| dc.selected);
+    let ss_outline = renderer.screen_space_selection_outline
+        && ctx.adaptive_quality != AdaptiveQuality::Low;
+    let run_geom_sel_edge = has_selection
+        && !ctx.performance_mode_active
+        && !ss_outline
+        && ctx.wireframe_supported
+        && ctx.adaptive_quality != AdaptiveQuality::Low;
+
     let edge_worthy = !ctx.performance_mode_active
         && ctx.adaptive_quality != AdaptiveQuality::Low
         && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
-    if edge_worthy || has_overlay {
+    let defer_line_overlays = use_ldr_fxaa;
+    if (edge_worthy || has_overlay) && !defer_line_overlays {
         pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
-    let has_selection = ctx.visible.iter().any(|dc| dc.selected);
     if has_selection && !ctx.performance_mode_active {
         pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
-        let ss_outline = renderer.screen_space_selection_outline
-            && ctx.adaptive_quality != AdaptiveQuality::Low;
         if ss_outline {
             let shade_fmt = if renderer.hdr_post_processing {
                 wgpu::TextureFormat::Rgba16Float
@@ -449,9 +457,9 @@ pub(super) fn execute_passes(
                 renderer.config.format
             };
             let scene_tex_ptr: *const wgpu::Texture = if renderer.hdr_post_processing {
-                std::ptr::from_ref(&renderer.post_fx.as_ref().unwrap().hdr_tex)
+                std::ptr::from_ref(&renderer.gpu.post_fx.as_ref().unwrap().hdr_tex)
             } else if use_ldr_fxaa {
-                std::ptr::from_ref(renderer.ldr_shade_tex.as_ref().expect("LDR shade texture"))
+                std::ptr::from_ref(renderer.gpu.ldr_shade_tex.as_ref().expect("LDR shade texture"))
             } else {
                 std::ptr::from_ref(&output.texture)
             };
@@ -463,10 +471,12 @@ pub(super) fn execute_passes(
                 shade_fmt,
                 scene_tex_ptr,
             );
-        } else if ctx.wireframe_supported && ctx.adaptive_quality != AdaptiveQuality::Low {
+        } else if run_geom_sel_edge && !defer_line_overlays {
             pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         }
-        pass_selection::pass_selection_bbox(&mut encoder, shade_view, &depth_view, ctx, &scene_pl, &mut renderer.flat_pool, ctx.wireframe_supported);
+        if !defer_line_overlays {
+            pass_selection::pass_selection_bbox(&mut encoder, shade_view, &depth_view, ctx, &scene_pl, &mut renderer.gpu.flat_pool, ctx.wireframe_supported);
+        }
     }
 
     // Transparent pass: iterate sorted draw calls with alpha blend pipeline
@@ -488,31 +498,51 @@ pub(super) fn execute_passes(
         pass_post::pass_fxaa_ldr_to_swapchain(
             &renderer.device,
             &mut encoder,
-            &renderer.post_fx_pipelines,
-            renderer.ldr_shade_view.as_ref().expect("LDR shade view"),
+            &renderer.gpu.post_fx_pipelines,
+            renderer.gpu.ldr_shade_view.as_ref().expect("LDR shade view"),
             &view,
             ctx.bg_color,
         );
     }
 
+    if defer_line_overlays {
+        if edge_worthy || has_overlay {
+            pass_edge::pass_edge_overlay(renderer, &mut encoder, &view, &depth_view, ctx, edge_worthy, &scene_pl);
+        }
+        if has_selection && !ctx.performance_mode_active {
+            if run_geom_sel_edge {
+                pass_selection::pass_selection_edge(renderer, &mut encoder, &view, &depth_view, ctx, &scene_pl);
+            }
+            pass_selection::pass_selection_bbox(
+                &mut encoder,
+                &view,
+                &depth_view,
+                ctx,
+                &scene_pl,
+                &mut renderer.gpu.flat_pool,
+                ctx.wireframe_supported,
+            );
+        }
+    }
+
     if renderer.hdr_post_processing {
-        if let Some(ref fx) = renderer.post_fx {
-            let pl = &renderer.post_fx_pipelines;
+        if let Some(ref fx) = renderer.gpu.post_fx {
+            let pl = &renderer.gpu.post_fx_pipelines;
             let w = renderer.config.width.max(1);
             let h = renderer.config.height.max(1);
             let proj = ctx.camera_proj.to_cols_array_2d();
             let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
 
             // ── Auto Exposure ──
-            let _exposure = renderer.auto_exposure.update(
+            let _exposure = renderer.gpu.auto_exposure.update(
                 &renderer.device, &renderer.queue, &mut encoder,
                 &fx.hdr_view, w, h, 0.016,
             );
 
             // ── SSR (screen-space reflections) ──
             if renderer.enable_ssr {
-                if let Some(ref ssr) = renderer.ssr_pass {
-                    if let Some(ref hzb) = renderer.hzb {
+                if let Some(ref ssr) = renderer.gpu.ssr_pass {
+                    if let Some(ref hzb) = renderer.gpu.hzb {
                         ssr.trace(
                             &renderer.device, &renderer.queue, &mut encoder,
                             &fx.hdr_view, &depth_read_view,
@@ -526,7 +556,7 @@ pub(super) fn execute_passes(
 
             // ── Volumetric Fog ──
             if renderer.enable_volumetric_fog {
-                if let Some(ref fog) = renderer.volumetric_fog {
+                if let Some(ref fog) = renderer.gpu.volumetric_fog {
                     fog.compute(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &depth_read_view, &fx.hdr_view, w, h,
@@ -542,7 +572,7 @@ pub(super) fn execute_passes(
 
             // ── Motion Blur ──
             if renderer.enable_motion_blur {
-                if let Some(ref mb) = renderer.motion_blur {
+                if let Some(ref mb) = renderer.gpu.motion_blur {
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &depth_read_view, &depth_read_view,
@@ -553,7 +583,7 @@ pub(super) fn execute_passes(
 
             // ── DOF ──
             if renderer.enable_dof {
-                if let Some(ref dof) = renderer.dof_pass {
+                if let Some(ref dof) = renderer.gpu.dof_pass {
                     dof.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &depth_read_view, &fx.hdr_view,
@@ -564,7 +594,7 @@ pub(super) fn execute_passes(
 
             // ── Color Grading ──
             if renderer.enable_color_grading {
-                if let Some(ref cg) = renderer.color_grading {
+                if let Some(ref cg) = renderer.gpu.color_grading {
                     cg.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &fx.hdr_view, w, h, 1.0,
@@ -576,13 +606,13 @@ pub(super) fn execute_passes(
             pass_post::pass_bloom_prefilter(&renderer.device, &mut encoder, pl, fx);
             // SSAO (read depth, write AO)
             pass_post::pass_ssao(&renderer.device, &mut encoder, pl, fx,
-                &depth_read_view, &renderer.ssao_noise_view, &proj, &inv_proj);
+                &depth_read_view, &renderer.gpu.ssao_noise_view, &proj, &inv_proj);
             // SSAO blur (read AO + depth, write blurred AO)
             pass_post::pass_ssao_blur(&renderer.device, &mut encoder, pl, fx, &depth_read_view);
 
             // ── TAA (temporal anti-aliasing) ──
             if renderer.enable_taa {
-                if let Some(ref mut taa) = renderer.taa_pass {
+                if let Some(ref mut taa) = renderer.gpu.taa_pass {
                     taa.ensure_history(&renderer.device, w, h);
                     taa.resolve(
                         &renderer.device, &renderer.queue, &mut encoder,
@@ -601,10 +631,10 @@ pub(super) fn execute_passes(
         }
     }
 
-    renderer.outline_pool.flush(&renderer.queue);
-    renderer.phong_pool.flush(&renderer.queue);
-    renderer.shadow_pool.flush(&renderer.queue);
-    renderer.flat_pool.flush(&renderer.queue);
+    renderer.gpu.outline_pool.flush(&renderer.queue);
+    renderer.gpu.phong_pool.flush(&renderer.queue);
+    renderer.gpu.shadow_pool.flush(&renderer.queue);
+    renderer.gpu.flat_pool.flush(&renderer.queue);
 
     // Ground plane grid overlay
     if renderer.grid_enabled {
@@ -613,8 +643,8 @@ pub(super) fn execute_passes(
             &mut encoder,
             &view,
             &depth_view,
-            renderer.scene_vp,
-            renderer.scene_camera_pos,
+            renderer.frame.scene_vp,
+            renderer.frame.scene_camera_pos,
             ctx.depth_reversed_z,
         );
     }
@@ -622,7 +652,7 @@ pub(super) fn execute_passes(
     // Viewport border overlay
     {
         let geom = pass_viewport::ViewportBorderGeometry::build(
-            &renderer.viewport_layout,
+            &renderer.frame.viewport_layout,
             renderer.config.width,
             renderer.config.height,
         );
@@ -643,12 +673,18 @@ pub(super) fn execute_passes(
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&renderer.pipelines.viewport_border_lines);
-            let ident = Mat4::IDENTITY.to_cols_array_2d();
+            pass.set_pipeline(&renderer.gpu.pipelines.viewport_border_lines);
+            let wpx = renderer.config.width.max(1) as f32;
+            let hpx = renderer.config.height.max(1) as f32;
+            // `border_lines` uses window pixel coords (origin top-left, +y down).
+            let screen_mvp = Mat4::orthographic_rh_gl(0.0, wpx, hpx, 0.0, -1.0, 1.0).to_cols_array_2d();
             // Split borders
             if has_splits {
-                let uniforms = FlatUniforms { mvp: ident, color: [0.4, 0.4, 0.4, 1.0] };
-                if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
+                let uniforms = FlatUniforms {
+                    mvp: screen_mvp,
+                    color: [0.4, 0.4, 0.4, 1.0],
+                };
+                if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
                     for chunk in geom.split_lines.chunks(2) {
                         if chunk.len() < 2 { break; }
                         let verts = [chunk[0], chunk[1]];
@@ -657,16 +693,19 @@ pub(super) fn execute_passes(
                             contents: bytemuck::cast_slice(&verts),
                             usage: wgpu::BufferUsages::VERTEX,
                         });
-                        pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
                         pass.set_vertex_buffer(0, vb.slice(..));
                         pass.draw(0..2, 0..1);
                     }
                 }
             }
-            // Active viewport highlight
-            if has_active {
-                let uniforms = FlatUniforms { mvp: ident, color: [1.0, 0.85, 0.1, 1.0] };
-                if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
+            // Active viewport highlight (hidden for single full-window viewport — no editor benefit).
+            if has_active && renderer.frame.viewport_layout.layout_mode != LayoutMode::Single {
+                let uniforms = FlatUniforms {
+                    mvp: screen_mvp,
+                    color: [1.0, 0.85, 0.1, 1.0],
+                };
+                if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
                     for chunk in geom.active_lines.chunks(2) {
                         if chunk.len() < 2 { break; }
                         let verts = [chunk[0], chunk[1]];
@@ -675,7 +714,7 @@ pub(super) fn execute_passes(
                             contents: bytemuck::cast_slice(&verts),
                             usage: wgpu::BufferUsages::VERTEX,
                         });
-                        pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
                         pass.set_vertex_buffer(0, vb.slice(..));
                         pass.draw(0..2, 0..1);
                     }
@@ -688,7 +727,7 @@ pub(super) fn execute_passes(
     pass_markup::pass_markup(renderer, &mut encoder, &view);
 
     if renderer.hud_enabled {
-        if let Some(hud) = renderer.hud.as_ref() {
+        if let Some(hud) = renderer.gpu.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

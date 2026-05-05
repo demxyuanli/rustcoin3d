@@ -457,10 +457,10 @@ impl App {
         let cx = self.cursor_pos.0 as f32;
         let cy = self.cursor_pos.1 as f32;
         let vp = r
-            .viewport_layout
+            .viewport_layout()
             .viewport_at(cx, cy)
-            .or_else(|| r.viewport_layout.active())
-            .or_else(|| r.viewport_layout.viewports.first())?;
+            .or_else(|| r.viewport_layout().active())
+            .or_else(|| r.viewport_layout().viewports.first())?;
         Some(vp.id)
     }
 
@@ -476,10 +476,10 @@ impl App {
         if !self.viewport_cameras.cameras.is_empty() {
             let r = self.renderer.as_ref()?;
             let vp_ref = r
-                .viewport_layout
+                .viewport_layout()
                 .viewport_at(cx, cy)
-                .or_else(|| r.viewport_layout.active())
-                .or_else(|| r.viewport_layout.viewports.first())?;
+                .or_else(|| r.viewport_layout().active())
+                .or_else(|| r.viewport_layout().viewports.first())?;
             if let Some(vc) = self.viewport_cameras.find(vp_ref.id) {
                 let (v, p) = gizmo_support::pick_view_proj(&self.world.graph, vc, vp_ref);
                 let lx = cx - vp_ref.rect.x as f32;
@@ -924,7 +924,7 @@ impl App {
             return;
         };
         self.viewport_cameras
-            .remap_viewport_ids_from_layout(&renderer.viewport_layout);
+            .remap_viewport_ids_from_layout(renderer.viewport_layout());
         self.orbit_drag_viewport_id = None;
         self.left_orbit_drag_viewport_id = None;
         self.pan_drag_viewport_id = None;

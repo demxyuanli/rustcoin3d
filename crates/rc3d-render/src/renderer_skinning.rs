@@ -8,10 +8,10 @@ impl super::Renderer {
         visible: &[&DrawCall],
         mesh_handles: &[Option<MeshId>],
     ) {
-        if self.skinned_mesh_resources.is_empty() {
+        if self.gpu.skinned_mesh_resources.is_empty() {
             return;
         }
-        let Some(pass) = self.gpu_skinning_pass.as_ref() else {
+        let Some(pass) = self.gpu.gpu_skinning_pass.as_ref() else {
             return;
         };
         for (i, dc) in visible.iter().enumerate() {
@@ -21,7 +21,7 @@ impl super::Renderer {
             let Some(mesh_id) = mesh_handles.get(i).copied().flatten() else {
                 continue;
             };
-            let Some(res) = self.skinned_mesh_resources.get(&mesh_id) else {
+            let Some(res) = self.gpu.skinned_mesh_resources.get(&mesh_id) else {
                 continue;
             };
             let jc = skin.skeleton.joint_count();
@@ -29,7 +29,7 @@ impl super::Renderer {
                 continue;
             }
             let local: Vec<glam::Mat4> = if let Some(ref clip) = skin.clip {
-                clip.sample_all(self.animation_time_sec, &skin.skeleton)
+                clip.sample_all(self.frame.animation_time_sec, &skin.skeleton)
             } else {
                 skin.skeleton.joints.iter().map(|j| j.bind_transform).collect()
             };

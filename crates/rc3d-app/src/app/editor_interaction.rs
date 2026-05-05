@@ -6,9 +6,9 @@ use super::{gizmo_support, App};
 impl App {
     pub(super) fn editor_on_left_down(&mut self) {
         if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
-            if r.viewport_layout.viewports.len() > 1 {
+            if r.viewport_layout().viewports.len() > 1 {
                 let s = w.inner_size();
-                if let Some(axis) = r.viewport_layout.splitter_hit(
+                if let Some(axis) = r.viewport_layout().splitter_hit(
                     self.cursor_pos.0 as f32,
                     self.cursor_pos.1 as f32,
                     s.width,
@@ -20,13 +20,13 @@ impl App {
             }
         }
         if let (Some(r), _w) = (&mut self.renderer, &self.window) {
-            if r.viewport_layout.viewports.len() > 1 {
+            if r.viewport_layout().viewports.len() > 1 {
                 if let Some(vp) = r
-                    .viewport_layout
+                    .viewport_layout()
                     .viewport_at(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32)
                 {
                     self.viewport_cameras
-                        .set_active(vp.id, &mut r.viewport_layout);
+                        .set_active(vp.id, r.viewport_layout_mut());
                 }
             }
         }
@@ -100,7 +100,7 @@ impl App {
                         (self.viewport_cameras.active(), self.build_pick_ray())
                     {
                         if let Some(avp) = r
-                            .viewport_layout
+                            .viewport_layout()
                             .viewports
                             .iter()
                             .find(|v| v.id == vc.viewport_id)
@@ -195,14 +195,14 @@ impl App {
         if let Some(axis) = self.view_split_drag {
             if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
                 let s = w.inner_size();
-                r.viewport_layout.apply_split_drag(
+                r.viewport_layout_mut().apply_split_drag(
                     axis,
                     self.cursor_pos.0 as f32,
                     self.cursor_pos.1 as f32,
                     s.width,
                     s.height,
                 );
-                r.viewport_layout.rebuild(s.width, s.height);
+                r.viewport_layout_mut().rebuild(s.width, s.height);
             }
             self.sync_viewport_camera_ids();
             if let Some(w) = &self.window {

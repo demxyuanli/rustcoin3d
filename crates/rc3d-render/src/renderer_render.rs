@@ -26,14 +26,14 @@ impl super::Renderer {
         scene: &SceneGraph,
         post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
     ) -> FrameStats {
-        self.frame_counter = self.frame_counter.wrapping_add(1);
-        let dt_sec = (self.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
-        self.animation_time_sec += dt_sec;
+        self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
+        let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
+        self.frame.animation_time_sec += dt_sec;
 
-        let _changed = self.shader_reload.check_and_reload();
+        let _changed = self.gpu.shader_reload.check_and_reload();
 
-        if self.frame_counter % 300 == 0 {
-            if let Some(ref mut pc) = self.pipeline_cache {
+        if self.frame.frame_counter % 300 == 0 {
+            if let Some(ref mut pc) = self.gpu.pipeline_cache {
                 pc.save_to_disk();
             }
         }
@@ -44,7 +44,7 @@ impl super::Renderer {
 
         let first = &draw_calls[0];
         let vp = first.mvp * first.model_matrix.inverse();
-        self.scene_vp = vp;
+        self.frame.scene_vp = vp;
         let frustum = Frustum::from_view_projection(vp);
 
         let bvh_items: Vec<(rc3d_core::Aabb, u32)> = draw_calls
@@ -77,15 +77,15 @@ impl super::Renderer {
             let dz = head.depth_reversed_z;
             let inconsistent = visible.iter().any(|dc| dc.depth_reversed_z != dz);
             if inconsistent {
-                if !self.depth_reversed_z_mismatch_warned {
+                if !self.gpu.depth_reversed_z_mismatch_warned {
                     log::warn!(
                         "visible draw calls disagree on depth_reversed_z; using first visible ({}) for pipelines and depth clears",
                         dz
                     );
-                    self.depth_reversed_z_mismatch_warned = true;
+                    self.gpu.depth_reversed_z_mismatch_warned = true;
                 }
             } else {
-                self.depth_reversed_z_mismatch_warned = false;
+                self.gpu.depth_reversed_z_mismatch_warned = false;
             }
         }
 
@@ -102,8 +102,8 @@ impl super::Renderer {
             })
             .sum();
         let enable_perf_mode = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
-        if enable_perf_mode != self.performance_mode_active {
-            self.performance_mode_active = enable_perf_mode;
+        if enable_perf_mode != self.frame.performance_mode_active {
+            self.frame.performance_mode_active = enable_perf_mode;
             if enable_perf_mode {
                 log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
             } else {
@@ -116,11 +116,11 @@ impl super::Renderer {
             let handle = if dc.vertices.is_empty() {
                 if let Some(md) = dc.meshlet_data.as_ref() {
                     let ptr = Arc::as_ptr(md) as u64;
-                    if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&ptr) {
-                        *last_used = self.frame_counter;
+                    if let Some((mesh_id, last_used)) = self.gpu.assets.mesh_cache.get_mut(&ptr) {
+                        *last_used = self.frame.frame_counter;
                         Some(*mesh_id)
                     } else {
-                        if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
+                        if self.gpu.assets.mesh_cache.len() >= MESH_CACHE_MAX {
                             self.prune_mesh_cache();
                         }
                         let verts: Vec<crate::vertex::Vertex> =
@@ -133,13 +133,14 @@ impl super::Renderer {
                                     tangent: mv.tangent,
                                 })
                                 .collect();
-                        let mesh_id = self.gpu_meshes.upload_mesh(
+                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
                             &self.device,
                             &verts,
                             Some(&md.indices),
                             &[],
+                            &[],
                         );
-                        self.assets.mesh_cache.insert(ptr, (mesh_id, self.frame_counter));
+                        self.gpu.assets.mesh_cache.insert(ptr, (mesh_id, self.frame.frame_counter));
                         Some(mesh_id)
                     }
                 } else {
@@ -164,11 +165,11 @@ impl super::Renderer {
                 } else {
                     base_hash
                 };
-                if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&hash) {
-                    *last_used = self.frame_counter;
+                if let Some((mesh_id, last_used)) = self.gpu.assets.mesh_cache.get_mut(&hash) {
+                    *last_used = self.frame.frame_counter;
                     Some(*mesh_id)
                 } else {
-                    if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
+                    if self.gpu.assets.mesh_cache.len() >= MESH_CACHE_MAX {
                         self.prune_mesh_cache();
                     }
                     if let Some(ref skin) = dc.skinning {
@@ -180,17 +181,18 @@ impl super::Renderer {
                                 skin_slice.len(),
                                 verts.len()
                             );
-                            let mesh_id = self.gpu_meshes.upload_mesh(
+                            let mesh_id = self.gpu.gpu_meshes.upload_mesh(
                                 &self.device,
                                 &dc.vertices,
                                 dc.indices.as_ref().map(|a| a.as_slice()),
                                 &dc.edge_positions,
+                                &dc.wireframe_edge_positions,
                             );
-                            self.assets.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
+                            self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
                             Some(mesh_id)
                         } else {
                         let pass = self
-                            .gpu_skinning_pass
+                            .gpu.gpu_skinning_pass
                             .get_or_insert_with(|| GpuSkinningPass::new(&self.device));
                         let positions: Vec<[f32; 3]> = verts.iter().map(|v| v.position).collect();
                         let normals: Vec<[f32; 3]> = verts.iter().map(|v| v.normal).collect();
@@ -207,25 +209,27 @@ impl super::Renderer {
                             max_bones,
                         );
                         let dst_vb = resources.dst_vertex_buffer.clone();
-                        let mesh_id = self.gpu_meshes.insert_skinned_mesh(
+                        let mesh_id = self.gpu.gpu_meshes.insert_skinned_mesh(
                             &self.device,
                             dst_vb,
                             verts.len() as u32,
                             dc.indices.as_ref().map(|a| a.as_slice()),
                             &dc.edge_positions,
+                            &dc.wireframe_edge_positions,
                         );
-                        self.skinned_mesh_resources.insert(mesh_id, resources);
-                        self.assets.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
+                        self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
+                        self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
                         Some(mesh_id)
                         }
                     } else {
-                        let mesh_id = self.gpu_meshes.upload_mesh(
+                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
                             &self.device,
                             &dc.vertices,
                             dc.indices.as_ref().map(|a| a.as_slice()),
                             &dc.edge_positions,
+                            &dc.wireframe_edge_positions,
                         );
-                        self.assets.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
+                        self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
                         Some(mesh_id)
                     }
                 }
@@ -276,7 +280,7 @@ impl super::Renderer {
         });
 
         let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-        self.scene_camera_pos = camera_pos_vec;
+        self.frame.scene_camera_pos = camera_pos_vec;
         let mut transparent_order: Vec<usize> = (0..visible.len())
             .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
             .collect();
@@ -295,50 +299,50 @@ impl super::Renderer {
             }
         }
         if !meshlet_indices.is_empty() {
-            if self.cluster_pipeline_generation != super::CLUSTER_PIPELINE_GENERATION {
-                self.cluster_renderer = None;
-                self.cluster_pipeline_generation = super::CLUSTER_PIPELINE_GENERATION;
+            if self.gpu.cluster_pipeline_generation != super::CLUSTER_PIPELINE_GENERATION {
+                self.gpu.cluster_renderer = None;
+                self.gpu.cluster_pipeline_generation = super::CLUSTER_PIPELINE_GENERATION;
             }
-            if self.cluster_renderer.is_none() {
-                self.cluster_renderer = Some(ClusterRenderer::new(&self.device));
+            if self.gpu.cluster_renderer.is_none() {
+                self.gpu.cluster_renderer = Some(ClusterRenderer::new(&self.device));
             }
         }
 
-        let bgls = self.cluster_renderer.as_ref().map(|cr| cr.bind_group_layouts());
+        let bgls = self.gpu.cluster_renderer.as_ref().map(|cr| cr.bind_group_layouts());
         for &idx in &meshlet_indices {
             let dc = visible[idx];
             let md = dc.meshlet_data.as_ref().unwrap();
             let ptr = Arc::as_ptr(md) as u64;
-            if !self.assets.cluster_cache.contains_key(&ptr) {
+            if !self.gpu.assets.cluster_cache.contains_key(&ptr) {
                 if let Some((cs_bgl, cmp_bgl, fin_bgl)) = bgls {
                     let cs = ClusterSet::from_meshlet_data(
                         &self.device, md, cs_bgl, cmp_bgl, fin_bgl,
                     );
-                    self.assets.cluster_cache.insert(ptr, cs);
+                    self.gpu.assets.cluster_cache.insert(ptr, cs);
                 }
             }
         }
 
-        self.phong_pool.reset();
-        self.shadow_pool.reset();
-        self.flat_pool.reset();
-        self.outline_pool.reset();
+        self.gpu.phong_pool.reset();
+        self.gpu.shadow_pool.reset();
+        self.gpu.flat_pool.reset();
+        self.gpu.outline_pool.reset();
 
-        let base_mode = if self.performance_mode_active {
+        let base_mode = if self.frame.performance_mode_active {
             DisplayMode::Shaded
         } else {
             self.global_display_mode
         };
-        let mode = if self.adaptive_quality == AdaptiveQuality::Low && base_mode == DisplayMode::Wireframe {
+        let mode = if self.gpu.adaptive_quality == AdaptiveQuality::Low && base_mode == DisplayMode::Wireframe {
             DisplayMode::Shaded
         } else {
             base_mode
         };
-        let run_outline = !self.performance_mode_active
-            && self.adaptive_quality == AdaptiveQuality::High
+        let run_outline = !self.frame.performance_mode_active
+            && self.gpu.adaptive_quality == AdaptiveQuality::High
             && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
 
-        let solid_wants_shadow = !self.performance_mode_active
+        let solid_wants_shadow = !self.frame.performance_mode_active
             && matches!(
                 mode,
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
@@ -366,12 +370,12 @@ impl super::Renderer {
             if let Some(dir) = primary_directional_light_dir(scene) {
                 let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
                 if let Some(_aabb) = aabb {
-                    let sm_size = match self.adaptive_quality {
+                    let sm_size = match self.gpu.adaptive_quality {
                         AdaptiveQuality::High => 2048,
                         AdaptiveQuality::Medium => 1024,
                         AdaptiveQuality::Low => 512,
                     };
-                    let cascade_count = match self.adaptive_quality {
+                    let cascade_count = match self.gpu.adaptive_quality {
                         AdaptiveQuality::High => 4,
                         AdaptiveQuality::Medium => 3,
                         AdaptiveQuality::Low => 1,
@@ -401,7 +405,7 @@ impl super::Renderer {
                     }
 
                     let inv = 1.0 / sm_size as f32;
-                    let (bias, pcf) = match self.adaptive_quality {
+                    let (bias, pcf) = match self.gpu.adaptive_quality {
                         AdaptiveQuality::High => (0.00015_f32, 2.0_f32),
                         AdaptiveQuality::Medium => (0.00028, 1.0),
                         AdaptiveQuality::Low => (0.00045, 0.0),
@@ -422,9 +426,9 @@ impl super::Renderer {
             mode,
             run_outline,
             bg_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
-            performance_mode_active: self.performance_mode_active,
+            performance_mode_active: self.frame.performance_mode_active,
             wireframe_supported: self.wireframe_supported,
-            adaptive_quality: self.adaptive_quality,
+            adaptive_quality: self.gpu.adaptive_quality,
             outline_width: self.outline_width,
             outline_color: self.outline_color,
             meshlet_indices: &meshlet_indices,
@@ -442,7 +446,7 @@ impl super::Renderer {
             self,
             &ctx,
             draw_calls,
-            self.frame_counter,
+            self.frame.frame_counter,
             post_swapchain_overlay,
         );
         let gpu_pass = self.read_gpu_timestamps();
@@ -455,7 +459,7 @@ impl super::Renderer {
             gpu_pass,
         );
         stats.diagnostics = Some(diagnostics.clone());
-        self.last_diagnostics = Some(diagnostics);
+        self.frame.last_diagnostics = Some(diagnostics);
         stats
     }
 
@@ -467,18 +471,18 @@ impl super::Renderer {
         if !self.hud_enabled {
             return;
         }
-        let interval = match self.adaptive_quality {
+        let interval = match self.gpu.adaptive_quality {
             AdaptiveQuality::High => 1,
             AdaptiveQuality::Medium => 2,
             AdaptiveQuality::Low => 6,
         };
-        if self.frame_counter.saturating_sub(self.last_hud_update_frame) < interval {
+        if self.frame.frame_counter.saturating_sub(self.frame.last_hud_update_frame) < interval {
             return;
         }
-        self.last_hud_update_frame = self.frame_counter;
+        self.frame.last_hud_update_frame = self.frame.frame_counter;
         let quality_name = self.adaptive_quality_name();
         let hud_mode_name = format!("{mode_name} [{quality_name}]");
-        if let Some(hud) = &mut self.hud {
+        if let Some(hud) = &mut self.gpu.hud {
             hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
         }
     }

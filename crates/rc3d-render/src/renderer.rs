@@ -10,6 +10,8 @@ mod renderer_helpers;
 mod renderer_render;
 #[path = "renderer_skinning.rs"]
 mod renderer_skinning;
+#[path = "renderer_internals.rs"]
+mod renderer_internals;
 
 pub use renderer_types::*;
 
@@ -32,7 +34,7 @@ use crate::shadow_omni::OmniShadowRenderer;
 use crate::shadow_pass::{self, CsmShadowResources};
 use crate::shader_permutation::ShaderVariantCache;
 use crate::shader_reload::ShaderHotReload;
-use crate::vertex::{InstanceData, MAX_INSTANCES};
+use crate::vertex::{InstanceData, LineVertex, MAX_INSTANCES};
 use crate::viewport::ViewportLayout;
 use crate::ssr_pass::SsrPass;
 use crate::taa::{TaaJitter, TaaPass};
@@ -40,6 +42,7 @@ use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::gpu_skinning::{GpuSkinningPass, GpuSkinningResources};
 use crate::ibl::IblPreset;
+use self::renderer_internals::{FrameState, GpuInternals};
 use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
@@ -73,82 +76,17 @@ fn resolve_studio_hdr_path() -> PathBuf {
 }
 
 pub struct Renderer {
+    // ── One-time config ──
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
-    /// Runtime render settings (replaces scattered feature toggles).
-    settings: RenderSettings,
-    pub pipelines: PipelineSet,
-    pub phong_pool: GpuUniformPool,
-    pub flat_pool: GpuUniformPool,
-    pub outline_pool: GpuUniformPool,
-    pub gpu_meshes: GpuResourceManager,
-    pub gpu_skinning_pass: Option<GpuSkinningPass>,
-    pub skinned_mesh_resources: std::collections::HashMap<crate::gpu_resource::MeshId, GpuSkinningResources>,
-    pub animation_time_sec: f32,
-    pub depth_texture: Option<(wgpu::Texture, wgpu::TextureView, wgpu::TextureView)>,
-    pub global_display_mode: DisplayMode,
-    pub clip_planes: Vec<[f32; 4]>,
-    pub wireframe_supported: bool,
-    pub assets: GpuAssetManager,
-    pub materials: MaterialLibrary,
-    pub frame_counter: u64,
-    pub performance_mode_active: bool,
-    pub hud: Option<HudRenderer>,
-    pub hud_enabled: bool,
-    pub(super) adaptive_quality: AdaptiveQuality,
-    adaptive_frame_time_ema_ms: f32,
-    adaptive_switch_cooldown_frames: u8,
-    pub last_hud_update_frame: u64,
-    pub outline_width: f32,
-    pub outline_color: [f32; 4],
-    pub cluster_renderer: Option<ClusterRenderer>,
-    pub hzb: Option<HzbPyramids>,
-    pub hzb_baker: Option<HzbBaker>,
-    pub cluster_pipeline_generation: u32,
-    depth_reversed_z_mismatch_warned: bool,
-    pub texture_cache: TextureCache,
-    pub ibl_diffuse: [f32; 4],
-    pub ibl_specular: [f32; 4],
-    pub ibl_preset: IblPreset,
-    pub shadow_pool: GpuUniformPool,
-    pub shadow_compare_sampler: wgpu::Sampler,
-    pub csm_shadow: Option<CsmShadowResources>,
-    pub hdr_post_processing: bool,
-    pub post_fx_pipelines: PostFxPipelines,
-    pub post_fx: Option<PostFxTextures>,
-    pub ssao_noise_tex: wgpu::Texture,
-    pub ssao_noise_view: wgpu::TextureView,
-    pub instance_buffer: wgpu::Buffer,
-    pub ibl_instance_bind_group: wgpu::BindGroup,
-    pub timing_supported: bool,
-    pub gpu_query_set: Option<wgpu::QuerySet>,
-    pub gpu_query_buffer: Option<wgpu::Buffer>,
-    pub gpu_query_slots: u32,
-    pub gpu_query_period: f32, // timestamp period in ns
-    // ── Phase 2 render features ──
-    pub pipeline_cache: Option<PipelineCacheManager>,
-    pub shader_cache: ShaderVariantCache,
-    pub viewport_layout: ViewportLayout,
-    pub grid_enabled: bool,
-    /// Pre-collected markup line vertices for overlay rendering.
-    pub markup_vertices: Vec<crate::vertex::LineVertex>,
-    pub(crate) scene_vp: Mat4,
-    pub(crate) scene_camera_pos: Vec3,
-    pub shader_reload: ShaderHotReload,
-    pub auto_exposure: AutoExposure,
-    pub taa_pass: Option<TaaPass>,
-    pub taa_jitter: TaaJitter,
-    pub motion_blur: Option<MotionBlurPass>,
-    pub ssr_pass: Option<SsrPass>,
-    pub color_grading: Option<ColorGradingPass>,
-    pub dof_pass: Option<DofPass>,
-    pub volumetric_fog: Option<VolumetricFogPass>,
-    pub cluster_lights: Option<ClusterLightResources>,
-    pub cluster_light_culler: Option<ClusterLightCuller>,
-    pub omni_shadow: Option<OmniShadowRenderer>,
-    // Feature toggles
+    wireframe_supported: bool,
+
+    // ── Settings tier ──
+    pub(crate) settings: RenderSettings,
+
+    // Feature toggles (kept pub for transition)
     pub enable_taa: bool,
     pub enable_motion_blur: bool,
     pub enable_ssr: bool,
@@ -157,16 +95,22 @@ pub struct Renderer {
     pub enable_volumetric_fog: bool,
     pub enable_cluster_lights: bool,
     pub enable_omni_shadows: bool,
-    pub xray_mode: bool,
-    pub last_diagnostics: Option<FrameDiagnostics>,
-    pub selection_outline_pipelines: Option<crate::selection_outline::SelectionOutlinePipelines>,
-    pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
-    /// three.js `OutlinePass`-style screen-space selection outline.
-    pub screen_space_selection_outline: bool,
-    /// When HDR is off, render 3D to `ldr_shade_*` then FXAA into the swapchain (whole-frame AA).
     pub enable_ldr_fxaa: bool,
-    pub(crate) ldr_shade_tex: Option<wgpu::Texture>,
-    pub(crate) ldr_shade_view: Option<wgpu::TextureView>,
+    pub hdr_post_processing: bool,
+    pub global_display_mode: DisplayMode,
+    pub grid_enabled: bool,
+    pub hud_enabled: bool,
+    pub outline_width: f32,
+    pub outline_color: [f32; 4],
+    pub xray_mode: bool,
+    pub screen_space_selection_outline: bool,
+    pub ibl_preset: IblPreset,
+
+    // ── Frame state tier ──
+    pub(crate) frame: FrameState,
+
+    // ── GPU internals tier ──
+    pub(crate) gpu: GpuInternals,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,15 +124,15 @@ impl Renderer {
     fn ensure_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
         let resolution = resolution.max(1);
         let cascade_count = cascade_count.max(1);
-        if let Some(ref csm) = self.csm_shadow {
+        if let Some(ref csm) = self.gpu.csm_shadow {
             if csm.resolution == resolution && csm.cascade_count == cascade_count {
                 return;
             }
         }
-        self.csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
+        self.gpu.csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
             &self.device,
-            &self.pipelines,
-            &self.shadow_compare_sampler,
+            &self.gpu.pipelines,
+            &self.gpu.shadow_compare_sampler,
             resolution,
             cascade_count,
         ));
@@ -197,7 +141,7 @@ impl Renderer {
     pub fn set_hdr_post_processing(&mut self, enabled: bool) {
         self.hdr_post_processing = enabled;
         if !enabled {
-            self.post_fx = None;
+            self.gpu.post_fx = None;
         } else {
             self.ensure_post_fx_targets();
         }
@@ -209,15 +153,15 @@ impl Renderer {
         }
         let w = self.config.width.max(1);
         let h = self.config.height.max(1);
-        if let Some(ref fx) = self.post_fx {
+        if let Some(ref fx) = self.gpu.post_fx {
             if fx.hdr_tex.size().width == w && fx.hdr_tex.size().height == h {
                 return;
             }
         }
         // Create a 1x1 black texture for dummy slots
-        let (black_tex, black_view) = self.texture_cache.black_placeholder(&self.device);
-        self.post_fx = Some(post_processor::ensure_post_fx_textures(
-            &self.device, &self.post_fx_pipelines, w, h, &black_tex, &black_view,
+        let (black_tex, black_view) = self.gpu.texture_cache.black_placeholder(&self.device);
+        self.gpu.post_fx = Some(post_processor::ensure_post_fx_textures(
+            &self.device, &self.gpu.post_fx_pipelines, w, h, &black_tex, &black_view,
         ));
     }
 
@@ -270,11 +214,11 @@ impl Renderer {
     }
 
     pub fn last_diagnostics(&self) -> Option<&FrameDiagnostics> {
-        self.last_diagnostics.as_ref()
+        self.frame.last_diagnostics.as_ref()
     }
 
     pub fn frame_counter(&self) -> u64 {
-        self.frame_counter
+        self.frame.frame_counter
     }
 
     pub async fn new(window: &winit::window::Window) -> Self {
@@ -448,75 +392,9 @@ impl Renderer {
             queue,
             surface,
             config,
-            settings: RenderSettings::default(),
-            pipelines,
-            phong_pool,
-            shadow_pool,
-            flat_pool,
-            outline_pool,
-            gpu_meshes: GpuResourceManager::new(),
-            gpu_skinning_pass: None,
-            skinned_mesh_resources: std::collections::HashMap::new(),
-            animation_time_sec: 0.0,
-            depth_texture: None,
-            global_display_mode: DisplayMode::ShadedWithEdges,
-            clip_planes: Vec::new(),
             wireframe_supported,
-            assets: GpuAssetManager::new(),
-            materials: MaterialLibrary::new(),
-            frame_counter: 0,
-            performance_mode_active: false,
-            hud: None,
-            hud_enabled: true,
-            adaptive_quality: AdaptiveQuality::High,
-            adaptive_frame_time_ema_ms: 16.7,
-            adaptive_switch_cooldown_frames: 0,
-            last_hud_update_frame: 0,
-            outline_width: 0.022,
-            outline_color: [1.0, 0.5, 0.0, 1.0],
-            cluster_renderer: None,
-            hzb: None,
-            hzb_baker: None,
-            cluster_pipeline_generation: 0,
-            depth_reversed_z_mismatch_warned: false,
-            texture_cache,
-            ibl_diffuse,
-            ibl_specular,
-            ibl_preset,
-            shadow_compare_sampler,
-            csm_shadow,
-            hdr_post_processing: false,
-            post_fx_pipelines,
-            post_fx: None,
-            ssao_noise_tex,
-            ssao_noise_view,
-            instance_buffer,
-            ibl_instance_bind_group,
-            timing_supported,
-            gpu_query_set,
-            gpu_query_buffer,
-            gpu_query_slots: 0,
-            gpu_query_period,
-            // Phase 2 features (lazy init below)
-            pipeline_cache: None,
-            shader_cache,
-            viewport_layout: ViewportLayout::new(),
-            grid_enabled: false,
-            markup_vertices: Vec::new(),
-            scene_vp: Mat4::IDENTITY,
-            scene_camera_pos: Vec3::ZERO,
-            shader_reload: ShaderHotReload::new(),
-            auto_exposure,
-            taa_pass: None,
-            taa_jitter: TaaJitter::new(),
-            motion_blur: None,
-            ssr_pass: None,
-            color_grading: None,
-            dof_pass: None,
-            volumetric_fog: None,
-            cluster_lights: None,
-            cluster_light_culler: None,
-            omni_shadow: None,
+            settings: RenderSettings::default(),
+            // Feature toggles
             enable_taa: false,
             enable_motion_blur: false,
             enable_ssr: false,
@@ -525,16 +403,89 @@ impl Renderer {
             enable_volumetric_fog: false,
             enable_cluster_lights: true,
             enable_omni_shadows: true,
-            xray_mode: false,
-            selection_outline_pipelines: Some(selection_outline_pipelines),
-            selection_outline_targets: None,
-            screen_space_selection_outline: true,
             enable_ldr_fxaa: true,
-            ldr_shade_tex: None,
-            ldr_shade_view: None,
-            last_diagnostics: None,
+            hdr_post_processing: false,
+            global_display_mode: DisplayMode::ShadedWithEdges,
+            grid_enabled: false,
+            hud_enabled: true,
+            outline_width: 0.022,
+            outline_color: [1.0, 0.5, 0.0, 1.0],
+            xray_mode: false,
+            screen_space_selection_outline: true,
+            ibl_preset,
+            // Frame state
+            frame: FrameState {
+                markup_vertices: Vec::new(),
+                clip_planes: Vec::new(),
+                scene_vp: Mat4::IDENTITY,
+                scene_camera_pos: Vec3::ZERO,
+                animation_time_sec: 0.0,
+                frame_counter: 0,
+                performance_mode_active: false,
+                last_diagnostics: None,
+                last_hud_update_frame: 0,
+                viewport_layout: ViewportLayout::new(),
+                frame_stats: FrameStats::default(),
+            },
+            // GPU internals
+            gpu: GpuInternals {
+                pipelines,
+                phong_pool,
+                shadow_pool,
+                flat_pool,
+                outline_pool,
+                gpu_meshes: GpuResourceManager::new(),
+                gpu_skinning_pass: None,
+                skinned_mesh_resources: std::collections::HashMap::new(),
+                depth_texture: None,
+                assets: GpuAssetManager::new(),
+                materials: MaterialLibrary::new(),
+                hud: None,
+                adaptive_quality: AdaptiveQuality::High,
+                adaptive_frame_time_ema_ms: 16.7,
+                adaptive_switch_cooldown_frames: 0,
+                cluster_renderer: None,
+                hzb: None,
+                hzb_baker: None,
+                cluster_pipeline_generation: 0,
+                depth_reversed_z_mismatch_warned: false,
+                texture_cache,
+                ibl_diffuse,
+                ibl_specular,
+                shadow_compare_sampler,
+                csm_shadow,
+                post_fx_pipelines,
+                post_fx: None,
+                ssao_noise_tex,
+                ssao_noise_view,
+                instance_buffer,
+                ibl_instance_bind_group,
+                timing_supported,
+                gpu_query_set,
+                gpu_query_buffer,
+                gpu_query_slots: 0,
+                gpu_query_period,
+                pipeline_cache: None,
+                shader_cache,
+                shader_reload: ShaderHotReload::new(),
+                auto_exposure,
+                taa_pass: None,
+                taa_jitter: TaaJitter::new(),
+                motion_blur: None,
+                ssr_pass: None,
+                color_grading: None,
+                dof_pass: None,
+                volumetric_fog: None,
+                cluster_lights: None,
+                cluster_light_culler: None,
+                omni_shadow: None,
+                selection_outline_pipelines: Some(selection_outline_pipelines),
+                selection_outline_targets: None,
+                ldr_shade_tex: None,
+                ldr_shade_view: None,
+            },
         };
-        renderer.hud = Some(HudRenderer::new(
+        renderer.gpu.hud = Some(HudRenderer::new(
             &renderer.device,
             &renderer.queue,
             renderer.config.format,
@@ -542,9 +493,9 @@ impl Renderer {
             renderer.config.height,
         ));
         renderer.create_depth_texture();
-        renderer.hzb_baker = Some(HzbBaker::new(&renderer.device));
-        let ds_bgl = &renderer.hzb_baker.as_ref().unwrap().downsample_bgl;
-        renderer.hzb = Some(HzbPyramids::new(
+        renderer.gpu.hzb_baker = Some(HzbBaker::new(&renderer.device));
+        let ds_bgl = &renderer.gpu.hzb_baker.as_ref().unwrap().downsample_bgl;
+        renderer.gpu.hzb = Some(HzbPyramids::new(
             &renderer.device,
             ds_bgl,
             renderer.config.width,
@@ -552,31 +503,31 @@ impl Renderer {
         ));
 
         // ── Phase 2: post-processing passes ──
-        renderer.taa_pass = Some(TaaPass::new(&renderer.device));
-        renderer.motion_blur = Some(MotionBlurPass::new(&renderer.device));
-        renderer.ssr_pass = Some(SsrPass::new(&renderer.device));
-        renderer.color_grading = Some(ColorGradingPass::new(&renderer.device, &renderer.queue));
-        renderer.dof_pass = Some(DofPass::new(&renderer.device));
-        renderer.volumetric_fog = Some(VolumetricFogPass::new(&renderer.device));
+        renderer.gpu.taa_pass = Some(TaaPass::new(&renderer.device));
+        renderer.gpu.motion_blur = Some(MotionBlurPass::new(&renderer.device));
+        renderer.gpu.ssr_pass = Some(SsrPass::new(&renderer.device));
+        renderer.gpu.color_grading = Some(ColorGradingPass::new(&renderer.device, &renderer.queue));
+        renderer.gpu.dof_pass = Some(DofPass::new(&renderer.device));
+        renderer.gpu.volumetric_fog = Some(VolumetricFogPass::new(&renderer.device));
 
         // ── Phase 2: lighting ──
-        renderer.cluster_light_culler = Some(ClusterLightCuller::new(&renderer.device));
-        renderer.cluster_lights = Some(ClusterLightResources::new(&renderer.device));
-        renderer.omni_shadow = Some(OmniShadowRenderer::new(&renderer.device));
+        renderer.gpu.cluster_light_culler = Some(ClusterLightCuller::new(&renderer.device));
+        renderer.gpu.cluster_lights = Some(ClusterLightResources::new(&renderer.device));
+        renderer.gpu.omni_shadow = Some(OmniShadowRenderer::new(&renderer.device));
 
         // ── Pipeline cache ──
         let cache_dir = std::path::Path::new("cache");
-        renderer.pipeline_cache = Some(PipelineCacheManager::new(&renderer.device, cache_dir));
+        renderer.gpu.pipeline_cache = Some(PipelineCacheManager::new(&renderer.device, cache_dir));
 
         // ── Shader hot-reload: watch shaders directory ──
         let shaders_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
-        renderer.shader_reload.watch_directory(&shaders_dir);
+        renderer.gpu.shader_reload.watch_directory(&shaders_dir);
 
         // ── Material library: set BGL for bind group building ──
-        renderer.materials.set_bind_group_layout(&renderer.pipelines.pbr_material_bgl);
+        renderer.gpu.materials.set_bind_group_layout(&renderer.gpu.pipelines.pbr_material_bgl);
 
         // ── Multi-viewport layout ──
-        renderer.viewport_layout.rebuild(renderer.config.width, renderer.config.height);
+        renderer.frame.viewport_layout.rebuild(renderer.config.width, renderer.config.height);
 
         renderer
     }
@@ -612,7 +563,7 @@ impl Renderer {
             array_layer_count: Some(1),
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
         });
-        self.depth_texture = Some((texture, view, depth_only));
+        self.gpu.depth_texture = Some((texture, view, depth_only));
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -620,15 +571,15 @@ impl Renderer {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
-            self.viewport_layout.rebuild(width, height);
+            self.frame.viewport_layout.rebuild(width, height);
             self.create_depth_texture();
-            self.selection_outline_targets = None;
-            self.ldr_shade_tex = None;
-            self.ldr_shade_view = None;
-            self.hzb_baker = Some(HzbBaker::new(&self.device));
-            let ds_bgl = &self.hzb_baker.as_ref().unwrap().downsample_bgl;
-            self.hzb = Some(HzbPyramids::new(&self.device, ds_bgl, width, height));
-            if let Some(hud) = &mut self.hud {
+            self.gpu.selection_outline_targets = None;
+            self.gpu.ldr_shade_tex = None;
+            self.gpu.ldr_shade_view = None;
+            self.gpu.hzb_baker = Some(HzbBaker::new(&self.device));
+            let ds_bgl = &self.gpu.hzb_baker.as_ref().unwrap().downsample_bgl;
+            self.gpu.hzb = Some(HzbPyramids::new(&self.device, ds_bgl, width, height));
+            if let Some(hud) = &mut self.gpu.hud {
                 hud.resize(&self.queue, width, height);
             }
             if self.hdr_post_processing {
@@ -643,8 +594,8 @@ impl Renderer {
 
     pub fn set_ldr_fxaa(&mut self, enabled: bool) {
         self.enable_ldr_fxaa = enabled;
-        self.ldr_shade_tex = None;
-        self.ldr_shade_view = None;
+        self.gpu.ldr_shade_tex = None;
+        self.gpu.ldr_shade_view = None;
     }
 
     /// Batch-apply render settings (HOOPS HPS::RenderingMode style).
@@ -671,13 +622,13 @@ impl Renderer {
             self.set_vsync(settings.display.vsync_enabled);
         }
         if !self.hdr_post_processing {
-            self.post_fx = None;
+            self.gpu.post_fx = None;
         } else {
             self.ensure_post_fx_targets();
         }
         if !self.enable_ldr_fxaa {
-            self.ldr_shade_tex = None;
-            self.ldr_shade_view = None;
+            self.gpu.ldr_shade_tex = None;
+            self.gpu.ldr_shade_view = None;
         }
         self.settings = settings;
     }
@@ -740,12 +691,31 @@ impl Renderer {
         self.hud_enabled = enabled;
     }
 
+    pub fn set_materials(&mut self, materials: MaterialLibrary) {
+        self.gpu.materials = materials;
+    }
+
     pub fn set_xray_mode(&mut self, enabled: bool) {
         self.xray_mode = enabled;
     }
 
     pub fn set_outline_width(&mut self, width: f32) {
         self.outline_width = width;
+    }
+
+    // ── Internal accessors for render_passes (pub(crate)) ──
+    pub(crate) fn dev(&self) -> &wgpu::Device { &self.device }
+    pub(crate) fn que(&self) -> &wgpu::Queue { &self.queue }
+    pub(crate) fn surf(&self) -> &wgpu::Surface<'static> { &self.surface }
+    pub(crate) fn surface_config_ref(&self) -> &wgpu::SurfaceConfiguration { &self.config }
+    pub(crate) fn surface_config_mut(&mut self) -> &mut wgpu::SurfaceConfiguration { &mut self.config }
+
+    // ── Public accessors for viewport_layout ──
+    pub fn viewport_layout(&self) -> &ViewportLayout {
+        &self.frame.viewport_layout
+    }
+    pub fn viewport_layout_mut(&mut self) -> &mut ViewportLayout {
+        &mut self.frame.viewport_layout
     }
 
     pub fn ibl_preset_name(&self) -> &'static str {
@@ -777,8 +747,8 @@ impl Renderer {
             ibl_path.as_path(),
             preset,
         );
-        self.ibl_diffuse = ibl_res.ibl_diffuse;
-        self.ibl_specular = ibl_res.ibl_specular;
+        self.gpu.ibl_diffuse = ibl_res.ibl_diffuse;
+        self.gpu.ibl_specular = ibl_res.ibl_specular;
         let morph_dummy = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Morph dummy buffer"),
             size: 16,
@@ -792,14 +762,14 @@ impl Renderer {
             mapped_at_creation: false,
         });
         self.queue.write_buffer(&morph_params_dummy, 0, &[0u8; 16]);
-        self.ibl_instance_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.gpu.ibl_instance_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("IBL + Instance BG"),
-            layout: &self.pipelines.ibl_instance_bgl,
+            layout: &self.gpu.pipelines.ibl_instance_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&ibl_res.env_map_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
-                wgpu::BindGroupEntry { binding: 3, resource: self.instance_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.gpu.instance_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: morph_dummy.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: morph_dummy.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: morph_params_dummy.as_entire_binding() },
@@ -813,22 +783,22 @@ impl Renderer {
     }
 
     pub fn performance_mode_active(&self) -> bool {
-        self.performance_mode_active
+        self.frame.performance_mode_active
     }
 
     pub fn adaptive_quality_name(&self) -> &'static str {
-        self.adaptive_quality.name()
+        self.gpu.adaptive_quality.name()
     }
 
     pub fn adaptive_is_low(&self) -> bool {
-        self.adaptive_quality.is_low()
+        self.gpu.adaptive_quality.is_low()
     }
 
     pub fn report_frame_time_ms(&mut self, frame_time_ms: f32, control: AdaptiveControl) {
         if matches!(control, AdaptiveControl::Disabled) {
-            self.adaptive_quality = AdaptiveQuality::High;
-            self.adaptive_switch_cooldown_frames = 0;
-            self.adaptive_frame_time_ema_ms = frame_time_ms.max(0.0);
+            self.gpu.adaptive_quality = AdaptiveQuality::High;
+            self.gpu.adaptive_switch_cooldown_frames = 0;
+            self.gpu.adaptive_frame_time_ema_ms = frame_time_ms.max(0.0);
             return;
         }
         if matches!(control, AdaptiveControl::Locked) {
@@ -837,37 +807,37 @@ impl Renderer {
         // Smooth short spikes and enforce a brief cooldown after each switch
         // to prevent quality oscillation on borderline frame times.
         let alpha = 0.12_f32;
-        self.adaptive_frame_time_ema_ms =
-            self.adaptive_frame_time_ema_ms + (frame_time_ms - self.adaptive_frame_time_ema_ms) * alpha;
+        self.gpu.adaptive_frame_time_ema_ms =
+            self.gpu.adaptive_frame_time_ema_ms + (frame_time_ms - self.gpu.adaptive_frame_time_ema_ms) * alpha;
 
-        if self.adaptive_switch_cooldown_frames > 0 {
-            self.adaptive_switch_cooldown_frames -= 1;
+        if self.gpu.adaptive_switch_cooldown_frames > 0 {
+            self.gpu.adaptive_switch_cooldown_frames -= 1;
             return;
         }
 
-        let previous = self.adaptive_quality;
-        let mut next = self.adaptive_quality.update(self.adaptive_frame_time_ema_ms);
+        let previous = self.gpu.adaptive_quality;
+        let mut next = self.gpu.adaptive_quality.update(self.gpu.adaptive_frame_time_ema_ms);
         if let AdaptiveControl::Dynamic { allow_downgrade: false } = control {
             if next as u8 > previous as u8 {
                 next = previous;
             }
         }
-        self.adaptive_quality = next;
-        if previous != self.adaptive_quality {
-            self.adaptive_switch_cooldown_frames = 30;
+        self.gpu.adaptive_quality = next;
+        if previous != self.gpu.adaptive_quality {
+            self.gpu.adaptive_switch_cooldown_frames = 30;
             log::warn!(
                 "Adaptive quality changed: {:?} -> {:?} (frame_ms={:.2}, ema_ms={:.2})",
-                previous, self.adaptive_quality, frame_time_ms, self.adaptive_frame_time_ema_ms
+                previous, self.gpu.adaptive_quality, frame_time_ms, self.gpu.adaptive_frame_time_ema_ms
             );
         }
     }
 
     pub fn set_clip_planes(&mut self, planes: Vec<[f32; 4]>) {
-        self.clip_planes = planes;
+        self.frame.clip_planes = planes;
     }
 
     pub fn collect_markup_vertices(&mut self, graph: &rc3d_scene::SceneGraph, root: rc3d_core::NodeId) {
-        self.markup_vertices = crate::render_passes::pass_markup::collect_markup_lines(
+        self.frame.markup_vertices = crate::render_passes::pass_markup::collect_markup_lines(
             graph,
             root,
             self.config.width,
@@ -885,7 +855,7 @@ impl Renderer {
     }
 
     pub fn clip_planes(&self) -> &[[f32; 4]] {
-        &self.clip_planes
+        &self.frame.clip_planes
     }
 
     /// Shared-device RGBA8 offscreen target for screenshots or readback (same `Device` / `Queue` as the main surface).
@@ -900,15 +870,15 @@ impl Renderer {
             2 => [0.0, 0.0, 1.0, 0.0],
             _ => return,
         };
-        if let Some(pos) = self.clip_planes.iter().position(|p| p[0] == normal[0] && p[1] == normal[1] && p[2] == normal[2]) {
-            self.clip_planes.remove(pos);
+        if let Some(pos) = self.frame.clip_planes.iter().position(|p| p[0] == normal[0] && p[1] == normal[1] && p[2] == normal[2]) {
+            self.frame.clip_planes.remove(pos);
         } else {
-            self.clip_planes.push(normal);
+            self.frame.clip_planes.push(normal);
         }
     }
 
     pub fn invalidate_mesh_cache(&mut self) {
-        self.assets.invalidate_all();
+        self.gpu.assets.invalidate_all();
     }
 }
 

@@ -6,7 +6,7 @@ pub(super) fn pass_shadow_depth(
     encoder: &mut wgpu::CommandEncoder,
     ctx: &PassContext<'_>,
 ) {
-    let Some(ref csm) = renderer.csm_shadow else {
+    let Some(ref csm) = renderer.gpu.csm_shadow else {
         return;
     };
 
@@ -30,7 +30,7 @@ pub(super) fn pass_shadow_depth(
             occlusion_query_set: None,
         });
 
-        pass.set_pipeline(&renderer.pipelines.shadow_depth);
+        pass.set_pipeline(&renderer.gpu.pipelines.shadow_depth);
         let mut last_bound_mesh = None;
         for &i in ctx.solid_order {
             let dc = ctx.visible[i];
@@ -38,9 +38,9 @@ pub(super) fn pass_shadow_depth(
             let uniforms = ShadowDrawUniforms {
                 shadow_mvp: shadow_mvp.to_cols_array_2d(),
             };
-            if let Some(offset) = renderer.shadow_pool.push_shadow(&uniforms) {
+            if let Some(offset) = renderer.gpu.shadow_pool.push_shadow(&uniforms) {
                 if let Some(mesh_id) = ctx.mesh_handles[i] {
-                    pass.set_bind_group(0, renderer.shadow_pool.bind_group(), &[offset]);
+                    pass.set_bind_group(0, renderer.gpu.shadow_pool.bind_group(), &[offset]);
                     renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
                 }
             }

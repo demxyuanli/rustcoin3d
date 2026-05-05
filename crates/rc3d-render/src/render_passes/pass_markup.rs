@@ -118,7 +118,7 @@ pub fn pass_markup(
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
 ) {
-    if renderer.markup_vertices.is_empty() {
+    if renderer.frame.markup_vertices.is_empty() {
         return;
     }
 
@@ -137,7 +137,7 @@ pub fn pass_markup(
         occlusion_query_set: None,
     });
 
-    pass.set_pipeline(&renderer.pipelines.markup_lines);
+    pass.set_pipeline(&renderer.gpu.pipelines.markup_lines);
 
     let ident = glam::Mat4::IDENTITY.to_cols_array_2d();
     let uniforms = crate::vertex::FlatUniforms {
@@ -145,15 +145,15 @@ pub fn pass_markup(
         color: [1.0, 0.0, 0.0, 0.8],
     };
 
-    if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
+    if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
         let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("markup vb"),
-            contents: bytemuck::cast_slice(&renderer.markup_vertices),
+            contents: bytemuck::cast_slice(&renderer.frame.markup_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
         pass.set_vertex_buffer(0, vb.slice(..));
-        pass.draw(0..renderer.markup_vertices.len() as u32, 0..1);
+        pass.draw(0..renderer.frame.markup_vertices.len() as u32, 0..1);
     }
 }
 

@@ -1,6 +1,7 @@
 use glam::Vec3;
 
 use super::PassContext;
+use crate::gpu_resource::EdgeLineKind;
 use crate::vertex::{FlatUniforms, LineVertex};
 
 pub(super) fn pass_selection_fill(
@@ -46,8 +47,8 @@ pub(super) fn pass_selection_fill(
             mvp: dc.mvp.to_cols_array_2d(),
             color: [1.0, 0.6, 0.0, 0.35],
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             if let Some(mesh_id) = ctx.mesh_handles[i] {
                 renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
             }
@@ -98,15 +99,25 @@ pub(super) fn pass_selection_edge(
             mvp: dc.mvp.to_cols_array_2d(),
             color: ctx.outline_color,
         };
-        if let Some(offset) = renderer.flat_pool.push_flat(&uniforms) {
-            pass.set_bind_group(0, renderer.flat_pool.bind_group(), &[offset]);
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             let drawn = if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_edges_batched(&mut pass, mesh_id, &mut last_bound_edge_mesh)
+                renderer.draw_edges_batched(
+                    &mut pass,
+                    mesh_id,
+                    &mut last_bound_edge_mesh,
+                    EdgeLineKind::Feature,
+                )
             } else {
                 false
             };
             if !drawn {
-                renderer.bind_and_draw_edges(&mut pass, dc, ctx.mesh_handles[i]);
+                renderer.bind_and_draw_edges(
+                    &mut pass,
+                    dc,
+                    ctx.mesh_handles[i],
+                    EdgeLineKind::Feature,
+                );
             }
         }
     }
