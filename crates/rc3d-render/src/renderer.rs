@@ -1,18 +1,24 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use slotmap::Key;
-use wgpu::util::DeviceExt;
+#[path = "renderer_types.rs"]
+mod renderer_types;
+#[path = "renderer_helpers.rs"]
+mod renderer_helpers;
+#[path = "renderer_render.rs"]
+mod renderer_render;
+#[path = "renderer_skinning.rs"]
+mod renderer_skinning;
+
+pub use renderer_types::*;
 
 use crate::adaptive_quality::AdaptiveQuality;
-use crate::asset_manager::{GpuAssetManager, MESH_CACHE_MAX};
+use crate::asset_manager::GpuAssetManager;
 use crate::auto_exposure::AutoExposure;
-use crate::cluster::{ClusterRenderer, ClusterSet};
+use crate::cluster::ClusterRenderer;
 use crate::cluster_lighting::{ClusterLightCuller, ClusterLightResources};
 use crate::color_grading::ColorGradingPass;
 use crate::dof_pass::DofPass;
-use crate::frustum::Frustum;
-use crate::gpu_resource::{GpuMesh, GpuResourceManager, GpuUniformPool};
+use crate::gpu_resource::{GpuResourceManager, GpuUniformPool};
 use crate::hud::HudRenderer;
 use crate::material_library::MaterialLibrary;
 use crate::hzb::{HzbBaker, HzbPyramids};
@@ -20,24 +26,20 @@ use crate::motion_blur::MotionBlurPass;
 use crate::pipeline_cache::PipelineCacheManager;
 use crate::pipelines::PipelineSet;
 use crate::post_processor::{self, PostFxPipelines, PostFxTextures};
-use crate::render_action::DrawCall;
-use crate::render_passes::{self, PassContext};
-use crate::shadow_map::{aabb_from_scene, csm_light_view_projs, compute_csm_splits, primary_directional_light_dir, union_draw_call_aabbs};
 use crate::shadow_omni::OmniShadowRenderer;
 use crate::shadow_pass::{self, CsmShadowResources};
 use crate::shader_permutation::ShaderVariantCache;
 use crate::shader_reload::ShaderHotReload;
+use crate::vertex::{InstanceData, MAX_INSTANCES};
 use crate::viewport::ViewportLayout;
-use crate::sort_keys;
 use crate::ssr_pass::SsrPass;
 use crate::taa::{TaaJitter, TaaPass};
 use crate::texture_cache::TextureCache;
-use crate::vertex::{InstanceData, LineVertex, CSM_CASCADE_COUNT, MAX_INSTANCES};
 use crate::volumetric_fog::VolumetricFogPass;
+use crate::gpu_skinning::{GpuSkinningPass, GpuSkinningResources};
 use crate::ibl::IblPreset;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
-use rc3d_scene::SceneGraph;
 
 const PERFORMANCE_MODE_TRIANGLE_THRESHOLD: u64 = 2_000_000;
 const CLUSTER_PIPELINE_GENERATION: u32 = 5;
@@ -67,15 +69,6 @@ fn resolve_studio_hdr_path() -> PathBuf {
     PathBuf::new()
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FrameStats {
-    pub visible_triangles: u64,
-    pub visible_draw_calls: usize,
-    pub culled_draw_calls: usize,
-    /// Approximate GPU time per pass in microseconds: [shadow, solid, post, total]
-    pub gpu_pass_times_us: Option<[f64; 4]>,
-}
-
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -86,6 +79,9 @@ pub struct Renderer {
     pub flat_pool: GpuUniformPool,
     pub outline_pool: GpuUniformPool,
     pub gpu_meshes: GpuResourceManager,
+    pub gpu_skinning_pass: Option<GpuSkinningPass>,
+    pub skinned_mesh_resources: std::collections::HashMap<crate::gpu_resource::MeshId, GpuSkinningResources>,
+    pub animation_time_sec: f32,
     pub depth_texture: Option<(wgpu::Texture, wgpu::TextureView, wgpu::TextureView)>,
     pub global_display_mode: DisplayMode,
     pub clip_planes: Vec<[f32; 4]>,
@@ -97,6 +93,8 @@ pub struct Renderer {
     pub hud: Option<HudRenderer>,
     pub hud_enabled: bool,
     pub(super) adaptive_quality: AdaptiveQuality,
+    adaptive_frame_time_ema_ms: f32,
+    adaptive_switch_cooldown_frames: u8,
     pub last_hud_update_frame: u64,
     pub outline_width: f32,
     pub outline_color: [f32; 4],
@@ -128,6 +126,11 @@ pub struct Renderer {
     pub pipeline_cache: Option<PipelineCacheManager>,
     pub shader_cache: ShaderVariantCache,
     pub viewport_layout: ViewportLayout,
+    pub grid_enabled: bool,
+    /// Pre-collected markup line vertices for overlay rendering.
+    pub markup_vertices: Vec<crate::vertex::LineVertex>,
+    pub(crate) scene_vp: Mat4,
+    pub(crate) scene_camera_pos: Vec3,
     pub shader_reload: ShaderHotReload,
     pub auto_exposure: AutoExposure,
     pub taa_pass: Option<TaaPass>,
@@ -150,6 +153,14 @@ pub struct Renderer {
     pub enable_cluster_lights: bool,
     pub enable_omni_shadows: bool,
     pub xray_mode: bool,
+    pub last_diagnostics: Option<FrameDiagnostics>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveControl {
+    Disabled,
+    Locked,
+    Dynamic { allow_downgrade: bool },
 }
 
 impl Renderer {
@@ -346,7 +357,21 @@ impl Renderer {
         let ibl_diffuse = ibl_res.ibl_diffuse;
         let ibl_specular = ibl_res.ibl_specular;
 
-        // Combined IBL + instance bind group (group 3, 4 bindings)
+        // Combined IBL + instance bind group (group 3, 7 bindings)
+        let morph_dummy = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Morph dummy buffer"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let morph_params_dummy = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Morph params dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&morph_params_dummy, 0, &[0u8; 16]);
+
         let ibl_instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("IBL + Instance BG"),
             layout: &pipelines.ibl_instance_bgl,
@@ -355,6 +380,9 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: instance_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: morph_params_dummy.as_entire_binding() },
             ],
         });
 
@@ -371,6 +399,9 @@ impl Renderer {
             flat_pool,
             outline_pool,
             gpu_meshes: GpuResourceManager::new(),
+            gpu_skinning_pass: None,
+            skinned_mesh_resources: std::collections::HashMap::new(),
+            animation_time_sec: 0.0,
             depth_texture: None,
             global_display_mode: DisplayMode::ShadedWithEdges,
             clip_planes: Vec::new(),
@@ -382,6 +413,8 @@ impl Renderer {
             hud: None,
             hud_enabled: true,
             adaptive_quality: AdaptiveQuality::High,
+            adaptive_frame_time_ema_ms: 16.7,
+            adaptive_switch_cooldown_frames: 0,
             last_hud_update_frame: 0,
             outline_width: 0.022,
             outline_color: [0.0, 0.0, 0.0, 1.0],
@@ -412,6 +445,10 @@ impl Renderer {
             pipeline_cache: None,
             shader_cache,
             viewport_layout: ViewportLayout::new(),
+            grid_enabled: false,
+            markup_vertices: Vec::new(),
+            scene_vp: Mat4::IDENTITY,
+            scene_camera_pos: Vec3::ZERO,
             shader_reload: ShaderHotReload::new(),
             auto_exposure,
             taa_pass: None,
@@ -430,9 +467,10 @@ impl Renderer {
             enable_color_grading: false,
             enable_dof: false,
             enable_volumetric_fog: false,
-            enable_cluster_lights: false,
-            enable_omni_shadows: false,
+            enable_cluster_lights: true,
+            enable_omni_shadows: true,
             xray_mode: false,
+            last_diagnostics: None,
         };
         renderer.hud = Some(HudRenderer::new(
             &renderer.device,
@@ -569,6 +607,19 @@ impl Renderer {
         );
         self.ibl_diffuse = ibl_res.ibl_diffuse;
         self.ibl_specular = ibl_res.ibl_specular;
+        let morph_dummy = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Morph dummy buffer"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let morph_params_dummy = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Morph params dummy"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&morph_params_dummy, 0, &[0u8; 16]);
         self.ibl_instance_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("IBL + Instance BG"),
             layout: &self.pipelines.ibl_instance_bgl,
@@ -577,6 +628,9 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: self.instance_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: morph_params_dummy.as_entire_binding() },
             ],
         });
         log::info!("IBL preset switched to {}", preset.name());
@@ -598,13 +652,40 @@ impl Renderer {
         self.adaptive_quality.is_low()
     }
 
-    pub fn report_frame_time_ms(&mut self, frame_time_ms: f32) {
+    pub fn report_frame_time_ms(&mut self, frame_time_ms: f32, control: AdaptiveControl) {
+        if matches!(control, AdaptiveControl::Disabled) {
+            self.adaptive_quality = AdaptiveQuality::High;
+            self.adaptive_switch_cooldown_frames = 0;
+            self.adaptive_frame_time_ema_ms = frame_time_ms.max(0.0);
+            return;
+        }
+        if matches!(control, AdaptiveControl::Locked) {
+            return;
+        }
+        // Smooth short spikes and enforce a brief cooldown after each switch
+        // to prevent quality oscillation on borderline frame times.
+        let alpha = 0.12_f32;
+        self.adaptive_frame_time_ema_ms =
+            self.adaptive_frame_time_ema_ms + (frame_time_ms - self.adaptive_frame_time_ema_ms) * alpha;
+
+        if self.adaptive_switch_cooldown_frames > 0 {
+            self.adaptive_switch_cooldown_frames -= 1;
+            return;
+        }
+
         let previous = self.adaptive_quality;
-        self.adaptive_quality = self.adaptive_quality.update(frame_time_ms);
+        let mut next = self.adaptive_quality.update(self.adaptive_frame_time_ema_ms);
+        if let AdaptiveControl::Dynamic { allow_downgrade: false } = control {
+            if next as u8 > previous as u8 {
+                next = previous;
+            }
+        }
+        self.adaptive_quality = next;
         if previous != self.adaptive_quality {
+            self.adaptive_switch_cooldown_frames = 30;
             log::warn!(
-                "Adaptive quality changed: {:?} -> {:?} (frame_ms={:.2})",
-                previous, self.adaptive_quality, frame_time_ms
+                "Adaptive quality changed: {:?} -> {:?} (frame_ms={:.2}, ema_ms={:.2})",
+                previous, self.adaptive_quality, frame_time_ms, self.adaptive_frame_time_ema_ms
             );
         }
     }
@@ -626,6 +707,11 @@ impl Renderer {
         &self.clip_planes
     }
 
+    /// Shared-device RGBA8 offscreen target for screenshots or readback (same `Device` / `Queue` as the main surface).
+    pub fn offscreen_target_rgba8(&self, width: u32, height: u32) -> crate::offscreen::OffscreenTarget {
+        crate::offscreen::OffscreenTarget::new_with_device(&self.device, &self.queue, width, height)
+    }
+
     pub fn toggle_clip_plane(&mut self, axis: usize) {
         let normal = match axis {
             0 => [1.0, 0.0, 0.0, 0.0],
@@ -643,475 +729,5 @@ impl Renderer {
     pub fn invalidate_mesh_cache(&mut self) {
         self.assets.invalidate_all();
     }
-
-    pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall], scene: &SceneGraph) -> FrameStats {
-        self.frame_counter = self.frame_counter.wrapping_add(1);
-
-        // ── Shader hot-reload: check for changed .wgsl files ──
-        let _changed = self.shader_reload.check_and_reload();
-
-        // ── Pipeline cache: save periodically (every 300 frames ≈ 5s) ──
-        if self.frame_counter % 300 == 0 {
-            if let Some(ref mut pc) = self.pipeline_cache {
-                pc.save_to_disk();
-            }
-        }
-
-        if draw_calls.is_empty() {
-            return FrameStats::default();
-        }
-
-        let first = &draw_calls[0];
-        let vp = first.mvp * first.model_matrix.inverse();
-        let frustum = Frustum::from_view_projection(vp);
-        let visible: Vec<&DrawCall> = draw_calls
-            .iter()
-            .filter(|dc| dc.aabb.as_ref().map_or(true, |aabb| frustum.intersects_aabb(aabb)))
-            .collect();
-
-        if let Some(head) = visible.first() {
-            let dz = head.depth_reversed_z;
-            let inconsistent = visible.iter().any(|dc| dc.depth_reversed_z != dz);
-            if inconsistent {
-                if !self.depth_reversed_z_mismatch_warned {
-                    log::warn!(
-                        "visible draw calls disagree on depth_reversed_z; using first visible ({}) for pipelines and depth clears",
-                        dz
-                    );
-                    self.depth_reversed_z_mismatch_warned = true;
-                }
-            } else {
-                self.depth_reversed_z_mismatch_warned = false;
-            }
-        }
-
-        let total_visible_triangles: u64 = visible
-            .iter()
-            .map(|dc| {
-                if let Some(md) = dc.meshlet_data.as_ref() {
-                    md.total_triangles as u64
-                } else if let Some(indices) = dc.indices.as_ref() {
-                    (indices.len() / 3) as u64
-                } else {
-                    (dc.vertices.len() / 3) as u64
-                }
-            })
-            .sum();
-        let enable_perf_mode = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
-        if enable_perf_mode != self.performance_mode_active {
-            self.performance_mode_active = enable_perf_mode;
-            if enable_perf_mode {
-                log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
-            } else {
-                log::info!("Performance mode disabled");
-            }
-        }
-
-        let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
-        for dc in &visible {
-            let handle = if dc.vertices.is_empty() {
-                if let Some(md) = dc.meshlet_data.as_ref() {
-                    // Fallback-only path: use meshlet-expanded geometry when no standard vertices exist.
-                    let ptr = Arc::as_ptr(md) as u64;
-                    if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&ptr) {
-                        *last_used = self.frame_counter;
-                        Some(*mesh_id)
-                    } else {
-                        if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
-                            self.prune_mesh_cache();
-                        }
-                        let verts: Vec<crate::vertex::Vertex> =
-                            md.vertices
-                                .iter()
-                                .map(|mv| crate::vertex::Vertex {
-                                    position: mv.position,
-                                    normal: mv.normal,
-                                    texcoord: mv.texcoord,
-                                    tangent: mv.tangent,
-                                })
-                                .collect();
-                        let mesh_id = self.gpu_meshes.upload_mesh(
-                            &self.device,
-                            &verts,
-                            Some(&md.indices),
-                            &[],
-                        );
-                        self.assets.mesh_cache.insert(ptr, (mesh_id, self.frame_counter));
-                        Some(mesh_id)
-                    }
-                } else {
-                    None
-                }
-            } else {
-                let hash = dc.mesh_hash.unwrap_or_else(|| {
-                    let ptr_key = (
-                        Arc::as_ptr(&dc.vertices) as u64,
-                        dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
-                    );
-                    let mut h = twox_hash::XxHash64::with_seed(0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.1);
-                    std::hash::Hasher::finish(&h)
-                });
-                if let Some((mesh_id, last_used)) = self.assets.mesh_cache.get_mut(&hash) {
-                    *last_used = self.frame_counter;
-                    Some(*mesh_id)
-                } else {
-                    if self.assets.mesh_cache.len() >= MESH_CACHE_MAX {
-                        self.prune_mesh_cache();
-                    }
-                    let mesh_id = self.gpu_meshes.upload_mesh(
-                        &self.device,
-                        &dc.vertices,
-                        dc.indices.as_ref().map(|a| a.as_slice()),
-                        &dc.edge_positions,
-                    );
-                    self.assets.mesh_cache.insert(hash, (mesh_id, self.frame_counter));
-                    Some(mesh_id)
-                }
-            };
-            mesh_handles.push(handle);
-        }
-
-        let mut solid_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
-            .collect();
-        solid_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::vec4_array_sort_key(dc.light_dirs),
-                sort_keys::vec4_array_sort_key(dc.light_colors),
-                sort_keys::vec4_array_sort_key(dc.light_types),
-                sort_keys::vec4_array_sort_key(dc.light_positions),
-                sort_keys::vec4_array_sort_key(dc.spot_params),
-                dc.light_count,
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                sort_keys::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
-                sort_keys::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
-                sort_keys::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
-                dc.shininess.to_bits(),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
-        });
-        let mut edge_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| !visible[i].edge_positions.is_empty())
-            .collect();
-        edge_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
-        });
-        let mut selected_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
-            .collect();
-        selected_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
-        });
-
-    let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-    let mut transparent_order: Vec<usize> = (0..visible.len())
-        .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
-        .collect();
-
-    transparent_order.sort_unstable_by(|&a, &b| {
-        let pos_a = visible[a].model_matrix.w_axis.truncate();
-        let pos_b = visible[b].model_matrix.w_axis.truncate();
-        let da = pos_a.distance(camera_pos_vec);
-        let db = pos_b.distance(camera_pos_vec);
-        db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-        // Collect meshlet visible indices and upload ClusterSets
-        let mut meshlet_indices: Vec<usize> = Vec::new();
-        for (i, dc) in visible.iter().enumerate() {
-            if dc.meshlet_data.is_some() {
-                meshlet_indices.push(i);
-            }
-        }
-        if !meshlet_indices.is_empty() {
-            if self.cluster_pipeline_generation != CLUSTER_PIPELINE_GENERATION {
-                self.cluster_renderer = None;
-                self.cluster_pipeline_generation = CLUSTER_PIPELINE_GENERATION;
-            }
-            if self.cluster_renderer.is_none() {
-                self.cluster_renderer = Some(ClusterRenderer::new(&self.device));
-            }
-        }
-
-        // Upload cluster sets after cluster renderer is ready
-        let bgls = self.cluster_renderer.as_ref().map(|cr| cr.bind_group_layouts());
-        for &idx in &meshlet_indices {
-            let dc = visible[idx];
-            let md = dc.meshlet_data.as_ref().unwrap();
-            let ptr = Arc::as_ptr(md) as u64;
-            if !self.assets.cluster_cache.contains_key(&ptr) {
-                if let Some((cs_bgl, cmp_bgl, fin_bgl)) = bgls {
-                    let cs = ClusterSet::from_meshlet_data(
-                        &self.device, md, cs_bgl, cmp_bgl, fin_bgl,
-                    );
-                    self.assets.cluster_cache.insert(ptr, cs);
-                }
-            }
-        }
-
-        self.phong_pool.reset();
-        self.shadow_pool.reset();
-        self.flat_pool.reset();
-        self.outline_pool.reset();
-
-        let base_mode = if self.performance_mode_active {
-            DisplayMode::Shaded
-        } else {
-            self.global_display_mode
-        };
-        let mode = if self.adaptive_quality == AdaptiveQuality::Low && base_mode == DisplayMode::Wireframe {
-            DisplayMode::Shaded
-        } else {
-            base_mode
-        };
-        let run_outline = !self.performance_mode_active
-            && self.adaptive_quality == AdaptiveQuality::High
-            && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
-
-        let solid_wants_shadow = !self.performance_mode_active
-            && matches!(
-                mode,
-                DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
-            );
-
-        let _camera_vp = first.mvp * first.model_matrix.inverse();
-        // Build a default perspective projection for SSAO (fov=60°, aspect from config)
-        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        let near = 0.1f32;
-        let far = 1000.0f32;
-        let fov = 60.0f32.to_radians();
-        let f = 1.0 / (fov / 2.0).tan();
-        let camera_proj = Mat4::from_cols_array_2d(&[
-            [f / aspect, 0.0, 0.0, 0.0],
-            [0.0, f, 0.0, 0.0],
-            [0.0, 0.0, far / (far - near), 1.0],
-            [0.0, 0.0, -near * far / (far - near), 0.0],
-        ]);
-        let camera_inv_proj = camera_proj.inverse();
-
-        let mut csm_view_proj = [Mat4::IDENTITY; CSM_CASCADE_COUNT];
-        let mut csm_split_depths = [0.0f32; CSM_CASCADE_COUNT];
-        let mut shadow_params = [0.0_f32, 0.0004, 0.0, 0.0];
-        let mut run_shadow_pass = false;
-
-        if solid_wants_shadow {
-            if let Some(dir) = primary_directional_light_dir(scene) {
-                let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
-                if let Some(_aabb) = aabb {
-                    let sm_size = match self.adaptive_quality {
-                        AdaptiveQuality::High => 2048,
-                        AdaptiveQuality::Medium => 1024,
-                        AdaptiveQuality::Low => 512,
-                    };
-                    let cascade_count = match self.adaptive_quality {
-                        AdaptiveQuality::High => 4,
-                        AdaptiveQuality::Medium => 3,
-                        AdaptiveQuality::Low => 1,
-                    };
-                    self.ensure_csm_shadow(sm_size, cascade_count);
-
-                    let vp = first.mvp * first.model_matrix.inverse();
-                    let camera_near = 0.1f32;
-                    let camera_far = 1000.0f32;
-                    let splits = compute_csm_splits(camera_near, camera_far, cascade_count, 0.5);
-                    let inv_vp = vp.inverse();
-                    let light_vps = csm_light_view_projs(dir, inv_vp, &splits, 8.0);
-
-                    for (i, lvp) in light_vps.iter().enumerate() {
-                        if i < CSM_CASCADE_COUNT {
-                            csm_view_proj[i] = *lvp;
-                        }
-                    }
-                    // Convert split depths to [0,1] range for shader comparison (view-space depth / far)
-                    let far_range = camera_far - camera_near;
-                    for i in 0..cascade_count as usize {
-                        if i + 1 < splits.len() {
-                            csm_split_depths[i] = (splits[i + 1] - camera_near) / far_range;
-                        }
-                    }
-                    // Fill remaining with far
-                    for i in cascade_count as usize..CSM_CASCADE_COUNT {
-                        csm_split_depths[i] = 1.0;
-                    }
-
-                    let inv = 1.0 / sm_size as f32;
-                    let (bias, pcf) = match self.adaptive_quality {
-                        AdaptiveQuality::High => (0.00015_f32, 2.0_f32),
-                        AdaptiveQuality::Medium => (0.00028, 1.0),
-                        AdaptiveQuality::Low => (0.00045, 0.0),
-                    };
-                    shadow_params = [inv, bias, pcf, 1.0];
-                    run_shadow_pass = true;
-                }
-            }
-        }
-
-        let ctx = PassContext {
-            visible: &visible,
-            solid_order: &solid_order,
-            edge_order: &edge_order,
-            selected_order: &selected_order,
-            transparent_order: &transparent_order,
-            mesh_handles: &mesh_handles,
-            mode,
-            run_outline,
-            // Darker background for stronger silhouette/material contrast in sRGB output.
-            bg_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
-            performance_mode_active: self.performance_mode_active,
-            wireframe_supported: self.wireframe_supported,
-            adaptive_quality: self.adaptive_quality,
-            outline_width: self.outline_width,
-            outline_color: self.outline_color,
-            meshlet_indices: &meshlet_indices,
-            camera_pos: [first.camera_pos.x, first.camera_pos.y, first.camera_pos.z],
-            depth_reversed_z: first.depth_reversed_z,
-            csm_view_proj,
-            csm_split_depths,
-            shadow_params,
-            run_shadow_pass,
-            camera_proj,
-            camera_inv_proj,
-        };
-
-        let mut stats = render_passes::execute_passes(self, &ctx, draw_calls, self.frame_counter);
-        stats.gpu_pass_times_us = self.read_gpu_timestamps();
-        stats
-    }
-
-    pub fn update_hud(&mut self, fps: f32, frame_time_ms: f32, stats: FrameStats, mode_name: &str) {
-        if !self.hud_enabled {
-            return;
-        }
-        let interval = match self.adaptive_quality {
-            AdaptiveQuality::High => 1,
-            AdaptiveQuality::Medium => 2,
-            AdaptiveQuality::Low => 6,
-        };
-        if self.frame_counter.saturating_sub(self.last_hud_update_frame) < interval {
-            return;
-        }
-        self.last_hud_update_frame = self.frame_counter;
-        let quality_name = self.adaptive_quality_name();
-        let hud_mode_name = format!("{mode_name} [{quality_name}]");
-        if let Some(hud) = &mut self.hud {
-            hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
-        }
-    }
-
-    pub(super) fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
-        self.gpu_meshes.get(mesh_id)
-    }
-
-    pub(super) fn draw_mesh_batched(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        mesh_id: crate::gpu_resource::MeshId,
-        last_bound: &mut Option<crate::gpu_resource::MeshId>,
-    ) {
-        let Some(mesh) = self.get_mesh(mesh_id) else { return };
-        if last_bound.map_or(true, |id| id != mesh_id) {
-            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            if let Some(index_buffer) = &mesh.index_buffer {
-                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            }
-            *last_bound = Some(mesh_id);
-        }
-        if mesh.index_buffer.is_some() {
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-        } else {
-            pass.draw(0..mesh.vertex_count, 0..1);
-        }
-    }
-
-    pub(super) fn draw_edges_batched(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        mesh_id: crate::gpu_resource::MeshId,
-        last_bound: &mut Option<crate::gpu_resource::MeshId>,
-    ) -> bool {
-        let Some(mesh) = self.get_mesh(mesh_id) else { return false };
-        let Some(edge_buffer) = &mesh.edge_vertex_buffer else { return false };
-        if last_bound.map_or(true, |id| id != mesh_id) {
-            pass.set_vertex_buffer(0, edge_buffer.slice(..));
-            *last_bound = Some(mesh_id);
-        }
-        pass.draw(0..mesh.edge_vertex_count, 0..1);
-        true
-    }
-
-    pub(super) fn bind_and_draw_edges(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        dc: &DrawCall,
-        handle: Option<crate::gpu_resource::MeshId>,
-    ) {
-        if let Some(mesh_id) = handle {
-            if let Some(mesh) = self.get_mesh(mesh_id) {
-                if let Some(edge_buffer) = &mesh.edge_vertex_buffer {
-                    pass.set_vertex_buffer(0, edge_buffer.slice(..));
-                    pass.draw(0..mesh.edge_vertex_count, 0..1);
-                    return;
-                }
-            }
-        }
-        if !dc.edge_positions.is_empty() {
-            let line_verts: Vec<LineVertex> = dc.edge_positions.iter().map(|&p| LineVertex { position: p }).collect();
-            let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Edge VB"),
-                contents: bytemuck::cast_slice(&line_verts),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            pass.set_vertex_buffer(0, vb.slice(..));
-            pass.draw(0..line_verts.len() as u32, 0..1);
-        }
-    }
-
-    pub(super) fn prune_mesh_cache(&mut self) {
-        self.assets
-            .prune_stale_meshes(self.frame_counter, &mut self.gpu_meshes);
-    }
-
-    pub(super) fn write_gpu_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let Some(ref qs) = self.gpu_query_set {
-            if self.gpu_query_slots < 16 {
-                encoder.write_timestamp(qs, self.gpu_query_slots);
-                self.gpu_query_slots += 1;
-            }
-        }
-    }
-
-    pub(super) fn resolve_gpu_timestamps(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let (Some(ref qs), Some(ref qb)) = (&self.gpu_query_set, &self.gpu_query_buffer) {
-            let written = self.gpu_query_slots.min(16);
-            if written > 0 {
-                encoder.resolve_query_set(qs, 0..written, qb, 0);
-            }
-        }
-    }
-
-    pub(super) fn read_gpu_timestamps(&mut self) -> Option<[f64; 4]> {
-        let qb = self.gpu_query_buffer.as_ref()?;
-        let written = (self.gpu_query_slots.min(16)) as usize;
-        if written < 8 { return None; } // need at least 4 pairs
-
-        // Use a staging buffer for async readback (simplified: try immediate map)
-        // For production, use map_async with a callback. For now, skip readback.
-        let _ = qb;
-        let _ = written;
-        // Reset for next frame
-        self.gpu_query_slots = 0;
-        None // simplified: no readback yet; extend later with staging
-    }
 }
+

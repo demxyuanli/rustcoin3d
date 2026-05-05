@@ -2,7 +2,7 @@ use rc3d_actions::{
     AddChildCommand, RemoveChildCommand, SetFieldCommand,
     SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };
-use rc3d_core::math::{Mat4, Quat, Vec3};
+use rc3d_core::math::{Mat4, Quat, Vec2, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::NodeData;
 use crate::editor_ui::{EditorCommand, EditorDisplayMode, NodeDataType};
@@ -559,6 +559,38 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 app.measurement_mode = is_active;
                 app.measurement_first_point = None;
                 app.measurements.clear();
+            }
+            EditorCommand::SetMarkupTool(tool) => {
+                app.markup_action.set_tool(tool);
+                let root = app.world.graph.roots().first().copied().unwrap_or_default();
+                app.markup_action.ensure_target_node(&mut app.world.graph, root);
+            }
+            EditorCommand::MarkupMouseDown { screen_pos } => {
+                let pos = Vec2::new(screen_pos[0], screen_pos[1]);
+                app.markup_action.on_mouse_down(pos, &mut app.world.graph);
+            }
+            EditorCommand::MarkupMouseMove { screen_pos } => {
+                app.markup_action.on_mouse_move(Vec2::new(screen_pos[0], screen_pos[1]));
+            }
+            EditorCommand::MarkupMouseUp { screen_pos } => {
+                if let Some(element) =
+                    app.markup_action.on_mouse_up(Vec2::new(screen_pos[0], screen_pos[1]))
+                {
+                    if let Some(target) = app.markup_action.target_node {
+                        if let Some(entry) = app.world.graph.get_mut(target) {
+                            if let NodeData::Markup(m) = &mut entry.data {
+                                m.elements.push(element);
+                            }
+                        }
+                    }
+                }
+            }
+            EditorCommand::ClearAllMarkup { node } => {
+                if let Some(entry) = app.world.graph.get_mut(node) {
+                    if let NodeData::Markup(m) = &mut entry.data {
+                        m.elements.clear();
+                    }
+                }
             }
             EditorCommand::SaveBookmark(slot) => {
                 if let Some(ctrl) = app.active_camera_controller_mut() {

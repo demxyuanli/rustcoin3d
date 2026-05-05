@@ -1,7 +1,7 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
-use crate::vertex::{FlatUniforms, InstanceData, SceneUniforms, CSM_CASCADE_COUNT};
+use crate::vertex::{FlatUniforms, CSM_CASCADE_COUNT};
 use crate::FrameStats;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 use wgpu::util::DeviceExt;
 
 mod pass_edge;
+mod pass_grid;
+mod pass_markup;
 mod pass_post;
 mod pass_selection;
 mod pass_shadow;
@@ -17,23 +19,10 @@ mod pass_text;
 mod pass_viewport;
 mod pass_wireframe;
 
-static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
+mod draw_opaque;
+use draw_opaque::draw_opaque_triangle_batches;
 
-fn albedo_material_bind_group<'a>(
-    texture_cache: &'a mut crate::texture_cache::TextureCache,
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    queue: &wgpu::Queue,
-    dc: &DrawCall,
-) -> &'a wgpu::BindGroup {
-    let handle = match &dc.albedo_path {
-        None => texture_cache.white_handle(),
-        Some(p) => texture_cache.load_path(device, queue, p.as_ref()),
-    };
-    // Normal map: use default flat normal if no explicit normal path
-    let normal_handle = texture_cache.default_normal_handle();
-    texture_cache.pbr_material_bind_group(device, layout, handle, normal_handle)
-}
+static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
 
 pub(super) struct PassContext<'a> {
     pub visible: &'a [&'a DrawCall],
@@ -70,6 +59,7 @@ pub(super) fn execute_passes(
     ctx: &PassContext<'_>,
     draw_calls: &[DrawCall],
     _frame_counter: u64,
+    mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
 ) -> FrameStats {
     RC3D_RENDER_GRAPH_OK.get_or_init(|| {
         let g = RenderGraph::rc3d_forward_default();
@@ -128,6 +118,8 @@ pub(super) fn execute_passes(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
+
+    renderer.encode_skinning_compute(&mut encoder, ctx.visible, ctx.mesh_handles);
 
     // GPU timestamp: frame start
     renderer.write_gpu_timestamp(&mut encoder);
@@ -346,6 +338,70 @@ pub(super) fn execute_passes(
         }
     }
 
+    if solid_mode && renderer.enable_cluster_lights {
+        if let (Some(ref culler), Some(ref resources)) =
+            (renderer.cluster_light_culler.as_ref(), renderer.cluster_lights.as_ref())
+        {
+            use crate::cluster_lighting::{GpuPointLight, GpuSpotLight};
+
+            let mut point_lights: Vec<GpuPointLight> = Vec::new();
+            let mut spot_lights: Vec<GpuSpotLight> = Vec::new();
+
+            for dc in ctx.visible.iter() {
+                for i in 0..(dc.light_count as usize).min(crate::vertex::MAX_LIGHTS) {
+                    let lt = dc.light_types[i][0];
+                    let pos = dc.light_positions[i];
+                    let col = dc.light_colors[i];
+                    let intensity = dc.light_colors[i][3];
+
+                    if (lt - 1.0).abs() < 0.5 {
+                        // Point light
+                        if point_lights.len() < 256 {
+                            point_lights.push(GpuPointLight {
+                                position: [pos[0], pos[1], pos[2]],
+                                radius: pos[3].max(1.0),
+                                color: [col[0], col[1], col[2]],
+                                intensity,
+                            });
+                        }
+                    } else if (lt - 3.0).abs() < 0.5 {
+                        // Spot light
+                        let dir = dc.light_dirs[i];
+                        let sp = dc.spot_params[i];
+                        if spot_lights.len() < 256 {
+                            spot_lights.push(GpuSpotLight {
+                                position: [pos[0], pos[1], pos[2]],
+                                direction: [dir[0], dir[1], dir[2]],
+                                radius: pos[3].max(1.0),
+                                cos_inner: sp[0],
+                                cos_outer: sp[1],
+                                color: [col[0], col[1], col[2]],
+                                intensity,
+                                _pad: 0.0,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !point_lights.is_empty() || !spot_lights.is_empty() {
+                let w = renderer.config.width.max(1);
+                let h = renderer.config.height.max(1);
+                culler.cull_lights(
+                    &renderer.device,
+                    &renderer.queue,
+                    &mut encoder,
+                    resources,
+                    ctx.camera_inv_proj,
+                    w, h,
+                    0.1, 1000.0,
+                    &point_lights,
+                    &spot_lights,
+                );
+            }
+        }
+    }
+
     if solid_mode {
         pass_solid::pass_solid_and_outline(
             renderer,
@@ -506,6 +562,19 @@ pub(super) fn execute_passes(
     renderer.shadow_pool.flush(&renderer.queue);
     renderer.flat_pool.flush(&renderer.queue);
 
+    // Ground plane grid overlay
+    if renderer.grid_enabled {
+        pass_grid::pass_grid(
+            renderer,
+            &mut encoder,
+            &view,
+            &depth_view,
+            renderer.scene_vp,
+            renderer.scene_camera_pos,
+            ctx.depth_reversed_z,
+        );
+    }
+
     // Viewport border overlay
     {
         let geom = pass_viewport::ViewportBorderGeometry::build(
@@ -530,7 +599,7 @@ pub(super) fn execute_passes(
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&scene_pl.edge_overlay);
+            pass.set_pipeline(&renderer.pipelines.viewport_border_lines);
             let ident = Mat4::IDENTITY.to_cols_array_2d();
             // Split borders
             if has_splits {
@@ -571,6 +640,9 @@ pub(super) fn execute_passes(
         }
     }
 
+    // Markup overlay
+    pass_markup::pass_markup(renderer, &mut encoder, &view);
+
     if renderer.hud_enabled {
         if let Some(hud) = renderer.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -589,6 +661,9 @@ pub(super) fn execute_passes(
             });
             hud.render(&mut pass);
         }
+    }
+    if let Some(cb) = &mut post_swapchain_overlay {
+        cb(&mut encoder, &view);
     }
 
     renderer.prune_mesh_cache();
@@ -613,184 +688,6 @@ pub(super) fn execute_passes(
         visible_draw_calls: ctx.visible.len(),
         culled_draw_calls: draw_calls.len().saturating_sub(ctx.visible.len()),
         gpu_pass_times_us: None,
+        diagnostics: None,
     }
-}
-
-fn draw_opaque_triangle_batches(
-    renderer: &mut crate::renderer::Renderer,
-    pass: &mut wgpu::RenderPass<'_>,
-    ctx: &PassContext<'_>,
-    solid_pipeline: &wgpu::RenderPipeline,
-    draw_meshlets: bool,
-) {
-    pass.set_pipeline(solid_pipeline);
-    pass.set_stencil_reference(1);
-
-    let mut clip_arr = [[0.0f32; 4]; 6];
-    for (i, cp) in renderer.clip_planes.iter().enumerate() {
-        if i < 6 {
-            clip_arr[i] = *cp;
-        }
-    }
-    let clip_count = [renderer.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
-
-    let meshlet_set: std::collections::HashSet<usize> = ctx.meshlet_indices.iter().copied().collect();
-
-    let mut last_bound_mesh = None;
-    let mut start = 0usize;
-    while start < ctx.solid_order.len() {
-        let head_idx = ctx.solid_order[start];
-        let head_dc = ctx.visible[head_idx];
-        let light_key = crate::sort_keys::light_sort_key(head_dc);
-        let mut end = start + 1;
-        while end < ctx.solid_order.len() {
-            let idx = ctx.solid_order[end];
-            let dc = ctx.visible[idx];
-            if crate::sort_keys::light_sort_key(dc) != light_key {
-                break;
-            }
-            end += 1;
-        }
-
-        // Split into meshlet and standard draws within this light group
-        let mut meshlet_draws: Vec<usize> = Vec::new();
-        let mut standard_draws: Vec<usize> = Vec::new();
-        for &i in &ctx.solid_order[start..end] {
-            if meshlet_set.contains(&i) {
-                if draw_meshlets {
-                    meshlet_draws.push(i);
-                } else {
-                    // Meshlet path disabled: fall back to stable per-object drawing.
-                    standard_draws.push(i);
-                }
-            } else {
-                standard_draws.push(i);
-            }
-        }
-
-        // Meshlet path (unchanged: uses draw_clustered)
-        for &i in &meshlet_draws {
-            if !draw_meshlets { continue; }
-            let dc = ctx.visible[i];
-            let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
-            let ptr = std::sync::Arc::as_ptr(md) as u64;
-            if !(renderer.cluster_renderer.is_some() && renderer.assets.cluster_cache.contains_key(&ptr)) { continue; }
-            let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
-                [0.08, 0.08, 0.08, 1.0]
-            } else {
-                [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
-            };
-            let uniforms = SceneUniforms {
-                mvp: dc.mvp.to_cols_array_2d(),
-                model: dc.model_matrix.to_cols_array_2d(),
-                camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
-                light_types: head_dc.light_types, light_positions: head_dc.light_positions,
-                spot_params: head_dc.spot_params,
-                light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
-                diffuse_color,
-                ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
-                shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                clip_planes: clip_arr, clip_count,
-                pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
-                csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
-                csm_split_depths: ctx.csm_split_depths,
-                shadow_params: ctx.shadow_params,
-            };
-            if let Some(offset) = renderer.phong_pool.push_scene(&uniforms) {
-                let mat_bg = albedo_material_bind_group(
-                    &mut renderer.texture_cache, &renderer.device,
-                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
-                );
-                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
-                pass.set_bind_group(1, mat_bg, &[]);
-                match &renderer.csm_shadow {
-                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
-                    None => log::error!("CSM shadow missing; shadow bind group not set"),
-                }
-                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
-                if let Some(cluster_set) = renderer.assets.cluster_cache.get(&ptr) {
-                    if let Some(cluster_renderer) = renderer.cluster_renderer.as_ref() {
-                        cluster_renderer.draw_clustered(pass, cluster_set);
-                    }
-                }
-            }
-        }
-
-        // Standard mesh path: draw per object to preserve exact transforms.
-        // The previous instanced path can collapse placements when instance payload
-        // and per-draw state drift apart; correctness is prioritized here.
-        if !standard_draws.is_empty() {
-            for &i in &standard_draws {
-                let dc = ctx.visible[i];
-                let diffuse = if ctx.mode == DisplayMode::HiddenLine {
-                    [0.08, 0.08, 0.08, 1.0]
-                } else {
-                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
-                };
-                let uniforms = SceneUniforms {
-                    mvp: dc.mvp.to_cols_array_2d(),
-                    model: dc.model_matrix.to_cols_array_2d(),
-                    camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                    light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
-                    light_types: head_dc.light_types, light_positions: head_dc.light_positions,
-                    spot_params: head_dc.spot_params,
-                    light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
-                    diffuse_color: diffuse,
-                    ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                    specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
-                    shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                    clip_planes: clip_arr, clip_count,
-                    pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                    pbr_metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                    ibl_diffuse: renderer.ibl_diffuse, ibl_specular: renderer.ibl_specular,
-                    csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
-                    csm_split_depths: ctx.csm_split_depths,
-                    shadow_params: ctx.shadow_params,
-                };
-                let Some(offset) = renderer.phong_pool.push_scene(&uniforms) else { continue };
-
-                // Keep storage instance slot 0 in sync for shaders that source per-instance fields.
-                let one = [InstanceData {
-                    model: dc.model_matrix.to_cols_array_2d(),
-                    mvp: dc.mvp.to_cols_array_2d(),
-                    diffuse_color: diffuse,
-                    base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                    metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                }];
-                renderer.queue.write_buffer(&renderer.instance_buffer, 0, bytemuck::cast_slice(&one));
-
-                let mat_bg = albedo_material_bind_group(
-                    &mut renderer.texture_cache, &renderer.device,
-                    &renderer.pipelines.pbr_material_bgl, &renderer.queue, dc,
-                );
-                pass.set_bind_group(0, renderer.phong_pool.bind_group(), &[offset]);
-                pass.set_bind_group(1, mat_bg, &[]);
-                match &renderer.csm_shadow {
-                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
-                    None => log::error!("CSM shadow missing; shadow bind group not set"),
-                }
-                pass.set_bind_group(3, &renderer.ibl_instance_bind_group, &[]);
-
-                if let Some(mesh_id) = ctx.mesh_handles[i] {
-                    renderer.draw_mesh_batched(pass, mesh_id, &mut last_bound_mesh);
-                }
-            }
-        }
-        start = end;
-    }
-}
-
-fn csm_to_uniform(vps: &[Mat4; CSM_CASCADE_COUNT]) -> [[f32; 4]; 16] {
-    let mut arr = [[0.0f32; 4]; 16];
-    for (i, vp) in vps.iter().enumerate() {
-        let cols = vp.to_cols_array_2d();
-        for r in 0..4 {
-            arr[i * 4 + r] = cols[r];
-        }
-    }
-    arr
 }
