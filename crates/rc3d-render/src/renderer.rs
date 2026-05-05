@@ -658,6 +658,54 @@ impl Renderer {
         self.outline_color = rgba;
     }
 
+    pub fn set_taa(&mut self, enabled: bool) {
+        self.enable_taa = enabled;
+    }
+
+    pub fn set_motion_blur(&mut self, enabled: bool) {
+        self.enable_motion_blur = enabled;
+    }
+
+    pub fn set_ssr(&mut self, enabled: bool) {
+        self.enable_ssr = enabled;
+    }
+
+    pub fn set_color_grading(&mut self, enabled: bool) {
+        self.enable_color_grading = enabled;
+    }
+
+    pub fn set_dof(&mut self, enabled: bool) {
+        self.enable_dof = enabled;
+    }
+
+    pub fn set_volumetric_fog(&mut self, enabled: bool) {
+        self.enable_volumetric_fog = enabled;
+    }
+
+    pub fn set_cluster_lights(&mut self, enabled: bool) {
+        self.enable_cluster_lights = enabled;
+    }
+
+    pub fn set_omni_shadows(&mut self, enabled: bool) {
+        self.enable_omni_shadows = enabled;
+    }
+
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.grid_enabled = enabled;
+    }
+
+    pub fn set_hud_enabled(&mut self, enabled: bool) {
+        self.hud_enabled = enabled;
+    }
+
+    pub fn set_xray_mode(&mut self, enabled: bool) {
+        self.xray_mode = enabled;
+    }
+
+    pub fn set_outline_width(&mut self, width: f32) {
+        self.outline_width = width;
+    }
+
     pub fn ibl_preset_name(&self) -> &'static str {
         self.ibl_preset.name()
     }
