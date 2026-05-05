@@ -9,6 +9,7 @@ pub mod intersection_detection;
 pub mod ray_pick;
 pub mod scene_path;
 pub mod section_plane;
+pub mod markup_tool;
 pub mod measurement;
 pub mod state;
 pub mod undo;
@@ -24,6 +25,7 @@ pub use intersection_detection::{IntersectionDetectionAction, IntersectionResult
 pub use ray_pick::{DetailInfo, PickDetail, PickHit, PickMode, Ray, RayPickAction};
 pub use scene_path::{GetMatrixAction, ScenePath, SearchAction};
 pub use section_plane::SectionPlaneAction;
+pub use markup_tool::{MarkupAction, MarkupTool};
 pub use measurement::{MeasurementAction, MeasurementMode};
 pub use state::State;
 pub use undo::{
