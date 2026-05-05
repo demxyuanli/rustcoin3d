@@ -707,6 +707,17 @@ impl Renderer {
         &self.clip_planes
     }
 
+    /// Collect markup line vertices from the scene graph for the next frame's overlay pass.
+    pub fn collect_markup_vertices(
+        &mut self,
+        graph: &rc3d_scene::SceneGraph,
+        root: rc3d_core::NodeId,
+    ) {
+        self.markup_vertices = crate::render_passes::pass_markup::collect_markup_lines(
+            graph, root, self.config.width, self.config.height,
+        );
+    }
+
     /// Shared-device RGBA8 offscreen target for screenshots or readback (same `Device` / `Queue` as the main surface).
     pub fn offscreen_target_rgba8(&self, width: u32, height: u32) -> crate::offscreen::OffscreenTarget {
         crate::offscreen::OffscreenTarget::new_with_device(&self.device, &self.queue, width, height)

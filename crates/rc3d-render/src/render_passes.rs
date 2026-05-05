@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 mod pass_edge;
 mod pass_grid;
-mod pass_markup;
+pub(super) mod pass_markup;
 mod pass_post;
 mod pass_selection;
 mod pass_shadow;
