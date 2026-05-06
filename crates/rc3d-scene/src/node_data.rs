@@ -365,6 +365,50 @@ impl Default for FileNode {
     fn default() -> Self { Self { path: String::new() } }
 }
 
+/// GPU ray tracing render mode (compute-based path tracing, HOOPS Luminate equivalent).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RayTracingNode {
+    pub max_samples: u32,
+    pub max_bounces: u32,
+    pub enabled: bool,
+}
+impl Default for RayTracingNode {
+    fn default() -> Self { Self { max_samples: 64, max_bounces: 4, enabled: false } }
+}
+
+/// Volumetric cellular data rendered via ray-marching (HOOPS Cellular Volumes).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VolumeNode {
+    pub dimensions: [u32; 3],
+    pub texture_path: String,
+    pub density_scale: f32,
+    pub color_map: [[f32; 4]; 4],
+}
+impl Default for VolumeNode {
+    fn default() -> Self {
+        Self {
+            dimensions: [64, 64, 64],
+            texture_path: String::new(),
+            density_scale: 1.0,
+            color_map: [[0.0; 4]; 4],
+        }
+    }
+}
+
+/// Out-of-core point cloud reference (HOOPS OOC PointCloud equivalent).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PointCloudNode {
+    pub file_path: String,
+    pub max_visible_points: u32,
+    pub point_size: f32,
+    pub color: [f32; 4],
+}
+impl Default for PointCloudNode {
+    fn default() -> Self {
+        Self { file_path: String::new(), max_visible_points: 100000, point_size: 1.0, color: [1.0; 4] }
+    }
+}
+
 /// Skeletal skinning data for mesh geometry under the same separator (Coin-style sidecar).
 /// Place before [`Coordinate3`](Coordinate3Node) / [`IndexedFaceSet`](IndexedFaceSetNode) so the
 /// render collector can attach weights to the generated draw call.
@@ -1016,6 +1060,9 @@ pub enum NodeData {
     MaterialBinding(MaterialBindingNode),
     /// Screen-space projected texture overlay.
     ExplodedView(ExplodedViewNode),
+    RayTracing(RayTracingNode),
+    Volume(VolumeNode),
+    PointCloud(PointCloudNode),
     ReflectionPlane(ReflectionPlaneNode),
     Decal(DecalNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
@@ -1068,6 +1115,9 @@ impl Clone for NodeData {
             NodeData::Texture2Transform(v) => NodeData::Texture2Transform(v.clone()),
             NodeData::MaterialBinding(v) => NodeData::MaterialBinding(v.clone()),
             NodeData::ExplodedView(v) => NodeData::ExplodedView(v.clone()),
+            NodeData::RayTracing(v) => NodeData::RayTracing(v.clone()),
+            NodeData::Volume(v) => NodeData::Volume(v.clone()),
+            NodeData::PointCloud(v) => NodeData::PointCloud(v.clone()),
             NodeData::ReflectionPlane(v) => NodeData::ReflectionPlane(v.clone()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
             NodeData::File(v) => NodeData::File(v.clone()),
@@ -1192,6 +1242,9 @@ impl NodeData {
             | NodeData::ResetTransform(_)
             | NodeData::Texture2Transform(_)
             | NodeData::MaterialBinding(_)
+            | NodeData::RayTracing(_)
+            | NodeData::Volume(_)
+            | NodeData::PointCloud(_)
             | NodeData::ExplodedView(_)
             | NodeData::ReflectionPlane(_)
             | NodeData::Cube(_)
@@ -1253,6 +1306,9 @@ impl NodeData {
             NodeData::Texture2Transform(_) => "Texture2Transform",
             NodeData::MaterialBinding(_) => "MaterialBinding",
             NodeData::ExplodedView(_) => "ExplodedView",
+            NodeData::RayTracing(_) => "RayTracing",
+            NodeData::Volume(_) => "Volume",
+            NodeData::PointCloud(_) => "PointCloud",
             NodeData::ReflectionPlane(_) => "ReflectionPlane",
             NodeData::Decal(_) => "Decal",
             NodeData::File(_) => "File",
@@ -1282,6 +1338,9 @@ impl Serialize for NodeData {
             NodeData::SkinnedMesh(v) => s.serialize_newtype_variant("NodeData", 13, "SkinnedMesh", v),
             NodeData::MorphTarget(v) => s.serialize_newtype_variant("NodeData", 14, "MorphTarget", v),
             NodeData::StereoCamera(v) => s.serialize_newtype_variant("NodeData", 44, "StereoCamera", v),
+            NodeData::RayTracing(v) => s.serialize_newtype_variant("NodeData", 45, "RayTracing", v),
+            NodeData::Volume(v) => s.serialize_newtype_variant("NodeData", 46, "Volume", v),
+            NodeData::PointCloud(v) => s.serialize_newtype_variant("NodeData", 47, "PointCloud", v),
             NodeData::PerspectiveCamera(v) => s.serialize_newtype_variant("NodeData", 15, "PerspectiveCamera", v),
             NodeData::OrthographicCamera(v) => s.serialize_newtype_variant("NodeData", 16, "OrthographicCamera", v),
             NodeData::DirectionalLight(v) => s.serialize_newtype_variant("NodeData", 17, "DirectionalLight", v),
@@ -1356,6 +1415,9 @@ impl<'de> Deserialize<'de> for NodeData {
             Texture2Transform(Texture2TransformNode),
             MaterialBinding(MaterialBindingNode),
             ExplodedView(ExplodedViewNode),
+            RayTracing(RayTracingNode),
+            Volume(VolumeNode),
+            PointCloud(PointCloudNode),
             ReflectionPlane(ReflectionPlaneNode),
             Decal(DecalNode),
             File(FileNode),
@@ -1405,6 +1467,9 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Texture2Transform(v) => Ok(NodeData::Texture2Transform(v)),
             NodeDataHelper::MaterialBinding(v) => Ok(NodeData::MaterialBinding(v)),
             NodeDataHelper::ExplodedView(v) => Ok(NodeData::ExplodedView(v)),
+            NodeDataHelper::RayTracing(v) => Ok(NodeData::RayTracing(v)),
+            NodeDataHelper::Volume(v) => Ok(NodeData::Volume(v)),
+            NodeDataHelper::PointCloud(v) => Ok(NodeData::PointCloud(v)),
             NodeDataHelper::ReflectionPlane(v) => Ok(NodeData::ReflectionPlane(v)),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
             NodeDataHelper::File(v) => Ok(NodeData::File(v)),

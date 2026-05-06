@@ -117,6 +117,55 @@ fn count_recursive(
     }
 }
 
+// ── U3D/PRC 3D PDF Export (HOOPS Publish equivalent) ──
+
+/// Export scene as U3D-embedded 3D PDF.
+///
+/// Full U3D embedding requires a native C library (libu3d, Adobe U3D SDK).
+/// This function returns a placeholder PDF that documents the export path.
+///
+/// Integration path for full 3D PDF:
+/// 1. Compile libu3d as a static library
+/// 2. Create Rust FFI bindings via `extern "C"` block
+/// 3. Serialize scene graph triangles to U3D binary format
+/// 4. Embed U3D stream in PDF with 3D annotation
+pub fn export_u3d_pdf(graph: &SceneGraph, title: &str) -> Result<Vec<u8>, String> {
+    let mut doc = PdfDocument::new(title);
+    let content = format!(
+        "3D PDF Export (U3D placeholder)\n\n\
+         Scene: {} nodes, {} roots\n\n\
+         To enable full 3D PDF with U3D/PRC embedding:\n\
+         1. Install libu3d native library\n\
+         2. Build with 'u3d' feature flag\n\
+         3. Use export_u3d_pdf_with_library()",
+        count_total(graph), graph.roots().len()
+    );
+    doc.add_page(&content);
+    Ok(doc.to_bytes())
+}
+
+fn count_total(graph: &SceneGraph) -> u32 {
+    let mut n = 0;
+    let mut counts = std::collections::HashMap::new();
+    count_scene_nodes(graph, &mut n, &mut counts);
+    n
+}
+
+#[cfg(test)]
+mod u3d_tests {
+    use super::*;
+    use rc3d_scene::node_data::CubeNode;
+
+    #[test]
+    fn test_u3d_export_placeholder() {
+        let mut g = SceneGraph::new();
+        g.add_root(rc3d_scene::NodeData::Cube(CubeNode::default()));
+        let bytes = export_u3d_pdf(&g, "3D Test").unwrap();
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        assert!(bytes.len() > 100);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
