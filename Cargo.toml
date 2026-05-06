@@ -12,6 +12,8 @@ members = [
     "crates/rc3d-io",
     "crates/rc3d-app",
     "crates/rc3d-gizmo",
+    "crates/rc3d-script",
+    "crates/rc3d-cli-editor",
 ]
 resolver = "2"
 
@@ -34,9 +36,12 @@ thiserror = "2.0"
 log = "0.4"
 lru = "0.12"
 env_logger = "0.11"
+rayon = "1.10"
+tracy-client = { version = "0.18", default-features = false }
 glyphon = "0.8"
 meshopt = "0.6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
+rhai = { version = "1", features = ["f32_float"] }
 
 # Internal crates
 rc3d-core = { path = "crates/rc3d-core" }
@@ -51,3 +56,4 @@ rc3d-io = { path = "crates/rc3d-io" }
 rc3d-app = { path = "crates/rc3d-app" }
 rc3d-gizmo = { path = "crates/rc3d-gizmo" }
 rc3d-nurbs = { path = "crates/rc3d-nurbs" }
+rc3d-script = { path = "crates/rc3d-script" }
