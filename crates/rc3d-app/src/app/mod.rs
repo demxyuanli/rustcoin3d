@@ -54,7 +54,7 @@ pub struct App {
     pub lod: LODState,
     // Cross-cutting hooks
     pub on_pick: Option<PickCallback>,
-    pub pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
+    pub pending_graph_rx: Option<std::sync::mpsc::Receiver<rc3d_core::EngineResult<SceneGraph>>>,
     pub graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
     pub panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
     pub panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
@@ -151,7 +151,7 @@ impl App {
 
     pub fn set_pending_graph_receiver(
         &mut self,
-        rx: std::sync::mpsc::Receiver<Result<SceneGraph, String>>,
+        rx: std::sync::mpsc::Receiver<rc3d_core::EngineResult<SceneGraph>>,
     ) {
         self.pending_graph_rx = Some(rx);
     }

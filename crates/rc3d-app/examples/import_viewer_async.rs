@@ -33,11 +33,11 @@ fn main() {
         .map(|e| e.eq_ignore_ascii_case("stl"))
         .unwrap_or(false);
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<rc3d_core::EngineResult<SceneGraph>>();
     thread::spawn(move || {
         let r = rc3d_io::import_file(&path_buf)
             .map(|g| ensure_camera_and_light(g, high_contrast))
-            .map_err(|e| e.to_string());
+            .map_err(|e| rc3d_core::EngineError::Parse(e.to_string()));
         let _ = tx.send(r);
     });
 

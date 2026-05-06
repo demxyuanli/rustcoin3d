@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+use rc3d_core::{EngineError, EngineResult};
 use rc3d_scene::SceneGraph;
 
 /// Handle to a potentially not-yet-loaded asset.
@@ -69,7 +70,7 @@ impl<T: Clone> AssetHandle<T> {
 enum LoadResult {
     Scene {
         path: PathBuf,
-        result: Result<SceneGraph, String>,
+        result: EngineResult<SceneGraph>,
     },
     Cancelled {
         path: PathBuf,
@@ -131,7 +132,7 @@ impl AsyncAssetManager {
                         match req.kind {
                             LoadKind::Scene => {
                                 let result = rc3d_io::import_file(&req.path)
-                                    .map_err(|e| e.to_string());
+                                    .map_err(|e| EngineError::Parse(e.to_string()));
                                 let _ = tx.send(LoadResult::Scene {
                                     path: req.path,
                                     result,
@@ -193,7 +194,7 @@ impl AsyncAssetManager {
                                 *lock = AssetState::Loaded(scene);
                             }
                             Err(e) => {
-                                *lock = AssetState::Failed(e);
+                                *lock = AssetState::Failed(e.to_string());
                             }
                         }
                     }
