@@ -212,7 +212,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -266,7 +266,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(
@@ -323,7 +323,7 @@ pub(super) fn execute_passes(
                     continue;
                 };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                     let model_inv = dc.model_matrix.inverse();
                     let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
                     cluster_renderer.cull_and_compact(

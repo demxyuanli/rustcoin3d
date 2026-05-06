@@ -16,6 +16,7 @@ glam = { workspace = true }
 slotmap = { workspace = true }
 wgpu = { workspace = true }
 log = { workspace = true }
+lru = { workspace = true }
 winit = { workspace = true }
 glyphon = { workspace = true }
 twox-hash = "1.6.3"

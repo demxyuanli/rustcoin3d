@@ -106,7 +106,7 @@ pub(super) fn draw_opaque_triangle_batches(
             let dc = ctx.visible[i];
             let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
             let ptr = std::sync::Arc::as_ptr(md) as u64;
-            if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_cache.contains_key(&ptr)) { continue; }
+            if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) { continue; }
             let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                 [0.08, 0.08, 0.08, 1.0]
             } else {
@@ -146,7 +146,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     None => log::error!("CSM shadow missing; shadow bind group not set"),
                 }
                 pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_cache.get(&ptr) {
+                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                     if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
                         cluster_renderer.draw_clustered(pass, cluster_set);
                     }

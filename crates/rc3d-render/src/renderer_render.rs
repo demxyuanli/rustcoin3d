@@ -116,13 +116,9 @@ impl super::Renderer {
             let handle = if dc.vertices.is_empty() {
                 if let Some(md) = dc.meshlet_data.as_ref() {
                     let ptr = Arc::as_ptr(md) as u64;
-                    if let Some((mesh_id, last_used)) = self.gpu.assets.mesh_cache.get_mut(&ptr) {
-                        *last_used = self.frame.frame_counter;
-                        Some(*mesh_id)
+                    if let Some(mesh_id) = self.gpu.assets.mesh_touch(&ptr, self.frame.frame_counter) {
+                        Some(mesh_id)
                     } else {
-                        if self.gpu.assets.mesh_cache.len() >= MESH_CACHE_MAX {
-                            self.prune_mesh_cache();
-                        }
                         let verts: Vec<crate::vertex::Vertex> =
                             md.vertices
                                 .iter()
@@ -140,7 +136,7 @@ impl super::Renderer {
                             &[],
                             &[],
                         );
-                        self.gpu.assets.mesh_cache.insert(ptr, (mesh_id, self.frame.frame_counter));
+                        self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
                         Some(mesh_id)
                     }
                 } else {
@@ -165,13 +161,9 @@ impl super::Renderer {
                 } else {
                     base_hash
                 };
-                if let Some((mesh_id, last_used)) = self.gpu.assets.mesh_cache.get_mut(&hash) {
-                    *last_used = self.frame.frame_counter;
-                    Some(*mesh_id)
+                if let Some(mesh_id) = self.gpu.assets.mesh_touch(&hash, self.frame.frame_counter) {
+                    Some(mesh_id)
                 } else {
-                    if self.gpu.assets.mesh_cache.len() >= MESH_CACHE_MAX {
-                        self.prune_mesh_cache();
-                    }
                     if let Some(ref skin) = dc.skinning {
                         let verts = &*dc.vertices;
                         let skin_slice = skin.skin_data.as_slice();
@@ -188,7 +180,7 @@ impl super::Renderer {
                                 &dc.edge_positions,
                                 &dc.wireframe_edge_positions,
                             );
-                            self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
+                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
                             Some(mesh_id)
                         } else {
                         let pass = self
@@ -218,7 +210,7 @@ impl super::Renderer {
                             &dc.wireframe_edge_positions,
                         );
                         self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
-                        self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
+                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
                         Some(mesh_id)
                         }
                     } else {
@@ -229,7 +221,7 @@ impl super::Renderer {
                             &dc.edge_positions,
                             &dc.wireframe_edge_positions,
                         );
-                        self.gpu.assets.mesh_cache.insert(hash, (mesh_id, self.frame.frame_counter));
+                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
                         Some(mesh_id)
                     }
                 }
@@ -313,12 +305,12 @@ impl super::Renderer {
             let dc = visible[idx];
             let md = dc.meshlet_data.as_ref().unwrap();
             let ptr = Arc::as_ptr(md) as u64;
-            if !self.gpu.assets.cluster_cache.contains_key(&ptr) {
+            if !self.gpu.assets.cluster_contains(&ptr) {
                 if let Some((cs_bgl, cmp_bgl, fin_bgl)) = bgls {
                     let cs = ClusterSet::from_meshlet_data(
                         &self.device, md, cs_bgl, cmp_bgl, fin_bgl,
                     );
-                    self.gpu.assets.cluster_cache.insert(ptr, cs);
+                    self.gpu.assets.cluster_insert(ptr, cs);
                 }
             }
         }

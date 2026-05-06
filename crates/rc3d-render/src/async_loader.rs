@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -8,6 +9,7 @@ use rc3d_scene::SceneGraph;
 /// Handle to a potentially not-yet-loaded asset.
 pub struct AssetHandle<T> {
     state: Arc<Mutex<AssetState<T>>>,
+    cancel_token: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -15,6 +17,36 @@ enum AssetState<T> {
     Loading,
     Loaded(T),
     Failed(String),
+    Cancelled,
+}
+
+impl<T> AssetHandle<T> {
+    pub fn is_loading(&self) -> bool {
+        matches!(&*self.state.lock().unwrap(), AssetState::Loading)
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        matches!(&*self.state.lock().unwrap(), AssetState::Loaded(_))
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_token.load(Ordering::Acquire)
+    }
+
+    /// Cancel this load. If already in-flight, the worker thread will
+    /// drop the result. If cancelled, `get()` returns `None`.
+    pub fn cancel(&self) {
+        self.cancel_token.store(true, Ordering::Release);
+        if let Ok(mut lock) = self.state.lock() {
+            if matches!(&*lock, AssetState::Loading) {
+                *lock = AssetState::Cancelled;
+            }
+        }
+    }
+
+    pub(crate) fn new(state: Arc<Mutex<AssetState<T>>>, cancel_token: Arc<AtomicBool>) -> Self {
+        Self { state, cancel_token }
+    }
 }
 
 impl<T: Clone> AssetHandle<T> {
@@ -23,14 +55,6 @@ impl<T: Clone> AssetHandle<T> {
             AssetState::Loaded(v) => Some(v.clone()),
             _ => None,
         }
-    }
-
-    pub fn is_loading(&self) -> bool {
-        matches!(&*self.state.lock().unwrap(), AssetState::Loading)
-    }
-
-    pub fn is_loaded(&self) -> bool {
-        matches!(&*self.state.lock().unwrap(), AssetState::Loaded(_))
     }
 
     pub fn error(&self) -> Option<String> {
@@ -47,12 +71,16 @@ enum LoadResult {
         path: PathBuf,
         result: Result<SceneGraph, String>,
     },
+    Cancelled {
+        path: PathBuf,
+    },
 }
 
 /// Request to load an asset on a background thread.
 struct LoadRequest {
     path: PathBuf,
     kind: LoadKind,
+    cancel_token: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,9 +118,16 @@ impl AsyncAssetManager {
                             let lock = rx.lock().unwrap();
                             match lock.recv() {
                                 Ok(req) => req,
-                                Err(_) => break, // Channel closed
+                                Err(_) => break,
                             }
                         };
+                        // Check cancel token before starting work
+                        if req.cancel_token.load(Ordering::Acquire) {
+                            let _ = tx.send(LoadResult::Cancelled {
+                                path: req.path,
+                            });
+                            continue;
+                        }
                         match req.kind {
                             LoadKind::Scene => {
                                 let result = rc3d_io::import_file(&req.path)
@@ -122,21 +157,25 @@ impl AsyncAssetManager {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         if let Some(state) = self.pending_scenes.get(&canonical) {
-            return AssetHandle {
-                state: Arc::clone(state),
-            };
+            // Re-use existing pending load; return a new handle with a fresh cancel token
+            return AssetHandle::new(
+                Arc::clone(state),
+                Arc::new(AtomicBool::new(false)),
+            );
         }
 
         let state = Arc::new(Mutex::new(AssetState::Loading));
+        let cancel_token = Arc::new(AtomicBool::new(false));
         self.pending_scenes
             .insert(canonical.clone(), Arc::clone(&state));
 
         let _ = self._request_tx.send(LoadRequest {
             path: canonical,
             kind: LoadKind::Scene,
+            cancel_token: Arc::clone(&cancel_token),
         });
 
-        AssetHandle { state }
+        AssetHandle::new(state, cancel_token)
     }
 
     /// Poll for completed loads. Returns paths of newly loaded assets.
@@ -160,6 +199,16 @@ impl AsyncAssetManager {
                     }
                     completed.push(path);
                 }
+                LoadResult::Cancelled { path } => {
+                    if let Some(state) = self.pending_scenes.get(&path) {
+                        if let Ok(mut lock) = state.lock() {
+                            if matches!(&*lock, AssetState::Loading) {
+                                *lock = AssetState::Cancelled;
+                            }
+                        }
+                    }
+                    completed.push(path);
+                }
             }
         }
         completed
@@ -176,5 +225,69 @@ impl AsyncAssetManager {
 
     pub fn worker_count(&self) -> usize {
         self.worker_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_cancel_sets_state() {
+        let state = Arc::new(Mutex::new(AssetState::<()>::Loading));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let handle = AssetHandle::new(Arc::clone(&state), Arc::clone(&cancel_token));
+
+        handle.cancel();
+        assert!(handle.is_cancelled());
+        assert!(matches!(
+            &*state.lock().unwrap(),
+            AssetState::Cancelled
+        ));
+    }
+
+    #[test]
+    fn test_cancel_before_loaded_returns_none() {
+        let state = Arc::new(Mutex::new(AssetState::<String>::Loading));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let handle = AssetHandle::new(Arc::clone(&state), Arc::clone(&cancel_token));
+
+        handle.cancel();
+        assert!(handle.get().is_none());
+        assert!(!handle.is_loading());
+    }
+
+    #[test]
+    fn test_get_after_load() {
+        let state = Arc::new(Mutex::new(AssetState::<String>::Loaded("hello".into())));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let handle = AssetHandle::new(Arc::clone(&state), Arc::clone(&cancel_token));
+
+        assert!(handle.is_loaded());
+        assert_eq!(handle.get(), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_error_state() {
+        let state = Arc::new(Mutex::new(AssetState::<String>::Failed("oops".into())));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let handle = AssetHandle::new(Arc::clone(&state), Arc::clone(&cancel_token));
+
+        assert!(!handle.is_loaded());
+        assert!(!handle.is_loading());
+        assert_eq!(handle.error(), Some("oops".to_string()));
+    }
+
+    #[test]
+    fn test_cancel_does_not_affect_already_loaded() {
+        let state = Arc::new(Mutex::new(AssetState::<u32>::Loaded(42)));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        let handle = AssetHandle::new(Arc::clone(&state), Arc::clone(&cancel_token));
+
+        handle.cancel();
+        // Already loaded data should survive cancel
+        assert!(handle.is_loaded());
+        assert_eq!(handle.get(), Some(42));
     }
 }
