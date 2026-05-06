@@ -362,6 +362,11 @@ impl RayPickAction {
             NodeData::IndexedFaceSet(ifs) => {
                 self.pick_indexed_face_set(node, &ifs.coord_index);
             }
+            NodeData::Custom(_, _) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
         }
     }
 

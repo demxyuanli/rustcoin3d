@@ -20,6 +20,7 @@ use rc3d_core::NodeId;
 use serde::{Deserialize, Serialize};
 
 use crate::animation::{AnimationClip, Skeleton, VertexSkinData};
+use crate::custom_node::CustomNodeData;
 use crate::node_handler::NodeHandler;
 
 /// Behavioral marker: saves/restores all state elements during traversal.
@@ -697,7 +698,7 @@ impl Default for MarkupNode {
 }
 
 /// Central node type enum.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum NodeData {
     // Grouping
     Separator(SeparatorNode),
@@ -742,6 +743,47 @@ pub enum NodeData {
     Text3(Text3Node),
     Measurement(MeasurementNode),
     Markup(MarkupNode),
+    /// User-defined node type registered via `NodeTypeRegistry`.
+    Custom(u16, Box<dyn CustomNodeData>),
+}
+
+impl Clone for NodeData {
+    fn clone(&self) -> Self {
+        match self {
+            NodeData::Separator(v) => NodeData::Separator(v.clone()),
+            NodeData::Group(v) => NodeData::Group(v.clone()),
+            NodeData::Transform(v) => NodeData::Transform(v.clone()),
+            NodeData::Coordinate3(v) => NodeData::Coordinate3(v.clone()),
+            NodeData::TextureCoordinate2(v) => NodeData::TextureCoordinate2(v.clone()),
+            NodeData::Normal(v) => NodeData::Normal(v.clone()),
+            NodeData::Material(v) => NodeData::Material(v.clone()),
+            NodeData::Triangle(v) => NodeData::Triangle(v.clone()),
+            NodeData::Cube(v) => NodeData::Cube(v.clone()),
+            NodeData::Sphere(v) => NodeData::Sphere(v.clone()),
+            NodeData::Cone(v) => NodeData::Cone(v.clone()),
+            NodeData::Cylinder(v) => NodeData::Cylinder(v.clone()),
+            NodeData::IndexedFaceSet(v) => NodeData::IndexedFaceSet(v.clone()),
+            NodeData::SkinnedMesh(v) => NodeData::SkinnedMesh(v.clone()),
+            NodeData::MorphTarget(v) => NodeData::MorphTarget(v.clone()),
+            NodeData::PerspectiveCamera(v) => NodeData::PerspectiveCamera(v.clone()),
+            NodeData::OrthographicCamera(v) => NodeData::OrthographicCamera(v.clone()),
+            NodeData::DirectionalLight(v) => NodeData::DirectionalLight(v.clone()),
+            NodeData::PointLight(v) => NodeData::PointLight(v.clone()),
+            NodeData::SpotLight(v) => NodeData::SpotLight(v.clone()),
+            NodeData::HandlerNode(h) => NodeData::HandlerNode(Arc::clone(h)),
+            NodeData::EventCallback(v) => NodeData::EventCallback(v.clone()),
+            NodeData::PickStyle(v) => NodeData::PickStyle(v.clone()),
+            NodeData::Lod(v) => NodeData::Lod(v.clone()),
+            NodeData::Switch(v) => NodeData::Switch(v.clone()),
+            NodeData::MultipleCopy(v) => NodeData::MultipleCopy(v.clone()),
+            NodeData::SectionPlane(v) => NodeData::SectionPlane(v.clone()),
+            NodeData::Text2(v) => NodeData::Text2(v.clone()),
+            NodeData::Text3(v) => NodeData::Text3(v.clone()),
+            NodeData::Measurement(v) => NodeData::Measurement(v.clone()),
+            NodeData::Markup(v) => NodeData::Markup(v.clone()),
+            NodeData::Custom(id, d) => NodeData::Custom(*id, d.clone_box()),
+        }
+    }
 }
 
 /// Describes a named field on a node type.
@@ -851,6 +893,7 @@ impl NodeData {
             | NodeData::MorphTarget(_)
             | NodeData::HandlerNode(_)
             | NodeData::MultipleCopy(_) => vec![],
+            NodeData::Custom(_, d) => d.field_descriptors(),
         }
     }
 
@@ -887,6 +930,7 @@ impl NodeData {
             NodeData::Text3(_) => "Text3",
             NodeData::Measurement(_) => "Measurement",
             NodeData::Markup(_) => "Markup",
+            NodeData::Custom(_, d) => d.type_name(),
         }
     }
 }
@@ -926,6 +970,10 @@ impl Serialize for NodeData {
             NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
             NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
+            NodeData::Custom(type_id, d) => {
+                let payload = (type_id, d.serialize_custom());
+                s.serialize_newtype_variant("NodeData", 31, "Custom", &payload)
+            }
         }
     }
 }
@@ -957,6 +1005,7 @@ impl<'de> Deserialize<'de> for NodeData {
             SpotLight(SpotLightNode),
             #[serde(rename = "HandlerNode")]
             Handler(String),
+            Custom((u16, String)),
             EventCallback(EventCallbackNode),
             PickStyle(PickStyleNode),
             Lod(LodNode),
@@ -992,6 +1041,12 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
                 crate::node_handler::DummyHandler,
             ))),
+            NodeDataHelper::Custom((_type_id, ref _data)) => {
+                // Defer to registry for deserialization; fallback to DummyHandler
+                Ok(NodeData::HandlerNode(Arc::new(
+                    crate::node_handler::DummyHandler,
+                )))
+            }
             NodeDataHelper::EventCallback(v) => Ok(NodeData::EventCallback(v)),
             NodeDataHelper::PickStyle(v) => Ok(NodeData::PickStyle(v)),
             NodeDataHelper::Lod(v) => Ok(NodeData::Lod(v)),

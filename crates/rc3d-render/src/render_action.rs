@@ -61,7 +61,14 @@ enum ShapeKey {
     },
 }
 
-type CachedShapeData = (Arc<Vec<Vertex>>, Arc<Vec<u32>>, Arc<Vec<[f32; 3]>>, rc3d_core::Aabb, Option<Arc<rc3d_mesh::MeshletData>>);
+type CachedShapeData = (
+    Arc<Vec<Vertex>>,
+    Arc<Vec<u32>>,
+    Arc<Vec<[f32; 3]>>,
+    Arc<Vec<[f32; 3]>>,
+    rc3d_core::Aabb,
+    Option<Arc<rc3d_mesh::MeshletData>>,
+);
 type PackedLights = (
     [[f32; 4]; MAX_LIGHTS],
     [[f32; 4]; MAX_LIGHTS],
@@ -73,6 +80,14 @@ type PackedLights = (
 
 const MAX_EDGE_POSITIONS: usize = 2_000_000;
 const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
+
+fn clamp_edge_positions(arc: Arc<Vec<[f32; 3]>>) -> Arc<Vec<[f32; 3]>> {
+    if arc.len() > MAX_EDGE_POSITIONS {
+        Arc::new(Vec::new())
+    } else {
+        arc
+    }
+}
 
 /// GPU skinning inputs carried on a draw call (`SkinnedMeshNode` in the scene graph).
 #[derive(Clone, Debug)]
@@ -87,7 +102,10 @@ pub struct SkinnedMeshDrawPayload {
 pub struct DrawCall {
     pub vertices: Arc<Vec<Vertex>>,
     pub indices: Option<Arc<Vec<u32>>>,
+    /// Crease + boundary feature edges (shaded overlay, selection edges).
     pub edge_positions: Arc<Vec<[f32; 3]>>,
+    /// Full topological edge line list (wireframe mode).
+    pub wireframe_edge_positions: Arc<Vec<[f32; 3]>>,
     pub mvp: Mat4,
     pub model_matrix: Mat4,
     pub camera_pos: Vec3,
@@ -145,6 +163,7 @@ impl Default for DrawCall {
             vertices: Arc::new(Vec::new()),
             indices: None,
             edge_positions: Arc::new(Vec::new()),
+            wireframe_edge_positions: Arc::new(Vec::new()),
             mvp: Mat4::IDENTITY,
             model_matrix: Mat4::IDENTITY,
             camera_pos: Vec3::ZERO,
@@ -421,6 +440,10 @@ impl RenderCollector {
                 let positions = vec![coord.points[0], coord.points[1], coord.points[2]];
                 let mut mesh = rc3d_mesh::TriangleMesh::from_tris(&positions);
                 mesh.compute_tangents();
+                let edge_feature = mesh.edge_line_positions_feature(
+                    rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                );
+                let edge_full = mesh.edge_line_positions();
                 let mut vertices = Vec::with_capacity(3);
                 for (i, v) in mesh.phong_buffers().0.iter().enumerate() {
                     let n = if i < face_n.len() { face_n[i].to_array() } else { [v[3], v[4], v[5]] };
@@ -431,11 +454,11 @@ impl RenderCollector {
                         tangent: [v[8], v[9], v[10], v[11]],
                     });
                 }
-                let edge_positions = Vec::new();
                 self.emit_draw_call_with_edges(
                     vertices,
                     Some((0..3u32).collect()),
-                    edge_positions,
+                    edge_feature,
+                    edge_full,
                     is_selected,
                     node_display_mode,
                     node_type_label,
@@ -609,7 +632,10 @@ impl RenderCollector {
                     mesh.compute_tangents();
                     if !mesh.positions.is_empty() {
                         let (phong_verts, indices) = mesh.phong_buffers();
-                        let edge_positions = mesh.edge_line_positions();
+                        let edge_feature = mesh.edge_line_positions_feature(
+                            rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                        );
+                        let edge_full = mesh.edge_line_positions();
                         let local_aabb = mesh.bounding_box();
                         let vertices: Vec<Vertex> = phong_verts
                             .iter()
@@ -639,25 +665,40 @@ impl RenderCollector {
                         } else {
                             None
                         };
-                        self.mesh_cache.insert(key, (Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb, meshlet_data));
+                        self.mesh_cache.insert(
+                            key,
+                            (
+                                Arc::new(vertices),
+                                Arc::new(indices),
+                                Arc::new(edge_feature),
+                                Arc::new(edge_full),
+                                local_aabb,
+                                meshlet_data,
+                            ),
+                        );
                     }
                 }
-                if let Some((vertices, indices, edge_positions, local_aabb, meshlet_data)) = self.mesh_cache.get(&key) {
-                    let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
-                        Arc::new(Vec::new())
-                    } else {
-                        Arc::clone(edge_positions)
-                    };
+                if let Some((vertices, indices, edge_feature, edge_full, local_aabb, meshlet_data)) =
+                    self.mesh_cache.get(&key)
+                {
+                    let edge_feature = clamp_edge_positions(Arc::clone(edge_feature));
+                    let edge_full = clamp_edge_positions(Arc::clone(edge_full));
                     self.emit_draw_call_with_cached_aabb(
                         Arc::clone(vertices),
                         Some(Arc::clone(indices)),
-                        edge_positions,
+                        edge_feature,
+                        edge_full,
                         local_aabb.clone(),
                         meshlet_data.clone(),
                         is_selected,
                         node_display_mode,
                         node_type_label,
                     );
+                }
+            }
+            NodeData::Custom(_, _) => {
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
                 }
             }
         }
@@ -678,12 +719,22 @@ impl RenderCollector {
             Entry::Vacant(vacant) => {
                 let mut mesh = build_mesh();
                 if mesh.positions.is_empty() {
-                    vacant.insert((Arc::new(Vec::new()), Arc::new(Vec::new()), Arc::new(Vec::new()), rc3d_core::Aabb::empty(), None));
+                    vacant.insert((
+                        Arc::new(Vec::new()),
+                        Arc::new(Vec::new()),
+                        Arc::new(Vec::new()),
+                        Arc::new(Vec::new()),
+                        rc3d_core::Aabb::empty(),
+                        None,
+                    ));
                     return;
                 }
                 mesh.compute_tangents();
                 let (phong_verts, indices) = mesh.phong_buffers();
-                let edge_positions = mesh.edge_line_positions();
+                let edge_feature = mesh.edge_line_positions_feature(
+                    rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                );
+                let edge_full = mesh.edge_line_positions();
                 let local_aabb = mesh.bounding_box();
                 let vertices: Vec<Vertex> = phong_verts
                     .iter()
@@ -694,20 +745,25 @@ impl RenderCollector {
                         tangent: [v[8], v[9], v[10], v[11]],
                     })
                     .collect();
-                vacant.insert((Arc::new(vertices), Arc::new(indices), Arc::new(edge_positions), local_aabb, None));
+                vacant.insert((
+                    Arc::new(vertices),
+                    Arc::new(indices),
+                    Arc::new(edge_feature),
+                    Arc::new(edge_full),
+                    local_aabb,
+                    None,
+                ));
             }
         }
 
-        if let Some((vertices, indices, edge_positions, local_aabb, meshlet_data)) = self.mesh_cache.get(&key) {
-            let edge_positions = if edge_positions.len() > MAX_EDGE_POSITIONS {
-                Arc::new(Vec::new())
-            } else {
-                Arc::clone(edge_positions)
-            };
+        if let Some((vertices, indices, edge_feature, edge_full, local_aabb, meshlet_data)) = self.mesh_cache.get(&key) {
+            let edge_feature = clamp_edge_positions(Arc::clone(edge_feature));
+            let edge_full = clamp_edge_positions(Arc::clone(edge_full));
             self.emit_draw_call_with_cached_aabb(
                 Arc::clone(vertices),
                 Some(Arc::clone(indices)),
-                edge_positions,
+                edge_feature,
+                edge_full,
                 local_aabb.clone(),
                 meshlet_data.clone(),
                 selected,
@@ -722,6 +778,7 @@ impl RenderCollector {
         vertices: Arc<Vec<Vertex>>,
         indices: Option<Arc<Vec<u32>>>,
         edge_positions: Arc<Vec<[f32; 3]>>,
+        wireframe_edge_positions: Arc<Vec<[f32; 3]>>,
         local_aabb: rc3d_core::Aabb,
         meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
         selected: bool,
@@ -739,6 +796,7 @@ impl RenderCollector {
             vertices,
             indices,
             edge_positions,
+            wireframe_edge_positions,
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
@@ -802,7 +860,8 @@ impl RenderCollector {
         &mut self,
         vertices: Vec<Vertex>,
         indices: Option<Vec<u32>>,
-        edge_positions: Vec<[f32; 3]>,
+        edge_feature: Vec<[f32; 3]>,
+        edge_wireframe: Vec<[f32; 3]>,
         selected: bool,
         node_display_mode: Option<DisplayMode>,
         node_type_label: &str,
@@ -828,7 +887,8 @@ impl RenderCollector {
         self.draw_calls.push(DrawCall {
             vertices: Arc::new(vertices),
             indices: indices.map(Arc::new),
-            edge_positions: Arc::new(edge_positions),
+            edge_positions: Arc::new(edge_feature),
+            wireframe_edge_positions: Arc::new(edge_wireframe),
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
