@@ -478,4 +478,61 @@ impl super::Renderer {
             hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
         }
     }
+
+    /// Render section plane cap surfaces for visible draw calls.
+    /// Renders back-faces of clipped geometry to fill the cut boundary.
+    pub fn render_section_caps(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        shade_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        cap_color: [f32; 4],
+        draw_calls: &[(usize, crate::gpu_resource::MeshId)],
+    ) {
+        if draw_calls.is_empty() {
+            return;
+        }
+        let ident = glam::Mat4::IDENTITY.to_cols_array_2d();
+        let cap_uniforms = crate::vertex::FlatUniforms {
+            mvp: ident,
+            color: cap_color,
+        };
+        if let Some(offset) = self.gpu.flat_pool.push_flat(&cap_uniforms) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Section Cap"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: shade_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            // Render back-faces with cap color to fill clip boundary
+            pass.set_pipeline(&self.gpu.pipelines.forward.edge_overlay);
+            pass.set_bind_group(0, self.gpu.flat_pool.bind_group(), &[offset]);
+            for &(_, mesh_id) in draw_calls {
+                if let Some(mesh) = self.gpu.gpu_meshes.get(mesh_id) {
+                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    if let Some(ref ib) = mesh.index_buffer {
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                    } else {
+                        pass.draw(0..mesh.vertex_count as u32, 0..1);
+                    }
+                }
+            }
+        }
+    }
 }

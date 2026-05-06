@@ -548,11 +548,20 @@ impl Default for LodNode {
 pub struct SectionPlaneNode {
     pub plane: [f32; 4],
     pub enabled: bool,
+    /// RGBA color for the cap surface at the cut boundary.
+    pub cap_color: [f32; 4],
+    /// When true, render a filled cap at the clip plane intersection.
+    pub cap_enabled: bool,
 }
 
 impl Default for SectionPlaneNode {
     fn default() -> Self {
-        Self { plane: [0.0, 1.0, 0.0, 0.0], enabled: true }
+        Self {
+            plane: [0.0, 1.0, 0.0, 0.0],
+            enabled: true,
+            cap_color: [0.5, 0.5, 0.5, 1.0],
+            cap_enabled: false,
+        }
     }
 }
 
