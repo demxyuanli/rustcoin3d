@@ -1,16 +1,24 @@
+use std::path::Path;
+
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 
-use super::command::CliCommand;
+use crate::cli::CliCommand;
 use crate::engine::state::{EngineEvent, EngineState, TestRun};
 
 pub fn execute(cmd: CliCommand, state: &mut EngineState) {
     match cmd {
         CliCommand::SceneLoad(path) => {
             state.add_log("info", &format!("Loading scene: {path}"));
-            build_demo_scene(&mut state.scene);
+            let p = Path::new(&path);
+            let loaded = try_load_scene(p, &mut state.scene);
+            if loaded {
+                state.add_log("info", &format!("Scene loaded from {path}"));
+            } else {
+                state.add_log("warn", &format!("Could not load {path}, building demo scene"));
+                build_demo_scene(&mut state.scene);
+            }
             state.push_event(EngineEvent::SceneLoaded);
-            state.add_log("info", "Scene loaded (demo)");
         }
         CliCommand::SceneReset => {
             state.scene = rc3d_scene::SceneGraph::new();
@@ -35,11 +43,24 @@ pub fn execute(cmd: CliCommand, state: &mut EngineState) {
             state.push_event(EngineEvent::TestStopped);
             state.add_log("info", "Test run stopped");
         }
-        CliCommand::CameraOrbit { dx: _, dy: _ }
-        | CliCommand::CameraPan { dx: _, dy: _ }
-        | CliCommand::CameraZoom(_)
-        | CliCommand::CameraFit => {
-            state.add_log("info", "Camera command received (use mouse for direct viewport control)");
+        CliCommand::CameraOrbit { dx, dy } => {
+            state.camera.orbit(dx, dy);
+            state.add_log(
+                "info",
+                &format!("Camera orbit: phi={:.2} theta={:.2}", state.camera.phi, state.camera.theta),
+            );
+        }
+        CliCommand::CameraPan { dx, dy } => {
+            state.camera.pan(dx, dy);
+            state.add_log("info", &format!("Camera pan: ({:.2}, {:.2})", dx, dy));
+        }
+        CliCommand::CameraZoom(amount) => {
+            state.camera.zoom(amount);
+            state.add_log("info", &format!("Camera zoom: distance={:.2}", state.camera.distance));
+        }
+        CliCommand::CameraFit => {
+            state.camera.fit();
+            state.add_log("info", "Camera fit to scene");
         }
         CliCommand::Select(id) => {
             state.selection.clear();
@@ -54,6 +75,7 @@ pub fn execute(cmd: CliCommand, state: &mut EngineState) {
         }
         CliCommand::PropSet { node, field, value } => {
             state.add_log("info", &format!("Set {field}={value} on {node:?}"));
+            apply_prop_set(&mut state.scene, node, &field, &value);
             state.push_event(EngineEvent::PropertyChanged { node, field });
         }
         CliCommand::DisplayMode(mode) => {
@@ -69,11 +91,60 @@ pub fn execute(cmd: CliCommand, state: &mut EngineState) {
             state.push_event(EngineEvent::LogCleared);
         }
         CliCommand::Help => {
-            state.add_log("info", "Commands: scene load/reset | test run/stop | select <id>/clear | prop set <n> <f> <v> | display <mode> | log filter/clear | help | quit");
+            state.add_log(
+                "info",
+                "Commands: scene load/reset | test run/stop | camera orbit/pan/zoom/fit | select <id>/clear | prop set <n> <f> <v> | display <mode> | log filter/clear | help | quit",
+            );
         }
         CliCommand::Quit => {
             state.push_event(EngineEvent::Quit);
         }
+    }
+}
+
+fn try_load_scene(path: &Path, _scene: &mut rc3d_scene::SceneGraph) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext.to_lowercase().as_str() {
+        "gltf" | "glb" => {
+            log::warn!("glTF loading not yet wired in CLI editor");
+            false
+        }
+        _ => {
+            log::warn!("Unsupported scene format: .{ext}");
+            false
+        }
+    }
+}
+
+fn apply_prop_set(scene: &mut rc3d_scene::SceneGraph, node: rc3d_core::NodeId, field: &str, value: &str) {
+    let Some(entry) = scene.get_mut(node) else { return };
+    match &mut entry.data {
+        NodeData::Transform(t) => match field {
+            "tx" => t.translation.x = value.parse().unwrap_or(t.translation.x),
+            "ty" => t.translation.y = value.parse().unwrap_or(t.translation.y),
+            "tz" => t.translation.z = value.parse().unwrap_or(t.translation.z),
+            "sx" => t.scale.x = value.parse().unwrap_or(t.scale.x),
+            "sy" => t.scale.y = value.parse().unwrap_or(t.scale.y),
+            "sz" => t.scale.z = value.parse().unwrap_or(t.scale.z),
+            _ => {}
+        },
+        NodeData::Material(m) => match field {
+            "roughness" => m.roughness = value.parse().unwrap_or(m.roughness),
+            "metallic" => m.metallic = value.parse().unwrap_or(m.metallic),
+            "opacity" => m.opacity = value.parse().unwrap_or(m.opacity),
+            _ => {}
+        },
+        NodeData::Sphere(s) => match field {
+            "radius" => s.radius = value.parse().unwrap_or(s.radius),
+            _ => {}
+        },
+        _ => {}
     }
 }
 

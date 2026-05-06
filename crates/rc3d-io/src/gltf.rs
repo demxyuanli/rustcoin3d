@@ -282,6 +282,7 @@ fn build_light_node(
                     direction: Vec3::new(0.0, -1.0, 0.0),
                     color: rgb,
                     intensity: 1.0,
+                    light_group: None,
                 }),
             );
         }
@@ -292,6 +293,7 @@ fn build_light_node(
                     location: Vec3::ZERO,
                     color: rgb,
                     intensity: 1.0,
+                    light_group: None,
                 }),
             );
         }
@@ -308,6 +310,7 @@ fn build_light_node(
                     intensity: 1.0,
                     cut_off_angle: outer_cone_angle,
                     drop_off_rate: 4.0,
+                    light_group: None,
                 }),
             );
         }
@@ -490,6 +493,8 @@ fn build_material_node(
         alpha_mode,
         alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
         double_sided: mat.double_sided(),
+        anisotropic: 0.0,
+        light_group: None,
     })
 }
 

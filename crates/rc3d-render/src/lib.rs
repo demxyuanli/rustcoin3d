@@ -47,7 +47,7 @@ pub use shader_reload::ShaderHotReload;
 pub use ssr_pass::SsrPass;
 pub use taa::{TaaJitter, TaaPass};
 pub use frustum::Frustum;
-pub use gpu_resource::{GpuResourceManager, GpuUniformPool, MeshId};
+pub use gpu_resource::{EdgeLineKind, GpuResourceManager, GpuUniformPool, MeshId};
 pub use cluster_lighting::{ClusterLightCuller, ClusterLightResources, GpuPointLight, GpuSpotLight};
 pub use color_grading::ColorGradingPass;
 pub use dof_pass::DofPass;

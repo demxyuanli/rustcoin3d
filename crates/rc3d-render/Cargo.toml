@@ -22,3 +22,7 @@ glyphon = { workspace = true }
 twox-hash = "1.6.3"
 image = { workspace = true }
 half = "2"
+tracy-client = { workspace = true, optional = true, features = ["enable"] }
+
+[features]
+profiler = ["dep:tracy-client"]

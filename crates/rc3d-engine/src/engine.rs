@@ -329,3 +329,111 @@ impl Default for EngineRegistry {
         Self::new()
     }
 }
+
+/// Float interpolation engine (Coin3D SoInterpolateFloat).
+#[derive(Debug, Clone)]
+pub struct InterpolateFloatEngine {
+    pub node_id: rc3d_core::NodeId,
+    pub field_id: rc3d_core::FieldId,
+    pub from: f32, pub to: f32,
+    pub duration: f64, pub elapsed: f64,
+}
+impl InterpolateFloatEngine {
+    pub fn new(node: rc3d_core::NodeId, field: rc3d_core::FieldId, from: f32, to: f32, duration: f64) -> Self {
+        Self { node_id: node, field_id: field, from, to, duration: duration.max(0.001), elapsed: 0.0 }
+    }
+}
+impl Engine for InterpolateFloatEngine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
+        self.elapsed += 0.016;
+        let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
+        let v = self.from + (self.to - self.from) * t as f32;
+        if let Some(entry) = graph.get_mut(self.node_id) {
+            entry.fields.set(self.field_id, rc3d_fields::FieldValue::Float(v));
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// Rotation interpolation engine (Coin3D SoInterpolateRotation).
+#[derive(Debug, Clone)]
+pub struct InterpolateRotationEngine {
+    pub node_id: rc3d_core::NodeId,
+    pub from: rc3d_core::math::Quat, pub to: rc3d_core::math::Quat,
+    pub duration: f64, pub elapsed: f64,
+}
+impl InterpolateRotationEngine {
+    pub fn new(node: rc3d_core::NodeId, from: rc3d_core::math::Quat, to: rc3d_core::math::Quat, duration: f64) -> Self {
+        Self { node_id: node, from, to, duration: duration.max(0.001), elapsed: 0.0 }
+    }
+}
+impl Engine for InterpolateRotationEngine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
+        self.elapsed += 0.016;
+        let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
+        let q = self.from.slerp(self.to, t as f32);
+        if let Some(entry) = graph.get_mut(self.node_id) {
+            if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
+                tf.rotation = rc3d_core::math::Mat4::from_quat(q);
+            }
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// Compose a 3D vector from three float fields (Coin3D SoComposeVec3f).
+#[derive(Debug, Clone)]
+pub struct ComposeVec3fEngine {
+    pub node_id: rc3d_core::NodeId,
+    pub x_field: rc3d_core::FieldId, pub y_field: rc3d_core::FieldId, pub z_field: rc3d_core::FieldId,
+    pub output_field: rc3d_core::FieldId,
+}
+impl ComposeVec3fEngine {
+    pub fn new(node: rc3d_core::NodeId, x: rc3d_core::FieldId, y: rc3d_core::FieldId, z: rc3d_core::FieldId, out: rc3d_core::FieldId) -> Self {
+        Self { node_id: node, x_field: x, y_field: y, z_field: z, output_field: out }
+    }
+}
+impl Engine for ComposeVec3fEngine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
+        let Some(entry) = graph.get_mut(self.node_id) else { return };
+        let x = entry.fields.get(self.x_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
+        let y = entry.fields.get(self.y_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
+        let z = entry.fields.get(self.z_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
+        entry.fields.set(self.output_field, rc3d_fields::FieldValue::Vec3f(rc3d_core::math::Vec3::new(x, y, z)));
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// Toggle engine (Coin3D SoOnOff).
+#[derive(Debug, Clone)]
+pub struct OnOffEngine { pub state: bool, pub triggered: bool }
+impl OnOffEngine {
+    pub fn new() -> Self { Self { state: false, triggered: false } }
+    pub fn trigger(&mut self) { self.triggered = true; }
+}
+impl Engine for OnOffEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        if self.triggered { self.state = !self.state; self.triggered = false; }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// Trigger on any input change (Coin3D SoTriggerAny).
+#[derive(Debug, Clone)]
+pub struct TriggerAnyEngine { pub fired: bool, pub triggered: bool }
+impl TriggerAnyEngine {
+    pub fn new() -> Self { Self { fired: false, triggered: false } }
+    pub fn trigger(&mut self) { self.triggered = true; }
+    pub fn has_fired(&self) -> bool { self.fired }
+}
+impl Engine for TriggerAnyEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        if self.triggered { self.fired = true; self.triggered = false; }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}

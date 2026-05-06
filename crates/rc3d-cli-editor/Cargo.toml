@@ -19,6 +19,6 @@ winit = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-egui = "0.31.1"
-egui-wgpu = "0.31.1"
-egui-winit = "0.31.1"
+egui = "0.31"
+egui-winit = "0.31"
+bytemuck = { workspace = true }

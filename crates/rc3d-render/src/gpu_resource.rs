@@ -7,6 +7,15 @@ new_key_type! {
     pub struct MeshId;
 }
 
+/// Which line-list buffer to use on [`GpuMesh`] / fall back data on [`crate::render_action::DrawCall`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeLineKind {
+    /// Crease + boundary edges (shaded overlay, selection edges).
+    Feature,
+    /// Full triangle mesh topology (wireframe mode).
+    WireframeFull,
+}
+
 pub struct GpuMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub vertex_count: u32,
@@ -14,6 +23,8 @@ pub struct GpuMesh {
     pub index_count: u32,
     pub edge_vertex_buffer: Option<wgpu::Buffer>,
     pub edge_vertex_count: u32,
+    pub wireframe_edge_vertex_buffer: Option<wgpu::Buffer>,
+    pub wireframe_edge_vertex_count: u32,
     pub generation: u32,
 }
 
@@ -34,12 +45,33 @@ impl GpuResourceManager {
         }
     }
 
+    fn edge_buffer_from_positions(
+        device: &wgpu::Device,
+        label: &'static str,
+        edge_positions: &[[f32; 3]],
+    ) -> (Option<wgpu::Buffer>, u32) {
+        if edge_positions.is_empty() {
+            return (None, 0);
+        }
+        let line_verts: Vec<LineVertex> = edge_positions
+            .iter()
+            .map(|&p| LineVertex { position: p })
+            .collect();
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(&line_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        (Some(buf), line_verts.len() as u32)
+    }
+
     pub fn upload_mesh(
         &mut self,
         device: &wgpu::Device,
         vertices: &[Vertex],
         indices: Option<&[u32]>,
-        edge_positions: &[[f32; 3]],
+        feature_edge_positions: &[[f32; 3]],
+        wireframe_edge_positions: &[[f32; 3]],
     ) -> MeshId {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mesh Vertices"),
@@ -58,20 +90,13 @@ impl GpuResourceManager {
             (None, 0)
         };
 
-        let (edge_vertex_buffer, edge_vertex_count) = if !edge_positions.is_empty() {
-            let line_verts: Vec<LineVertex> = edge_positions
-                .iter()
-                .map(|&p| LineVertex { position: p })
-                .collect();
-            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Edge Vertices"),
-                contents: bytemuck::cast_slice(&line_verts),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            (Some(buf), line_verts.len() as u32)
-        } else {
-            (None, 0)
-        };
+        let (edge_vertex_buffer, edge_vertex_count) =
+            Self::edge_buffer_from_positions(device, "Edge Vertices (feature)", feature_edge_positions);
+        let (wireframe_edge_vertex_buffer, wireframe_edge_vertex_count) = Self::edge_buffer_from_positions(
+            device,
+            "Edge Vertices (wireframe full)",
+            wireframe_edge_positions,
+        );
 
         self.meshes.insert(GpuMesh {
             vertex_buffer,
@@ -80,6 +105,8 @@ impl GpuResourceManager {
             index_count,
             edge_vertex_buffer,
             edge_vertex_count,
+            wireframe_edge_vertex_buffer,
+            wireframe_edge_vertex_count,
             generation: 0,
         })
     }
@@ -91,7 +118,8 @@ impl GpuResourceManager {
         vertex_buffer: wgpu::Buffer,
         vertex_count: u32,
         indices: Option<&[u32]>,
-        edge_positions: &[[f32; 3]],
+        feature_edge_positions: &[[f32; 3]],
+        wireframe_edge_positions: &[[f32; 3]],
     ) -> MeshId {
         let (index_buffer, index_count) = if let Some(idx) = indices {
             let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -104,20 +132,13 @@ impl GpuResourceManager {
             (None, 0)
         };
 
-        let (edge_vertex_buffer, edge_vertex_count) = if !edge_positions.is_empty() {
-            let line_verts: Vec<LineVertex> = edge_positions
-                .iter()
-                .map(|&p| LineVertex { position: p })
-                .collect();
-            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Skinned mesh edges"),
-                contents: bytemuck::cast_slice(&line_verts),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            (Some(buf), line_verts.len() as u32)
-        } else {
-            (None, 0)
-        };
+        let (edge_vertex_buffer, edge_vertex_count) =
+            Self::edge_buffer_from_positions(device, "Skinned mesh edges (feature)", feature_edge_positions);
+        let (wireframe_edge_vertex_buffer, wireframe_edge_vertex_count) = Self::edge_buffer_from_positions(
+            device,
+            "Skinned mesh edges (wireframe full)",
+            wireframe_edge_positions,
+        );
 
         self.meshes.insert(GpuMesh {
             vertex_buffer,
@@ -126,6 +147,8 @@ impl GpuResourceManager {
             index_count,
             edge_vertex_buffer,
             edge_vertex_count,
+            wireframe_edge_vertex_buffer,
+            wireframe_edge_vertex_count,
             generation: 0,
         })
     }

@@ -291,6 +291,68 @@ pub struct IndexedLineSetNode {
     pub line_width: f32,
 }
 
+/// Global environment settings (Coin3D SoEnvironment).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EnvironmentNode {
+    pub ambient_intensity: f32,
+    pub ambient_color: Vec3,
+    pub attenuation: Vec3,
+    pub fog_color: Vec3,
+    pub fog_visibility: f32,
+}
+impl Default for EnvironmentNode {
+    fn default() -> Self {
+        Self { ambient_intensity: 0.2, ambient_color: Vec3::ONE, attenuation: Vec3::new(0.0, 0.0, 1.0), fog_color: Vec3::ONE, fog_visibility: 0.0 }
+    }
+}
+
+/// Shape rendering hints (Coin3D SoShapeHints).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VertexOrdering { Unknown, Clockwise, CounterClockwise }
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeType { Unknown, Solid, FaceSet, LineSet, PointSet }
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceType { Unknown, Convex }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ShapeHintsNode {
+    pub vertex_ordering: VertexOrdering,
+    pub shape_type: ShapeType,
+    pub face_type: FaceType,
+    pub crease_angle: f32,
+}
+impl Default for ShapeHintsNode {
+    fn default() -> Self {
+        Self { vertex_ordering: VertexOrdering::Unknown, shape_type: ShapeType::Unknown, face_type: FaceType::Convex, crease_angle: 0.5 }
+    }
+}
+
+/// Annotation node: renders children as overlay without depth test (Coin3D SoAnnotation).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AnnotationNode;
+
+/// Resets the current model matrix to identity (Coin3D SoResetTransform).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ResetTransformNode;
+
+/// 2D texture coordinate transform (Coin3D SoTexture2Transform).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Texture2TransformNode {
+    pub translation: [f32; 2],
+    pub rotation: f32,
+    pub scale: [f32; 2],
+    pub center: [f32; 2],
+}
+impl Default for Texture2TransformNode {
+    fn default() -> Self { Self { translation: [0.0; 2], rotation: 0.0, scale: [1.0; 2], center: [0.0; 2] } }
+}
+
+/// Per-vertex material binding (Coin3D SoMaterialBinding).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialBinding { Default, Overall, PerPart, PerPartIndexed, PerFace, PerFaceIndexed, PerVertex, PerVertexIndexed }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MaterialBindingNode { pub value: MaterialBinding }
+impl Default for MaterialBindingNode { fn default() -> Self { Self { value: MaterialBinding::Default } } }
+
 /// External file reference (Coin3D SoFile / SoWWWInline).
 /// When encountered during traversal, the referenced file is imported
 /// and its scene graph is merged in-place.
@@ -906,6 +968,12 @@ pub enum NodeData {
     Markup(MarkupNode),
     /// External file reference (SoFile/SoWWWInline equivalent).
     File(FileNode),
+    Environment(EnvironmentNode),
+    ShapeHints(ShapeHintsNode),
+    Annotation(AnnotationNode),
+    ResetTransform(ResetTransformNode),
+    Texture2Transform(Texture2TransformNode),
+    MaterialBinding(MaterialBindingNode),
     /// Screen-space projected texture overlay.
     Decal(DecalNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
@@ -950,6 +1018,12 @@ impl Clone for NodeData {
             NodeData::Measurement(v) => NodeData::Measurement(v.clone()),
             NodeData::Markup(v) => NodeData::Markup(v.clone()),
             NodeData::Custom(id, d) => NodeData::Custom(*id, d.clone_box()),
+            NodeData::Environment(v) => NodeData::Environment(v.clone()),
+            NodeData::ShapeHints(v) => NodeData::ShapeHints(v.clone()),
+            NodeData::Annotation(v) => NodeData::Annotation(v.clone()),
+            NodeData::ResetTransform(v) => NodeData::ResetTransform(v.clone()),
+            NodeData::Texture2Transform(v) => NodeData::Texture2Transform(v.clone()),
+            NodeData::MaterialBinding(v) => NodeData::MaterialBinding(v.clone()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
             NodeData::File(v) => NodeData::File(v.clone()),
         }
@@ -1063,6 +1137,12 @@ impl NodeData {
             | NodeData::Triangle(_)
             | NodeData::IndexedLineSet(_)
             | NodeData::File(_)
+            | NodeData::Environment(_)
+            | NodeData::ShapeHints(_)
+            | NodeData::Annotation(_)
+            | NodeData::ResetTransform(_)
+            | NodeData::Texture2Transform(_)
+            | NodeData::MaterialBinding(_)
             | NodeData::Cube(_)
             | NodeData::Sphere(_)
             | NodeData::Cone(_)
@@ -1114,6 +1194,12 @@ impl NodeData {
             NodeData::Measurement(_) => "Measurement",
             NodeData::Markup(_) => "Markup",
             NodeData::Custom(_, d) => d.type_name(),
+            NodeData::Environment(_) => "Environment",
+            NodeData::ShapeHints(_) => "ShapeHints",
+            NodeData::Annotation(_) => "Annotation",
+            NodeData::ResetTransform(_) => "ResetTransform",
+            NodeData::Texture2Transform(_) => "Texture2Transform",
+            NodeData::MaterialBinding(_) => "MaterialBinding",
             NodeData::Decal(_) => "Decal",
             NodeData::File(_) => "File",
         }
@@ -1158,6 +1244,12 @@ impl Serialize for NodeData {
             NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
             NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
+            NodeData::Environment(v) => s.serialize_newtype_variant("NodeData", 36, "Environment", v),
+            NodeData::ShapeHints(v) => s.serialize_newtype_variant("NodeData", 37, "ShapeHints", v),
+            NodeData::Annotation(v) => s.serialize_newtype_variant("NodeData", 38, "Annotation", v),
+            NodeData::ResetTransform(v) => s.serialize_newtype_variant("NodeData", 39, "ResetTransform", v),
+            NodeData::Texture2Transform(v) => s.serialize_newtype_variant("NodeData", 40, "Texture2Transform", v),
+            NodeData::MaterialBinding(v) => s.serialize_newtype_variant("NodeData", 41, "MaterialBinding", v),
             NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
             NodeData::File(v) => s.serialize_newtype_variant("NodeData", 35, "File", v),
             NodeData::Custom(type_id, d) => {
@@ -1199,6 +1291,12 @@ impl<'de> Deserialize<'de> for NodeData {
             #[serde(rename = "HandlerNode")]
             Handler(String),
             Custom((u16, String)),
+            Environment(EnvironmentNode),
+            ShapeHints(ShapeHintsNode),
+            Annotation(AnnotationNode),
+            ResetTransform(ResetTransformNode),
+            Texture2Transform(Texture2TransformNode),
+            MaterialBinding(MaterialBindingNode),
             Decal(DecalNode),
             File(FileNode),
             EventCallback(EventCallbackNode),
@@ -1239,6 +1337,12 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
                 crate::node_handler::DummyHandler,
             ))),
+            NodeDataHelper::Environment(v) => Ok(NodeData::Environment(v)),
+            NodeDataHelper::ShapeHints(v) => Ok(NodeData::ShapeHints(v)),
+            NodeDataHelper::Annotation(v) => Ok(NodeData::Annotation(v)),
+            NodeDataHelper::ResetTransform(v) => Ok(NodeData::ResetTransform(v)),
+            NodeDataHelper::Texture2Transform(v) => Ok(NodeData::Texture2Transform(v)),
+            NodeDataHelper::MaterialBinding(v) => Ok(NodeData::MaterialBinding(v)),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
             NodeDataHelper::File(v) => Ok(NodeData::File(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {

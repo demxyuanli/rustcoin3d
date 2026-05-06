@@ -136,6 +136,8 @@ pub(super) fn execute_passes(
     renderer.write_gpu_timestamp(&mut encoder);
 
     if ctx.run_shadow_pass {
+        #[cfg(feature = "profiler")]
+        let _span_shadow = tracy_client::span!("shadow");
         pass_shadow::pass_shadow_depth(renderer, &mut encoder, ctx);
         renderer.write_gpu_timestamp(&mut encoder); // shadow end
     }
@@ -414,6 +416,8 @@ pub(super) fn execute_passes(
     }
 
     if solid_mode {
+        #[cfg(feature = "profiler")]
+        let _span_solid = tracy_client::span!("solid");
         pass_solid::pass_solid_and_outline(
             renderer,
             &mut encoder,
@@ -427,6 +431,8 @@ pub(super) fn execute_passes(
     }
 
     if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe {
+        #[cfg(feature = "profiler")]
+        let _span_wireframe = tracy_client::span!("wireframe");
         pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
     }
 
@@ -445,6 +451,8 @@ pub(super) fn execute_passes(
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
     let defer_line_overlays = use_ldr_fxaa;
     if (edge_worthy || has_overlay) && !defer_line_overlays {
+        #[cfg(feature = "profiler")]
+        let _span_edge = tracy_client::span!("edge");
         pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
@@ -526,6 +534,8 @@ pub(super) fn execute_passes(
     }
 
     if renderer.hdr_post_processing {
+        #[cfg(feature = "profiler")]
+        let _span_post = tracy_client::span!("post");
         if let Some(ref fx) = renderer.gpu.post_fx {
             let pl = &renderer.gpu.post_fx_pipelines;
             let w = renderer.config.width.max(1);
@@ -724,6 +734,8 @@ pub(super) fn execute_passes(
     }
 
     // Markup overlay
+    #[cfg(feature = "profiler")]
+    let _span_markup = tracy_client::span!("markup");
     pass_markup::pass_markup(renderer, &mut encoder, &view);
 
     if renderer.hud_enabled {

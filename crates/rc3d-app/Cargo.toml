@@ -12,6 +12,7 @@ rc3d-render = { workspace = true }
 rc3d-engine = { workspace = true }
 rc3d-io = { workspace = true }
 rc3d-gizmo = { workspace = true }
+rc3d-script = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }

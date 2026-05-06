@@ -28,7 +28,7 @@ impl GetBoundingBoxAction {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::Billboard(_) => {
+            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::Billboard(_) => {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }

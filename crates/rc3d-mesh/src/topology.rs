@@ -352,6 +352,39 @@ impl TriangleMesh {
         positions
     }
 
+    /// Default crease angle (degrees) for [`Self::edge_line_positions_feature`]: technical overlays.
+    pub const DEFAULT_FEATURE_EDGE_CREASE_DEG: f32 = 35.0;
+
+    /// Boundary + crease edges for static visualization (`ShadedWithEdges`), not full triangulation.
+    ///
+    /// Includes every **boundary** edge (one adjacent face) and **crease** edges where the dihedral
+    /// angle between face normals exceeds `crease_angle_deg`.
+    pub fn edge_line_positions_feature(&self, crease_angle_deg: f32) -> Vec<[f32; 3]> {
+        let cos_thresh = crease_angle_deg.to_radians().cos();
+        let mut positions = Vec::new();
+        for edge in &self.edges {
+            let p0 = self.positions[edge.vertices[0] as usize].to_array();
+            let p1 = self.positions[edge.vertices[1] as usize].to_array();
+            match (edge.faces[0], edge.faces[1]) {
+                (None, None) => {}
+                (Some(_), None) | (None, Some(_)) => {
+                    positions.push(p0);
+                    positions.push(p1);
+                }
+                (Some(a), Some(b)) => {
+                    let n0 = self.faces[a.0 as usize].normal;
+                    let n1 = self.faces[b.0 as usize].normal;
+                    let d = n0.dot(n1).clamp(-1.0, 1.0);
+                    if d < cos_thresh {
+                        positions.push(p0);
+                        positions.push(p1);
+                    }
+                }
+            }
+        }
+        positions
+    }
+
     /// Flat buffers for GPU: (positions as [f32;3] array, indices).
     pub fn triangle_buffers(&self) -> (Vec<[f32; 3]>, Vec<u32>) {
         let positions: Vec<[f32; 3]> = self.positions.iter().map(|p| p.to_array()).collect();

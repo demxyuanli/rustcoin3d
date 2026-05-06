@@ -359,6 +359,8 @@ impl super::Renderer {
         let mut run_shadow_pass = false;
 
         if solid_wants_shadow {
+            #[cfg(feature = "profiler")]
+            let _span_csm = tracy_client::span!("csm_setup");
             if let Some(dir) = primary_directional_light_dir(scene) {
                 let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
                 if let Some(_aabb) = aabb {

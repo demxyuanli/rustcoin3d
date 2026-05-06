@@ -11,7 +11,7 @@ use rc3d_core::{DisplayMode, NodeId};
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::{AdaptiveControl, DrawCall, Renderer};
 
-use crate::editor_ui::{EditorUi, EditorUiContext, RenderFeatureFlags};
+use crate::editor_ui::{EditorCommand, EditorUi, EditorUiContext, RenderFeatureFlags};
 
 use super::streaming_lod::stream_step_ms;
 
@@ -269,6 +269,18 @@ pub(crate) fn window_event(
                                 renderer.viewport_layout_mut().cycle_active();
                                 app.state.viewport_cameras.active_viewport =
                                     renderer.viewport_layout().active_id;
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::Delete
+                            | winit::keyboard::KeyCode::Backspace,
+                        ) => {
+                            let selected: Vec<NodeId> =
+                                app.state.world.graph.selected_nodes().iter().copied().collect();
+                            for id in selected {
+                                let _ = app.state.editor_commands.push_back(
+                                    EditorCommand::DeleteNode(id),
+                                );
                             }
                         }
                         _ => {}

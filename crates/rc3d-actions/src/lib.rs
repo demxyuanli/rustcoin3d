@@ -14,7 +14,7 @@ pub mod measurement;
 pub mod state;
 pub mod undo;
 
-pub use action::{Action, ActionKind, apply_to_all_roots};
+pub use action::{Action, ActionKind, apply_to_all_roots, par_apply_to_all_roots};
 pub use event::{Event, EventContext};
 pub use light_subsystem::LightSubsystem;
 pub use element::*;
