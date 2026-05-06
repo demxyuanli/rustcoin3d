@@ -47,11 +47,11 @@ fn main() {
         App::new(SceneGraph::new()).with_initial_display_mode(DisplayMode::ShadedWithEdges);
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
-        let (target, orbit_radius) = fit_camera_to_scene(&mut app.world.graph);
-        let controller_root = find_first_camera_node(&app.world.graph)
-            .or_else(|| app.world.graph.roots().first().copied())
+        let (target, orbit_radius) = fit_camera_to_scene(&mut app.state.world.graph);
+        let controller_root = find_first_camera_node(&app.state.world.graph)
+            .or_else(|| app.state.world.graph.roots().first().copied())
             .expect("non-empty graph after load");
-        app.camera_controller = Some(CameraController::new(target, orbit_radius));
+        app.state.camera_controller = Some(CameraController::new(target, orbit_radius));
     });
 
     winit::event_loop::EventLoop::new()

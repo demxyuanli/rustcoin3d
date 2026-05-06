@@ -20,11 +20,11 @@ use crate::adaptive_quality::AdaptiveQualityMode;
 use super::gizmo_support;
 use super::App;
 pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
-        if app.window.is_none() {
+        if app.state.window.is_none() {
             let window = event_loop
                 .create_window(
                     WindowAttributes::default()
-                        .with_title(app.window_title.clone())
+                        .with_title(app.state.window_title.clone())
                         .with_inner_size(winit::dpi::LogicalSize::new(800, 600))
                         .with_resizable(true)
                         .with_maximized(true)
@@ -32,23 +32,23 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 )
                 .expect("failed to create window");
             let renderer = pollster::block_on(Renderer::new(&window));
-            app.window = Some(window);
-            app.renderer = Some(renderer);
-            if app.editor_ui_enabled {
-                if let (Some(window), Some(renderer)) = (&app.window, &app.renderer) {
-                    app.editor_ui = Some(EditorUi::new(window, renderer));
+            app.state.window = Some(window);
+            app.state.renderer = Some(renderer);
+            if app.state.editor_ui_enabled {
+                if let (Some(window), Some(renderer)) = (&app.state.window, &app.state.renderer) {
+                    app.state.editor_ui = Some(EditorUi::new(window, renderer));
                 }
             }
-            if let Some(renderer) = &mut app.renderer {
-                renderer.set_display_mode(app.initial_display_mode);
-                if app.enable_hdr_post_processing {
+            if let Some(renderer) = &mut app.state.renderer {
+                renderer.set_display_mode(app.state.initial_display_mode);
+                if app.state.enable_hdr_post_processing {
                     renderer.set_hdr_post_processing(true);
                 }
-                if app.editor_ui_enabled {
+                if app.state.editor_ui_enabled {
                     renderer.set_hud_enabled(false);
                 }
             }
-            if let Some(window) = &app.window {
+            if let Some(window) = &app.state.window {
                 window.set_visible(true);
             }
         }
@@ -60,9 +60,9 @@ pub(crate) fn window_event(
     _window_id: winit::window::WindowId,
     event: WindowEvent,
 ) {
-        let cursor_pos_before_event = app.cursor_pos;
-        let ui_consumed = if app.editor_ui_enabled {
-            if let (Some(ui), Some(window)) = (&mut app.editor_ui, &app.window) {
+        let cursor_pos_before_event = app.input.cursor_pos;
+        let ui_consumed = if app.state.editor_ui_enabled {
+            if let (Some(ui), Some(window)) = (&mut app.state.editor_ui, &app.state.window) {
                 ui.on_window_event(window, &event)
             } else {
                 false
@@ -76,43 +76,43 @@ pub(crate) fn window_event(
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
-                app.adaptive_last_interaction = Instant::now();
+                app.state.adaptive_last_interaction = Instant::now();
                 let size = *physical_size;
-                if let Some(renderer) = &mut app.renderer {
+                if let Some(renderer) = &mut app.state.renderer {
                     renderer.resize(size.width, size.height);
                 }
                 app.sync_viewport_camera_ids();
-                if let Some(window) = &app.window {
-                    if let Some(ui) = &mut app.editor_ui {
+                if let Some(window) = &app.state.window {
+                    if let Some(ui) = &mut app.state.editor_ui {
                         ui.resize(size.width, size.height, window.scale_factor() as f32);
                     }
                 }
-                if let Some(window) = &app.window {
+                if let Some(window) = &app.state.window {
                     window.request_redraw();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                app.adaptive_last_interaction = Instant::now();
-                let prev = app.cursor_pos;
-                app.cursor_pos = (position.x, position.y);
+                app.state.adaptive_last_interaction = Instant::now();
+                let prev = app.input.cursor_pos;
+                app.input.cursor_pos = (position.x, position.y);
                 if app.camera_left_orbit_enabled() {
-                    if let Some((ax, ay)) = app.left_pick_arm_pos {
-                        let dx = app.cursor_pos.0 - ax;
-                        let dy = app.cursor_pos.1 - ay;
+                    if let Some((ax, ay)) = app.editor.left_pick_arm_pos {
+                        let dx = app.input.cursor_pos.0 - ax;
+                        let dy = app.input.cursor_pos.1 - ay;
                         if dx * dx + dy * dy > 9.0 {
-                            app.left_drag_suppresses_pick = true;
+                            app.editor.left_drag_suppresses_pick = true;
                         }
                     }
                 }
-                if !app.measurement_mode {
+                if !app.editor.measurement_mode {
                     app.editor_on_cursor_moved();
                 }
                 if !ui_consumed
-                    && !app.measurement_mode
+                    && !app.editor.measurement_mode
                     && !app.should_block_handle_event_pointer_dispatch(true)
                 {
-                    let dx = (app.cursor_pos.0 - prev.0) as f32;
-                    let dy = (app.cursor_pos.1 - prev.1) as f32;
+                    let dx = (app.input.cursor_pos.0 - prev.0) as f32;
+                    let dy = (app.input.cursor_pos.1 - prev.1) as f32;
                     app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
                         x: 0.0,
                         y: 0.0,
@@ -125,7 +125,7 @@ pub(crate) fn window_event(
                 event: key_event, ..
             } => {
                 if ui_consumed {
-                    if let Some(window) = &app.window {
+                    if let Some(window) = &app.state.window {
                         window.request_redraw();
                     }
                     return;
@@ -133,94 +133,94 @@ pub(crate) fn window_event(
                 if key_event.state == winit::event::ElementState::Pressed && !key_event.repeat {
                     let key = key_event.physical_key;
                     if let winit::keyboard::PhysicalKey::Code(code) = key {
-                        app.adaptive_last_interaction = Instant::now();
+                        app.state.adaptive_last_interaction = Instant::now();
                         if let Some(hook) = &mut app.panel_overlay_key_hook {
                             hook(code);
                         }
                     }
                     match key {
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::Wireframe);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyS) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::Shaded);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyE) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::ShadedWithEdges);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyH) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::HiddenLine);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => {
-                            app.axis_clip[0] = !app.axis_clip[0];
+                            app.editor.axis_clip[0] = !app.editor.axis_clip[0];
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY) => {
-                            if app.ctrl_pressed {
-                                let _ = app.command_history.redo(&mut app.world.graph);
+                            if app.input.ctrl_pressed {
+                                let _ = app.editor.command_history.redo(&mut app.state.world.graph);
                             } else {
-                                app.axis_clip[1] = !app.axis_clip[1];
+                                app.editor.axis_clip[1] = !app.editor.axis_clip[1];
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
-                            if app.ctrl_pressed {
-                                let _ = app.command_history.undo(&mut app.world.graph);
+                            if app.input.ctrl_pressed {
+                                let _ = app.editor.command_history.undo(&mut app.state.world.graph);
                             } else {
-                                app.axis_clip[2] = !app.axis_clip[2];
+                                app.editor.axis_clip[2] = !app.editor.axis_clip[2];
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyF) => {
                             app.fit_selection_to_view();
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyT) => {
-                            app.gizmo.mode = GizmoMode::Translate;
+                            app.editor.gizmo.mode = GizmoMode::Translate;
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyR) => {
-                            app.gizmo.mode = GizmoMode::Rotate;
+                            app.editor.gizmo.mode = GizmoMode::Rotate;
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyG) => {
-                            app.gizmo.mode = GizmoMode::Scale;
+                            app.editor.gizmo.mode = GizmoMode::Scale;
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyP) => {
-                            app.section_edit_mode = !app.section_edit_mode;
+                            app.editor.section_edit_mode = !app.editor.section_edit_mode;
                         }
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::BracketLeft,
                         ) => {
-                            if app.section_edit_mode {
+                            if app.editor.section_edit_mode {
                                 app.nudge_section_planes(-0.04);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::BracketRight,
                         ) => {
-                            if app.section_edit_mode {
+                            if app.editor.section_edit_mode {
                                 app.nudge_section_planes(0.04);
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) => {
-                            app.world.graph.clear_selection();
-                            app.measurements.clear();
-                            app.measurement_first_point = None;
+                            app.state.world.graph.clear_selection();
+                            app.editor.measurements.clear();
+                            app.editor.measurement_first_point = None;
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyM) => {
-                            app.measurement_mode = !app.measurement_mode;
-                            app.measurement_first_point = None;
-                            log::info!("Measurement mode: {}", app.measurement_mode);
+                            app.editor.measurement_mode = !app.editor.measurement_mode;
+                            app.editor.measurement_first_point = None;
+                            log::info!("Measurement mode: {}", app.editor.measurement_mode);
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyN) => {
-                            app.grid_enabled = !app.grid_enabled;
-                            if let Some(renderer) = &mut app.renderer {
-                                renderer.set_grid_enabled(app.grid_enabled);
+                            app.editor.grid_enabled = !app.editor.grid_enabled;
+                            if let Some(renderer) = &mut app.state.renderer {
+                                renderer.set_grid_enabled(app.editor.grid_enabled);
                             }
-                            log::info!("Grid: {}", if app.grid_enabled { "on" } else { "off" });
+                            log::info!("Grid: {}", if app.editor.grid_enabled { "on" } else { "off" });
                         }
                         // Camera bookmarks: Ctrl+Digit = save, Digit = recall
                         k @ winit::keyboard::PhysicalKey::Code(
@@ -239,7 +239,7 @@ pub(crate) fn window_event(
                                 _ => winit::keyboard::KeyCode::Digit1,
                             };
                             let slot = super::bookmark_slot_from_key(code);
-                            if app.ctrl_pressed {
+                            if app.input.ctrl_pressed {
                                 if let Some(ctrl) = app.active_camera_controller_mut() {
                                     ctrl.save_bookmark(slot, "bookmark");
                                     log::info!("Saved camera bookmark to slot {}", slot + 1);
@@ -252,12 +252,12 @@ pub(crate) fn window_event(
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyI) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.cycle_ibl_preset();
                             }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 let (w, h) = renderer.surface_size();
                                 
                                 renderer.viewport_layout_mut().cycle_layout(w, h);
@@ -265,15 +265,15 @@ pub(crate) fn window_event(
                             app.sync_viewport_camera_ids();
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Tab) => {
-                            if let Some(renderer) = &mut app.renderer {
+                            if let Some(renderer) = &mut app.state.renderer {
                                 renderer.viewport_layout_mut().cycle_active();
-                                app.viewport_cameras.active_viewport =
+                                app.state.viewport_cameras.active_viewport =
                                     renderer.viewport_layout().active_id;
                             }
                         }
                         _ => {}
                     }
-                    if let Some(window) = &app.window {
+                    if let Some(window) = &app.state.window {
                         window.request_redraw();
                     }
                 }
@@ -283,7 +283,7 @@ pub(crate) fn window_event(
                             key: format!("{:?}", kb.logical_key),
                         };
                         if let (Some(_r), Some(active)) =
-                            (&app.renderer, app.viewport_cameras.active())
+                            (&app.state.renderer, app.state.viewport_cameras.active())
                         {
                             let view = active.controller.view_matrix();
                             let proj =
@@ -291,8 +291,8 @@ pub(crate) fn window_event(
                             let ctx = rc3d_actions::EventContext::new(evt, view, proj);
                             let mut action = rc3d_actions::HandleEventAction::new(ctx);
                             action.apply_non_pointer_only(
-                                &app.world.graph,
-                                app.world
+                                &app.state.world.graph,
+                                app.state.world
                                     .graph
                                     .roots()
                                     .first()
@@ -300,25 +300,25 @@ pub(crate) fn window_event(
                                     .unwrap_or(NodeId::default()),
                             );
                         }
-                        if let Some(window) = &app.window {
+                        if let Some(window) = &app.state.window {
                             window.request_redraw();
                         }
                     }
                 }
             }
             WindowEvent::ModifiersChanged(mods) => {
-                app.adaptive_last_interaction = Instant::now();
-                app.shift_pressed = mods.state().shift_key();
-                app.ctrl_pressed = mods.state().control_key();
+                app.state.adaptive_last_interaction = Instant::now();
+                app.input.shift_pressed = mods.state().shift_key();
+                app.input.ctrl_pressed = mods.state().control_key();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if ui_consumed {
-                    if let Some(window) = &app.window {
+                    if let Some(window) = &app.state.window {
                         window.request_redraw();
                     }
                     return;
                 }
-                if !app.measurement_mode && !app.should_block_handle_event_pointer_dispatch(false) {
+                if !app.editor.measurement_mode && !app.should_block_handle_event_pointer_dispatch(false) {
                     use winit::event::ElementState;
                     let btn = match *button {
                         MouseButton::Left => Some(0u8),
@@ -343,25 +343,25 @@ pub(crate) fn window_event(
                     }
                 }
                 if *button == MouseButton::Left {
-                    app.adaptive_last_interaction = Instant::now();
+                    app.state.adaptive_last_interaction = Instant::now();
                     if *state == winit::event::ElementState::Pressed {
                         if let Some(hook) = &mut app.panel_overlay_mouse_hook {
-                            if let Some(window) = app.window.as_ref() {
+                            if let Some(window) = app.state.window.as_ref() {
                                 let size = window.inner_size();
                                 if hook(
-                                    app.cursor_pos.0 as f32,
-                                    app.cursor_pos.1 as f32,
+                                    app.input.cursor_pos.0 as f32,
+                                    app.input.cursor_pos.1 as f32,
                                     size.width,
                                     size.height,
                                 ) {
-                                    if let Some(window) = &app.window {
+                                    if let Some(window) = &app.state.window {
                                         window.request_redraw();
                                     }
                                     return;
                                 }
                             }
                         }
-                        if app.measurement_mode {
+                        if app.editor.measurement_mode {
                             app.do_measure_pick();
                         } else {
                             app.editor_on_left_down();
@@ -373,13 +373,13 @@ pub(crate) fn window_event(
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if ui_consumed {
-                    if let Some(window) = &app.window {
+                    if let Some(window) = &app.state.window {
                         window.request_redraw();
                     }
                     return;
                 }
-                app.adaptive_last_interaction = Instant::now();
-                if !app.measurement_mode && !app.should_block_handle_event_pointer_dispatch(false) {
+                app.state.adaptive_last_interaction = Instant::now();
+                if !app.editor.measurement_mode && !app.should_block_handle_event_pointer_dispatch(false) {
                     let (dx, dy) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (*x, *y),
                         MouseScrollDelta::PixelDelta(pos) => {
@@ -391,31 +391,31 @@ pub(crate) fn window_event(
             }
             WindowEvent::RedrawRequested => {
                 app.poll_pending_graph_load();
-                if app.preview_mode_active
-                    && app.renderer.is_some()
-                    && app.stream_next_tick.is_none()
+                if app.lod.preview_mode_active
+                    && app.state.renderer.is_some()
+                    && app.lod.stream_next_tick.is_none()
                 {
-                    app.stream_next_tick =
+                    app.lod.stream_next_tick =
                         Some(Instant::now() + Duration::from_millis(stream_step_ms()));
                 }
                 app.tick_mesh_stream();
 
                 // Legacy camera controller: update scene-graph camera node
-                if let Some(ref ctrl) = app.camera_controller {
-                    let aspect = app
+                if let Some(ref ctrl) = app.state.camera_controller {
+                    let aspect = app.state
                         .renderer
                         .as_ref()
                         .map(|r| r.config.width as f32 / r.config.height.max(1) as f32)
                         .unwrap_or(1.0);
-                    let roots: Vec<NodeId> = app.world.graph.roots().to_vec();
+                    let roots: Vec<NodeId> = app.state.world.graph.roots().to_vec();
                     for &root in &roots {
-                        App::update_camera_recursive(ctrl, &mut app.world.graph, root, aspect);
+                        App::update_camera_recursive(ctrl, &mut app.state.world.graph, root, aspect);
                     }
                 }
 
                 // Snapshot viewport layout for camera updates (before renderer is mutably borrowed)
-                if !app.viewport_cameras.cameras.is_empty() {
-                    let viewports: Vec<_> = app
+                if !app.state.viewport_cameras.cameras.is_empty() {
+                    let viewports: Vec<_> = app.state
                         .renderer
                         .as_ref()
                         .map(|r| {
@@ -426,12 +426,12 @@ pub(crate) fn window_event(
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    for vc in &app.viewport_cameras.cameras {
+                    for vc in &app.state.viewport_cameras.cameras {
                         if let Some(&(_, aspect)) =
                             viewports.iter().find(|&&(id, _)| id == vc.viewport_id)
                         {
                             vc.controller.update_camera_node(
-                                &mut app.world.graph,
+                                &mut app.state.world.graph,
                                 vc.camera_node,
                                 aspect,
                             );
@@ -439,7 +439,7 @@ pub(crate) fn window_event(
                     }
                 }
 
-                let selected_set = app.world.graph.selected_nodes().clone();
+                let selected_set = app.state.world.graph.selected_nodes().clone();
                 let selected_count = selected_set.len();
                 // Snapshot bookmarks outside of renderer/editor borrow scope
                 let bookmarks: [(bool, &'static str); 9] = {
@@ -453,16 +453,16 @@ pub(crate) fn window_event(
                     }
                     bm
                 };
-                if app.editor_ui_enabled {
+                if app.state.editor_ui_enabled {
                     if let (Some(ui), Some(window), Some(renderer)) =
-                        (&mut app.editor_ui, &app.window, &app.renderer)
+                        (&mut app.state.editor_ui, &app.state.window, &app.state.renderer)
                     {
                         let ui_ctx = EditorUiContext {
                             selected: selected_set,
                             display_mode_label: format!("{:?}", renderer.display_mode()),
                             ibl_label: renderer.ibl_preset_name().to_string(),
                             ibl_preset: renderer.ibl_preset,
-                            gizmo_mode: app.gizmo.mode,
+                            gizmo_mode: app.editor.gizmo.mode,
                             layout_mode: renderer.viewport_layout().layout_mode,
                             layout_mode_label: format!(
                                 "{:?}",
@@ -472,10 +472,10 @@ pub(crate) fn window_event(
                                 "{:?}",
                                 renderer.viewport_layout().active_id
                             ),
-                            smoothed_fps: app.fps_tracker.smoothed_fps(),
-                            frame_time_ms: app.last_frame_time_ms,
-                            diagnostics: app.last_render_stats.diagnostics.clone(),
-                            hidden_nodes: app.hidden_nodes.clone(),
+                            smoothed_fps: app.state.fps_tracker.smoothed_fps(),
+                            frame_time_ms: app.state.last_frame_time_ms,
+                            diagnostics: app.state.last_render_stats.diagnostics.clone(),
+                            hidden_nodes: app.state.hidden_nodes.clone(),
                             render_features: RenderFeatureFlags {
                                 taa: renderer.enable_taa,
                                 motion_blur: renderer.enable_motion_blur,
@@ -492,83 +492,83 @@ pub(crate) fn window_event(
                                 renderer.config.present_mode,
                                 wgpu::PresentMode::AutoVsync
                             ),
-                            grid_enabled: app.grid_enabled,
+                            grid_enabled: app.editor.grid_enabled,
                             hud_enabled: renderer.hud_enabled,
                             outline_width: renderer.outline_width,
                             outline_color: renderer.outline_color,
                             xray_mode: renderer.xray_mode,
-                            adaptive_quality_mode: app.adaptive_quality_mode,
+                            adaptive_quality_mode: app.state.adaptive_quality_mode,
                             adaptive_quality_name: renderer.adaptive_quality_name().to_string(),
                             bookmarks,
                             selected_count,
                         };
-                        ui.run(window, &app.world.graph, renderer, &ui_ctx);
+                        ui.run(window, &app.state.world.graph, renderer, &ui_ctx);
                         for cmd in ui.take_commands() {
-                            app.editor_commands.push_back(cmd);
+                            app.state.editor_commands.push_back(cmd);
                         }
                     }
                     app.apply_editor_commands();
                 }
 
-                if let (Some(renderer), Some(window)) = (&mut app.renderer, &app.window) {
-                    let roots_lod: Vec<NodeId> = app.world.graph.roots().to_vec();
+                if let (Some(renderer), Some(window)) = (&mut app.state.renderer, &app.state.window) {
+                    let roots_lod: Vec<NodeId> = app.state.world.graph.roots().to_vec();
                     for &r in &roots_lod {
-                        update_all_lod_nodes(&mut app.world.graph, r, app.last_camera_eye);
+                        update_all_lod_nodes(&mut app.state.world.graph, r, app.state.last_camera_eye);
                     }
                     {
                         let mut section = SectionPlaneAction::new();
                         for &r in &roots_lod {
-                            section.apply(&app.world.graph, r);
+                            section.apply(&app.state.world.graph, r);
                         }
                         let mut merged = section.planes;
-                        if app.axis_clip[0] {
+                        if app.editor.axis_clip[0] {
                             merged.push([1.0, 0.0, 0.0, 0.0]);
                         }
-                        if app.axis_clip[1] {
+                        if app.editor.axis_clip[1] {
                             merged.push([0.0, 1.0, 0.0, 0.0]);
                         }
-                        if app.axis_clip[2] {
+                        if app.editor.axis_clip[2] {
                             merged.push([0.0, 0.0, 1.0, 0.0]);
                         }
                         renderer.set_clip_planes(merged);
                     }
-                    app.world.evaluate_engines();
+                    app.state.world.evaluate_engines();
 
-                    renderer.set_materials(app.world.materials.clone());
-                    renderer.set_grid_enabled(app.grid_enabled);
-                    app.world.collector.draw_calls.clear();
-                    app.world.collector.state = rc3d_actions::State::new();
-                    app.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
-                    app.world.collector.view_matrix = Mat4::IDENTITY;
-                    app.world.collector.projection_matrix = Mat4::IDENTITY;
-                    app.world.collector.projection_orthographic = false;
-                    app.world.collector.global_display_mode = renderer.display_mode();
-                    app.world.collector.material_library = Some(app.world.materials.clone());
-                    app.world.collector.set_hidden_nodes(&app.hidden_nodes);
-                    for &root in app.world.graph.roots() {
-                        app.world.collector.traverse(&app.world.graph, root);
+                    renderer.set_materials(app.state.world.materials.clone());
+                    renderer.set_grid_enabled(app.editor.grid_enabled);
+                    app.state.world.collector.draw_calls.clear();
+                    app.state.world.collector.state = rc3d_actions::State::new();
+                    app.state.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
+                    app.state.world.collector.view_matrix = Mat4::IDENTITY;
+                    app.state.world.collector.projection_matrix = Mat4::IDENTITY;
+                    app.state.world.collector.projection_orthographic = false;
+                    app.state.world.collector.global_display_mode = renderer.display_mode();
+                    app.state.world.collector.material_library = Some(app.state.world.materials.clone());
+                    app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
+                    for &root in app.state.world.graph.roots() {
+                        app.state.world.collector.traverse(&app.state.world.graph, root);
                     }
-                    app.last_camera_eye = app.world.collector.camera_pos;
-                    gizmo_support::sync_gizmo_from_selection(&mut app.gizmo, &app.world.graph);
+                    app.state.last_camera_eye = app.state.world.collector.camera_pos;
+                    gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
 
-                    if !app.measurements.is_empty() {
-                        let vp = app.world.collector.projection_matrix
-                            * app.world.collector.view_matrix;
+                    if !app.editor.measurements.is_empty() {
+                        let vp = app.state.world.collector.projection_matrix
+                            * app.state.world.collector.view_matrix;
                         let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(
-                            app.world.collector.projection_matrix,
+                            app.state.world.collector.projection_matrix,
                         );
-                        for &(p1, p2, _dist) in &app.measurements {
-                            app.world.collector.draw_calls.push(DrawCall {
+                        for &(p1, p2, _dist) in &app.editor.measurements {
+                            app.state.world.collector.draw_calls.push(DrawCall {
                                 vertices: Arc::new(Vec::new()),
                                 indices: None,
                                 edge_positions: Arc::new(vec![p1.to_array(), p2.to_array()]),
                                 mvp: vp,
                                 model_matrix: Mat4::IDENTITY,
-                                camera_pos: app.world.collector.camera_pos,
+                                camera_pos: app.state.world.collector.camera_pos,
                                 light_count: 0,
                                 overlay_color: Some([1.0, 1.0, 0.0, 1.0]),
                                 display_mode: DisplayMode::ShadedWithEdges,
-                                projection_orthographic: app
+                                projection_orthographic: app.state
                                     .world
                                     .collector
                                     .projection_orthographic,
@@ -578,30 +578,30 @@ pub(crate) fn window_event(
                             });
                         }
                     }
-                    if app.gizmo.visible {
-                        let vp = app.world.collector.projection_matrix
-                            * app.world.collector.view_matrix;
+                    if app.editor.gizmo.visible {
+                        let vp = app.state.world.collector.projection_matrix
+                            * app.state.world.collector.view_matrix;
                         let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(
-                            app.world.collector.projection_matrix,
+                            app.state.world.collector.projection_matrix,
                         );
-                        for (line_verts, color) in app.gizmo.generate_lines() {
+                        for (line_verts, color) in app.editor.gizmo.generate_lines() {
                             let mut ep: Vec<[f32; 3]> = Vec::new();
                             for c in line_verts.chunks_exact(2) {
                                 ep.push(c[0].position);
                                 ep.push(c[1].position);
                             }
                             if !ep.is_empty() {
-                                app.world.collector.draw_calls.push(DrawCall {
+                                app.state.world.collector.draw_calls.push(DrawCall {
                                     vertices: Arc::new(Vec::new()),
                                     indices: None,
                                     edge_positions: Arc::new(ep),
                                     mvp: vp,
                                     model_matrix: Mat4::IDENTITY,
-                                    camera_pos: app.world.collector.camera_pos,
+                                    camera_pos: app.state.world.collector.camera_pos,
                                     light_count: 0,
                                     overlay_color: Some(color),
                                     display_mode: DisplayMode::ShadedWithEdges,
-                                    projection_orthographic: app
+                                    projection_orthographic: app.state
                                         .world
                                         .collector
                                         .projection_orthographic,
@@ -613,44 +613,44 @@ pub(crate) fn window_event(
                         }
                     }
 
-                    let markup_root = app.world.graph.roots().first().copied().unwrap_or_default();
-                    renderer.collect_markup_vertices(&app.world.graph, markup_root);
+                    let markup_root = app.state.world.graph.roots().first().copied().unwrap_or_default();
+                    renderer.collect_markup_vertices(&app.state.world.graph, markup_root);
 
-                    if !app.world.collector.draw_calls.is_empty() {
+                    if !app.state.world.collector.draw_calls.is_empty() {
                         let mut overlay = None;
-                        if let Some(ui) = &mut app.editor_ui {
+                        if let Some(ui) = &mut app.state.editor_ui {
                             overlay = Some(ui as *mut EditorUi);
                         }
                         let stats = if let Some(ui_ptr) = overlay {
                             let device = renderer.device.clone();
                             let queue = renderer.queue.clone();
                             renderer.render_draw_calls_with_overlay(
-                                &app.world.collector.draw_calls,
-                                &app.world.graph,
+                                &app.state.world.collector.draw_calls,
+                                &app.state.world.graph,
                                 Some(&mut |encoder, view| {
-                                    // SAFETY: ui_ptr points to app.editor_ui and is valid for this frame scope.
+                                    // SAFETY: ui_ptr points to app.state.editor_ui and is valid for this frame scope.
                                     let ui = unsafe { &mut *ui_ptr };
                                     ui.paint(&device, &queue, encoder, view);
                                 }),
                             )
                         } else {
                             renderer.render_draw_calls(
-                                &app.world.collector.draw_calls,
-                                &app.world.graph,
+                                &app.state.world.collector.draw_calls,
+                                &app.state.world.graph,
                             )
                         };
                         let now = Instant::now();
                         let frame_time_ms =
-                            now.duration_since(app.last_frame_time).as_secs_f32() * 1000.0;
-                        app.last_frame_time = now;
-                        app.last_frame_time_ms = frame_time_ms;
-                        app.fps_tracker.push(frame_time_ms);
-                        app.last_render_stats = stats;
-                        let idle_for_secs = app.adaptive_last_interaction.elapsed().as_secs_f32();
-                        let has_dynamic_scene = app.world.engines.is_some();
+                            now.duration_since(app.state.last_frame_time).as_secs_f32() * 1000.0;
+                        app.state.last_frame_time = now;
+                        app.state.last_frame_time_ms = frame_time_ms;
+                        app.state.fps_tracker.push(frame_time_ms);
+                        app.state.last_render_stats = stats;
+                        let idle_for_secs = app.state.adaptive_last_interaction.elapsed().as_secs_f32();
+                        let has_dynamic_scene = app.state.world.engines.is_some();
                         let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
                         let lock_idle = idle_for_secs >= 2.0 && !has_dynamic_scene;
-                        let adaptive_control = match app.adaptive_quality_mode {
+                        let adaptive_control = match app.state.adaptive_quality_mode {
                             AdaptiveQualityMode::Off => AdaptiveControl::Disabled,
                             AdaptiveQualityMode::On => AdaptiveControl::Dynamic { allow_downgrade },
                             AdaptiveQualityMode::AutoIdleLock => {
@@ -675,16 +675,16 @@ pub(crate) fn window_event(
                             }
                         }
                         renderer.update_hud(
-                            app.fps_tracker.smoothed_fps(),
-                            app.fps_tracker.average_frame_ms(),
-                            &app.last_render_stats,
+                            app.state.fps_tracker.smoothed_fps(),
+                            app.state.fps_tracker.average_frame_ms(),
+                            &app.state.last_render_stats,
                             &mode_name,
                         );
                         let quality = renderer.adaptive_quality_name().to_string();
-                        app.fps_tracker.maybe_log(&app.last_render_stats, &quality);
+                        app.state.fps_tracker.maybe_log(&app.state.last_render_stats, &quality);
                         let perf_active = renderer.performance_mode_active();
-                        if perf_active != app.perf_mode_last {
-                            app.perf_mode_last = perf_active;
+                        if perf_active != app.state.perf_mode_last {
+                            app.state.perf_mode_last = perf_active;
                             if perf_active {
                                 window.set_title("rustcoin3d [Performance Mode]");
                                 log::warn!("Performance mode is enabled");
@@ -693,7 +693,7 @@ pub(crate) fn window_event(
                                 log::info!("Performance mode is disabled");
                             }
                         }
-                        if app.preview_mode_active {
+                        if app.lod.preview_mode_active {
                             window.set_title("rustcoin3d [Stream mesh]");
                         }
                     } else {
@@ -705,12 +705,12 @@ pub(crate) fn window_event(
                             Err(e) => log::warn!("Surface error during no-op frame: {:?}", e),
                         }
                     }
-                    if app.continuous_redraw && app.world.engines.is_some() {
+                    if app.state.continuous_redraw && app.state.world.engines.is_some() {
                         window.request_redraw();
                     }
                 }
-                if app.preview_mode_active {
-                    if let Some(w) = &app.window {
+                if app.lod.preview_mode_active {
+                    if let Some(w) = &app.state.window {
                         w.request_redraw();
                     }
                 }
@@ -720,30 +720,30 @@ pub(crate) fn window_event(
 
         // Tick fly-to camera animation (outside renderer borrow scope)
         {
-            let dt_s = app.last_frame_time_ms / 1000.0;
+            let dt_s = app.state.last_frame_time_ms / 1000.0;
             let mut flying = false;
-            if let Some(ref mut ctrl) = app.camera_controller {
+            if let Some(ref mut ctrl) = app.state.camera_controller {
                 flying = ctrl.tick_fly(dt_s);
             }
             if !flying {
-                if let Some(vc) = app.viewport_cameras.active_mut() {
+                if let Some(vc) = app.state.viewport_cameras.active_mut() {
                     vc.controller.tick_fly(dt_s);
                 }
             }
         }
 
         // Camera control (legacy single-camera path)
-        let block_orbit = app.gizmo_dragging || app.box_select_drag || app.view_split_drag.is_some();
+        let block_orbit = app.editor.gizmo_dragging || app.editor.box_select_drag || app.editor.view_split_drag.is_some();
         let cursor_for_camera_delta: (f64, f64) = match &event {
             WindowEvent::CursorMoved { .. } => cursor_pos_before_event,
-            _ => app.cursor_pos,
+            _ => app.input.cursor_pos,
         };
         let left_orbit = app.camera_left_orbit_enabled();
         if !ui_consumed {
-            if let Some(ref mut ctrl) = app.camera_controller {
-                if !app.measurement_mode && !block_orbit {
+            if let Some(ref mut ctrl) = app.state.camera_controller {
+                if !app.editor.measurement_mode && !block_orbit {
                     App::dispatch_camera_event(ctrl, &event, &cursor_for_camera_delta, left_orbit);
-                    if let Some(window) = &app.window {
+                    if let Some(window) = &app.state.window {
                         match event {
                             WindowEvent::CursorMoved { .. }
                             | WindowEvent::MouseInput { .. }
@@ -757,7 +757,7 @@ pub(crate) fn window_event(
 
             // Viewport camera set (new multi-viewport path).
             // Wheel: cursor viewport; middle/right: lock to press viewport until release.
-            if !app.viewport_cameras.cameras.is_empty() && !app.measurement_mode && !block_orbit {
+            if !app.state.viewport_cameras.cameras.is_empty() && !app.editor.measurement_mode && !block_orbit {
                 app.dispatch_multi_viewport_camera(&event, &cursor_for_camera_delta, left_orbit);
             }
         }

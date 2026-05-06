@@ -1,12 +1,20 @@
+mod app_state;
 mod box_select;
 mod editor_commands;
+mod editor_interaction;
+mod editor_session;
 mod event_handler;
 mod fps_tracker;
 mod gizmo_support;
+mod input_state;
+mod lod_state;
 mod measurement;
 mod streaming_lod;
 
-mod editor_interaction;
+pub(crate) use app_state::AppState;
+pub(crate) use editor_session::EditorSession;
+pub(crate) use input_state::InputState;
+pub(crate) use lod_state::LODState;
 
 use rc3d_actions::{
     Action, CommandHistory, Event, EventContext, HandleEventAction, MarkupAction, Ray,
@@ -40,65 +48,17 @@ const APPROX_VERTEX_BYTES: usize = 48;
 const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 240 * 1024 * 1024;
 
 pub struct App {
-    pub world: World,
-    pub renderer: Option<Renderer>,
-    pub window: Option<winit::window::Window>,
-    pub camera_controller: Option<CameraController>, // legacy; prefer viewport_cameras
-    pub viewport_cameras: ViewportCameraSet,
+    pub state: AppState,
+    pub editor: EditorSession,
+    pub input: InputState,
+    pub lod: LODState,
+    // Cross-cutting hooks
     pub on_pick: Option<PickCallback>,
-    cursor_pos: (f64, f64),
-    shift_pressed: bool,
-    ctrl_pressed: bool,
-    measurement_mode: bool,
-    measurement_type: Option<rc3d_scene::node_data::MeasurementType>,
-    measurement_first_point: Option<Vec3>,
-    measurements: Vec<(Vec3, Vec3, f32)>,
-    perf_mode_last: bool,
-    full_res_patches: Vec<FullResPatch>,
-    preview_mode_active: bool,
-    stream_next_tick: Option<Instant>,
-    initial_display_mode: DisplayMode,
-    enable_hdr_post_processing: bool,
-    last_frame_time: Instant,
-    last_frame_time_ms: f32,
-    fps_tracker: FpsTracker,
-    last_render_stats: FrameStats,
-    pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
-    graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
-    panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
-    panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
-    panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
-    adaptive_quality_mode: AdaptiveQualityMode,
-    adaptive_last_interaction: Instant,
-    continuous_redraw: bool,
-    gizmo: rc3d_gizmo::Gizmo,
-    gizmo_dragging: bool,
-    gizmo_pending_transform: Option<(NodeId, Mat4)>,
-    command_history: CommandHistory,
-    markup_action: MarkupAction,
-    /// Axis-aligned clip toggles (merged with `SectionPlane` from the graph each frame).
-    axis_clip: [bool; 3],
-    grid_enabled: bool,
-    box_select_drag: bool,
-    box_select_anchor: (f32, f32),
-    section_edit_mode: bool,
-    /// When `Some`, user is dragging a multi-viewport split bar (`ViewportSplitAxis`).
-    view_split_drag: Option<rc3d_render::viewport::ViewportSplitAxis>,
-    /// Middle-mouse orbit: camera updates go to this viewport until middle button release.
-    orbit_drag_viewport_id: Option<rc3d_render::viewport::ViewportId>,
-    /// Left-mouse orbit (viewer mode): camera viewport lock until release.
-    left_orbit_drag_viewport_id: Option<rc3d_render::viewport::ViewportId>,
-    /// Right-mouse pan: same for pan until right button release.
-    pan_drag_viewport_id: Option<rc3d_render::viewport::ViewportId>,
-    /// Deferred pick: arm on left down, run on left up if user did not drag (viewer orbit mode).
-    left_pick_arm_pos: Option<(f64, f64)>,
-    left_drag_suppresses_pick: bool,
-    hidden_nodes: std::collections::HashSet<NodeId>,
-    last_camera_eye: Vec3,
-    window_title: String,
-    editor_ui: Option<EditorUi>,
-    editor_ui_enabled: bool,
-    editor_commands: std::collections::VecDeque<EditorCommand>,
+    pub pending_graph_rx: Option<std::sync::mpsc::Receiver<Result<SceneGraph, String>>>,
+    pub graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
+    pub panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
+    pub panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
+    pub panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
 }
 
 impl App {
@@ -115,69 +75,77 @@ impl App {
             );
         }
         Self {
-            world: World::new(graph),
-            renderer: None,
-            window: None,
-            camera_controller: None,
-            viewport_cameras: ViewportCameraSet::new(),
+            state: AppState {
+                world: World::new(graph),
+                renderer: None,
+                window: None,
+                camera_controller: None,
+                viewport_cameras: ViewportCameraSet::new(),
+                initial_display_mode: DisplayMode::ShadedWithEdges,
+                enable_hdr_post_processing: false,
+                adaptive_quality_mode: AdaptiveQualityMode::On,
+                adaptive_last_interaction: Instant::now(),
+                continuous_redraw: true,
+                last_frame_time: Instant::now(),
+                last_frame_time_ms: 0.0,
+                fps_tracker: FpsTracker::new(120),
+                last_render_stats: FrameStats::default(),
+                window_title: "rustcoin3d".into(),
+                editor_ui: None,
+                editor_ui_enabled: false,
+                editor_commands: std::collections::VecDeque::new(),
+                hidden_nodes: std::collections::HashSet::new(),
+                last_camera_eye: Vec3::new(0.0, 0.0, 5.0),
+                perf_mode_last: false,
+            },
+            editor: EditorSession {
+                gizmo: rc3d_gizmo::Gizmo::new(),
+                gizmo_dragging: false,
+                gizmo_pending_transform: None,
+                command_history: CommandHistory::new(128),
+                markup_action: MarkupAction::new(),
+                measurement_mode: false,
+                measurement_type: None,
+                measurement_first_point: None,
+                measurements: Vec::new(),
+                axis_clip: [false, false, false],
+                grid_enabled: false,
+                box_select_drag: false,
+                box_select_anchor: (0.0, 0.0),
+                section_edit_mode: false,
+                view_split_drag: None,
+                orbit_drag_viewport_id: None,
+                left_orbit_drag_viewport_id: None,
+                pan_drag_viewport_id: None,
+                left_pick_arm_pos: None,
+                left_drag_suppresses_pick: false,
+            },
+            input: InputState {
+                cursor_pos: (0.0, 0.0),
+                shift_pressed: false,
+                ctrl_pressed: false,
+            },
+            lod: LODState {
+                full_res_patches,
+                preview_mode_active,
+                stream_next_tick: None,
+            },
             on_pick: None,
-            cursor_pos: (0.0, 0.0),
-            shift_pressed: false,
-            ctrl_pressed: false,
-            measurement_mode: false,
-            measurement_type: None,
-            measurement_first_point: None,
-            measurements: Vec::new(),
-            perf_mode_last: false,
-            full_res_patches,
-            preview_mode_active,
-            stream_next_tick: None,
-            initial_display_mode: DisplayMode::ShadedWithEdges,
-            enable_hdr_post_processing: false,
-            last_frame_time: Instant::now(),
-            last_frame_time_ms: 0.0,
-            fps_tracker: FpsTracker::new(120),
-            last_render_stats: FrameStats::default(),
             pending_graph_rx: None,
             graph_load_hook: None,
             panel_overlay_text_hook: None,
             panel_overlay_key_hook: None,
             panel_overlay_mouse_hook: None,
-            adaptive_quality_mode: AdaptiveQualityMode::On,
-            adaptive_last_interaction: Instant::now(),
-            continuous_redraw: true,
-            gizmo: rc3d_gizmo::Gizmo::new(),
-            gizmo_dragging: false,
-            gizmo_pending_transform: None,
-            command_history: CommandHistory::new(128),
-            markup_action: MarkupAction::new(),
-            axis_clip: [false, false, false],
-            grid_enabled: false,
-            box_select_drag: false,
-            box_select_anchor: (0.0, 0.0),
-            section_edit_mode: false,
-            view_split_drag: None,
-            orbit_drag_viewport_id: None,
-            left_orbit_drag_viewport_id: None,
-            pan_drag_viewport_id: None,
-            left_pick_arm_pos: None,
-            left_drag_suppresses_pick: false,
-            hidden_nodes: std::collections::HashSet::new(),
-            last_camera_eye: Vec3::new(0.0, 0.0, 5.0),
-            window_title: "rustcoin3d".into(),
-            editor_ui: None,
-            editor_ui_enabled: false,
-            editor_commands: std::collections::VecDeque::new(),
         }
     }
 
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
-        self.window_title = title.into();
+        self.state.window_title = title.into();
         self
     }
 
     pub fn with_editor_ui(mut self, enabled: bool) -> Self {
-        self.editor_ui_enabled = enabled;
+        self.state.editor_ui_enabled = enabled;
         self
     }
 
@@ -198,18 +166,18 @@ impl App {
         };
         match rx.try_recv() {
             Ok(Ok(graph)) => {
-                self.world.graph = graph;
-                self.viewport_cameras.cameras.clear();
-                self.orbit_drag_viewport_id = None;
-                self.left_orbit_drag_viewport_id = None;
-                self.pan_drag_viewport_id = None;
-                self.left_pick_arm_pos = None;
-                self.left_drag_suppresses_pick = false;
+                self.state.world.graph = graph;
+                self.state.viewport_cameras.cameras.clear();
+                self.editor.orbit_drag_viewport_id = None;
+                self.editor.left_orbit_drag_viewport_id = None;
+                self.editor.pan_drag_viewport_id = None;
+                self.editor.left_pick_arm_pos = None;
+                self.editor.left_drag_suppresses_pick = false;
                 self.pending_graph_rx = None;
-                if let Some(renderer) = &mut self.renderer {
-                    self.world.invalidate_caches(renderer);
+                if let Some(renderer) = &mut self.state.renderer {
+                    self.state.world.invalidate_caches(renderer);
                 } else {
-                    self.world.collector.invalidate_mesh_cache();
+                    self.state.world.collector.invalidate_mesh_cache();
                 }
                 log::info!("Async scene load applied");
                 if let Some(hook) = self.graph_load_hook.take() {
@@ -229,12 +197,12 @@ impl App {
     }
 
     pub fn with_camera_controller(mut self, controller: CameraController) -> Self {
-        self.camera_controller = Some(controller);
+        self.state.camera_controller = Some(controller);
         self
     }
 
     pub fn with_engines(mut self, engines: rc3d_engine::EngineRegistry) -> Self {
-        self.world.engines = Some(engines);
+        self.state.world.engines = Some(engines);
         self
     }
 
@@ -247,20 +215,20 @@ impl App {
     }
 
     pub fn scene_graph(&self) -> &SceneGraph {
-        &self.world.graph
+        &self.state.world.graph
     }
 
     pub fn scene_graph_mut(&mut self) -> &mut SceneGraph {
-        &mut self.world.graph
+        &mut self.state.world.graph
     }
 
     pub fn with_initial_display_mode(mut self, mode: DisplayMode) -> Self {
-        self.initial_display_mode = mode;
+        self.state.initial_display_mode = mode;
         self
     }
 
     pub fn with_hdr_post_processing(mut self, enabled: bool) -> Self {
-        self.enable_hdr_post_processing = enabled;
+        self.state.enable_hdr_post_processing = enabled;
         self
     }
 
@@ -286,17 +254,17 @@ impl App {
     }
 
     pub fn with_grid_enabled(mut self, enabled: bool) -> Self {
-        self.grid_enabled = enabled;
+        self.editor.grid_enabled = enabled;
         self
     }
 
     pub fn with_adaptive_quality_mode(mut self, mode: AdaptiveQualityMode) -> Self {
-        self.adaptive_quality_mode = mode;
+        self.state.adaptive_quality_mode = mode;
         self
     }
 
     pub fn with_continuous_redraw(mut self, enabled: bool) -> Self {
-        self.continuous_redraw = enabled;
+        self.state.continuous_redraw = enabled;
         self
     }
 }
@@ -318,23 +286,23 @@ impl ApplicationHandler for App {
 
 impl App {
     fn tick_mesh_stream(&mut self) {
-        if self.full_res_patches.is_empty() {
+        if self.lod.full_res_patches.is_empty() {
             return;
         }
-        let Some(fire_at) = self.stream_next_tick else {
+        let Some(fire_at) = self.lod.stream_next_tick else {
             return;
         };
         let now = Instant::now();
         if now < fire_at {
             return;
         }
-        self.stream_next_tick = Some(now + Duration::from_millis(stream_step_ms()));
+        self.lod.stream_next_tick = Some(now + Duration::from_millis(stream_step_ms()));
 
         let mut remaining = Vec::new();
         let mut any_change = false;
         let mut finished_patches: Vec<FullResPatch> = Vec::new();
 
-        for mut patch in self.full_res_patches.drain(..) {
+        for mut patch in self.lod.full_res_patches.drain(..) {
             let start = *patch.stream_start.get_or_insert(now);
             let t_s = start.elapsed().as_secs_f64();
 
@@ -349,7 +317,7 @@ impl App {
                     // advance to the highest available streamed stage before finishing.
                     if let Some(last_stage) = patch.stream_stages.len().checked_sub(1) {
                         if last_stage > patch.current_stage {
-                            patch.apply_stage_to_graph(&mut self.world.graph, last_stage);
+                            patch.apply_stage_to_graph(&mut self.state.world.graph, last_stage);
                             let tris = patch.stage_tri_counts[last_stage];
                             log::info!(
                                 "Mesh stream [Gaussian]: ~{}K tris at t={:.2}s (max staged LOD)",
@@ -372,7 +340,7 @@ impl App {
 
             if let Some(target_stage) = patch.stage_for_budget(budget) {
                 if target_stage > patch.current_stage {
-                    patch.apply_stage_to_graph(&mut self.world.graph, target_stage);
+                    patch.apply_stage_to_graph(&mut self.state.world.graph, target_stage);
                     let tris = patch.stage_tri_counts[target_stage];
                     log::info!(
                         "Mesh stream [Gaussian]: ~{}K tris at t={:.2}s (budget={})",
@@ -401,7 +369,7 @@ impl App {
                     MAX_SAFE_VERTEX_BUFFER_BYTES,
                 );
             } else {
-                patch.apply_full_to_graph(&mut self.world.graph);
+                patch.apply_full_to_graph(&mut self.state.world.graph);
                 log::warn!(
                     "Full-resolution mesh restored: points={}, indices={}, ~{}K triangles",
                     total_points,
@@ -411,19 +379,19 @@ impl App {
             }
         }
 
-        self.full_res_patches = remaining;
+        self.lod.full_res_patches = remaining;
 
         if any_change || n_finished > 0 {
-            if let Some(renderer) = &mut self.renderer {
+            if let Some(renderer) = &mut self.state.renderer {
                 renderer.invalidate_mesh_cache();
             }
-            self.world.collector.invalidate_mesh_cache();
+            self.state.world.collector.invalidate_mesh_cache();
         }
 
-        if self.full_res_patches.is_empty() {
-            self.preview_mode_active = false;
-            self.stream_next_tick = None;
-            if let Some(window) = &self.window {
+        if self.lod.full_res_patches.is_empty() {
+            self.lod.preview_mode_active = false;
+            self.lod.stream_next_tick = None;
+            if let Some(window) = &self.state.window {
                 window.set_title("rustcoin3d");
                 window.request_redraw();
             }
@@ -453,9 +421,9 @@ impl App {
 
     /// Viewport id under the cursor (winit physical pixels), using the same viewport resolution rules as scene picking.
     pub(super) fn viewport_id_under_cursor(&self) -> Option<rc3d_render::viewport::ViewportId> {
-        let r = self.renderer.as_ref()?;
-        let cx = self.cursor_pos.0 as f32;
-        let cy = self.cursor_pos.1 as f32;
+        let r = self.state.renderer.as_ref()?;
+        let cx = self.input.cursor_pos.0 as f32;
+        let cy = self.input.cursor_pos.1 as f32;
         let vp = r
             .viewport_layout()
             .viewport_at(cx, cy)
@@ -473,15 +441,15 @@ impl App {
         surface_w: u32,
         surface_h: u32,
     ) -> Option<(f32, f32, f32, f32, Mat4, Mat4)> {
-        if !self.viewport_cameras.cameras.is_empty() {
-            let r = self.renderer.as_ref()?;
+        if !self.state.viewport_cameras.cameras.is_empty() {
+            let r = self.state.renderer.as_ref()?;
             let vp_ref = r
                 .viewport_layout()
                 .viewport_at(cx, cy)
                 .or_else(|| r.viewport_layout().active())
                 .or_else(|| r.viewport_layout().viewports.first())?;
-            if let Some(vc) = self.viewport_cameras.find(vp_ref.id) {
-                let (v, p) = gizmo_support::pick_view_proj(&self.world.graph, vc, vp_ref);
+            if let Some(vc) = self.state.viewport_cameras.find(vp_ref.id) {
+                let (v, p) = gizmo_support::pick_view_proj(&self.state.world.graph, vc, vp_ref);
                 let lx = cx - vp_ref.rect.x as f32;
                 let ly = cy - vp_ref.rect.y as f32;
                 let vw = vp_ref.rect.width.max(1) as f32;
@@ -489,7 +457,7 @@ impl App {
                 return Some((lx, ly, vw, vh, v, p));
             }
         }
-        if let Some(ctrl) = &self.camera_controller {
+        if let Some(ctrl) = &self.state.camera_controller {
             let vw = surface_w.max(1) as f32;
             let vh = surface_h.max(1) as f32;
             let aspect = vw / vh;
@@ -508,10 +476,10 @@ impl App {
         &self,
         event: Event,
     ) -> Option<EventContext> {
-        let w = self.window.as_ref()?;
+        let w = self.state.window.as_ref()?;
         let s = w.inner_size();
-        let cx = self.cursor_pos.0 as f32;
-        let cy = self.cursor_pos.1 as f32;
+        let cx = self.input.cursor_pos.0 as f32;
+        let cy = self.input.cursor_pos.1 as f32;
         let (local_event, view, proj, pick_vp) = match &event {
             Event::MouseMove { dx, dy, .. } => {
                 let (lx, ly, vw, vh, v, p) =
@@ -569,25 +537,25 @@ impl App {
         };
         let mut action = HandleEventAction::new(ctx);
         let root = self
-            .world
+            .state.world
             .graph
             .roots()
             .first()
             .copied()
             .unwrap_or(NodeId::default());
-        action.apply(&self.world.graph, root);
+        action.apply(&self.state.world.graph, root);
         if let Some(n) = action.hit_node {
             log::trace!("HandleEventAction pointer: pick hit {:?}", n);
         }
     }
 
     pub(super) fn dispatch_handle_event_for_scroll(&self, dx: f32, dy: f32) {
-        let Some(w) = self.window.as_ref() else {
+        let Some(w) = self.state.window.as_ref() else {
             return;
         };
         let s = w.inner_size();
-        let cx = self.cursor_pos.0 as f32;
-        let cy = self.cursor_pos.1 as f32;
+        let cx = self.input.cursor_pos.0 as f32;
+        let cy = self.input.cursor_pos.1 as f32;
         let Some((_, _, _, _, view, proj)) =
             self.pointer_pick_frame(cx, cy, s.width, s.height)
         else {
@@ -596,13 +564,13 @@ impl App {
         let ctx = EventContext::new(Event::Scroll { dx, dy }, view, proj);
         let mut action = HandleEventAction::new(ctx);
         let root = self
-            .world
+            .state.world
             .graph
             .roots()
             .first()
             .copied()
             .unwrap_or(NodeId::default());
-        action.apply(&self.world.graph, root);
+        action.apply(&self.state.world.graph, root);
         if !action.event_callback_nodes.is_empty() {
             log::trace!(
                 "HandleEventAction scroll: {} EventCallback node(s) collected",
@@ -612,10 +580,10 @@ impl App {
     }
 
     pub(super) fn should_block_handle_event_pointer_dispatch(&self, for_cursor_move: bool) -> bool {
-        if self.view_split_drag.is_some() {
+        if self.editor.view_split_drag.is_some() {
             return true;
         }
-        if for_cursor_move && (self.gizmo_dragging || self.box_select_drag) {
+        if for_cursor_move && (self.editor.gizmo_dragging || self.editor.box_select_drag) {
             return true;
         }
         false
@@ -623,11 +591,11 @@ impl App {
 
     fn viewport_camera_by_id_mut(&mut self, id: rc3d_render::viewport::ViewportId) -> Option<&mut ViewportCamera> {
         let i = self
-            .viewport_cameras
+            .state.viewport_cameras
             .cameras
             .iter()
             .position(|vc| vc.viewport_id == id)?;
-        self.viewport_cameras.cameras.get_mut(i)
+        self.state.viewport_cameras.cameras.get_mut(i)
     }
 
     /// Multi-viewport camera: wheel uses cursor viewport; middle/left/right drag locks to press viewport until release.
@@ -637,10 +605,10 @@ impl App {
         cursor_pos: &(f64, f64),
         left_orbit_enabled: bool,
     ) {
-        let active_id = self.viewport_cameras.active_viewport;
+        let active_id = self.state.viewport_cameras.active_viewport;
         let vid_cursor_resolved = || {
             self.viewport_id_under_cursor()
-                .filter(|id| self.viewport_cameras.find(*id).is_some())
+                .filter(|id| self.state.viewport_cameras.find(*id).is_some())
                 .unwrap_or(active_id)
         };
 
@@ -648,7 +616,7 @@ impl App {
             WindowEvent::MouseInput { state, button, .. } => match (*button, *state) {
                 (MouseButton::Middle, ElementState::Pressed) => {
                     let vid = vid_cursor_resolved();
-                    self.orbit_drag_viewport_id = Some(vid);
+                    self.editor.orbit_drag_viewport_id = Some(vid);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -659,7 +627,7 @@ impl App {
                     }
                 }
                 (MouseButton::Middle, ElementState::Released) => {
-                    let vid = self.orbit_drag_viewport_id.unwrap_or(active_id);
+                    let vid = self.editor.orbit_drag_viewport_id.unwrap_or(active_id);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -668,11 +636,11 @@ impl App {
                             left_orbit_enabled,
                         );
                     }
-                    self.orbit_drag_viewport_id = None;
+                    self.editor.orbit_drag_viewport_id = None;
                 }
                 (MouseButton::Left, ElementState::Pressed) if left_orbit_enabled => {
                     let vid = vid_cursor_resolved();
-                    self.left_orbit_drag_viewport_id = Some(vid);
+                    self.editor.left_orbit_drag_viewport_id = Some(vid);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -683,7 +651,7 @@ impl App {
                     }
                 }
                 (MouseButton::Left, ElementState::Released) if left_orbit_enabled => {
-                    let vid = self.left_orbit_drag_viewport_id.unwrap_or(active_id);
+                    let vid = self.editor.left_orbit_drag_viewport_id.unwrap_or(active_id);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -692,11 +660,11 @@ impl App {
                             left_orbit_enabled,
                         );
                     }
-                    self.left_orbit_drag_viewport_id = None;
+                    self.editor.left_orbit_drag_viewport_id = None;
                 }
                 (MouseButton::Right, ElementState::Pressed) => {
                     let vid = vid_cursor_resolved();
-                    self.pan_drag_viewport_id = Some(vid);
+                    self.editor.pan_drag_viewport_id = Some(vid);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -707,7 +675,7 @@ impl App {
                     }
                 }
                 (MouseButton::Right, ElementState::Released) => {
-                    let vid = self.pan_drag_viewport_id.unwrap_or(active_id);
+                    let vid = self.editor.pan_drag_viewport_id.unwrap_or(active_id);
                     if let Some(vc) = self.viewport_camera_by_id_mut(vid) {
                         Self::dispatch_camera_event(
                             &mut vc.controller,
@@ -716,16 +684,16 @@ impl App {
                             left_orbit_enabled,
                         );
                     }
-                    self.pan_drag_viewport_id = None;
+                    self.editor.pan_drag_viewport_id = None;
                 }
                 _ => {}
             },
             WindowEvent::CursorMoved { .. } => {
                 let mut targ: Vec<rc3d_render::viewport::ViewportId> = Vec::new();
                 for vid in [
-                    self.orbit_drag_viewport_id,
-                    self.left_orbit_drag_viewport_id,
-                    self.pan_drag_viewport_id,
+                    self.editor.orbit_drag_viewport_id,
+                    self.editor.left_orbit_drag_viewport_id,
+                    self.editor.pan_drag_viewport_id,
                 ]
                 .into_iter()
                 .flatten()
@@ -762,7 +730,7 @@ impl App {
 
     /// Left-drag orbit when not using the full editor UI, measurement picks, or an `on_pick` demo hook.
     pub(super) fn camera_left_orbit_enabled(&self) -> bool {
-        !self.editor_ui_enabled && !self.measurement_mode && self.on_pick.is_none()
+        !self.state.editor_ui_enabled && !self.editor.measurement_mode && self.on_pick.is_none()
     }
 
     fn dispatch_camera_event(
@@ -822,23 +790,23 @@ impl App {
             return;
         };
         let mut picker = rc3d_actions::RayPickAction::new(ray);
-        rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
+        rc3d_actions::apply_to_all_roots(&mut picker, &self.state.world.graph);
 
         if let Some(hit) = picker.hits.first() {
-            self.world.graph.toggle_selection(hit.node);
+            self.state.world.graph.toggle_selection(hit.node);
             log::info!(
                 "Pick hit: node={:?}, point={:?}, selected={}",
                 hit.node,
                 hit.point,
-                self.world.graph.is_selected(hit.node)
+                self.state.world.graph.is_selected(hit.node)
             );
             if let Some(cb) = &mut self.on_pick {
-                cb(&mut self.world.graph, hit.node, hit.point);
+                cb(&mut self.state.world.graph, hit.node, hit.point);
             }
         } else {
             log::info!("Pick miss (no hit)");
-            if !self.shift_pressed {
-                self.world.graph.clear_selection();
+            if !self.input.shift_pressed {
+                self.state.world.graph.clear_selection();
             }
         }
     }
@@ -848,19 +816,19 @@ impl App {
             return;
         };
         let mut picker = rc3d_actions::RayPickAction::new(ray);
-        rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
+        rc3d_actions::apply_to_all_roots(&mut picker, &self.state.world.graph);
 
         if let Some(hit) = picker.hits.first() {
             let point = hit.point;
-            match self.measurement_first_point {
+            match self.editor.measurement_first_point {
                 None => {
-                    self.measurement_first_point = Some(point);
+                    self.editor.measurement_first_point = Some(point);
                     log::info!("Measurement point A: {:?}", point);
                 }
                 Some(first) => {
                     let dist = (point - first).length();
-                    self.measurements.push((first, point, dist));
-                    self.measurement_first_point = None;
+                    self.editor.measurements.push((first, point, dist));
+                    self.editor.measurement_first_point = None;
                     log::info!(
                         "Measurement: A={:?} B={:?} distance={:.4}",
                         first,
@@ -873,11 +841,11 @@ impl App {
     }
 
     fn build_pick_ray(&self) -> Option<Ray> {
-        let w = self.window.as_ref()?;
+        let w = self.state.window.as_ref()?;
         let s = w.inner_size();
         let (lx, ly, vw, vh, v, p) = self.pointer_pick_frame(
-            self.cursor_pos.0 as f32,
-            self.cursor_pos.1 as f32,
+            self.input.cursor_pos.0 as f32,
+            self.input.cursor_pos.1 as f32,
             s.width,
             s.height,
         )?;
@@ -885,15 +853,15 @@ impl App {
     }
 
     fn nudge_section_planes(&mut self, d: f32) {
-        for &root in &self.world.graph.roots().to_vec() {
-            nudge_sp_rec(&mut self.world.graph, root, d);
+        for &root in &self.state.world.graph.roots().to_vec() {
+            nudge_sp_rec(&mut self.state.world.graph, root, d);
         }
     }
 
     fn active_camera_controller_mut(&mut self) -> Option<&mut CameraController> {
-        if let Some(vc) = self.viewport_cameras.active_mut() {
+        if let Some(vc) = self.state.viewport_cameras.active_mut() {
             Some(&mut vc.controller)
-        } else if let Some(ref mut ctrl) = self.camera_controller {
+        } else if let Some(ref mut ctrl) = self.state.camera_controller {
             Some(ctrl)
         } else {
             None
@@ -903,9 +871,9 @@ impl App {
     fn active_camera_matrices(&self, width: f32, height: f32) -> (Mat4, Mat4) {
         let aspect = width / height.max(1.0);
         let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
-        if let Some(vc) = self.viewport_cameras.active() {
+        if let Some(vc) = self.state.viewport_cameras.active() {
             (vc.controller.view_matrix(), proj)
-        } else if let Some(ctrl) = &self.camera_controller {
+        } else if let Some(ctrl) = &self.state.camera_controller {
             (ctrl.view_matrix(), proj)
         } else {
             (
@@ -917,17 +885,17 @@ impl App {
 
     /// Call after any `ViewportLayout::rebuild` so [`ViewportCamera::viewport_id`] matches new slots.
     pub fn sync_viewport_camera_ids(&mut self) {
-        if self.viewport_cameras.cameras.is_empty() {
+        if self.state.viewport_cameras.cameras.is_empty() {
             return;
         }
-        let Some(renderer) = &self.renderer else {
+        let Some(renderer) = &self.state.renderer else {
             return;
         };
-        self.viewport_cameras
+        self.state.viewport_cameras
             .remap_viewport_ids_from_layout(renderer.viewport_layout());
-        self.orbit_drag_viewport_id = None;
-        self.left_orbit_drag_viewport_id = None;
-        self.pan_drag_viewport_id = None;
+        self.editor.orbit_drag_viewport_id = None;
+        self.editor.left_orbit_drag_viewport_id = None;
+        self.editor.pan_drag_viewport_id = None;
     }
 
     fn apply_editor_commands(&mut self) {
