@@ -496,6 +496,23 @@ impl Default for OrthographicCameraNode {
     }
 }
 
+/// Stereo camera for VR/AR side-by-side rendering.
+/// Encapsulates left/right eye transforms derived from a base camera.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StereoMode { SideBySide, TopBottom, Anaglyph }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StereoCameraNode {
+    pub base_camera: rc3d_core::NodeId,
+    pub interocular_distance: f32,
+    pub convergence_distance: f32,
+    pub mode: StereoMode,
+}
+impl Default for StereoCameraNode {
+    fn default() -> Self {
+        Self { base_camera: rc3d_core::NodeId::default(), interocular_distance: 0.065, convergence_distance: 2.0, mode: StereoMode::SideBySide }
+    }
+}
+
 impl OrthographicCameraNode {
     pub fn view_matrix(&self) -> Mat4 {
         self.orientation
@@ -962,6 +979,7 @@ pub enum NodeData {
     SkinnedMesh(SkinnedMeshNode),
     MorphTarget(MorphTargetNode),
     // Cameras
+    StereoCamera(StereoCameraNode),
     PerspectiveCamera(PerspectiveCameraNode),
     OrthographicCamera(OrthographicCameraNode),
     // Lights
@@ -1024,6 +1042,7 @@ impl Clone for NodeData {
             NodeData::IndexedLineSet(v) => NodeData::IndexedLineSet(v.clone()),
             NodeData::SkinnedMesh(v) => NodeData::SkinnedMesh(v.clone()),
             NodeData::MorphTarget(v) => NodeData::MorphTarget(v.clone()),
+            NodeData::StereoCamera(v) => NodeData::StereoCamera(v.clone()),
             NodeData::PerspectiveCamera(v) => NodeData::PerspectiveCamera(v.clone()),
             NodeData::OrthographicCamera(v) => NodeData::OrthographicCamera(v.clone()),
             NodeData::DirectionalLight(v) => NodeData::DirectionalLight(v.clone()),
@@ -1109,6 +1128,10 @@ impl NodeData {
                 FieldDescriptor { name: "near", field_index: 1 },
                 FieldDescriptor { name: "far", field_index: 2 },
                 FieldDescriptor { name: "reverse_depth", field_index: 3 },
+            ],
+            NodeData::StereoCamera(_) => vec![
+                FieldDescriptor { name: "interocular", field_index: 0 },
+                FieldDescriptor { name: "convergence", field_index: 1 },
             ],
             NodeData::OrthographicCamera(_) => vec![
                 FieldDescriptor { name: "height", field_index: 0 },
@@ -1204,6 +1227,7 @@ impl NodeData {
             NodeData::IndexedLineSet(_) => "IndexedLineSet",
             NodeData::SkinnedMesh(_) => "SkinnedMesh",
             NodeData::MorphTarget(_) => "MorphTarget",
+            NodeData::StereoCamera(_) => "StereoCamera",
             NodeData::PerspectiveCamera(_) => "PerspectiveCamera",
             NodeData::OrthographicCamera(_) => "OrthographicCamera",
             NodeData::DirectionalLight(_) => "DirectionalLight",
@@ -1257,6 +1281,7 @@ impl Serialize for NodeData {
             NodeData::IndexedLineSet(v) => s.serialize_newtype_variant("NodeData", 34, "IndexedLineSet", v),
             NodeData::SkinnedMesh(v) => s.serialize_newtype_variant("NodeData", 13, "SkinnedMesh", v),
             NodeData::MorphTarget(v) => s.serialize_newtype_variant("NodeData", 14, "MorphTarget", v),
+            NodeData::StereoCamera(v) => s.serialize_newtype_variant("NodeData", 44, "StereoCamera", v),
             NodeData::PerspectiveCamera(v) => s.serialize_newtype_variant("NodeData", 15, "PerspectiveCamera", v),
             NodeData::OrthographicCamera(v) => s.serialize_newtype_variant("NodeData", 16, "OrthographicCamera", v),
             NodeData::DirectionalLight(v) => s.serialize_newtype_variant("NodeData", 17, "DirectionalLight", v),
@@ -1314,6 +1339,7 @@ impl<'de> Deserialize<'de> for NodeData {
             IndexedLineSet(IndexedLineSetNode),
             SkinnedMesh(SkinnedMeshNode),
             MorphTarget(MorphTargetNode),
+            StereoCamera(StereoCameraNode),
             PerspectiveCamera(PerspectiveCameraNode),
             OrthographicCamera(OrthographicCameraNode),
             DirectionalLight(DirectionalLightNode),
@@ -1362,6 +1388,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::IndexedLineSet(v) => Ok(NodeData::IndexedLineSet(v)),
             NodeDataHelper::SkinnedMesh(v) => Ok(NodeData::SkinnedMesh(v)),
             NodeDataHelper::MorphTarget(v) => Ok(NodeData::MorphTarget(v)),
+            NodeDataHelper::StereoCamera(v) => Ok(NodeData::StereoCamera(v)),
             NodeDataHelper::PerspectiveCamera(v) => Ok(NodeData::PerspectiveCamera(v)),
             NodeDataHelper::OrthographicCamera(v) => Ok(NodeData::OrthographicCamera(v)),
             NodeDataHelper::DirectionalLight(v) => Ok(NodeData::DirectionalLight(v)),
