@@ -22,6 +22,7 @@ pub(super) fn build_ui(
 ) {
     let mut push = |c: EditorCommand| q.push_back(c);
 
+    // ── Menu bar ──
     egui::TopBottomPanel::top("rc3d_menu").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -42,74 +43,153 @@ pub(super) fn build_ui(
                 }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.button("Undo").clicked() {
+                if ui.button("Undo  (Ctrl+Z)").clicked() {
                     push(EditorCommand::Undo);
                 }
-                if ui.button("Redo").clicked() {
+                if ui.button("Redo  (Ctrl+Y)").clicked() {
                     push(EditorCommand::Redo);
                 }
                 ui.separator();
-                if ui.button("Fit selection").clicked() {
+                if ui.button("Fit selection  (F)").clicked() {
                     push(EditorCommand::FitSelection);
                 }
             });
             ui.menu_button("View", |ui| {
-                if ui.button("Wireframe").clicked() {
+                ui.label("Display mode");
+                if ui.button("Wireframe  (W)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::Wireframe));
                 }
-                if ui.button("Shaded").clicked() {
+                if ui.button("Shaded  (S)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::Shaded));
                 }
-                if ui.button("Shaded + edges").clicked() {
+                if ui.button("Shaded + edges  (E)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::ShadedWithEdges));
                 }
-                if ui.button("Hidden line").clicked() {
+                if ui.button("Hidden line  (H)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::HiddenLine));
                 }
                 ui.separator();
-                if ui.button("Cycle IBL").clicked() {
+                ui.label("Display toggles");
+                let mut grid = ui_ctx.grid_enabled;
+                if ui.checkbox(&mut grid, "Grid  (N)").changed() {
+                    push(EditorCommand::SetGridEnabled(grid));
+                }
+                let mut hud = ui_ctx.hud_enabled;
+                if ui.checkbox(&mut hud, "HUD").changed() {
+                    push(EditorCommand::SetHudEnabled(hud));
+                }
+                let mut xray = ui_ctx.xray_mode;
+                if ui.checkbox(&mut xray, "X-ray").changed() {
+                    push(EditorCommand::SetXrayMode(xray));
+                }
+                ui.separator();
+                ui.label("Render features");
+                view_render_features_menu(ui, ui_ctx, &mut push);
+                ui.separator();
+                if ui.button("Cycle IBL  (I)").clicked() {
                     push(EditorCommand::CycleIbl);
                 }
-                if ui.button("Cycle viewport layout").clicked() {
+                if ui.button("Cycle viewport layout  (C)").clicked() {
                     push(EditorCommand::CycleViewportLayout);
                 }
-                if ui.button("Cycle active viewport").clicked() {
+                if ui.button("Cycle active viewport  (Tab)").clicked() {
                     push(EditorCommand::CycleActiveViewport);
                 }
             });
             ui.menu_button("Tools", |ui| {
-                if ui.button("Toggle measurement").clicked() {
+                if ui.button("Toggle measurement  (M)").clicked() {
                     push(EditorCommand::ToggleMeasurement);
                 }
-                if ui.button("Toggle section edit").clicked() {
+                if ui.button("Toggle section edit  (P)").clicked() {
                     push(EditorCommand::ToggleSectionEdit);
                 }
                 ui.separator();
                 ui.label("Gizmo");
-                if ui.button("Move").clicked() {
+                if ui.button("Move  (T)").clicked() {
                     push(EditorCommand::SetGizmoMode(GizmoMode::Translate));
                 }
-                if ui.button("Rotate").clicked() {
+                if ui.button("Rotate  (R)").clicked() {
                     push(EditorCommand::SetGizmoMode(GizmoMode::Rotate));
                 }
-                if ui.button("Scale").clicked() {
+                if ui.button("Scale  (G)").clicked() {
                     push(EditorCommand::SetGizmoMode(GizmoMode::Scale));
                 }
             });
             ui.menu_button("Bookmarks", |ui| {
+                ui.label("Ctrl+Digit = save | Digit = recall");
+                ui.separator();
                 for i in 0..9 {
+                    let has = ui_ctx.bookmarks[i].0;
+                    let label = ui_ctx.bookmarks[i].1;
                     ui.horizontal(|ui| {
                         if ui.button(format!("Save {i}")).clicked() {
                             push(EditorCommand::SaveBookmark(i));
                         }
-                        if ui.button(format!("Recall {i}")).clicked() {
+                        if ui.button(format!("Recall {i}  {label}")).clicked() {
                             push(EditorCommand::RecallBookmark(i));
+                        }
+                        if has {
+                            ui.label("●");
                         }
                     });
                 }
             });
             ui.menu_button("Create", |ui| {
                 create_node_menu(ui, None, &mut push);
+            });
+        });
+    });
+
+    // ── Toolbar ──
+    egui::TopBottomPanel::top("rc3d_toolbar").show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Gizmo:");
+            let gm = ui_ctx.gizmo_mode;
+            let mut selected = gm == GizmoMode::Translate;
+            if ui.selectable_label(selected, "↕ Move").clicked() {
+                push(EditorCommand::SetGizmoMode(GizmoMode::Translate));
+            }
+            selected = gm == GizmoMode::Rotate;
+            if ui.selectable_label(selected, "↻ Rotate").clicked() {
+                push(EditorCommand::SetGizmoMode(GizmoMode::Rotate));
+            }
+            selected = gm == GizmoMode::Scale;
+            if ui.selectable_label(selected, "↔ Scale").clicked() {
+                push(EditorCommand::SetGizmoMode(GizmoMode::Scale));
+            }
+
+            ui.separator();
+
+            ui.label("View:");
+            let presets = [
+                (ViewPreset::Top, "Top"),
+                (ViewPreset::Front, "Front"),
+                (ViewPreset::Right, "Right"),
+                (ViewPreset::Iso, "Iso"),
+                (ViewPreset::Bottom, "Bot"),
+                (ViewPreset::Back, "Back"),
+                (ViewPreset::Left, "Left"),
+            ];
+            for (preset, label) in presets {
+                if ui.small_button(label).clicked() {
+                    push(EditorCommand::SetViewPreset(preset));
+                }
+            }
+
+            ui.separator();
+
+            let mut grid = ui_ctx.grid_enabled;
+            if ui.toggle_value(&mut grid, "Grid").changed() {
+                push(EditorCommand::SetGridEnabled(grid));
+            }
+            let mut hud = ui_ctx.hud_enabled;
+            if ui.toggle_value(&mut hud, "HUD").changed() {
+                push(EditorCommand::SetHudEnabled(hud));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(format!("FPS: {:.1}  {:.1} ms", ui_ctx.smoothed_fps, ui_ctx.frame_time_ms));
+                ui.label(format!("Mode: {}  IBL: {}", ui_ctx.display_mode_label, ui_ctx.ibl_label));
             });
         });
     });
@@ -244,7 +324,7 @@ fn hierarchy_node(
 fn node_type_tag(data: &NodeData) -> &'static str {
     match data {
         NodeData::Separator(_) => "Separator",
-        NodeData::Group(_) | NodeData::Decal(_) => "Group",
+        NodeData::Group(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) => "Group",
         NodeData::Billboard(_) => "Billboard",
         NodeData::Transform(_) => "Transform",
         NodeData::Material(_) => "Material",
@@ -464,7 +544,7 @@ fn inspector(
     }
 
     let mut vis = match data {
-        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Decal(_) | NodeData::Separator(_) => {
+        NodeData::Transform(_) | NodeData::Group(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::Separator(_) => {
             !hidden.contains(&id)
         }
         NodeData::Switch(sw) => sw.which_child >= 0,
@@ -473,6 +553,28 @@ fn inspector(
     if ui.checkbox(&mut vis, "visible (app)").changed() {
         push(EditorCommand::SetNodeVisibility(id, vis));
     }
+}
+
+/// Render feature checkboxes (used by both the View menu and the Render panel).
+fn view_render_features_menu(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnMut(EditorCommand)) {
+    let mut feat = |label: &str, field: bool, name: &'static str| {
+        let mut v = field;
+        if ui.checkbox(&mut v, label).changed() {
+            push(EditorCommand::SetRenderFeature {
+                feature_name: name,
+                enabled: v,
+            });
+        }
+    };
+    let f = ui_ctx.render_features;
+    feat("TAA", f.taa, "taa");
+    feat("Motion blur", f.motion_blur, "motion_blur");
+    feat("SSR", f.ssr, "ssr");
+    feat("Color grading", f.color_grading, "color_grading");
+    feat("DoF", f.dof, "dof");
+    feat("Volumetric fog", f.volumetric_fog, "volumetric_fog");
+    feat("Cluster lights", f.cluster_lights, "cluster_lights");
+    feat("Omni shadows", f.omni_shadows, "omni_shadows");
 }
 
 fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnMut(EditorCommand)) {
@@ -576,24 +678,7 @@ fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnM
 
     ui.separator();
     ui.label("Features");
-    let mut rf = |label: &'static str, field: bool, name: &'static str| {
-        let mut v = field;
-        if ui.checkbox(&mut v, label).changed() {
-            push(EditorCommand::SetRenderFeature {
-                feature_name: name,
-                enabled: v,
-            });
-        }
-    };
-    let f = ui_ctx.render_features;
-    rf("TAA", f.taa, "taa");
-    rf("Motion blur", f.motion_blur, "motion_blur");
-    rf("SSR", f.ssr, "ssr");
-    rf("Color grading", f.color_grading, "color_grading");
-    rf("DoF", f.dof, "dof");
-    rf("Volumetric fog", f.volumetric_fog, "volumetric_fog");
-    rf("Cluster lights", f.cluster_lights, "cluster_lights");
-    rf("Omni shadows", f.omni_shadows, "omni_shadows");
+    view_render_features_menu(ui, ui_ctx, push);
 
     ui.separator();
     ui.label("Measurement");

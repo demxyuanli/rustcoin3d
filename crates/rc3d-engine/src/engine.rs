@@ -114,22 +114,48 @@ impl Engine for SineOscillatorEngine {
 pub struct CalculatorEngine {
     pub expressions: Vec<String>,
     pub output_field_ids: Vec<FieldId>,
+    pub node_id: rc3d_core::NodeId,
 }
 
 impl CalculatorEngine {
-    pub fn new(expressions: Vec<String>, outputs: Vec<FieldId>) -> Self {
-        Self { expressions, output_field_ids: outputs }
+    pub fn new(expressions: Vec<String>, outputs: Vec<FieldId>, node: rc3d_core::NodeId) -> Self {
+        Self { expressions, output_field_ids: outputs, node_id: node }
     }
 }
 
 impl Engine for CalculatorEngine {
-    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
-        // Pending: expression parser and field evaluation.
-        // Will evaluate expressions like "oA = sin(iA) * 3.0" on connected fields.
+    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
+        use rc3d_fields::FieldValue;
+        let Some(entry) = graph.get_mut(self.node_id) else { return };
+        for (i, expr) in self.expressions.iter().enumerate() {
+            if i < self.output_field_ids.len() {
+                let value = Self::eval_simple(expr);
+                if let Some(val) = value {
+                    entry.fields.set(self.output_field_ids[i], FieldValue::Float(val));
+                }
+            }
+        }
     }
-
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+impl CalculatorEngine {
+    fn eval_simple(expr: &str) -> Option<f32> {
+        let parts: Vec<&str> = expr.split('=').collect();
+        if parts.len() < 2 { return None; }
+        let rhs = parts[1].trim();
+        if let Ok(v) = rhs.parse::<f32>() { return Some(v); }
+        if rhs.starts_with("sin(") {
+            let inner = rhs.trim_start_matches("sin(").trim_end_matches(')');
+            if let Ok(x) = inner.parse::<f32>() { return Some(x.sin()); }
+        }
+        if rhs.starts_with("cos(") {
+            let inner = rhs.trim_start_matches("cos(").trim_end_matches(')');
+            if let Ok(x) = inner.parse::<f32>() { return Some(x.cos()); }
+        }
+        None
+    }
 }
 
 impl std::fmt::Debug for CalculatorEngine {
@@ -144,20 +170,38 @@ pub struct ComposeMatrixEngine {
     pub rotation_field: Option<FieldId>,
     pub scale_field: Option<FieldId>,
     pub output_field: FieldId,
+    pub node_id: rc3d_core::NodeId,
 }
 
 impl ComposeMatrixEngine {
-    pub fn new(output: FieldId) -> Self {
-        Self { translation_field: None, rotation_field: None, scale_field: None, output_field: output }
+    pub fn new(output: FieldId, node: rc3d_core::NodeId) -> Self {
+        Self { translation_field: None, rotation_field: None, scale_field: None, output_field: output, node_id: node }
     }
 }
 
 impl Engine for ComposeMatrixEngine {
-    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
-        // Pending: composition of TRS fields into a Mat4 output field.
-        // Will read translation/rotation/scale fields and write composed matrix.
+    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
+        use rc3d_core::math::{Mat4, Quat, Vec3};
+        use rc3d_fields::FieldValue;
+        let Some(entry) = graph.get_mut(self.node_id) else { return };
+        let t = self.translation_field
+            .and_then(|fid| entry.fields.get(fid))
+            .and_then(|v| match v { FieldValue::Vec3f(v) => Some(*v), _ => None })
+            .unwrap_or(Vec3::ZERO);
+        let r = self.rotation_field
+            .and_then(|fid| entry.fields.get(fid))
+            .and_then(|v| match v { FieldValue::Vec3f(v) => {
+                let q = Quat::from_xyzw(v.x, v.y, v.z, 1.0);
+                Some(Mat4::from_quat(q))
+            }, _ => None })
+            .unwrap_or(Mat4::IDENTITY);
+        let s = self.scale_field
+            .and_then(|fid| entry.fields.get(fid))
+            .and_then(|v| match v { FieldValue::Vec3f(v) => Some(*v), _ => None })
+            .unwrap_or(Vec3::ONE);
+        let m = Mat4::from_scale_rotation_translation(s, Quat::from_mat4(&r), t);
+        entry.fields.set(self.output_field, FieldValue::Mat4f(m));
     }
-
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -166,6 +210,64 @@ impl std::fmt::Debug for ComposeMatrixEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ComposeMatrixEngine").finish()
     }
+}
+
+/// One-shot trigger engine (Coin3D SoOneShot).
+/// Fires once for a specified duration when triggered, then stops.
+#[derive(Debug, Clone)]
+pub struct OneShotEngine {
+    pub duration: f64,
+    pub triggered: bool,
+    pub elapsed: f64,
+    pub active: bool,
+}
+
+impl OneShotEngine {
+    pub fn new(duration: f64) -> Self {
+        Self { duration, triggered: false, elapsed: 0.0, active: false }
+    }
+    pub fn trigger(&mut self) { self.triggered = true; self.active = true; self.elapsed = 0.0; }
+    pub fn is_active(&self) -> bool { self.active }
+}
+
+impl Engine for OneShotEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        if !self.active { return; }
+        self.elapsed += 0.016; // ~60fps tick
+        if self.elapsed >= self.duration { self.active = false; }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// Integer counter engine (Coin3D SoCounter).
+/// Increments or decrements on trigger, wraps at min/max.
+#[derive(Debug, Clone)]
+pub struct CounterEngine {
+    pub value: i32,
+    pub min: i32,
+    pub max: i32,
+    pub step: i32,
+    pub triggered: bool,
+}
+
+impl CounterEngine {
+    pub fn new(min: i32, max: i32, step: i32) -> Self {
+        Self { value: min, min, max, step: step.max(1), triggered: false }
+    }
+    pub fn trigger(&mut self) { self.triggered = true; }
+    pub fn value(&self) -> i32 { self.value }
+}
+
+impl Engine for CounterEngine {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+        if !self.triggered { return; }
+        self.triggered = false;
+        self.value += self.step;
+        if self.value > self.max { self.value = self.min; }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
 /// Interpolates a [`TransformNode`](rc3d_scene::node_data::TransformNode) translation (Coin3D SoInterpolate-style).

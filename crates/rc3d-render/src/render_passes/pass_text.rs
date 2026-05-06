@@ -57,7 +57,7 @@ fn collect_recursive(
             }
         }
         NodeData::Separator(_)
-        | NodeData::Group(_) | NodeData::Decal(_) | NodeData::Billboard(_)
+        | NodeData::Group(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::Billboard(_)
         | NodeData::Lod(_)
         | NodeData::EventCallback(_)
         | NodeData::SectionPlane(_)

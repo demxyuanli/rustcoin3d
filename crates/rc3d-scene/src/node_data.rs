@@ -191,10 +191,16 @@ impl Default for TransformNode {
 
 impl TransformNode {
     pub fn from_translation(t: Vec3) -> Self {
-        Self {
-            translation: t,
-            ..Default::default()
-        }
+        Self { translation: t, ..Default::default() }
+    }
+    pub fn from_rotation(r: Mat4) -> Self {
+        Self { rotation: r, ..Default::default() }
+    }
+    pub fn from_scale(s: Vec3) -> Self {
+        Self { scale: s, ..Default::default() }
+    }
+    pub fn from_trs(t: Vec3, r: Mat4, s: Vec3) -> Self {
+        Self { translation: t, rotation: r, scale: s, ..Default::default() }
     }
 
     pub fn to_matrix(&self) -> Mat4 {
@@ -276,6 +282,25 @@ impl Default for CylinderNode {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct IndexedFaceSetNode {
     pub coord_index: Vec<i32>,
+}
+
+/// Shape: line segments from vertex/index arrays (Coin3D SoIndexedLineSet).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct IndexedLineSetNode {
+    pub coord_index: Vec<i32>,
+    pub line_width: f32,
+}
+
+/// External file reference (Coin3D SoFile / SoWWWInline).
+/// When encountered during traversal, the referenced file is imported
+/// and its scene graph is merged in-place.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FileNode {
+    pub path: String,
+}
+
+impl Default for FileNode {
+    fn default() -> Self { Self { path: String::new() } }
 }
 
 /// Skeletal skinning data for mesh geometry under the same separator (Coin-style sidecar).
@@ -849,6 +874,7 @@ pub enum NodeData {
     Cone(ConeNode),
     Cylinder(CylinderNode),
     IndexedFaceSet(IndexedFaceSetNode),
+    IndexedLineSet(IndexedLineSetNode),
     SkinnedMesh(SkinnedMeshNode),
     MorphTarget(MorphTargetNode),
     // Cameras
@@ -878,6 +904,8 @@ pub enum NodeData {
     Text3(Text3Node),
     Measurement(MeasurementNode),
     Markup(MarkupNode),
+    /// External file reference (SoFile/SoWWWInline equivalent).
+    File(FileNode),
     /// Screen-space projected texture overlay.
     Decal(DecalNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
@@ -901,6 +929,7 @@ impl Clone for NodeData {
             NodeData::Cone(v) => NodeData::Cone(v.clone()),
             NodeData::Cylinder(v) => NodeData::Cylinder(v.clone()),
             NodeData::IndexedFaceSet(v) => NodeData::IndexedFaceSet(v.clone()),
+            NodeData::IndexedLineSet(v) => NodeData::IndexedLineSet(v.clone()),
             NodeData::SkinnedMesh(v) => NodeData::SkinnedMesh(v.clone()),
             NodeData::MorphTarget(v) => NodeData::MorphTarget(v.clone()),
             NodeData::PerspectiveCamera(v) => NodeData::PerspectiveCamera(v.clone()),
@@ -922,6 +951,7 @@ impl Clone for NodeData {
             NodeData::Markup(v) => NodeData::Markup(v.clone()),
             NodeData::Custom(id, d) => NodeData::Custom(*id, d.clone_box()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
+            NodeData::File(v) => NodeData::File(v.clone()),
         }
     }
 }
@@ -1031,6 +1061,8 @@ impl NodeData {
             | NodeData::TextureCoordinate2(_)
             | NodeData::Normal(_)
             | NodeData::Triangle(_)
+            | NodeData::IndexedLineSet(_)
+            | NodeData::File(_)
             | NodeData::Cube(_)
             | NodeData::Sphere(_)
             | NodeData::Cone(_)
@@ -1061,6 +1093,7 @@ impl NodeData {
             NodeData::Cone(_) => "Cone",
             NodeData::Cylinder(_) => "Cylinder",
             NodeData::IndexedFaceSet(_) => "IndexedFaceSet",
+            NodeData::IndexedLineSet(_) => "IndexedLineSet",
             NodeData::SkinnedMesh(_) => "SkinnedMesh",
             NodeData::MorphTarget(_) => "MorphTarget",
             NodeData::PerspectiveCamera(_) => "PerspectiveCamera",
@@ -1082,6 +1115,7 @@ impl NodeData {
             NodeData::Markup(_) => "Markup",
             NodeData::Custom(_, d) => d.type_name(),
             NodeData::Decal(_) => "Decal",
+            NodeData::File(_) => "File",
         }
     }
 }
@@ -1104,6 +1138,7 @@ impl Serialize for NodeData {
             NodeData::Cone(v) => s.serialize_newtype_variant("NodeData", 10, "Cone", v),
             NodeData::Cylinder(v) => s.serialize_newtype_variant("NodeData", 11, "Cylinder", v),
             NodeData::IndexedFaceSet(v) => s.serialize_newtype_variant("NodeData", 12, "IndexedFaceSet", v),
+            NodeData::IndexedLineSet(v) => s.serialize_newtype_variant("NodeData", 34, "IndexedLineSet", v),
             NodeData::SkinnedMesh(v) => s.serialize_newtype_variant("NodeData", 13, "SkinnedMesh", v),
             NodeData::MorphTarget(v) => s.serialize_newtype_variant("NodeData", 14, "MorphTarget", v),
             NodeData::PerspectiveCamera(v) => s.serialize_newtype_variant("NodeData", 15, "PerspectiveCamera", v),
@@ -1124,6 +1159,7 @@ impl Serialize for NodeData {
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
             NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
             NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
+            NodeData::File(v) => s.serialize_newtype_variant("NodeData", 35, "File", v),
             NodeData::Custom(type_id, d) => {
                 let payload = (type_id, d.serialize_custom());
                 s.serialize_newtype_variant("NodeData", 31, "Custom", &payload)
@@ -1151,6 +1187,7 @@ impl<'de> Deserialize<'de> for NodeData {
             Cone(ConeNode),
             Cylinder(CylinderNode),
             IndexedFaceSet(IndexedFaceSetNode),
+            IndexedLineSet(IndexedLineSetNode),
             SkinnedMesh(SkinnedMeshNode),
             MorphTarget(MorphTargetNode),
             PerspectiveCamera(PerspectiveCameraNode),
@@ -1163,6 +1200,7 @@ impl<'de> Deserialize<'de> for NodeData {
             Handler(String),
             Custom((u16, String)),
             Decal(DecalNode),
+            File(FileNode),
             EventCallback(EventCallbackNode),
             PickStyle(PickStyleNode),
             Lod(LodNode),
@@ -1189,6 +1227,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Cone(v) => Ok(NodeData::Cone(v)),
             NodeDataHelper::Cylinder(v) => Ok(NodeData::Cylinder(v)),
             NodeDataHelper::IndexedFaceSet(v) => Ok(NodeData::IndexedFaceSet(v)),
+            NodeDataHelper::IndexedLineSet(v) => Ok(NodeData::IndexedLineSet(v)),
             NodeDataHelper::SkinnedMesh(v) => Ok(NodeData::SkinnedMesh(v)),
             NodeDataHelper::MorphTarget(v) => Ok(NodeData::MorphTarget(v)),
             NodeDataHelper::PerspectiveCamera(v) => Ok(NodeData::PerspectiveCamera(v)),
@@ -1201,6 +1240,7 @@ impl<'de> Deserialize<'de> for NodeData {
                 crate::node_handler::DummyHandler,
             ))),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
+            NodeDataHelper::File(v) => Ok(NodeData::File(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {
                 // Defer to registry for deserialization; fallback to DummyHandler
                 Ok(NodeData::HandlerNode(Arc::new(
