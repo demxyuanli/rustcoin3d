@@ -5,6 +5,14 @@
 @group(0) @binding(2) var t_ssao: texture_2d<f32>;
 @group(0) @binding(3) var s_point: sampler;
 
+struct PostParams {
+    vignette: f32,
+    chromatic: f32,
+    bloom_str: f32,
+    pad: f32,
+}
+@group(0) @binding(4) var<uniform> params: PostParams;
+
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -65,9 +73,19 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let avg = (c_l + c_r + c_d + c_u) * 0.25;
     var filtered = mix(c_m, avg, blend);
 
+    // Chromatic aberration: offset R and B channels
+    if params.chromatic > 0.0 {
+        let center = i.uv - 0.5;
+        let dist = length(center);
+        let offset = center * dist * params.chromatic * 0.02;
+        let r_sample = textureSampleLevel(t_hdr, s_point, i.uv + offset, 0.0).r;
+        let b_sample = textureSampleLevel(t_hdr, s_point, i.uv - offset, 0.0).b;
+        filtered = vec3<f32>(r_sample, filtered.g, b_sample);
+    }
+
     // Bloom compositing
     let bloom_sample = textureSampleLevel(t_bloom, s_point, i.uv, 0.0).rgb;
-    filtered = filtered + bloom_sample * 0.8;
+    filtered = filtered + bloom_sample * params.bloom_str;
 
     // SSAO application
     let ao = textureSampleLevel(t_ssao, s_point, i.uv, 0.0).r;
@@ -76,5 +94,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     // ACES tonemapping
     let ldr = tonemap_aces(filtered);
 
-    return vec4<f32>(ldr, 1.0);
+    // Vignette: radial darkening
+    let vig = 1.0 - dot(i.uv - 0.5, i.uv - 0.5) * params.vignette * 2.0;
+    let vig_ldr = ldr * clamp(vig, 0.0, 1.0);
+
+    return vec4<f32>(vig_ldr, 1.0);
 }

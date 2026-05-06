@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -12,11 +13,28 @@ pub struct SsaoParamsUniform {
     pub _tail_pad: [f32; 3],
 }
 
+/// Post-processing effect parameters (uploaded to GPU uniform).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PostEffectParams {
+    pub vignette: f32,
+    pub chromatic: f32,
+    pub bloom_str: f32,
+    pub _pad: f32,
+}
+
+impl Default for PostEffectParams {
+    fn default() -> Self {
+        Self { vignette: 0.3, chromatic: 0.0, bloom_str: 0.8, _pad: 0.0 }
+    }
+}
+
 /// All post-FX pipelines and bind-group layouts.
 pub struct PostFxPipelines {
     pub tonemap_bgl: wgpu::BindGroupLayout,
     pub tonemap_sampler: wgpu::Sampler,
     pub tonemap_pipeline: wgpu::RenderPipeline,
+    pub post_params_buf: wgpu::Buffer,
     pub fxaa_ldr_bgl: wgpu::BindGroupLayout,
     pub fxaa_ldr_pipeline: wgpu::RenderPipeline,
     pub blit_bgl: wgpu::BindGroupLayout,
@@ -79,7 +97,23 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
+    });
+
+    let post_params = PostEffectParams::default();
+    let post_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("PostEffectParams"),
+        contents: bytemuck::bytes_of(&post_params),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     let tonemap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -311,6 +345,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         tonemap_bgl,
         tonemap_sampler,
         tonemap_pipeline,
+        post_params_buf,
         fxaa_ldr_bgl,
         fxaa_ldr_pipeline,
         blit_bgl,
@@ -398,6 +433,7 @@ pub fn ensure_post_fx_textures(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&bloom_view) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ssao_blur_view) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&p.tonemap_sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: p.post_params_buf.as_entire_binding() },
         ],
     });
 
