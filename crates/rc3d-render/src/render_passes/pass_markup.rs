@@ -85,26 +85,90 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<LineVertex>) {
             }
         }
         MarkupElement::Dimension {
-            start,
-            end,
-            offset_dir,
-            extension_len,
-            ..
+            start, end, offset_dir, extension_len, arrow_size, ..
         } => {
-            let dl_start = [
-                start[0] + offset_dir[0] * extension_len,
-                start[1] + offset_dir[1] * extension_len,
-            ];
-            let dl_end = [
-                end[0] + offset_dir[0] * extension_len,
-                end[1] + offset_dir[1] * extension_len,
-            ];
+            let dl_start = [start[0] + offset_dir[0] * extension_len, start[1] + offset_dir[1] * extension_len];
+            let dl_end = [end[0] + offset_dir[0] * extension_len, end[1] + offset_dir[1] * extension_len];
+            // Dimension line
             out.push(LineVertex { position: [dl_start[0], dl_start[1], 0.0] });
             out.push(LineVertex { position: [dl_end[0], dl_end[1], 0.0] });
+            // Extension lines
             out.push(LineVertex { position: [start[0], start[1], 0.0] });
             out.push(LineVertex { position: [dl_start[0], dl_start[1], 0.0] });
             out.push(LineVertex { position: [end[0], end[1], 0.0] });
             out.push(LineVertex { position: [dl_end[0], dl_end[1], 0.0] });
+            // Arrowheads
+            let dir = [(end[0] - start[0]), (end[1] - start[1])];
+            let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt().max(0.001);
+            let ndir = [dir[0] / len, dir[1] / len];
+            let perp = [-ndir[1], ndir[0]];
+            let asz = *arrow_size;
+            // Start arrowhead
+            let p0 = [dl_start[0] + ndir[0] * asz, dl_start[1] + ndir[1] * asz];
+            let p1 = [dl_start[0] + perp[0] * asz * 0.5, dl_start[1] + perp[1] * asz * 0.5];
+            let p2 = [dl_start[0] - perp[0] * asz * 0.5, dl_start[1] - perp[1] * asz * 0.5];
+            out.push(LineVertex { position: [dl_start[0], dl_start[1], 0.0] });
+            out.push(LineVertex { position: [p1[0], p1[1], 0.0] });
+            out.push(LineVertex { position: [dl_start[0], dl_start[1], 0.0] });
+            out.push(LineVertex { position: [p2[0], p2[1], 0.0] });
+            // End arrowhead
+            let e0 = [dl_end[0] - ndir[0] * asz, dl_end[1] - ndir[1] * asz];
+            let e1 = [dl_end[0] + perp[0] * asz * 0.5, dl_end[1] + perp[1] * asz * 0.5];
+            let e2 = [dl_end[0] - perp[0] * asz * 0.5, dl_end[1] - perp[1] * asz * 0.5];
+            out.push(LineVertex { position: [dl_end[0], dl_end[1], 0.0] });
+            out.push(LineVertex { position: [e1[0], e1[1], 0.0] });
+            out.push(LineVertex { position: [dl_end[0], dl_end[1], 0.0] });
+            out.push(LineVertex { position: [e2[0], e2[1], 0.0] });
+        }
+        MarkupElement::AngleDimension { center, arm1, arm2, radius, .. } => {
+            // Arc from arm1 to arm2
+            let a1 = (arm1[1] - center[1]).atan2(arm1[0] - center[0]);
+            let a2 = (arm2[1] - center[1]).atan2(arm2[0] - center[0]);
+            let n = 32usize;
+            let span = a2 - a1;
+            let mut prev = [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()];
+            for i in 1..=n {
+                let t = i as f32 / n as f32;
+                let angle = a1 + span * t;
+                let curr = [center[0] + radius * angle.cos(), center[1] + radius * angle.sin()];
+                out.push(LineVertex { position: [prev[0], prev[1], 0.0] });
+                out.push(LineVertex { position: [curr[0], curr[1], 0.0] });
+                prev = curr;
+            }
+            // Arms to center
+            out.push(LineVertex { position: [center[0], center[1], 0.0] });
+            out.push(LineVertex { position: [arm1[0], arm1[1], 0.0] });
+            out.push(LineVertex { position: [center[0], center[1], 0.0] });
+            out.push(LineVertex { position: [arm2[0], arm2[1], 0.0] });
+        }
+        MarkupElement::RadialDimension { center, perimeter, .. } => {
+            out.push(LineVertex { position: [center[0], center[1], 0.0] });
+            out.push(LineVertex { position: [perimeter[0], perimeter[1], 0.0] });
+        }
+        MarkupElement::DiameterDimension { p1, p2, center, .. } => {
+            out.push(LineVertex { position: [p1[0], p1[1], 0.0] });
+            out.push(LineVertex { position: [p2[0], p2[1], 0.0] });
+            // Cross mark at center
+            let s = 3.0;
+            out.push(LineVertex { position: [center[0] - s, center[1] - s, 0.0] });
+            out.push(LineVertex { position: [center[0] + s, center[1] + s, 0.0] });
+            out.push(LineVertex { position: [center[0] + s, center[1] - s, 0.0] });
+            out.push(LineVertex { position: [center[0] - s, center[1] + s, 0.0] });
+        }
+        MarkupElement::Leader { anchor, label_pos, .. } => {
+            out.push(LineVertex { position: [anchor[0], anchor[1], 0.0] });
+            out.push(LineVertex { position: [label_pos[0], label_pos[1], 0.0] });
+            // Small dot at anchor
+            let r = 2.0;
+            let n = 8;
+            let mut prev = [anchor[0] + r, anchor[1]];
+            for i in 1..=n {
+                let a = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let curr = [anchor[0] + r * a.cos(), anchor[1] + r * a.sin()];
+                out.push(LineVertex { position: [prev[0], prev[1], 0.0] });
+                out.push(LineVertex { position: [curr[0], curr[1], 0.0] });
+                prev = curr;
+            }
         }
         MarkupElement::Text { .. } => {
             // Text elements are deferred to HUD/glyphon layer.
@@ -358,8 +422,8 @@ mod tests {
             true,
         );
         let v = collect_markup_lines(&g, root, 800, 600);
-        // 3 lines × 2 = 6 vertices
-        assert_eq!(v.len(), 6);
+        // 3 extension/dim lines + 4 arrow lines = 14 vertices
+        assert!(v.len() >= 14, "expected >=14 vertices, got {}", v.len());
     }
 
     // ── Text (deferred) ──
@@ -380,6 +444,71 @@ mod tests {
     }
 
     // ── Multiple elements ──
+
+    // ── Angle Dimension ──
+
+    #[test]
+    fn test_angle_dimension_produces_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::AngleDimension {
+                center: [100.0, 100.0],
+                arm1: [150.0, 100.0],
+                arm2: [100.0, 50.0],
+                radius: 40.0,
+                color: [1.0, 1.0, 0.0, 1.0],
+                label: "45°".into(),
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert!(v.len() > 0, "angle dimension should produce vertices");
+    }
+
+    #[test]
+    fn test_radial_dimension_produces_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::RadialDimension {
+                center: [100.0, 100.0],
+                perimeter: [150.0, 100.0],
+                color: [1.0, 1.0, 0.0, 1.0],
+                label: "R=50".into(),
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_diameter_dimension_produces_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::DiameterDimension {
+                p1: [50.0, 100.0],
+                p2: [150.0, 100.0],
+                center: [100.0, 100.0],
+                color: [1.0, 1.0, 0.0, 1.0],
+                label: "D=100".into(),
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert!(v.len() >= 6, "diameter dimension should have main line + cross mark");
+    }
+
+    #[test]
+    fn test_leader_produces_vertices() {
+        let (g, root) = make_markup_graph(
+            vec![MarkupElement::Leader {
+                anchor: [50.0, 50.0],
+                label_pos: [150.0, 100.0],
+                text: "note".into(),
+                color: [1.0, 1.0, 0.0, 1.0],
+            }],
+            true,
+        );
+        let v = collect_markup_lines(&g, root, 800, 600);
+        assert!(v.len() >= 2, "leader line + dot should produce vertices");
+    }
 
     #[test]
     fn test_multiple_elements_combined() {

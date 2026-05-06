@@ -31,6 +31,16 @@ pub struct SeparatorNode;
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct GroupNode;
 
+/// Billboard node: renders children always facing the active camera.
+/// During traversal, the model matrix is adjusted to cancel the camera
+/// rotation, keeping the children screen-aligned.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BillboardNode {
+    /// If true, only the Y-axis rotation is cancelled (cylindrical billboard).
+    /// If false, full camera orientation is cancelled (spherical billboard).
+    pub axis_aligned: bool,
+}
+
 /// Stores vertex positions.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Coordinate3Node {
@@ -678,6 +688,37 @@ pub enum MarkupElement {
         label: String,
         color: [f32; 4],
     },
+    /// Angle dimension: arc between two rays from a center point.
+    AngleDimension {
+        center: [f32; 2],
+        arm1: [f32; 2],
+        arm2: [f32; 2],
+        radius: f32,
+        color: [f32; 4],
+        label: String,
+    },
+    /// Radial dimension: line from center to circumference point.
+    RadialDimension {
+        center: [f32; 2],
+        perimeter: [f32; 2],
+        color: [f32; 4],
+        label: String,
+    },
+    /// Diameter dimension: line through center between two perimeter points.
+    DiameterDimension {
+        p1: [f32; 2],
+        p2: [f32; 2],
+        center: [f32; 2],
+        color: [f32; 4],
+        label: String,
+    },
+    /// Leader line from a point to a text label.
+    Leader {
+        anchor: [f32; 2],
+        label_pos: [f32; 2],
+        text: String,
+        color: [f32; 4],
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -703,6 +744,7 @@ pub enum NodeData {
     // Grouping
     Separator(SeparatorNode),
     Group(GroupNode),
+            Billboard(BillboardNode),
     // Properties
     Transform(TransformNode),
     Coordinate3(Coordinate3Node),
@@ -752,6 +794,7 @@ impl Clone for NodeData {
         match self {
             NodeData::Separator(v) => NodeData::Separator(v.clone()),
             NodeData::Group(v) => NodeData::Group(v.clone()),
+            NodeData::Billboard(v) => NodeData::Billboard(v.clone()),
             NodeData::Transform(v) => NodeData::Transform(v.clone()),
             NodeData::Coordinate3(v) => NodeData::Coordinate3(v.clone()),
             NodeData::TextureCoordinate2(v) => NodeData::TextureCoordinate2(v.clone()),
@@ -880,6 +923,7 @@ impl NodeData {
             // Nodes with no runtime fields
             NodeData::Separator(_)
             | NodeData::Group(_)
+            | NodeData::Billboard(_)
             | NodeData::Coordinate3(_)
             | NodeData::TextureCoordinate2(_)
             | NodeData::Normal(_)
@@ -901,6 +945,7 @@ impl NodeData {
         match self {
             NodeData::Separator(_) => "Separator",
             NodeData::Group(_) => "Group",
+            NodeData::Billboard(_) => "Billboard",
             NodeData::Transform(_) => "Transform",
             NodeData::Coordinate3(_) => "Coordinate3",
             NodeData::TextureCoordinate2(_) => "TextureCoordinate2",
@@ -941,6 +986,7 @@ impl Serialize for NodeData {
         match self {
             NodeData::Separator(v) => s.serialize_newtype_variant("NodeData", 0, "Separator", v),
             NodeData::Group(v) => s.serialize_newtype_variant("NodeData", 1, "Group", v),
+            NodeData::Billboard(v) => s.serialize_newtype_variant("NodeData", 31, "Billboard", v),
             NodeData::Transform(v) => s.serialize_newtype_variant("NodeData", 2, "Transform", v),
             NodeData::Coordinate3(v) => s.serialize_newtype_variant("NodeData", 3, "Coordinate3", v),
             NodeData::TextureCoordinate2(v) => s.serialize_newtype_variant("NodeData", 4, "TextureCoordinate2", v),
@@ -985,6 +1031,7 @@ impl<'de> Deserialize<'de> for NodeData {
         enum NodeDataHelper {
             Separator(SeparatorNode),
             Group(GroupNode),
+            Billboard(BillboardNode),
             Transform(TransformNode),
             Coordinate3(Coordinate3Node),
             TextureCoordinate2(TextureCoordinate2Node),
@@ -1020,6 +1067,7 @@ impl<'de> Deserialize<'de> for NodeData {
         match NodeDataHelper::deserialize(d)? {
             NodeDataHelper::Separator(v) => Ok(NodeData::Separator(v)),
             NodeDataHelper::Group(v) => Ok(NodeData::Group(v)),
+            NodeDataHelper::Billboard(v) => Ok(NodeData::Billboard(v)),
             NodeDataHelper::Transform(v) => Ok(NodeData::Transform(v)),
             NodeDataHelper::Coordinate3(v) => Ok(NodeData::Coordinate3(v)),
             NodeDataHelper::TextureCoordinate2(v) => Ok(NodeData::TextureCoordinate2(v)),

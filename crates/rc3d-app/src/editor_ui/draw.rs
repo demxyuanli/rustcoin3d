@@ -245,6 +245,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
     match data {
         NodeData::Separator(_) => "Separator",
         NodeData::Group(_) => "Group",
+        NodeData::Billboard(_) => "Billboard",
         NodeData::Transform(_) => "Transform",
         NodeData::Material(_) => "Material",
         NodeData::Triangle(_) => "Triangle",
@@ -274,6 +275,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::Coordinate3(_) => "Coord3",
         NodeData::TextureCoordinate2(_) => "TexCoord2",
         NodeData::Normal(_) => "Normal",
+        NodeData::Custom(_, d) => d.type_name(),
     }
 }
 

@@ -28,7 +28,7 @@ impl GetBoundingBoxAction {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) => {
+            NodeData::Group(_) | NodeData::Billboard(_) => {
                 for &child in &entry.children {
                     self.traverse_node(graph, child);
                 }

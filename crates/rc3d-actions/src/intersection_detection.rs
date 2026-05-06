@@ -98,7 +98,7 @@ impl IntersectionDetectionAction {
                     self.traverse(graph, child);
                 }
             }
-            NodeData::Group(_)
+            NodeData::Group(_) | NodeData::Billboard(_)
             | NodeData::EventCallback(_)
             | NodeData::SectionPlane(_)
             | NodeData::Switch(_)

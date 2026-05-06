@@ -68,7 +68,7 @@ fn approximate_node_center(graph: &SceneGraph, node: NodeId) -> Option<Vec3> {
     let entry = graph.get(node)?;
     match &entry.data {
         NodeData::Transform(t) => Some(t.translation),
-        NodeData::Group(_) | NodeData::Separator(_) | NodeData::Lod(_) | NodeData::Switch(_) | NodeData::MultipleCopy(_)
+        NodeData::Group(_) | NodeData::Billboard(_) | NodeData::Separator(_) | NodeData::Lod(_) | NodeData::Switch(_) | NodeData::MultipleCopy(_)
         | NodeData::Measurement(_) | NodeData::Markup(_) | NodeData::Text2(_) | NodeData::Text3(_) | NodeData::EventCallback(_) => {
             for &c in &entry.children {
                 if let Some(p) = approximate_node_center(graph, c) {
