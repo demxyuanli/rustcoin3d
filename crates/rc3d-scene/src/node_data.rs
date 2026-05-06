@@ -98,6 +98,8 @@ pub struct MaterialNode {
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// Anisotropic roughness (0.0 = isotropic GGX, 1.0 = fully anisotropic).
+    pub anisotropic: f32,
     pub light_group: Option<String>,
 }
 
@@ -135,6 +137,7 @@ impl MaterialNode {
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            anisotropic: 0.0,
             light_group: None,
         }
     }
@@ -160,6 +163,7 @@ impl Default for MaterialNode {
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            anisotropic: 0.0,
             light_group: None,
         }
     }

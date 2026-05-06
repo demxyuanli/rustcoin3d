@@ -38,6 +38,7 @@ fn material_element_for_node(
         alpha_mode: src.alpha_mode,
         alpha_cutoff: src.alpha_cutoff,
         double_sided: src.double_sided,
+        anisotropic: src.anisotropic,
     }
 }
 
@@ -122,6 +123,7 @@ pub struct DrawCall {
     pub base_color: Vec3,
     pub metallic: f32,
     pub roughness: f32,
+    pub anisotropic: f32,
     pub opacity: f32,
     pub albedo_path: Option<Arc<str>>,
     pub normal_path: Option<Arc<str>>,
@@ -180,6 +182,7 @@ impl Default for DrawCall {
             base_color: Vec3::ZERO,
             metallic: 0.0,
             roughness: 0.5,
+            anisotropic: 0.0,
             opacity: 1.0,
             albedo_path: None,
             normal_path: None,
@@ -820,6 +823,7 @@ impl RenderCollector {
             base_color: mat.base_color,
             metallic: mat.metallic,
             roughness: mat.roughness,
+            anisotropic: mat.anisotropic,
             opacity: mat.opacity,
             albedo_path: mat
                 .albedo_texture
@@ -912,6 +916,7 @@ impl RenderCollector {
             base_color: mat.base_color,
             metallic: mat.metallic,
             roughness: mat.roughness,
+            anisotropic: mat.anisotropic,
             opacity: mat.opacity,
             albedo_path: mat
                 .albedo_texture

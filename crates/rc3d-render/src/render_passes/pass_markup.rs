@@ -104,7 +104,7 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<LineVertex>) {
             let perp = [-ndir[1], ndir[0]];
             let asz = *arrow_size;
             // Start arrowhead
-            let p0 = [dl_start[0] + ndir[0] * asz, dl_start[1] + ndir[1] * asz];
+            let _p0 = [dl_start[0] + ndir[0] * asz, dl_start[1] + ndir[1] * asz];
             let p1 = [dl_start[0] + perp[0] * asz * 0.5, dl_start[1] + perp[1] * asz * 0.5];
             let p2 = [dl_start[0] - perp[0] * asz * 0.5, dl_start[1] - perp[1] * asz * 0.5];
             out.push(LineVertex { position: [dl_start[0], dl_start[1], 0.0] });

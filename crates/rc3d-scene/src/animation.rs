@@ -314,3 +314,71 @@ fn decompose_matrix(m: Mat4) -> (Vec3, Quat, Vec3) {
     let rotation = Quat::from_mat4(&rot_mat);
     (translation, rotation, scale)
 }
+
+/// One node in an animation blend tree.
+/// Leaf nodes reference a clip; internal nodes blend children by weight.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum BlendNode {
+    /// Plays a single animation clip.
+    Clip {
+        clip: AnimationClip,
+        speed: f32,
+        start_time: f32,
+    },
+    /// Linearly blends two child nodes by weight [0,1].
+    Blend {
+        left: Box<BlendNode>,
+        right: Box<BlendNode>,
+        weight: f32,
+    },
+    /// Additively combines two child nodes (second adds on top of first).
+    Additive {
+        base: Box<BlendNode>,
+        additive: Box<BlendNode>,
+        weight: f32,
+    },
+}
+
+impl BlendNode {
+    /// Sample the blend tree at a given time, using the provided skeleton for clip sampling.
+    pub fn sample(&self, time: f32, skeleton: &Skeleton) -> Option<Vec<Mat4>> {
+        match self {
+            BlendNode::Clip { clip, speed, start_time } => {
+                let t = start_time + (time * speed) % clip.duration.max(0.001);
+                Some(clip.sample_all(t, skeleton))
+            }
+            BlendNode::Blend { left, right, weight } => {
+                let l = left.sample(time, skeleton)?;
+                let r = right.sample(time, skeleton)?;
+                let w = weight.clamp(0.0, 1.0);
+                // Per-joint lerp
+                let blended: Vec<Mat4> = l.iter().zip(r.iter())
+                    .map(|(lm, rm)| {
+                        let (lt, lr, ls) = decompose_matrix(*lm);
+                        let (rt, rr, rs) = decompose_matrix(*rm);
+                        let t = lt.lerp(rt, w);
+                        let rot = lr.slerp(rr, w);
+                        let s = ls.lerp(rs, w);
+                        Mat4::from_scale_rotation_translation(s, rot, t)
+                    })
+                    .collect();
+                Some(blended)
+            }
+            BlendNode::Additive { base, additive, weight } => {
+                let b = base.sample(time, skeleton)?;
+                let a = additive.sample(time, skeleton)?;
+                let w = weight.clamp(0.0, 1.0);
+                let result: Vec<Mat4> = b.iter().zip(a.iter())
+                    .map(|(bm, am)| {
+                        let (bt, _br, bs) = decompose_matrix(*bm);
+                        let (at, ar, as_) = decompose_matrix(*am);
+                        let t = bt + at * w;
+                        let s = bs + as_ * w;
+                        *bm * Mat4::from_scale_rotation_translation(s, ar, t)
+                    })
+                    .collect();
+                Some(result)
+            }
+        }
+    }
+}

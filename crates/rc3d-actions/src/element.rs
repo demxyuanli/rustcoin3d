@@ -4,7 +4,7 @@ use std::any::Any;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ElementId(pub u16);
 
-pub trait Element: Any + std::fmt::Debug {
+pub trait Element: Any + std::fmt::Debug + Send + Sync {
     fn element_id(&self) -> ElementId;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -140,6 +140,8 @@ pub struct MaterialElement {
     pub alpha_mode: rc3d_scene::AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// Anisotropic roughness (0.0 = isotropic).
+    pub anisotropic: f32,
 }
 
 impl Default for MaterialElement {
@@ -162,6 +164,7 @@ impl Default for MaterialElement {
             alpha_mode: rc3d_scene::AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            anisotropic: 0.0,
         }
     }
 }
