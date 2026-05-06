@@ -526,6 +526,30 @@ impl Default for AreaLightNode {
     }
 }
 
+/// Screen-space projected texture decal.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DecalNode {
+    pub position: Vec3,
+    pub direction: Vec3,
+    pub size: [f32; 2],
+    pub texture_path: String,
+    pub color: [f32; 4],
+    pub opacity: f32,
+}
+
+impl Default for DecalNode {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            size: [1.0, 1.0],
+            texture_path: String::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            opacity: 1.0,
+        }
+    }
+}
+
 /// Event callback node: marker for scene-graph event routing.
 ///
 /// When HandleEventAction encounters this node during traversal,
@@ -831,6 +855,8 @@ pub enum NodeData {
     Text3(Text3Node),
     Measurement(MeasurementNode),
     Markup(MarkupNode),
+    /// Screen-space projected texture overlay.
+    Decal(DecalNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
     Custom(u16, Box<dyn CustomNodeData>),
 }
@@ -872,6 +898,7 @@ impl Clone for NodeData {
             NodeData::Measurement(v) => NodeData::Measurement(v.clone()),
             NodeData::Markup(v) => NodeData::Markup(v.clone()),
             NodeData::Custom(id, d) => NodeData::Custom(*id, d.clone_box()),
+            NodeData::Decal(v) => NodeData::Decal(v.clone()),
         }
     }
 }
@@ -992,6 +1019,7 @@ impl NodeData {
             | NodeData::HandlerNode(_)
             | NodeData::MultipleCopy(_) => vec![],
             NodeData::Custom(_, d) => d.field_descriptors(),
+            NodeData::Decal(_) => vec![FieldDescriptor { name: "opacity", field_index: 0 }],
         }
     }
 
@@ -1031,6 +1059,7 @@ impl NodeData {
             NodeData::Measurement(_) => "Measurement",
             NodeData::Markup(_) => "Markup",
             NodeData::Custom(_, d) => d.type_name(),
+            NodeData::Decal(_) => "Decal",
         }
     }
 }
@@ -1072,6 +1101,7 @@ impl Serialize for NodeData {
             NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
             NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
+            NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
             NodeData::Custom(type_id, d) => {
                 let payload = (type_id, d.serialize_custom());
                 s.serialize_newtype_variant("NodeData", 31, "Custom", &payload)
@@ -1110,6 +1140,7 @@ impl<'de> Deserialize<'de> for NodeData {
             #[serde(rename = "HandlerNode")]
             Handler(String),
             Custom((u16, String)),
+            Decal(DecalNode),
             EventCallback(EventCallbackNode),
             PickStyle(PickStyleNode),
             Lod(LodNode),
@@ -1147,6 +1178,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
                 crate::node_handler::DummyHandler,
             ))),
+            NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {
                 // Defer to registry for deserialization; fallback to DummyHandler
                 Ok(NodeData::HandlerNode(Arc::new(

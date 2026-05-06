@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rc3d_core::NodeId;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,8 @@ pub struct SceneGraph {
     roots: Vec<NodeId>,
     #[serde(default, skip_serializing)]
     selected: HashSet<NodeId>,
+    #[serde(default, skip_serializing)]
+    selection_sets: HashMap<String, HashSet<NodeId>>,
 }
 
 impl SceneGraph {
@@ -27,6 +29,7 @@ impl SceneGraph {
             nodes: SlotMap::with_key(),
             roots: Vec::new(),
             selected: HashSet::new(),
+            selection_sets: HashMap::new(),
         }
     }
 
@@ -167,6 +170,49 @@ impl SceneGraph {
 
     pub fn selected_nodes(&self) -> &HashSet<NodeId> {
         &self.selected
+    }
+
+    /// Named selection sets for group operations.
+    pub fn selection_set(&self, name: &str) -> Option<&HashSet<NodeId>> {
+        self.selection_sets.get(name)
+    }
+
+    pub fn selection_set_mut(&mut self, name: &str) -> &mut HashSet<NodeId> {
+        self.selection_sets.entry(name.to_string()).or_default()
+    }
+
+    pub fn selection_set_names(&self) -> impl Iterator<Item = &String> {
+        self.selection_sets.keys()
+    }
+
+    /// Add nodes to a named selection set (creating it if needed).
+    pub fn selection_set_add(&mut self, name: &str, ids: &[NodeId]) {
+        let valid: Vec<NodeId> = ids.iter().filter(|&&id| self.nodes.contains_key(id)).copied().collect();
+        let set = self.selection_set_mut(name);
+        for id in valid {
+            set.insert(id);
+        }
+    }
+
+    /// Remove nodes from a named selection set.
+    pub fn selection_set_remove(&mut self, name: &str, ids: &[NodeId]) {
+        if let Some(set) = self.selection_sets.get_mut(name) {
+            for &id in ids {
+                set.remove(&id);
+            }
+        }
+    }
+
+    /// Apply a named selection set to the active selection.
+    pub fn selection_set_select(&mut self, name: &str) {
+        if let Some(set) = self.selection_sets.get(name) {
+            self.selected = set.clone();
+        }
+    }
+
+    /// Delete a named selection set.
+    pub fn selection_set_delete(&mut self, name: &str) -> bool {
+        self.selection_sets.remove(name).is_some()
     }
 
     /// Marks every field on each node in the subtree as dirty (e.g. after a structural edit).
