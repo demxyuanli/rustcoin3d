@@ -552,3 +552,38 @@ fn write_node(graph: &SceneGraph, node: rc3d_core::NodeId, out: &mut String, ind
         _ => { out.push_str(&format!("{pad}# unhandled node\n")); }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_iv_separator_with_cube() {
+        let iv = "#Inventor V2.1 ascii\n\
+                  Separator {\n\
+                    Cube { width 2 height 2 depth 2 }\n\
+                  }\n";
+        let result = parse_iv(iv);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+        let g = result.unwrap();
+        assert!(!g.roots().is_empty());
+    }
+
+    #[test]
+    fn test_parse_iv_separator_with_sphere() {
+        let iv = "#Inventor V2.1 ascii\n\
+                  Separator {\n\
+                    Sphere { radius 1.5 }\n\
+                  }\n";
+        let result = parse_iv(iv);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_parse_iv_empty() {
+        let iv = "#Inventor V2.1 ascii\n";
+        let result = parse_iv(iv);
+        // Empty should parse successfully (just no nodes)
+        assert!(result.is_ok());
+    }
+}

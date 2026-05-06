@@ -268,3 +268,58 @@ fn split_indexed_face_set_into_chunks(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_binary_stl(triangles: &[[f32; 12]]) -> Vec<u8> {
+        let mut buf = vec![0u8; 84]; // 80 header + 4 count
+        let count = triangles.len() as u32;
+        buf[80..84].copy_from_slice(&count.to_le_bytes());
+        for tri in triangles {
+            // 12 floats: nx,ny,nz, v1x,v1y,v1z, v2x,v2y,v2z, v3x,v3y,v3z
+            for v in tri {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            buf.extend_from_slice(&[0u8; 2]); // attribute byte count
+        }
+        buf
+    }
+
+    #[test]
+    fn test_parse_binary_stl_one_triangle() {
+        let data = make_binary_stl(&[[
+            0.0, 0.0, 1.0,  // normal
+            0.0, 0.0, 0.0,  // v1
+            1.0, 0.0, 0.0,  // v2
+            0.0, 1.0, 0.0,  // v3
+        ]]);
+        let result = parse_stl(&data);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+        let g = result.unwrap();
+        assert!(!g.roots().is_empty());
+    }
+
+    #[test]
+    fn test_parse_binary_stl_empty() {
+        let data = make_binary_stl(&[]);
+        let result = parse_stl(&data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_ascii_stl_minimal() {
+        let text = "solid test\n\
+                    facet normal 0 0 1\n\
+                    outer loop\n\
+                    vertex 0 0 0\n\
+                    vertex 1 0 0\n\
+                    vertex 0 1 0\n\
+                    endloop\n\
+                    endfacet\n\
+                    endsolid test\n";
+        let result = parse_stl(text.as_bytes());
+        assert!(result.is_ok());
+    }
+}

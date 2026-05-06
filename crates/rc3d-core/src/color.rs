@@ -40,3 +40,37 @@ impl LinearColor {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_black_roundtrip() {
+        let srgb = SrgbColor(Vec3::new(0.0, 0.0, 0.0));
+        let linear = srgb.to_linear();
+        let back = linear.to_srgb();
+        assert!((back.0.x).abs() < 0.001);
+        assert!((back.0.y).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_white_roundtrip() {
+        let srgb = SrgbColor(Vec3::new(1.0, 1.0, 1.0));
+        let linear = srgb.to_linear();
+        let back = linear.to_srgb();
+        assert!((back.0.x - 1.0).abs() < 0.01);
+        assert!((back.0.y - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_linear_to_srgb_clamped() {
+        // Negative values should produce something sane, not NaN
+        let linear = LinearColor(Vec3::new(-0.1, 0.5, 1.5));
+        let srgb = linear.to_srgb();
+        assert!(srgb.0.x.is_finite());
+        assert!(srgb.0.y.is_finite());
+        assert!(srgb.0.z.is_finite());
+    }
+
+}

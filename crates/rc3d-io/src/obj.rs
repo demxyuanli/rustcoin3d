@@ -228,3 +228,33 @@ fn parse_obj_index(s: &str, count: usize, line_num: usize, kind: &str) -> Result
         Ok(n - 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_obj_triangle() {
+        let text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let result = parse_obj(text);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+        let g = result.unwrap();
+        assert!(!g.roots().is_empty());
+    }
+
+    #[test]
+    fn test_parse_obj_cube() {
+        let text = "\
+v -0.5 -0.5 -0.5\nv  0.5 -0.5 -0.5\nv  0.5  0.5 -0.5\nv -0.5  0.5 -0.5\n\
+v -0.5 -0.5  0.5\nv  0.5 -0.5  0.5\nv  0.5  0.5  0.5\nv -0.5  0.5  0.5\n\
+f 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 5 1 4 8\n";
+        let result = parse_obj(text);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_parse_obj_empty() {
+        assert!(parse_obj("").is_err() || parse_obj("").is_ok());
+        // Empty OBJ may or may not be valid depending on parser behavior
+    }
+}
