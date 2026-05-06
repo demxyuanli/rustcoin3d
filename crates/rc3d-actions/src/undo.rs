@@ -3,6 +3,9 @@ use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, NodeEntry, SceneGraph};
 
 /// A reversible operation on the scene graph.
+///
+/// Implementors store enough state to both apply (`execute`) and reverse (`undo`)
+/// the mutation. Commands are `Send + Sync` so they can be moved across threads.
 pub trait Command: std::fmt::Debug + Send + Sync {
     fn execute(&mut self, graph: &mut SceneGraph);
     fn undo(&mut self, graph: &mut SceneGraph);

@@ -7,9 +7,15 @@ use slotmap::SlotMap;
 use crate::node_data::NodeData;
 use crate::node_entry::NodeEntry;
 
+/// Core scene container: a hierarchical directed graph of typed nodes.
+///
+/// Nodes are stored in a `SlotMap` for O(1) access and stable IDs.
+/// Supports root nodes, parent-child relationships, selection, and
+/// subtree operations. Serializable via serde (skips transient selection state).
 #[derive(Serialize, Deserialize)]
 pub struct SceneGraph {
     nodes: SlotMap<NodeId, NodeEntry>,
+    /// Top-level nodes with no parent.
     roots: Vec<NodeId>,
     #[serde(default, skip_serializing)]
     selected: HashSet<NodeId>,

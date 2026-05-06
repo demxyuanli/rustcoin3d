@@ -1,9 +1,14 @@
 use crate::math::{Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 
+/// Axis-aligned bounding box defined by min/max corners.
+///
+/// Supports union, transform, center, size, and intersection queries.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Aabb {
+    /// Minimum corner (smallest x, y, z).
     pub min: Vec3,
+    /// Maximum corner (largest x, y, z).
     pub max: Vec3,
 }
 
