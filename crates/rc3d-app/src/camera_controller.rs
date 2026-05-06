@@ -81,6 +81,8 @@ pub struct CameraController {
     pub left_orbit_held: bool,
     /// Whether the controller is currently panning (for drag state tracking).
     pub panning: bool,
+    /// When true, use first-person walk navigation instead of orbit.
+    pub walk_mode: bool,
     /// Saved camera bookmarks (slots 0-8, keys 1-9).
     pub bookmarks: [Option<CameraBookmark>; 9],
     /// Active fly-to animation state.
@@ -98,6 +100,7 @@ impl CameraController {
             middle_orbit_held: false,
             left_orbit_held: false,
             panning: false,
+            walk_mode: false,
             bookmarks: [None; 9],
             fly_to: None,
         }
@@ -123,6 +126,27 @@ impl CameraController {
     pub fn zoom(&mut self, delta: f32) {
         self.distance *= 1.0 - delta * 0.1;
         self.distance = self.distance.max(0.01);
+    }
+
+    /// Walk forward/right relative to the current view direction.
+    /// `forward` and `right` are normalized directional inputs.
+    pub fn walk(&mut self, forward: f32, right: f32, up_down: f32, speed: f32) {
+        let fwd = self.forward_vector();
+        let rgt = self.right_vector();
+        let delta = fwd * forward + rgt * right + self.up * up_down;
+        self.target += delta * speed;
+    }
+
+    /// Turn the view via mouse delta (first-person look).
+    pub fn turn(&mut self, dx: f32, dy: f32) {
+        self.yaw -= dx * 0.005;
+        self.pitch -= dy * 0.005;
+        self.pitch = self.pitch.clamp(-1.5, 1.5);
+    }
+
+    /// Toggle walk mode on/off.
+    pub fn toggle_walk_mode(&mut self) {
+        self.walk_mode = !self.walk_mode;
     }
 
     pub fn eye_position(&self) -> Vec3 {
@@ -233,8 +257,12 @@ impl CameraController {
         self.fly_to.is_some()
     }
 
+    fn forward_vector(&self) -> Vec3 {
+        (self.target - self.eye_position()).normalize()
+    }
+
     fn right_vector(&self) -> Vec3 {
-        let forward = (self.target - self.eye_position()).normalize();
+        let forward = self.forward_vector();
         forward.cross(self.up).normalize()
     }
 
