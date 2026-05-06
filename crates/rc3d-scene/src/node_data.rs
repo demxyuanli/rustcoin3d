@@ -98,6 +98,7 @@ pub struct MaterialNode {
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    pub light_group: Option<String>,
 }
 
 /// Alpha rendering mode following glTF conventions.
@@ -134,6 +135,7 @@ impl MaterialNode {
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            light_group: None,
         }
     }
 }
@@ -158,6 +160,7 @@ impl Default for MaterialNode {
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            light_group: None,
         }
     }
 }
@@ -437,6 +440,7 @@ pub struct DirectionalLightNode {
     pub direction: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    pub light_group: Option<String>,
 }
 
 impl Default for DirectionalLightNode {
@@ -445,6 +449,7 @@ impl Default for DirectionalLightNode {
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::ONE,
             intensity: 1.0,
+            light_group: None,
         }
     }
 }
@@ -455,6 +460,7 @@ pub struct PointLightNode {
     pub location: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    pub light_group: Option<String>,
 }
 
 impl Default for PointLightNode {
@@ -463,6 +469,7 @@ impl Default for PointLightNode {
             location: Vec3::ZERO,
             color: Vec3::ONE,
             intensity: 1.0,
+            light_group: None,
         }
     }
 }
@@ -476,6 +483,7 @@ pub struct SpotLightNode {
     pub intensity: f32,
     pub cut_off_angle: f32,
     pub drop_off_rate: f32,
+    pub light_group: Option<String>,
 }
 
 impl Default for SpotLightNode {
@@ -487,6 +495,7 @@ impl Default for SpotLightNode {
             intensity: 1.0,
             cut_off_angle: 0.785,
             drop_off_rate: 0.0,
+            light_group: None,
         }
     }
 }
@@ -510,6 +519,7 @@ pub struct AreaLightNode {
     /// Height of the light (rectangle height, ignored for disc).
     pub height: f32,
     pub shape: AreaLightShape,
+    pub light_group: Option<String>,
 }
 
 impl Default for AreaLightNode {
@@ -522,6 +532,7 @@ impl Default for AreaLightNode {
             width: 1.0,
             height: 1.0,
             shape: AreaLightShape::Rectangle,
+            light_group: None,
         }
     }
 }
@@ -787,6 +798,14 @@ pub enum MarkupElement {
         text: String,
         color: [f32; 4],
     },
+    /// Callout bubble: leader line + filled circle with text.
+    Callout {
+        anchor: [f32; 2],
+        label_pos: [f32; 2],
+        text: String,
+        radius: f32,
+        color: [f32; 4],
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1015,7 +1034,6 @@ impl NodeData {
             | NodeData::IndexedFaceSet(_)
             | NodeData::SkinnedMesh(_)
             | NodeData::MorphTarget(_)
-            | NodeData::AreaLight(_)
             | NodeData::HandlerNode(_)
             | NodeData::MultipleCopy(_) => vec![],
             NodeData::Custom(_, d) => d.field_descriptors(),

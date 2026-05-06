@@ -9,7 +9,7 @@ struct PostParams {
     vignette: f32,
     chromatic: f32,
     bloom_str: f32,
-    pad: f32,
+    grain: f32,
 }
 @group(0) @binding(4) var<uniform> params: PostParams;
 
@@ -98,5 +98,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let vig = 1.0 - dot(i.uv - 0.5, i.uv - 0.5) * params.vignette * 2.0;
     let vig_ldr = ldr * clamp(vig, 0.0, 1.0);
 
-    return vec4<f32>(vig_ldr, 1.0);
+    // Film grain
+    let grain_noise = fract(sin(dot(i.clip_pos.xy, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let grain_ldr = vig_ldr + (grain_noise - 0.5) * params.grain;
+
+    return vec4<f32>(grain_ldr, 1.0);
 }

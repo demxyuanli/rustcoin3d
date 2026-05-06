@@ -170,6 +170,32 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<LineVertex>) {
                 prev = curr;
             }
         }
+        MarkupElement::Callout { anchor, label_pos, radius, .. } => {
+            // Leader line
+            out.push(LineVertex { position: [anchor[0], anchor[1], 0.0] });
+            out.push(LineVertex { position: [label_pos[0], label_pos[1], 0.0] });
+            // Filled circle (dot) at anchor
+            let n = 8;
+            let sr = 2.0;
+            let mut prev = [anchor[0] + sr, anchor[1]];
+            for i in 1..=n {
+                let a = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let curr = [anchor[0] + sr * a.cos(), anchor[1] + sr * a.sin()];
+                out.push(LineVertex { position: [prev[0], prev[1], 0.0] });
+                out.push(LineVertex { position: [curr[0], curr[1], 0.0] });
+                prev = curr;
+            }
+            // Circle bubble at label_pos
+            let n_seg = 32usize;
+            let mut prev_b = [label_pos[0] + radius, label_pos[1]];
+            for i in 1..=n_seg {
+                let a = (i as f32 / n_seg as f32) * std::f32::consts::TAU;
+                let curr = [label_pos[0] + radius * a.cos(), label_pos[1] + radius * a.sin()];
+                out.push(LineVertex { position: [prev_b[0], prev_b[1], 0.0] });
+                out.push(LineVertex { position: [curr[0], curr[1], 0.0] });
+                prev_b = curr;
+            }
+        }
         MarkupElement::Text { .. } => {
             // Text elements are deferred to HUD/glyphon layer.
         }
