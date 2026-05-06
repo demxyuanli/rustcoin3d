@@ -324,7 +324,7 @@ fn hierarchy_node(
 fn node_type_tag(data: &NodeData) -> &'static str {
     match data {
         NodeData::Separator(_) => "Separator",
-        NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) => "Group",
+        NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) => "Group",
         NodeData::Billboard(_) => "Billboard",
         NodeData::Transform(_) => "Transform",
         NodeData::Material(_) => "Material",
@@ -544,7 +544,7 @@ fn inspector(
     }
 
     let mut vis = match data {
-        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::Separator(_) => {
+        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::Separator(_) => {
             !hidden.contains(&id)
         }
         NodeData::Switch(sw) => sw.which_child >= 0,

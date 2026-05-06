@@ -628,6 +628,28 @@ impl Default for AreaLightNode {
     }
 }
 
+/// Exploded view: offsets children along direction proportionally (HOOPS explode).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ExplodedViewNode {
+    pub direction: Vec3,
+    pub factor: f32,
+    pub center: Vec3,
+}
+impl Default for ExplodedViewNode {
+    fn default() -> Self { Self { direction: Vec3::Y, factor: 1.0, center: Vec3::ZERO } }
+}
+
+/// Planar reflection plane (HOOPS reflection equivalent).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReflectionPlaneNode {
+    pub normal: Vec3,
+    pub origin: Vec3,
+    pub enabled: bool,
+}
+impl Default for ReflectionPlaneNode {
+    fn default() -> Self { Self { normal: Vec3::Y, origin: Vec3::ZERO, enabled: true } }
+}
+
 /// Screen-space projected texture decal.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DecalNode {
@@ -975,6 +997,8 @@ pub enum NodeData {
     Texture2Transform(Texture2TransformNode),
     MaterialBinding(MaterialBindingNode),
     /// Screen-space projected texture overlay.
+    ExplodedView(ExplodedViewNode),
+    ReflectionPlane(ReflectionPlaneNode),
     Decal(DecalNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
     Custom(u16, Box<dyn CustomNodeData>),
@@ -1024,6 +1048,8 @@ impl Clone for NodeData {
             NodeData::ResetTransform(v) => NodeData::ResetTransform(v.clone()),
             NodeData::Texture2Transform(v) => NodeData::Texture2Transform(v.clone()),
             NodeData::MaterialBinding(v) => NodeData::MaterialBinding(v.clone()),
+            NodeData::ExplodedView(v) => NodeData::ExplodedView(v.clone()),
+            NodeData::ReflectionPlane(v) => NodeData::ReflectionPlane(v.clone()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
             NodeData::File(v) => NodeData::File(v.clone()),
         }
@@ -1143,6 +1169,8 @@ impl NodeData {
             | NodeData::ResetTransform(_)
             | NodeData::Texture2Transform(_)
             | NodeData::MaterialBinding(_)
+            | NodeData::ExplodedView(_)
+            | NodeData::ReflectionPlane(_)
             | NodeData::Cube(_)
             | NodeData::Sphere(_)
             | NodeData::Cone(_)
@@ -1200,6 +1228,8 @@ impl NodeData {
             NodeData::ResetTransform(_) => "ResetTransform",
             NodeData::Texture2Transform(_) => "Texture2Transform",
             NodeData::MaterialBinding(_) => "MaterialBinding",
+            NodeData::ExplodedView(_) => "ExplodedView",
+            NodeData::ReflectionPlane(_) => "ReflectionPlane",
             NodeData::Decal(_) => "Decal",
             NodeData::File(_) => "File",
         }
@@ -1250,6 +1280,8 @@ impl Serialize for NodeData {
             NodeData::ResetTransform(v) => s.serialize_newtype_variant("NodeData", 39, "ResetTransform", v),
             NodeData::Texture2Transform(v) => s.serialize_newtype_variant("NodeData", 40, "Texture2Transform", v),
             NodeData::MaterialBinding(v) => s.serialize_newtype_variant("NodeData", 41, "MaterialBinding", v),
+            NodeData::ExplodedView(v) => s.serialize_newtype_variant("NodeData", 42, "ExplodedView", v),
+            NodeData::ReflectionPlane(v) => s.serialize_newtype_variant("NodeData", 43, "ReflectionPlane", v),
             NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
             NodeData::File(v) => s.serialize_newtype_variant("NodeData", 35, "File", v),
             NodeData::Custom(type_id, d) => {
@@ -1297,6 +1329,8 @@ impl<'de> Deserialize<'de> for NodeData {
             ResetTransform(ResetTransformNode),
             Texture2Transform(Texture2TransformNode),
             MaterialBinding(MaterialBindingNode),
+            ExplodedView(ExplodedViewNode),
+            ReflectionPlane(ReflectionPlaneNode),
             Decal(DecalNode),
             File(FileNode),
             EventCallback(EventCallbackNode),
@@ -1343,6 +1377,8 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::ResetTransform(v) => Ok(NodeData::ResetTransform(v)),
             NodeDataHelper::Texture2Transform(v) => Ok(NodeData::Texture2Transform(v)),
             NodeDataHelper::MaterialBinding(v) => Ok(NodeData::MaterialBinding(v)),
+            NodeDataHelper::ExplodedView(v) => Ok(NodeData::ExplodedView(v)),
+            NodeDataHelper::ReflectionPlane(v) => Ok(NodeData::ReflectionPlane(v)),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
             NodeDataHelper::File(v) => Ok(NodeData::File(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {
