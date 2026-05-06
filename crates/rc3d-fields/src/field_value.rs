@@ -1,6 +1,7 @@
 use rc3d_core::math::{Mat4, Vec2, Vec3, Vec4};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FieldValue {
     Bool(bool),
     Int32(i32),

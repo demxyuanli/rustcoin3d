@@ -1,14 +1,17 @@
 use std::collections::HashSet;
 
 use rc3d_core::NodeId;
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 
 use crate::node_data::NodeData;
 use crate::node_entry::NodeEntry;
 
+#[derive(Serialize, Deserialize)]
 pub struct SceneGraph {
     nodes: SlotMap<NodeId, NodeEntry>,
     roots: Vec<NodeId>,
+    #[serde(default, skip_serializing)]
     selected: HashSet<NodeId>,
 }
 
@@ -324,5 +327,113 @@ mod tests {
         assert!(g.get(root).unwrap().fields.any_dirty());
         assert!(g.get(a).unwrap().fields.any_dirty());
         assert!(g.get(b).unwrap().fields.any_dirty());
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use crate::node_data::*;
+
+    fn make_test_scene() -> SceneGraph {
+        let mut g = SceneGraph::new();
+        let root = g.add_root(NodeData::Separator(SeparatorNode));
+        let mat_id = g.add_child(
+            root,
+            NodeData::Material(MaterialNode {
+                base_color: rc3d_core::math::Vec3::new(0.8, 0.2, 0.2),
+                metallic: 0.5,
+                roughness: 0.3,
+                ..Default::default()
+            }),
+        );
+        let cube = g.add_child(root, NodeData::Cube(CubeNode::default()));
+        let light = g.add_child(
+            root,
+            NodeData::DirectionalLight(DirectionalLightNode::default()),
+        );
+        let camera = g.add_child(
+            root,
+            NodeData::PerspectiveCamera(PerspectiveCameraNode::default()),
+        );
+        let markup = g.add_child(
+            root,
+            NodeData::Markup(MarkupNode {
+                elements: vec![MarkupElement::Line {
+                    start: [0.0, 0.0],
+                    end: [100.0, 100.0],
+                    color: [1.0, 0.0, 0.0, 1.0],
+                    width: 2.0,
+                }],
+                layer_name: "layer1".into(),
+                visible: true,
+            }),
+        );
+        g
+    }
+
+    #[test]
+    fn test_scene_graph_json_roundtrip() {
+        let g = make_test_scene();
+        let json = serde_json::to_string_pretty(&g).expect("serialize");
+        let g2: SceneGraph = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(g2.roots().len(), g.roots().len());
+        // Root node exists
+        let root = g2.roots()[0];
+        assert!(g2.get(root).is_some());
+    }
+
+    #[test]
+    fn test_node_data_roundtrip_via_json() {
+        let nd = NodeData::Material(MaterialNode {
+            base_color: rc3d_core::math::Vec3::new(1.0, 0.0, 0.0),
+            metallic: 1.0,
+            roughness: 0.2,
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&nd).expect("serialize");
+        let nd2: NodeData = serde_json::from_str(&json).expect("deserialize");
+        match nd2 {
+            NodeData::Material(m) => {
+                assert_eq!(m.base_color, rc3d_core::math::Vec3::new(1.0, 0.0, 0.0));
+                assert_eq!(m.metallic, 1.0);
+                assert_eq!(m.roughness, 0.2);
+            }
+            _ => panic!("expected Material"),
+        }
+    }
+
+    #[test]
+    fn test_handler_node_roundtrip() {
+        let nd = NodeData::HandlerNode(std::sync::Arc::new(
+            crate::node_handler::DummyHandler,
+        ));
+        let json = serde_json::to_string(&nd).expect("serialize");
+        let nd2: NodeData = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(nd2, NodeData::HandlerNode(_)));
+    }
+
+    #[test]
+    fn test_field_value_serde() {
+        use rc3d_fields::FieldValue;
+        let cases = vec![
+            FieldValue::Bool(true),
+            FieldValue::Float(3.14),
+            FieldValue::String("hello".into()),
+            FieldValue::Vec3f(rc3d_core::math::Vec3::new(1.0, 2.0, 3.0)),
+        ];
+        for fv in cases {
+            let json = serde_json::to_string(&fv).expect("serialize");
+            let fv2: FieldValue = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(fv, fv2);
+        }
+    }
+
+    #[test]
+    fn test_empty_scene_roundtrip() {
+        let g = SceneGraph::new();
+        let json = serde_json::to_string(&g).expect("serialize");
+        let g2: SceneGraph = serde_json::from_str(&json).expect("deserialize");
+        assert!(g2.roots().is_empty());
     }
 }

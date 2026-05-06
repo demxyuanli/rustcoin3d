@@ -2,9 +2,11 @@ use std::collections::HashMap;
 
 use rc3d_core::{DisplayMode, NodeId};
 use rc3d_fields::FieldMap;
+use serde::{Deserialize, Serialize};
 
 use crate::node_data::NodeData;
 
+#[derive(Serialize, Deserialize)]
 pub struct NodeEntry {
     pub data: NodeData,
     pub parent: Option<NodeId>,

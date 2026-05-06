@@ -6,10 +6,12 @@
 //! Animation clips store per-joint keyframe tracks with linear interpolation.
 //! Skinning data attaches vertex bone indices + weights for GPU skinning.
 
+use serde::{Deserialize, Serialize};
+
 use rc3d_core::math::{Mat4, Quat, Vec3, Vec4};
 
 /// One joint (bone) in a skeleton.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Joint {
     pub name: String,
     /// Index of parent joint, or `joint_count` for root.
@@ -21,7 +23,7 @@ pub struct Joint {
 }
 
 /// Skeleton: flat array of joints + cached global transforms.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Skeleton {
     pub joints: Vec<Joint>,
     /// Pre-computed global bind-pose transforms.
@@ -84,7 +86,7 @@ impl Skeleton {
 }
 
 /// Per-joint keyframe with timestamp and local transform.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct JointKeyframe {
     pub time: f32,
     pub translation: Vec3,
@@ -99,7 +101,7 @@ impl JointKeyframe {
 }
 
 /// Keyframe track for one joint in one animation clip.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct JointTrack {
     pub joint_index: usize,
     pub keyframes: Vec<JointKeyframe>,
@@ -152,7 +154,7 @@ impl JointTrack {
 }
 
 /// Animation clip: named sequence of joint tracks.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AnimationClip {
     pub name: String,
     pub duration: f32,
@@ -180,7 +182,7 @@ impl AnimationClip {
 
 /// Per-vertex skinning data: up to 4 bone indices + weights.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct VertexSkinData {
     pub bone_indices: [u32; 4],
     pub bone_weights: [f32; 4],
@@ -196,7 +198,7 @@ impl VertexSkinData {
 }
 
 /// Animation player: drives one animation clip playback with blending.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AnimationPlayer {
     pub clip: Option<AnimationClip>,
     pub current_time: f32,

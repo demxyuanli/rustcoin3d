@@ -1,19 +1,24 @@
 use std::collections::{HashSet, VecDeque};
 
 use rc3d_core::{FieldId, NodeId};
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 
 use crate::field_value::FieldValue;
 
+#[derive(Serialize, Deserialize)]
 pub struct FieldMap {
     entries: SlotMap<FieldId, FieldEntry>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct FieldEntry {
     pub value: FieldValue,
+    #[serde(default)]
     pub dirty: bool,
     pub owner: NodeId,
     pub field_index: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<FieldId>,
 }
 

@@ -14,3 +14,13 @@ pub trait NodeHandler: Debug + Send + Sync {
         }
     }
 }
+
+/// Placeholder handler produced by deserialization; triggers default child traversal.
+#[derive(Debug)]
+pub struct DummyHandler;
+
+impl NodeHandler for DummyHandler {
+    fn handler_name(&self) -> &'static str {
+        "DummyHandler"
+    }
+}

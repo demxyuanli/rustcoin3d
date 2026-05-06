@@ -17,19 +17,21 @@ use std::sync::Arc;
 use rc3d_core::math::{Mat4, Vec3, Vec4};
 use rc3d_core::NodeId;
 
+use serde::{Deserialize, Serialize};
+
 use crate::animation::{AnimationClip, Skeleton, VertexSkinData};
 use crate::node_handler::NodeHandler;
 
 /// Behavioral marker: saves/restores all state elements during traversal.
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SeparatorNode;
 
 /// Ordered container of children (no state save/restore).
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct GroupNode;
 
 /// Stores vertex positions.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Coordinate3Node {
     pub point: Vec<Vec3>,
 }
@@ -41,7 +43,7 @@ impl Coordinate3Node {
 }
 
 /// Per-vertex 2D texture coordinates (parallel to [`Coordinate3Node::point`] when used with IFS).
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TextureCoordinate2Node {
     pub point: Vec<[f32; 2]>,
 }
@@ -53,7 +55,7 @@ impl TextureCoordinate2Node {
 }
 
 /// Stores per-vertex normals.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NormalNode {
     pub vector: Vec<Vec3>,
 }
@@ -65,7 +67,7 @@ impl NormalNode {
 }
 
 /// Stores material properties with full PBR support.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MaterialNode {
     pub diffuse_color: Vec3,
     pub ambient_color: Vec3,
@@ -88,7 +90,7 @@ pub struct MaterialNode {
 }
 
 /// Alpha rendering mode following glTF conventions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlphaMode {
     Opaque,
     Mask,
@@ -150,7 +152,7 @@ impl Default for MaterialNode {
 }
 
 /// 3D transformation: translation, rotation, scale.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TransformNode {
     pub translation: Vec3,
     pub rotation: Mat4,
@@ -187,11 +189,11 @@ impl TransformNode {
 }
 
 /// Shape: renders the first 3 coordinates as a triangle.
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct TriangleNode;
 
 /// Shape: axis-aligned box.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CubeNode {
     pub width: f32,
     pub height: f32,
@@ -209,7 +211,7 @@ impl Default for CubeNode {
 }
 
 /// Shape: UV sphere.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SphereNode {
     pub radius: f32,
 }
@@ -221,7 +223,7 @@ impl Default for SphereNode {
 }
 
 /// Shape: cone.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ConeNode {
     pub bottom_radius: f32,
     pub height: f32,
@@ -237,7 +239,7 @@ impl Default for ConeNode {
 }
 
 /// Shape: cylinder.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CylinderNode {
     pub radius: f32,
     pub height: f32,
@@ -253,7 +255,7 @@ impl Default for CylinderNode {
 }
 
 /// Shape: arbitrary triangle mesh from vertex/index arrays.
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct IndexedFaceSetNode {
     pub coord_index: Vec<i32>,
 }
@@ -261,7 +263,7 @@ pub struct IndexedFaceSetNode {
 /// Skeletal skinning data for mesh geometry under the same separator (Coin-style sidecar).
 /// Place before [`Coordinate3`](Coordinate3Node) / [`IndexedFaceSet`](IndexedFaceSetNode) so the
 /// render collector can attach weights to the generated draw call.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SkinnedMeshNode {
     pub skeleton: Skeleton,
     pub skin_data: Vec<VertexSkinData>,
@@ -269,7 +271,7 @@ pub struct SkinnedMeshNode {
 }
 
 /// A single morph target (blend shape) storing per-vertex deltas.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MorphTarget {
     pub name: String,
     /// Per-vertex position deltas (same length as Coordinate3Node::point).
@@ -282,7 +284,7 @@ pub struct MorphTarget {
 
 /// Stores morph target (blend shape) data and per-instance weights.
 /// Parent this node alongside the geometry it affects within a Separator.
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct MorphTargetNode {
     /// The morph targets (blend shapes) for this mesh.
     pub targets: Vec<MorphTarget>,
@@ -291,7 +293,7 @@ pub struct MorphTargetNode {
 }
 
 /// Camera with perspective projection.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PerspectiveCameraNode {
     pub position: Vec3,
     pub orientation: Mat4,
@@ -363,7 +365,7 @@ impl PerspectiveCameraNode {
 }
 
 /// Camera with orthographic projection.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OrthographicCameraNode {
     pub position: Vec3,
     pub orientation: Mat4,
@@ -419,7 +421,7 @@ impl OrthographicCameraNode {
 }
 
 /// Directional (infinite) light.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DirectionalLightNode {
     pub direction: Vec3,
     pub color: Vec3,
@@ -437,7 +439,7 @@ impl Default for DirectionalLightNode {
 }
 
 /// Point light.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PointLightNode {
     pub location: Vec3,
     pub color: Vec3,
@@ -455,7 +457,7 @@ impl Default for PointLightNode {
 }
 
 /// Spot light.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SpotLightNode {
     pub location: Vec3,
     pub direction: Vec3,
@@ -483,7 +485,7 @@ impl Default for SpotLightNode {
 /// When HandleEventAction encounters this node during traversal,
 /// the application-level handler decides whether to consume the event.
 /// The `enabled` flag controls whether the node participates in routing.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EventCallbackNode {
     pub enabled: bool,
 }
@@ -495,7 +497,7 @@ impl Default for EventCallbackNode {
 }
 
 /// Pick style: controls whether this node (and its children) can be picked.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PickStyleNode {
     pub pickable: bool,
 }
@@ -507,7 +509,7 @@ impl Default for PickStyleNode {
 }
 
 /// One LOD level: a group of children rendered at this detail level.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LodLevel {
     pub children: Vec<NodeId>,
     pub max_distance: f32,
@@ -515,7 +517,7 @@ pub struct LodLevel {
 
 /// LOD switch node (Coin3D SoLOD / SoLevelOfDetail pattern).
 /// Selects one child group based on camera distance.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LodNode {
     pub levels: Vec<LodLevel>,
     pub current_level: usize,
@@ -531,7 +533,7 @@ impl Default for LodNode {
 }
 
 /// Section/cutting plane node (Coin3D SoClipPlane pattern).
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SectionPlaneNode {
     pub plane: [f32; 4],
     pub enabled: bool,
@@ -545,7 +547,7 @@ impl Default for SectionPlaneNode {
 
 /// Switch node: traverses one child based on index (Coin3D SoSwitch pattern).
 /// which_child: -1 = all, -2 = none, 0..N = specific child.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SwitchNode {
     pub which_child: i32,
     pub children: Vec<rc3d_core::NodeId>,
@@ -559,7 +561,7 @@ impl Default for SwitchNode {
 
 /// MultipleCopy node: repeats child traversal with offset transforms
 /// (Coin3D SoMultipleCopy pattern).
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MultipleCopyNode {
     pub copies: Vec<rc3d_core::math::Mat4>,
     pub children: Vec<rc3d_core::NodeId>,
@@ -572,7 +574,7 @@ impl Default for MultipleCopyNode {
 }
 
 /// Screen-space 2D text label (Coin3D SoText2 pattern).
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Text2Node {
     pub string: String,
     pub position: [f32; 2],
@@ -587,7 +589,7 @@ impl Default for Text2Node {
 }
 
 /// World-space 3D text label (Coin3D SoText3 pattern).
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Text3Node {
     pub string: String,
     pub position: Vec3,
@@ -602,7 +604,7 @@ impl Default for Text3Node {
 }
 
 /// Central node type enum.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum MeasurementType {
     Distance,
     Angle,
@@ -610,7 +612,7 @@ pub enum MeasurementType {
     Diameter,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MeasurementNode {
     pub points: Vec<rc3d_core::math::Vec3>,
     pub measurement_type: MeasurementType,
@@ -631,7 +633,7 @@ impl Default for MeasurementNode {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum MarkupElement {
     Line {
         start: [f32; 2],
@@ -677,7 +679,7 @@ pub enum MarkupElement {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MarkupNode {
     pub elements: Vec<MarkupElement>,
     pub layer_name: String,
@@ -743,7 +745,7 @@ pub enum NodeData {
 }
 
 /// Describes a named field on a node type.
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FieldDescriptor {
     pub name: &'static str,
     pub field_index: u16,
@@ -885,6 +887,121 @@ impl NodeData {
             NodeData::Text3(_) => "Text3",
             NodeData::Measurement(_) => "Measurement",
             NodeData::Markup(_) => "Markup",
+        }
+    }
+}
+
+// Manual Serialize/Deserialize to handle HandlerNode (Arc<dyn NodeHandler>).
+impl Serialize for NodeData {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            NodeData::Separator(v) => s.serialize_newtype_variant("NodeData", 0, "Separator", v),
+            NodeData::Group(v) => s.serialize_newtype_variant("NodeData", 1, "Group", v),
+            NodeData::Transform(v) => s.serialize_newtype_variant("NodeData", 2, "Transform", v),
+            NodeData::Coordinate3(v) => s.serialize_newtype_variant("NodeData", 3, "Coordinate3", v),
+            NodeData::TextureCoordinate2(v) => s.serialize_newtype_variant("NodeData", 4, "TextureCoordinate2", v),
+            NodeData::Normal(v) => s.serialize_newtype_variant("NodeData", 5, "Normal", v),
+            NodeData::Material(v) => s.serialize_newtype_variant("NodeData", 6, "Material", v),
+            NodeData::Triangle(v) => s.serialize_newtype_variant("NodeData", 7, "Triangle", v),
+            NodeData::Cube(v) => s.serialize_newtype_variant("NodeData", 8, "Cube", v),
+            NodeData::Sphere(v) => s.serialize_newtype_variant("NodeData", 9, "Sphere", v),
+            NodeData::Cone(v) => s.serialize_newtype_variant("NodeData", 10, "Cone", v),
+            NodeData::Cylinder(v) => s.serialize_newtype_variant("NodeData", 11, "Cylinder", v),
+            NodeData::IndexedFaceSet(v) => s.serialize_newtype_variant("NodeData", 12, "IndexedFaceSet", v),
+            NodeData::SkinnedMesh(v) => s.serialize_newtype_variant("NodeData", 13, "SkinnedMesh", v),
+            NodeData::MorphTarget(v) => s.serialize_newtype_variant("NodeData", 14, "MorphTarget", v),
+            NodeData::PerspectiveCamera(v) => s.serialize_newtype_variant("NodeData", 15, "PerspectiveCamera", v),
+            NodeData::OrthographicCamera(v) => s.serialize_newtype_variant("NodeData", 16, "OrthographicCamera", v),
+            NodeData::DirectionalLight(v) => s.serialize_newtype_variant("NodeData", 17, "DirectionalLight", v),
+            NodeData::PointLight(v) => s.serialize_newtype_variant("NodeData", 18, "PointLight", v),
+            NodeData::SpotLight(v) => s.serialize_newtype_variant("NodeData", 19, "SpotLight", v),
+            NodeData::EventCallback(v) => s.serialize_newtype_variant("NodeData", 20, "EventCallback", v),
+            NodeData::PickStyle(v) => s.serialize_newtype_variant("NodeData", 21, "PickStyle", v),
+            NodeData::Lod(v) => s.serialize_newtype_variant("NodeData", 22, "Lod", v),
+            NodeData::Switch(v) => s.serialize_newtype_variant("NodeData", 23, "Switch", v),
+            NodeData::MultipleCopy(v) => s.serialize_newtype_variant("NodeData", 24, "MultipleCopy", v),
+            NodeData::SectionPlane(v) => s.serialize_newtype_variant("NodeData", 25, "SectionPlane", v),
+            NodeData::Text2(v) => s.serialize_newtype_variant("NodeData", 26, "Text2", v),
+            NodeData::Text3(v) => s.serialize_newtype_variant("NodeData", 27, "Text3", v),
+            NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
+            NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
+            NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeData {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Use a helper enum for deserialization, then map HandlerNode -> default
+        #[derive(Deserialize)]
+        enum NodeDataHelper {
+            Separator(SeparatorNode),
+            Group(GroupNode),
+            Transform(TransformNode),
+            Coordinate3(Coordinate3Node),
+            TextureCoordinate2(TextureCoordinate2Node),
+            Normal(NormalNode),
+            Material(MaterialNode),
+            Triangle(TriangleNode),
+            Cube(CubeNode),
+            Sphere(SphereNode),
+            Cone(ConeNode),
+            Cylinder(CylinderNode),
+            IndexedFaceSet(IndexedFaceSetNode),
+            SkinnedMesh(SkinnedMeshNode),
+            MorphTarget(MorphTargetNode),
+            PerspectiveCamera(PerspectiveCameraNode),
+            OrthographicCamera(OrthographicCameraNode),
+            DirectionalLight(DirectionalLightNode),
+            PointLight(PointLightNode),
+            SpotLight(SpotLightNode),
+            #[serde(rename = "HandlerNode")]
+            Handler(String),
+            EventCallback(EventCallbackNode),
+            PickStyle(PickStyleNode),
+            Lod(LodNode),
+            Switch(SwitchNode),
+            MultipleCopy(MultipleCopyNode),
+            SectionPlane(SectionPlaneNode),
+            Text2(Text2Node),
+            Text3(Text3Node),
+            Measurement(MeasurementNode),
+            Markup(MarkupNode),
+        }
+        match NodeDataHelper::deserialize(d)? {
+            NodeDataHelper::Separator(v) => Ok(NodeData::Separator(v)),
+            NodeDataHelper::Group(v) => Ok(NodeData::Group(v)),
+            NodeDataHelper::Transform(v) => Ok(NodeData::Transform(v)),
+            NodeDataHelper::Coordinate3(v) => Ok(NodeData::Coordinate3(v)),
+            NodeDataHelper::TextureCoordinate2(v) => Ok(NodeData::TextureCoordinate2(v)),
+            NodeDataHelper::Normal(v) => Ok(NodeData::Normal(v)),
+            NodeDataHelper::Material(v) => Ok(NodeData::Material(v)),
+            NodeDataHelper::Triangle(v) => Ok(NodeData::Triangle(v)),
+            NodeDataHelper::Cube(v) => Ok(NodeData::Cube(v)),
+            NodeDataHelper::Sphere(v) => Ok(NodeData::Sphere(v)),
+            NodeDataHelper::Cone(v) => Ok(NodeData::Cone(v)),
+            NodeDataHelper::Cylinder(v) => Ok(NodeData::Cylinder(v)),
+            NodeDataHelper::IndexedFaceSet(v) => Ok(NodeData::IndexedFaceSet(v)),
+            NodeDataHelper::SkinnedMesh(v) => Ok(NodeData::SkinnedMesh(v)),
+            NodeDataHelper::MorphTarget(v) => Ok(NodeData::MorphTarget(v)),
+            NodeDataHelper::PerspectiveCamera(v) => Ok(NodeData::PerspectiveCamera(v)),
+            NodeDataHelper::OrthographicCamera(v) => Ok(NodeData::OrthographicCamera(v)),
+            NodeDataHelper::DirectionalLight(v) => Ok(NodeData::DirectionalLight(v)),
+            NodeDataHelper::PointLight(v) => Ok(NodeData::PointLight(v)),
+            NodeDataHelper::SpotLight(v) => Ok(NodeData::SpotLight(v)),
+            NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
+                crate::node_handler::DummyHandler,
+            ))),
+            NodeDataHelper::EventCallback(v) => Ok(NodeData::EventCallback(v)),
+            NodeDataHelper::PickStyle(v) => Ok(NodeData::PickStyle(v)),
+            NodeDataHelper::Lod(v) => Ok(NodeData::Lod(v)),
+            NodeDataHelper::Switch(v) => Ok(NodeData::Switch(v)),
+            NodeDataHelper::MultipleCopy(v) => Ok(NodeData::MultipleCopy(v)),
+            NodeDataHelper::SectionPlane(v) => Ok(NodeData::SectionPlane(v)),
+            NodeDataHelper::Text2(v) => Ok(NodeData::Text2(v)),
+            NodeDataHelper::Text3(v) => Ok(NodeData::Text3(v)),
+            NodeDataHelper::Measurement(v) => Ok(NodeData::Measurement(v)),
+            NodeDataHelper::Markup(v) => Ok(NodeData::Markup(v)),
         }
     }
 }
