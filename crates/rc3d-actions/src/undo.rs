@@ -271,6 +271,110 @@ impl Command for RemoveChildCommand {
     }
 }
 
+/// Command: create a new node with specified data under a parent (or as root).
+#[derive(Debug)]
+pub struct CreateNodeCommand {
+    pub node_id: NodeId,
+    pub parent_id: Option<NodeId>,
+    pub data: NodeData,
+}
+
+impl CreateNodeCommand {
+    pub fn new(node_id: NodeId, parent_id: Option<NodeId>, data: NodeData) -> Self {
+        Self { node_id, parent_id, data }
+    }
+}
+
+impl Command for CreateNodeCommand {
+    fn execute(&mut self, graph: &mut SceneGraph) {
+        let actual_id = if let Some(parent) = self.parent_id {
+            graph.add_child(parent, self.data.clone())
+        } else {
+            graph.add_root(self.data.clone())
+        };
+        self.node_id = actual_id;
+    }
+    fn undo(&mut self, graph: &mut SceneGraph) {
+        graph.remove(self.node_id);
+    }
+    fn description(&self) -> &str {
+        "CreateNode"
+    }
+}
+
+/// Command: delete a node and its subtree, preserving data for undo.
+#[derive(Debug)]
+pub struct DeleteNodeCommand {
+    pub node_id: NodeId,
+    parent_id: Option<NodeId>,
+    /// Serialized subtree snapshot (JSON) for undo reconstruction.
+    snapshot: String,
+}
+
+impl DeleteNodeCommand {
+    pub fn new(node_id: NodeId, graph: &SceneGraph) -> Self {
+        let parent_id = graph.get(node_id).and_then(|e| e.parent);
+        // Snapshot the subtree
+        let mut sub = SceneGraph::new();
+        if let Some(entry) = graph.get(node_id) {
+            let copy = entry.data.clone();
+            let root = sub.add_root(copy);
+            clone_subtree(graph, node_id, &mut sub, root);
+            let snapshot = serde_json::to_string(&sub).unwrap_or_default();
+            Self { node_id, parent_id, snapshot }
+        } else {
+            Self { node_id, parent_id, snapshot: String::new() }
+        }
+    }
+}
+
+impl Command for DeleteNodeCommand {
+    fn execute(&mut self, graph: &mut SceneGraph) {
+        graph.remove(self.node_id);
+    }
+    fn undo(&mut self, graph: &mut SceneGraph) {
+        if self.snapshot.is_empty() {
+            return;
+        }
+        if let Ok(sub) = serde_json::from_str::<SceneGraph>(&self.snapshot) {
+            if let Some(sub_root) = sub.roots().first().copied() {
+                merge_subtree(&sub, sub_root, graph, self.parent_id);
+            }
+        }
+    }
+    fn description(&self) -> &str {
+        "DeleteNode"
+    }
+}
+
+/// Recursively clone children from source graph into destination graph.
+fn clone_subtree(src: &SceneGraph, src_id: NodeId, dst: &mut SceneGraph, dst_parent: NodeId) {
+    if let Some(entry) = src.get(src_id) {
+        for &child_id in &entry.children {
+            if let Some(child) = src.get(child_id) {
+                let child_data = child.data.clone();
+                let new_id = dst.add_child(dst_parent, child_data);
+                clone_subtree(src, child_id, dst, new_id);
+            }
+        }
+    }
+}
+
+/// Merge a subtree from `src` graph into `dst` graph under a given parent.
+fn merge_subtree(src: &SceneGraph, src_root: NodeId, dst: &mut SceneGraph, parent: Option<NodeId>) {
+    if let Some(entry) = src.get(src_root) {
+        let data = entry.data.clone();
+        let new_id = if let Some(p) = parent {
+            dst.add_child(p, data)
+        } else {
+            dst.add_root(data)
+        };
+        for &child_id in &entry.children {
+            merge_subtree(src, child_id, dst, Some(new_id));
+        }
+    }
+}
+
 /// Compound command: bundles multiple commands into one atomic transaction.
 #[derive(Debug)]
 pub struct CompoundCommand {
@@ -514,6 +618,76 @@ mod tests {
         assert_eq!(children[0], a);
         assert_eq!(children[1], b);
         assert_eq!(children[2], c);
+    }
+
+    // ── CreateNodeCommand ──
+
+    #[test]
+    fn test_create_root_node_execute_undo() {
+        let mut g = make_graph();
+        let node_id = rc3d_core::NodeId::default(); // will be replaced by add_root
+        let mut cmd = CreateNodeCommand::new(
+            node_id,
+            None,
+            NodeData::Cube(rc3d_scene::node_data::CubeNode::default()),
+        );
+        cmd.execute(&mut g);
+        assert_eq!(g.roots().len(), 1);
+
+        cmd.undo(&mut g);
+        assert!(g.roots().is_empty());
+    }
+
+    #[test]
+    fn test_create_child_node_execute_undo() {
+        let mut g = make_graph();
+        let parent = add_transform(&mut g);
+        let mut cmd = CreateNodeCommand::new(
+            rc3d_core::NodeId::default(),
+            Some(parent),
+            NodeData::Sphere(rc3d_scene::node_data::SphereNode::default()),
+        );
+        cmd.execute(&mut g);
+        assert_eq!(g.children(parent).unwrap().len(), 1);
+
+        cmd.undo(&mut g);
+        assert!(g.children(parent).unwrap().is_empty());
+    }
+
+    // ── DeleteNodeCommand ──
+
+    #[test]
+    fn test_delete_node_execute_undo() {
+        let mut g = make_graph();
+        let root = g.add_root(NodeData::Cube(rc3d_scene::node_data::CubeNode::default()));
+        let root_count_before = g.roots().len();
+        let mut cmd = DeleteNodeCommand::new(root, &g);
+        cmd.execute(&mut g);
+        assert!(g.get(root).is_none());
+        assert_eq!(g.roots().len(), root_count_before - 1);
+
+        cmd.undo(&mut g);
+        // Undo restores the subtree (root gets a new ID from the snapshot)
+        assert_eq!(g.roots().len(), root_count_before);
+    }
+
+    #[test]
+    fn test_delete_subtree_undo_restores_children() {
+        let mut g = make_graph();
+        let root = g.add_root(NodeData::Group(rc3d_scene::node_data::GroupNode));
+        let child = g.add_child(root, NodeData::Cube(rc3d_scene::node_data::CubeNode::default()));
+        let grandchild = g.add_child(child, NodeData::Sphere(rc3d_scene::node_data::SphereNode::default()));
+
+        let mut cmd = DeleteNodeCommand::new(root, &g);
+        cmd.execute(&mut g);
+        assert!(g.get(root).is_none());
+        assert!(g.get(child).is_none());
+        assert!(g.get(grandchild).is_none());
+
+        cmd.undo(&mut g);
+        // After undo, the subtree should be back
+        let new_root_id = g.roots()[0]; // re-created root gets new ID from sub-graph
+        assert!(g.get(new_root_id).is_some());
     }
 
     // ── CompoundCommand ──

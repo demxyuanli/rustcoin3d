@@ -9,4 +9,5 @@ rc3d-core = { workspace = true }
 rc3d-fields = { workspace = true }
 rc3d-mesh = { workspace = true }
 rc3d-scene = { workspace = true }
+serde_json = { workspace = true }
 

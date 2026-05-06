@@ -1,6 +1,6 @@
 use rc3d_actions::{
-    AddChildCommand, RemoveChildCommand, SetFieldCommand,
-    SetRotationCommand, SetScaleCommand, SetTranslationCommand,
+    AddChildCommand, CreateNodeCommand, DeleteNodeCommand, RemoveChildCommand,
+    SetFieldCommand, SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };
 use rc3d_core::math::{Mat4, Quat, Vec2, Vec3};
 use rc3d_core::DisplayMode;
@@ -510,26 +510,21 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::CreateNode { node_type, parent } => {
                 let data = node_type_to_node_data(node_type);
-                let (id, parent_id) = if let Some(p) = parent {
-                    (app.state.world.graph.add_child(p, data), p)
+                let id = if let Some(p) = parent {
+                    app.state.world.graph.add_child(p, data.clone())
                 } else {
-                    let id = app.state.world.graph.add_root(data);
-                    (id, id) // root node has self as parent for undo tracking
+                    app.state.world.graph.add_root(data.clone())
                 };
                 app.state.world.graph.clear_selection();
                 app.state.world.graph.select(id);
                 app.editor.command_history.execute(
-                    Box::new(AddChildCommand::new(parent_id, id)),
+                    Box::new(CreateNodeCommand::new(id, parent, data)),
                     &mut app.state.world.graph,
                 );
             }
             EditorCommand::DeleteNode(node) => {
-                if let Some(parent) = app.state.world.graph.get(node).and_then(|e| e.parent) {
-                    let cmd = RemoveChildCommand::new(parent, node, &app.state.world.graph);
-                    app.editor.command_history.execute(Box::new(cmd), &mut app.state.world.graph);
-                } else {
-                    app.state.world.graph.remove(node);
-                }
+                let cmd = DeleteNodeCommand::new(node, &app.state.world.graph);
+                app.editor.command_history.execute(Box::new(cmd), &mut app.state.world.graph);
             }
             EditorCommand::DuplicateNode(node) => {
                 let data = app.state.world.graph.get(node).map(|e| e.data.clone());
