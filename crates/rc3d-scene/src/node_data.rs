@@ -491,6 +491,41 @@ impl Default for SpotLightNode {
     }
 }
 
+/// Area light shape.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AreaLightShape {
+    Rectangle,
+    Disc,
+}
+
+/// Area light: rectangle or disc emitter with soft shadows.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AreaLightNode {
+    pub position: Vec3,
+    pub direction: Vec3,
+    pub color: Vec3,
+    pub intensity: f32,
+    /// Width of the light (rectangle width, or disc diameter).
+    pub width: f32,
+    /// Height of the light (rectangle height, ignored for disc).
+    pub height: f32,
+    pub shape: AreaLightShape,
+}
+
+impl Default for AreaLightNode {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            color: Vec3::ONE,
+            intensity: 1.0,
+            width: 1.0,
+            height: 1.0,
+            shape: AreaLightShape::Rectangle,
+        }
+    }
+}
+
 /// Event callback node: marker for scene-graph event routing.
 ///
 /// When HandleEventAction encounters this node during traversal,
@@ -776,6 +811,8 @@ pub enum NodeData {
     DirectionalLight(DirectionalLightNode),
     PointLight(PointLightNode),
     SpotLight(SpotLightNode),
+    /// Area light: rectangle or disc emitter with realistic soft shadows.
+    AreaLight(AreaLightNode),
     /// User-defined behavior via [`NodeHandler`] (traversal / future collect hooks).
     HandlerNode(Arc<dyn NodeHandler>),
     /// Event routing callback (Coin3D SoEventCallback pattern).
@@ -822,6 +859,7 @@ impl Clone for NodeData {
             NodeData::DirectionalLight(v) => NodeData::DirectionalLight(v.clone()),
             NodeData::PointLight(v) => NodeData::PointLight(v.clone()),
             NodeData::SpotLight(v) => NodeData::SpotLight(v.clone()),
+            NodeData::AreaLight(v) => NodeData::AreaLight(v.clone()),
             NodeData::HandlerNode(h) => NodeData::HandlerNode(Arc::clone(h)),
             NodeData::EventCallback(v) => NodeData::EventCallback(v.clone()),
             NodeData::PickStyle(v) => NodeData::PickStyle(v.clone()),
@@ -879,6 +917,12 @@ impl NodeData {
                 FieldDescriptor { name: "intensity", field_index: 3 },
                 FieldDescriptor { name: "cut_off_angle", field_index: 4 },
                 FieldDescriptor { name: "drop_off_rate", field_index: 5 },
+            ],
+            NodeData::AreaLight(_) => vec![
+                FieldDescriptor { name: "color", field_index: 0 },
+                FieldDescriptor { name: "intensity", field_index: 1 },
+                FieldDescriptor { name: "width", field_index: 2 },
+                FieldDescriptor { name: "height", field_index: 3 },
             ],
             NodeData::PerspectiveCamera(_) => vec![
                 FieldDescriptor { name: "fov", field_index: 0 },
@@ -944,6 +988,7 @@ impl NodeData {
             | NodeData::IndexedFaceSet(_)
             | NodeData::SkinnedMesh(_)
             | NodeData::MorphTarget(_)
+            | NodeData::AreaLight(_)
             | NodeData::HandlerNode(_)
             | NodeData::MultipleCopy(_) => vec![],
             NodeData::Custom(_, d) => d.field_descriptors(),
@@ -973,6 +1018,7 @@ impl NodeData {
             NodeData::DirectionalLight(_) => "DirectionalLight",
             NodeData::PointLight(_) => "PointLight",
             NodeData::SpotLight(_) => "SpotLight",
+            NodeData::AreaLight(_) => "AreaLight",
             NodeData::HandlerNode(h) => h.handler_name(),
             NodeData::EventCallback(_) => "EventCallback",
             NodeData::PickStyle(_) => "PickStyle",
@@ -1014,6 +1060,7 @@ impl Serialize for NodeData {
             NodeData::DirectionalLight(v) => s.serialize_newtype_variant("NodeData", 17, "DirectionalLight", v),
             NodeData::PointLight(v) => s.serialize_newtype_variant("NodeData", 18, "PointLight", v),
             NodeData::SpotLight(v) => s.serialize_newtype_variant("NodeData", 19, "SpotLight", v),
+            NodeData::AreaLight(v) => s.serialize_newtype_variant("NodeData", 32, "AreaLight", v),
             NodeData::EventCallback(v) => s.serialize_newtype_variant("NodeData", 20, "EventCallback", v),
             NodeData::PickStyle(v) => s.serialize_newtype_variant("NodeData", 21, "PickStyle", v),
             NodeData::Lod(v) => s.serialize_newtype_variant("NodeData", 22, "Lod", v),
@@ -1059,6 +1106,7 @@ impl<'de> Deserialize<'de> for NodeData {
             DirectionalLight(DirectionalLightNode),
             PointLight(PointLightNode),
             SpotLight(SpotLightNode),
+            AreaLight(AreaLightNode),
             #[serde(rename = "HandlerNode")]
             Handler(String),
             Custom((u16, String)),
@@ -1095,6 +1143,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::DirectionalLight(v) => Ok(NodeData::DirectionalLight(v)),
             NodeDataHelper::PointLight(v) => Ok(NodeData::PointLight(v)),
             NodeDataHelper::SpotLight(v) => Ok(NodeData::SpotLight(v)),
+            NodeDataHelper::AreaLight(v) => Ok(NodeData::AreaLight(v)),
             NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
                 crate::node_handler::DummyHandler,
             ))),

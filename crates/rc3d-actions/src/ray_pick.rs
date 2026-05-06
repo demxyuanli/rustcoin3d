@@ -315,7 +315,7 @@ impl RayPickAction {
             NodeData::Coordinate3(_) | NodeData::TextureCoordinate2(_) | NodeData::Normal(_) | NodeData::Material(_) => {}
             NodeData::DirectionalLight(_)
             | NodeData::PointLight(_)
-            | NodeData::SpotLight(_) => {}
+            | NodeData::SpotLight(_) | NodeData::AreaLight(_) => {}
             // Shape nodes: do intersection test
             NodeData::Triangle(_) => {
                 if !self.is_pickable() { return; }

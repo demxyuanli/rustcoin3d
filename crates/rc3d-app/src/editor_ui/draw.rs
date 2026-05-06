@@ -260,7 +260,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::OrthographicCamera(_) => "OrthoCam",
         NodeData::DirectionalLight(_) => "DirLight",
         NodeData::PointLight(_) => "PointLight",
-        NodeData::SpotLight(_) => "SpotLight",
+        NodeData::SpotLight(_) | NodeData::AreaLight(_) => "SpotLight",
         NodeData::HandlerNode(_) => "Handler",
         NodeData::EventCallback(_) => "EventCb",
         NodeData::PickStyle(_) => "PickStyle",

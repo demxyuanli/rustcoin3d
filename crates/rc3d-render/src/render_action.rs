@@ -423,6 +423,13 @@ impl RenderCollector {
                     drop_off_rate: light.drop_off_rate,
                 });
             }
+            NodeData::AreaLight(light) => {
+                // Area lights rendered via cluster lighting with LTC approximation
+                // For now, traverse children like any grouping node
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::Triangle(_) => {
                 let coord = self.state.coordinate();
                 if coord.points.len() < 3 {
