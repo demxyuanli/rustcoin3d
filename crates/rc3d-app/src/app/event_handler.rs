@@ -274,6 +274,9 @@ pub(crate) fn window_event(
                             }
                             app.sync_viewport_camera_ids();
                         }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV) => {
+                            if let Some(ref mut cc) = app.state.camera_controller { cc.toggle_walk_mode(); }
+                        }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Tab) => {
                             if let Some(renderer) = &mut app.state.renderer {
                                 renderer.viewport_layout_mut().cycle_active();

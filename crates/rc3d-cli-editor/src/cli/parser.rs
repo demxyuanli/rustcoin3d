@@ -1,4 +1,3 @@
-use rc3d_core::NodeId;
 use super::command::CliCommand;
 
 pub fn parse(input: &str) -> Result<CliCommand, String> {

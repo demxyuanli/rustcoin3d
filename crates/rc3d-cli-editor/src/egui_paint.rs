@@ -9,18 +9,22 @@ struct ScreenUniform {
     _pad: [f32; 2],
 }
 
+/// Pre-uploaded draw data for one clipped primitive.
+pub struct DrawBatch {
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    index_count: u32,
+    bind_group: wgpu::BindGroup,
+    scissor: [u32; 4], // x, y, w, h
+}
+
 pub struct EguiPainter {
     pipeline: wgpu::RenderPipeline,
-    uniform_bind_group_layout: wgpu::BindGroupLayout,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     white_bind_group: wgpu::BindGroup,
     screen_uniform_buf: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
     texture_map: std::collections::HashMap<egui::TextureId, wgpu::BindGroup>,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    vertex_capacity: u64,
-    index_capacity: u64,
     sampler: wgpu::Sampler,
     screen_size: [f32; 2],
 }
@@ -32,7 +36,7 @@ impl EguiPainter {
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(EGUI_SHADER)),
         });
 
-        let uniform_bind_group_layout =
+        let uniform_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("egui uniform"),
                 entries: &[wgpu::BindGroupLayoutEntry {
@@ -47,7 +51,7 @@ impl EguiPainter {
                 }],
             });
 
-        let texture_bind_group_layout =
+        let texture_bgl =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("egui texture"),
                 entries: &[
@@ -72,7 +76,7 @@ impl EguiPainter {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("egui pipeline"),
-            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[&uniform_bgl, &texture_bgl],
             push_constant_ranges: &[],
         });
 
@@ -161,7 +165,7 @@ impl EguiPainter {
 
         let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("egui white"),
-            layout: &texture_bind_group_layout,
+            layout: &texture_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -180,43 +184,22 @@ impl EguiPainter {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
         let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("egui screen bind"),
-            layout: &uniform_bind_group_layout,
+            layout: &uniform_bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: screen_uniform_buf.as_entire_binding(),
             }],
         });
 
-        let vc = 65536u64;
-        let ic = 65536u64;
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui vbuf"),
-            size: vc * std::mem::size_of::<EguiVertex>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui ibuf"),
-            size: ic * std::mem::size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         Self {
             pipeline,
-            uniform_bind_group_layout,
-            texture_bind_group_layout,
+            texture_bind_group_layout: texture_bgl,
             white_bind_group,
             screen_uniform_buf,
             screen_bind_group,
             texture_map: std::collections::HashMap::new(),
-            vertex_buffer,
-            index_buffer,
-            vertex_capacity: vc,
-            index_capacity: ic,
             sampler,
             screen_size: [1280.0, 800.0],
         }
@@ -231,22 +214,16 @@ impl EguiPainter {
     ) {
         let (pixels_rgba, size) = match &delta.image {
             egui::epaint::ImageData::Color(img) => {
-                let rgba: Vec<u8> = img
-                    .pixels
-                    .iter()
-                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
-                    .collect();
+                let rgba: Vec<u8> = img.pixels.iter()
+                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()]).collect();
                 (rgba, img.size)
             }
             egui::epaint::ImageData::Font(img) => {
-                let srgba: Vec<u8> = img
-                    .srgba_pixels(None)
-                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
-                    .collect();
+                let srgba: Vec<u8> = img.srgba_pixels(None)
+                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()]).collect();
                 (srgba, img.size)
             }
         };
-
         let w = size[0] as u32;
         let h = size[1] as u32;
         let tex_size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
@@ -267,14 +244,8 @@ impl EguiPainter {
             label: Some("egui user bind"),
             layout: &self.texture_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
 
@@ -293,7 +264,6 @@ impl EguiPainter {
             },
             tex_size,
         );
-
         self.texture_map.insert(id, bind_group);
     }
 
@@ -301,87 +271,109 @@ impl EguiPainter {
         self.texture_map.remove(id);
     }
 
-    pub fn paint(
+    /// Sample an existing GPU color target (Viewport RT) from egui.
+    pub fn bind_user_texture_view(
+        &mut self,
+        device: &wgpu::Device,
+        texture_id: egui::TextureId,
+        texture_view: &wgpu::TextureView,
+    ) {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("egui user native"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.texture_map.insert(texture_id, bind_group);
+    }
+
+    /// Upload all mesh data to GPU buffers (call BEFORE creating encoder/render pass).
+    pub fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        rpass: &mut wgpu::RenderPass<'_>,
         paint_jobs: &[egui::ClippedPrimitive],
         pixels_per_point: f32,
         screen_width: u32,
         screen_height: u32,
-    ) {
+    ) -> Vec<DrawBatch> {
         let ss = [screen_width as f32, screen_height as f32];
         if ss != self.screen_size {
             self.screen_size = ss;
             queue.write_buffer(
                 &self.screen_uniform_buf,
                 0,
-                bytemuck::cast_slice(&[ScreenUniform {
-                    screen_size: ss,
-                    _pad: [0.0; 2],
-                }]),
+                bytemuck::cast_slice(&[ScreenUniform { screen_size: ss, _pad: [0.0; 2] }]),
             );
         }
 
-        rpass.set_pipeline(&self.pipeline);
-        rpass.set_bind_group(0, &self.screen_bind_group, &[]);
+        let mut batches = Vec::with_capacity(paint_jobs.len());
 
         for job in paint_jobs {
-            let rect = egui::Rect::from_min_max(
-                egui::pos2(
-                    job.clip_rect.min.x * pixels_per_point,
-                    job.clip_rect.min.y * pixels_per_point,
-                ),
-                egui::pos2(
-                    job.clip_rect.max.x * pixels_per_point,
-                    job.clip_rect.max.y * pixels_per_point,
-                ),
-            );
-            rpass.set_scissor_rect(
-                rect.min.x as u32,
-                rect.min.y as u32,
-                rect.width() as u32,
-                rect.height() as u32,
-            );
+            let scissor = {
+                let min_x = (job.clip_rect.min.x * pixels_per_point) as u32;
+                let min_y = (job.clip_rect.min.y * pixels_per_point) as u32;
+                let max_x = (job.clip_rect.max.x * pixels_per_point) as u32;
+                let max_y = (job.clip_rect.max.y * pixels_per_point) as u32;
+                [min_x, min_y, max_x.saturating_sub(min_x), max_y.saturating_sub(min_y)]
+            };
 
             if let egui::epaint::Primitive::Mesh(mesh) = &job.primitive {
                 let vtx_bytes: &[u8] = bytemuck::cast_slice(&mesh.vertices);
                 let idx_bytes: &[u8] = bytemuck::cast_slice(&mesh.indices);
-                let vtx_size = vtx_bytes.len() as u64;
-                let idx_size = idx_bytes.len() as u64;
 
-                if vtx_size > self.vertex_capacity {
-                    self.vertex_capacity = vtx_size.max(self.vertex_capacity * 2);
-                    self.vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("egui vbuf"),
-                        size: self.vertex_capacity,
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                }
-                if idx_size > self.index_capacity {
-                    self.index_capacity = idx_size.max(self.index_capacity * 2);
-                    self.index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("egui ibuf"),
-                        size: self.index_capacity,
-                        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                }
+                let vbuf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("egui vbuf"),
+                    size: (vtx_bytes.len() as u64).max(64),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let ibuf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("egui ibuf"),
+                    size: (idx_bytes.len() as u64).max(64),
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
 
-                queue.write_buffer(&self.vertex_buffer, 0, vtx_bytes);
-                queue.write_buffer(&self.index_buffer, 0, idx_bytes);
+                queue.write_buffer(&vbuf, 0, vtx_bytes);
+                queue.write_buffer(&ibuf, 0, idx_bytes);
 
-                let tex_bg = self
-                    .texture_map
-                    .get(&mesh.texture_id)
-                    .unwrap_or(&self.white_bind_group);
-                rpass.set_bind_group(1, tex_bg, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                rpass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                let bg = self.texture_map.get(&mesh.texture_id)
+                    .cloned()
+                    .unwrap_or_else(|| self.white_bind_group.clone());
+
+                batches.push(DrawBatch {
+                    vbuf,
+                    ibuf,
+                    index_count: mesh.indices.len() as u32,
+                    bind_group: bg,
+                    scissor,
+                });
             }
+        }
+
+        batches
+    }
+
+    /// Draw pre-uploaded batches (call INSIDE render pass).
+    pub fn draw_batches<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, batches: &'a [DrawBatch]) {
+        rpass.set_pipeline(&self.pipeline);
+        rpass.set_bind_group(0, &self.screen_bind_group, &[]);
+
+        for batch in batches {
+            rpass.set_scissor_rect(batch.scissor[0], batch.scissor[1], batch.scissor[2], batch.scissor[3]);
+            rpass.set_bind_group(1, &batch.bind_group, &[]);
+            rpass.set_vertex_buffer(0, batch.vbuf.slice(..));
+            rpass.set_index_buffer(batch.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            rpass.draw_indexed(0..batch.index_count, 0, 0..1);
         }
     }
 }
@@ -419,7 +411,6 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // Transform from screen-space (0..W, 0..H) to clip-space (-1..1, -1..1, flipped Y)
     out.position = vec4<f32>(
         2.0 * in.pos.x / u.screen_size.x - 1.0,
         1.0 - 2.0 * in.pos.y / u.screen_size.y,

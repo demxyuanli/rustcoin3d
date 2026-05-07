@@ -1,28 +1,30 @@
 # CLI Editor for Test Engine — Design Spec
 
-> **Goal:** Build a new standalone editor (new crate, not modifying existing editor) driven by a CLI command engine, with a 4-panel layout: CLI panel (left), 3D viewport (center), properties panel (right), log/diagnostics panel (bottom).
+> **Goal:** Build a new standalone editor (new crate, not modifying existing editor) driven by a CLI command engine, with a GPU window for 3D plus egui diagnostics, and a **terminal TUI** (ratatui) as the primary command surface.
 
-> **Tech Stack:** Rust, winit, wgpu, egui 0.31 (panels only), rc3d-render, rc3d-scene, rc3d-core
+> **Tech Stack:** Rust, winit, wgpu, egui 0.31 (viewport-adjacent panels only), ratatui + crossterm (CLI TUI thread), rc3d-render, rc3d-scene, rc3d-core
 
 ---
 
 ## 1. Architecture Overview
 
-Single process, single winit window. egui manages 4-panel split layout. 3D viewport renders via rc3d-render directly to a wgpu texture, displayed as an egui Image in the central area.
+Single process, **two UI surfaces**:
+
+1. **Terminal (stdout):** Alternate-screen ratatui shell — scrollback log, `rc3d>` input line, Tab completion on command prefixes, history navigation (↑/↓), Enter to run parser + executor against shared `EditorSession`.
+2. **GPU window:** winit + wgpu — full-frame 3D via `rc3d-render`, with egui overlay for central viewport caption, properties (right), and diagnostics (bottom). No egui CLI panel.
+
+`EditorSession` holds `RwLock<EngineState>` shared between the **TUI thread** and **winit main thread**. Quit from TUI notifies the GPU loop via `EventLoopProxy<AppEvent>` so the window closes cleanly.
+
+**Target rendering model (incremental toward spec):** 3D to swapchain behind egui overlay today; migrating to center **viewport texture + egui Image** remains planned.
 
 ```
-┌─────────────────────────────────────────────────┐
-│  rc3d-cli-editor (new crate)                     │
-│                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ CLI panel │  │  3D      │  │ Props    │       │
-│  │ (left)   │  │ viewport │  │ panel    │       │
-│  │          │  │ (center) │  │ (right)  │       │
-│  └──────────┘  └──────────┘  └──────────┘       │
-│  ┌─────────────────────────────────────────┐     │
-│  │  Log / diagnostics panel (bottom)       │     │
-│  └─────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────┘
+   Terminal (TTY)                         GPU window (winit + egui)
+┌──────────────────────┐                 ┌─────────────────────────────┐
+│ command log          │                 │ viewport | props | diag     │
+│ ...                  │                 │ + 3D on surface             │
+└──────────────────────┘                 └─────────────────────────────┘
+ │ rc3d> input                                                   ▲
+ └──────────────► parse → execute ──► RwLock<EngineState> ────────┘
 ```
 
 ## 2. CLI Engine (Core)
@@ -70,24 +72,20 @@ enum EngineEvent {
 }
 ```
 
-Events fan out to panels. CLI panel emits commands; other panels react to events.
+Events fan out to the TUI (echo + scrollback) and to egui panels (read-only views of shared state).
 
-## 3. Four Panels
+### Terminal TUI (`src/tui/`)
+- Alternate screen, bordered command log + input areas
+- Command history (↑/↓) and Tab completion on static command prefixes
+- Runs only when stdout is a TTY; otherwise GPU-only session with CLI disabled (`log::warn`)
 
-### Left — CLI Panel
-- Multi-line output area (command history + results)
-- Single-line input at bottom
-- Auto-complete (commands, node IDs, file paths)
-- Command history buffer (up-arrow recall)
-- Hand-rolled tokenizer for parsing (command set is small and known)
+## 3. Window Panels (egui)
 
 ### Center — 3D Viewport
-- Renders `EngineState.scene` via rc3d-render to a wgpu texture
+- Renders `EngineState.scene` via rc3d-render to a wgpu texture (target: egui Image in center; current: full-surface + overlay)
 - Camera controlled by CLI commands or mouse (orbit/pan/zoom)
 - Selection highlights rendered as outlines
 - Test result markers overlaid on nodes (pass/fail)
-
-### Right — Properties Panel
 - Shows selected node's properties in scrollable form
 - Each field is a labeled editor (text, color picker, dropdown)
 - Changes emit `PropSet` commands back to CLI engine
@@ -102,15 +100,15 @@ Events fan out to panels. CLI panel emits commands; other panels react to events
 ## 4. Data Flow
 
 ```
-User input (CLI or widget)
-    → CliCommand
+User input (terminal TUI or widget)
+    → CliCommand (via `cli::submit`)
     → Executor mutates EngineState
     → Emits EngineEvent(s)
-    → All panels read EngineState (shared ref)
+    → TUI echoes events; egui panels read RwLock<EngineState>
     → 3D viewport re-renders, properties refreshes, logs append
 ```
 
-EngineState is single source of truth. Panels are read-only views + input producers. No panel-to-panel direct communication.
+EngineState is single source of truth. TUI writes through the parser/executor; egui panels read the same `EditorSession` (`RwLock`).
 
 ## 5. Crate Structure
 
@@ -118,18 +116,22 @@ EngineState is single source of truth. Panels are read-only views + input produc
 crates/rc3d-cli-editor/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs           # winit event loop, window setup
+│   ├── main.rs           # winit + AppEvent proxy; spawns TUI thread
+│   ├── session.rs        # EditorSession = shared RwLock<EngineState>
+│   ├── egui_paint.rs    # overlay painter
+│   ├── tui/
+│   │   └── shell.rs      # ratatui thread, EventLoopProxy quit
 │   ├── cli/
 │   │   ├── mod.rs
 │   │   ├── parser.rs     # string → CliCommand
 │   │   ├── command.rs    # CliCommand enum
+│   │   ├── dispatch.rs   # submit → execute + formatted event lines
 │   │   └── executor.rs   # command → state mutation + events
 │   ├── engine/
 │   │   ├── mod.rs
 │   │   └── state.rs      # EngineState, EngineEvent, TestRun
 │   ├── panels/
 │   │   ├── mod.rs
-│   │   ├── cli_panel.rs
 │   │   ├── viewport.rs
 │   │   ├── properties.rs
 │   │   └── diagnostics.rs
@@ -144,6 +146,7 @@ crates/rc3d-cli-editor/
 - `egui` + `egui-wgpu` + `egui-winit` — UI panels only
 - `winit` — window/event loop
 - `wgpu` — GPU access
+- `ratatui` + `crossterm` — terminal TUI for commands
 - `env_logger` / `log` — logging
 
 ## 7. Non-Goals

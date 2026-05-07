@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use rc3d_core::NodeId;
-use rc3d_core::math::{Vec3, Mat4};
+use rc3d_core::math::{Mat4, Vec3, Vec4};
 use rc3d_scene::SceneGraph;
 
 #[derive(Debug, Clone)]
@@ -48,6 +48,21 @@ impl CameraState {
         self.phi = std::f32::consts::FRAC_PI_4;
         self.theta = 0.5;
         self.pan_offset = (0.0, 0.0);
+    }
+
+    pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
+        let aspect = aspect.max(f32::EPSILON);
+        let fov_clamped = self.fov.clamp(f32::EPSILON, std::f32::consts::PI - f32::EPSILON);
+        let f = 1.0 / (fov_clamped * 0.5).tan();
+        let near = 0.1f32;
+        let far = 100.0f32;
+        let nf = 1.0 / (near - far);
+        Mat4::from_cols(
+            Vec4::new(f / aspect, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, f, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, far * nf, -1.0),
+            Vec4::new(0.0, 0.0, near * far * nf, 0.0),
+        )
     }
 
     pub fn position(&self) -> Vec3 {

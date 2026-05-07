@@ -210,6 +210,23 @@ impl Default for DrawCall {
     }
 }
 
+/// Recomputes MVP and projection-related flags using the given view/projection
+/// without re-traversing the scene graph (e.g. orbit camera overlay on collected geometry).
+pub fn apply_world_camera(
+    draw_calls: &mut [DrawCall],
+    view_matrix: Mat4,
+    projection: Mat4,
+    camera_pos: Vec3,
+) {
+    let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(projection);
+    for dc in draw_calls.iter_mut() {
+        dc.mvp = projection * view_matrix * dc.model_matrix;
+        dc.camera_pos = camera_pos;
+        dc.depth_reversed_z = depth_reversed_z;
+        dc.projection_orthographic = false;
+    }
+}
+
 /// Traverses the scene graph, accumulates state, and collects draw calls.
 pub struct RenderCollector {
     pub state: State,
@@ -271,7 +288,17 @@ impl RenderCollector {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) | NodeData::ShapeHints(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) => {
+            NodeData::Group(_)
+            | NodeData::ShapeHints(_)
+            | NodeData::Texture2Transform(_)
+            | NodeData::MaterialBinding(_)
+            | NodeData::File(_)
+            | NodeData::Decal(_)
+            | NodeData::ReflectionPlane(_)
+            | NodeData::StereoCamera(_)
+            | NodeData::RayTracing(_)
+            | NodeData::Volume(_)
+            | NodeData::PointCloud(_) => {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::Billboard(b) => {
@@ -316,7 +343,7 @@ impl RenderCollector {
                         let b = ils.coord_index[i + 1].max(0) as usize;
                         if a < coord.points.len() && b < coord.points.len() {
                             let pa = coord.points[a]; let pb = coord.points[b];
-                            let dir = (pb - pa).normalize();
+                            let _dir = (pb - pa).normalize();
                             let tan = [1.0, 0.0, 0.0, 1.0f32];
                             let mid = (pa + pb) * 0.5;
                             self.draw_calls.push(DrawCall {

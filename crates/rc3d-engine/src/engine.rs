@@ -341,15 +341,19 @@ pub struct InterpolateFloatEngine {
     pub field_id: rc3d_core::FieldId,
     pub from: f32, pub to: f32,
     pub duration: f64, pub elapsed: f64,
+    last_time: f64,
 }
 impl InterpolateFloatEngine {
     pub fn new(node: rc3d_core::NodeId, field: rc3d_core::FieldId, from: f32, to: f32, duration: f64) -> Self {
-        Self { node_id: node, field_id: field, from, to, duration: duration.max(0.001), elapsed: 0.0 }
+        Self { node_id: node, field_id: field, from, to, duration: duration.max(0.001), elapsed: 0.0, last_time: 0.0 }
     }
 }
 impl Engine for InterpolateFloatEngine {
-    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        self.elapsed += 0.016;
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        if self.elapsed == 0.0 { self.last_time = time; }
+        let dt = (time - self.last_time).max(0.0).min(0.1);
+        self.last_time = time;
+        self.elapsed += dt;
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
         let v = self.from + (self.to - self.from) * t as f32;
         if let Some(entry) = graph.get_mut(self.node_id) {
@@ -366,15 +370,19 @@ pub struct InterpolateRotationEngine {
     pub node_id: rc3d_core::NodeId,
     pub from: rc3d_core::math::Quat, pub to: rc3d_core::math::Quat,
     pub duration: f64, pub elapsed: f64,
+    last_time: f64,
 }
 impl InterpolateRotationEngine {
     pub fn new(node: rc3d_core::NodeId, from: rc3d_core::math::Quat, to: rc3d_core::math::Quat, duration: f64) -> Self {
-        Self { node_id: node, from, to, duration: duration.max(0.001), elapsed: 0.0 }
+        Self { node_id: node, from, to, duration: duration.max(0.001), elapsed: 0.0, last_time: 0.0 }
     }
 }
 impl Engine for InterpolateRotationEngine {
-    fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        self.elapsed += 0.016;
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        if self.elapsed == 0.0 { self.last_time = time; }
+        let dt = (time - self.last_time).max(0.0).min(0.1);
+        self.last_time = time;
+        self.elapsed += dt;
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
         let q = self.from.slerp(self.to, t as f32);
         if let Some(entry) = graph.get_mut(self.node_id) {

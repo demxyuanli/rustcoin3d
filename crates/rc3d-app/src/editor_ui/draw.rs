@@ -336,7 +336,11 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::IndexedFaceSet(_) => "IFS",
         NodeData::SkinnedMesh(_) => "SkinnedMesh",
         NodeData::MorphTarget(_) => "Morph",
+        NodeData::RayTracing(_) => "RayTracing",
+        NodeData::Volume(_) => "Volume",
+        NodeData::PointCloud(_) => "PtCloud",
         NodeData::PerspectiveCamera(_) => "PerspCam",
+        NodeData::StereoCamera(_) => "StereoCam",
         NodeData::OrthographicCamera(_) => "OrthoCam",
         NodeData::DirectionalLight(_) => "DirLight",
         NodeData::PointLight(_) => "PointLight",
@@ -544,7 +548,7 @@ fn inspector(
     }
 
     let mut vis = match data {
-        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::Separator(_) => {
+        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) | NodeData::Separator(_) => {
             !hidden.contains(&id)
         }
         NodeData::Switch(sw) => sw.which_child >= 0,

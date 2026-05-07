@@ -57,7 +57,9 @@ pub use motion_blur::MotionBlurPass;
 pub use hud::HudRenderer;
 pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
-pub use render_action::{DrawCall, RenderCollector, SkinnedMeshDrawPayload};
+pub use render_action::{
+    apply_world_camera, DrawCall, RenderCollector, SkinnedMeshDrawPayload,
+};
 pub use renderer::{
     AdaptiveControl, BatchAnalysis, FrameDiagnostics, FrameStats, MemoryBudget, NodeTypeDrawStat,
     Renderer,

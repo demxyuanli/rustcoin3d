@@ -1,6 +1,8 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
-use rc3d_render::Renderer;
+use rc3d_render::{render_action::apply_world_camera, Renderer};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -11,10 +13,15 @@ mod egui_paint;
 mod engine;
 mod panels;
 mod render;
+mod session;
+mod viewport_gpu;
+mod tui;
 
-use engine::state::EngineState;
-use panels::{CliPanel, DiagnosticsPanel, PropertiesPanel, ViewportPanel};
+use session::EditorSession;
+use viewport_gpu::CliViewportRt;
+use panels::{DiagnosticsPanel, PropertiesPanel, ViewportPanel};
 use render::RenderContext;
+use tui::AppEvent;
 
 fn main() {
     env_logger::Builder::from_env(
@@ -23,42 +30,64 @@ fn main() {
     .init();
     log::info!("rc3d CLI Editor starting...");
 
-    let event_loop = EventLoop::new().expect("failed to create event loop");
+    let event_loop =
+        EventLoop::<AppEvent>::with_user_event().build().expect("failed to create event loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    let mut app = CliEditorApp::new();
+    let gui_alive = Arc::new(AtomicBool::new(true));
+    let proxy = event_loop.create_proxy();
+
+    let session = Arc::new(EditorSession::new());
+    session.load_initial_demo();
+
+    let session_tui = session.clone();
+    let proxy_tui = proxy.clone();
+    let alive_for_tui = gui_alive.clone();
+    std::thread::spawn(move || {
+        tui::run_tui_thread(session_tui, proxy_tui, alive_for_tui);
+    });
+
+    let mut app = CliEditorApp::new(session, gui_alive);
+
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
 struct CliEditorApp {
     window: Option<Window>,
     render_ctx: Option<RenderContext>,
-    engine_state: EngineState,
-    cli_panel: CliPanel,
+    session: Arc<EditorSession>,
+    gui_alive: Arc<AtomicBool>,
     viewport_panel: ViewportPanel,
     properties_panel: PropertiesPanel,
     diagnostics_panel: DiagnosticsPanel,
     last_frame: Instant,
     fps_smoother: f64,
+    viewport_rt: Option<CliViewportRt>,
 }
 
 impl CliEditorApp {
-    fn new() -> Self {
+    fn new(session: Arc<EditorSession>, gui_alive: Arc<AtomicBool>) -> Self {
         Self {
             window: None,
             render_ctx: None,
-            engine_state: EngineState::new(),
-            cli_panel: CliPanel::new(),
+            session,
+            gui_alive,
             viewport_panel: ViewportPanel::new(),
             properties_panel: PropertiesPanel::new(),
             diagnostics_panel: DiagnosticsPanel::new(),
             last_frame: Instant::now(),
             fps_smoother: 60.0,
+            viewport_rt: None,
         }
     }
 }
 
-impl ApplicationHandler for CliEditorApp {
+impl ApplicationHandler<AppEvent> for CliEditorApp {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: AppEvent) {
+        self.gui_alive.store(false, Ordering::Relaxed);
+        event_loop.exit();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -92,9 +121,14 @@ impl ApplicationHandler for CliEditorApp {
 
         match event {
             WindowEvent::CloseRequested => {
+                self.gui_alive.store(false, Ordering::Relaxed);
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                let Ok(state) = self.session.state.read() else {
+                    return;
+                };
+
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame).as_secs_f64();
                 self.last_frame = now;
@@ -102,23 +136,71 @@ impl ApplicationHandler for CliEditorApp {
                     self.fps_smoother = self.fps_smoother * 0.9 + (1.0 / dt) * 0.1;
                 }
 
-                // Build egui UI
+                self.viewport_panel.collect(&state);
+
+                let [vx_req, vy_req] = self.viewport_panel.viewport_pixel_extent();
+                let fmt = render_ctx.renderer.config.format;
+                let recreated = viewport_gpu::ensure_viewport_rt(
+                    &mut self.viewport_rt,
+                    &render_ctx.renderer.device,
+                    fmt,
+                    vx_req,
+                    vy_req,
+                );
+                if recreated {
+                    if let Some(ref rt) = self.viewport_rt {
+                        render_ctx.egui_painter.bind_user_texture_view(
+                            &render_ctx.renderer.device,
+                            self.viewport_panel.viewport_texture_id,
+                            &rt.view,
+                        );
+                    }
+                }
+
+                if let Some(ref rt) = self.viewport_rt {
+                    let vx = rt.extent[0];
+                    let vy = rt.extent[1];
+                    if !self.viewport_panel.draw_calls.is_empty() {
+                        let aspect = vx as f32 / vy.max(1) as f32;
+                        let proj = state.camera.projection_matrix(aspect);
+                        let inv_proj = proj.inverse();
+                        apply_world_camera(
+                            &mut self.viewport_panel.draw_calls,
+                            state.camera.view_matrix(),
+                            proj,
+                            state.camera.position(),
+                        );
+                        let stats = render_ctx.renderer.render_draw_calls_to_viewport_texture(
+                            &self.viewport_panel.draw_calls,
+                            &state.scene,
+                            &rt.texture,
+                            &rt.view,
+                            vx,
+                            vy,
+                            proj,
+                            inv_proj,
+                        );
+                        self.viewport_panel.frame_stats = Some(stats);
+                    } else {
+                        self.viewport_panel.frame_stats = None;
+                    }
+                }
+
                 render_ctx
                     .egui_ctx
                     .begin_pass(render_ctx.egui_winit.take_egui_input(window));
 
+                let ppp = render_ctx.pixels_per_point;
                 self.diagnostics_panel.ui(
                     &render_ctx.egui_ctx,
-                    &self.engine_state,
+                    &state,
                     self.fps_smoother,
                     dt * 1000.0,
                 );
-                self.cli_panel
-                    .ui(&render_ctx.egui_ctx, &mut self.engine_state);
                 self.properties_panel
-                    .ui(&render_ctx.egui_ctx, &self.engine_state);
+                    .ui(&render_ctx.egui_ctx, &state);
                 self.viewport_panel
-                    .ui(&render_ctx.egui_ctx, &self.engine_state);
+                    .ui(&render_ctx.egui_ctx, &state, ppp);
 
                 let egui_output = render_ctx.egui_ctx.end_pass();
                 let paint_jobs = render_ctx.egui_ctx.tessellate(
@@ -126,7 +208,11 @@ impl ApplicationHandler for CliEditorApp {
                     render_ctx.pixels_per_point,
                 );
 
+                let viewport_tex_id = self.viewport_panel.viewport_texture_id;
                 for (id, delta) in egui_output.textures_delta.set {
+                    if id == viewport_tex_id {
+                        continue;
+                    }
                     render_ctx.egui_painter.update_texture(
                         &render_ctx.renderer.device,
                         &render_ctx.renderer.queue,
@@ -135,10 +221,22 @@ impl ApplicationHandler for CliEditorApp {
                     );
                 }
                 for id in egui_output.textures_delta.free {
+                    if id == viewport_tex_id {
+                        continue;
+                    }
                     render_ctx.egui_painter.free_texture(&id);
                 }
 
-                // Acquire surface and render egui
+                let screen_size = window.inner_size();
+                let batches = render_ctx.egui_painter.upload(
+                    &render_ctx.renderer.device,
+                    &render_ctx.renderer.queue,
+                    &paint_jobs,
+                    render_ctx.pixels_per_point,
+                    screen_size.width,
+                    screen_size.height,
+                );
+
                 let surface_tex = match render_ctx.renderer.acquire_surface_texture() {
                     Ok(t) => t,
                     Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -151,22 +249,20 @@ impl ApplicationHandler for CliEditorApp {
                         return;
                     }
                 };
-
-                let view = surface_tex
+                let swap_view = surface_tex
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
-
-                let mut encoder = render_ctx.renderer.device.create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor {
-                        label: Some("egui frame"),
-                    },
-                );
-
+                let mut encoder = render_ctx
+                    .renderer
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("cli editor egui to swapchain"),
+                    });
                 {
                     let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("egui render pass"),
+                        label: Some("swapchain egui"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
+                            view: &swap_view,
                             resolve_target: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -182,18 +278,8 @@ impl ApplicationHandler for CliEditorApp {
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     });
-                    let screen_size = window.inner_size();
-                    render_ctx.egui_painter.paint(
-                        &render_ctx.renderer.device,
-                        &render_ctx.renderer.queue,
-                        &mut rp,
-                        &paint_jobs,
-                        render_ctx.pixels_per_point,
-                        screen_size.width,
-                        screen_size.height,
-                    );
+                    render_ctx.egui_painter.draw_batches(&mut rp, &batches);
                 }
-
                 render_ctx
                     .renderer
                     .queue
@@ -209,3 +295,5 @@ impl ApplicationHandler for CliEditorApp {
         }
     }
 }
+
+

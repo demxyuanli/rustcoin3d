@@ -21,4 +21,6 @@ log = { workspace = true }
 env_logger = { workspace = true }
 egui = "0.31"
 egui-winit = "0.31"
+ratatui = "0.29"
+crossterm = "0.28"
 bytemuck = { workspace = true }

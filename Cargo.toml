@@ -11,6 +11,7 @@ members = [
     "crates/rc3d-engine",
     "crates/rc3d-io",
     "crates/rc3d-app",
+    "crates/rc3d-cli-editor",
     "crates/rc3d-gizmo",
     "crates/rc3d-script",
     "crates/rc3d-pointcloud",
@@ -60,3 +61,4 @@ rc3d-nurbs = { path = "crates/rc3d-nurbs" }
 rc3d-pointcloud = { path = "crates/rc3d-pointcloud" }
 rc3d-pdf = { path = "crates/rc3d-pdf" }
 rc3d-script = { path = "crates/rc3d-script" }
+rc3d-cli-editor = { path = "crates/rc3d-cli-editor" }

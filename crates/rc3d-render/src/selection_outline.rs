@@ -680,7 +680,9 @@ fn wgpu_depth_clear(depth_reversed_z: bool) -> f32 {
 }
 
 /// Encodes the selection outline pass. `scene_source_tex` must point at the shaded scene texture
-/// (HDR, LDR offscreen, or swapchain) and remain valid for the encode duration.
+/// (HDR, LDR offscreen, swapchain, or viewport RT) and remain valid for the encode duration.
+/// `target_width_px` / `target_height_px` must match that texture and `shade_view` size (typically
+/// swapchain dims or an off-screen viewport extent — not blindly `renderer.config` when embedding).
 pub(crate) fn encode_selection_outline_pass(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
@@ -688,12 +690,14 @@ pub(crate) fn encode_selection_outline_pass(
     shade_view: &wgpu::TextureView,
     shade_format: wgpu::TextureFormat,
     scene_source_tex: *const wgpu::Texture,
+    target_width_px: u32,
+    target_height_px: u32,
 ) {
     let Some(ref pl) = renderer.gpu.selection_outline_pipelines else {
         return;
     };
-    let w = renderer.config.width.max(1);
-    let h = renderer.config.height.max(1);
+    let w = target_width_px.max(1);
+    let h = target_height_px.max(1);
 
     let tg = SelectionOutlineTargets::ensure(
         &renderer.device,

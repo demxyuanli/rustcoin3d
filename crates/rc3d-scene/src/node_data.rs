@@ -1322,7 +1322,7 @@ impl Serialize for NodeData {
         match self {
             NodeData::Separator(v) => s.serialize_newtype_variant("NodeData", 0, "Separator", v),
             NodeData::Group(v) => s.serialize_newtype_variant("NodeData", 1, "Group", v),
-            NodeData::Billboard(v) => s.serialize_newtype_variant("NodeData", 31, "Billboard", v),
+            NodeData::Billboard(v) => s.serialize_newtype_variant("NodeData", 48, "Billboard", v),
             NodeData::Transform(v) => s.serialize_newtype_variant("NodeData", 2, "Transform", v),
             NodeData::Coordinate3(v) => s.serialize_newtype_variant("NodeData", 3, "Coordinate3", v),
             NodeData::TextureCoordinate2(v) => s.serialize_newtype_variant("NodeData", 4, "TextureCoordinate2", v),
