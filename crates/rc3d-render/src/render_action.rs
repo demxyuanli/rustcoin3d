@@ -271,10 +271,67 @@ impl RenderCollector {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::Billboard(_) => {
+            NodeData::Group(_) | NodeData::ShapeHints(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) => {
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Billboard(b) => {
+                let current = self.state.model_matrix();
+                let inv = self.state.view_matrix().inverse();
+                let facing = if b.axis_aligned {
+                    let fwd = Vec3::new(inv.w_axis.x, 0.0, inv.w_axis.z).normalize();
+                    Mat4::look_at_rh(Vec3::ZERO, fwd, Vec3::Y)
+                } else {
+                    Mat4::from_cols(inv.x_axis, inv.y_axis, inv.z_axis, Mat4::IDENTITY.w_axis)
+                };
+                self.state.set_model_matrix(current * facing);
+                for &child in &entry.children { self.traverse_node(graph, child); }
+                self.state.set_model_matrix(current);
+            }
+            NodeData::ResetTransform(_) => {
+                let saved = self.state.model_matrix();
+                self.state.set_model_matrix(Mat4::IDENTITY);
+                for &child in &entry.children { self.traverse_node(graph, child); }
+                self.state.set_model_matrix(saved);
+            }
+            NodeData::ExplodedView(ev) => {
+                let base = self.state.model_matrix();
                 for &child in &entry.children {
+                    let offset = ev.direction * ev.factor;
+                    self.state.set_model_matrix(base * Mat4::from_translation(offset));
                     self.traverse_node(graph, child);
                 }
+                self.state.set_model_matrix(base);
+            }
+            NodeData::Annotation(_) => {
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Environment(_) => {
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::IndexedLineSet(ils) => {
+                let coord = self.state.coordinate();
+                for i in (0..ils.coord_index.len()).step_by(2) {
+                    if i + 1 < ils.coord_index.len() {
+                        let a = ils.coord_index[i].max(0) as usize;
+                        let b = ils.coord_index[i + 1].max(0) as usize;
+                        if a < coord.points.len() && b < coord.points.len() {
+                            let pa = coord.points[a]; let pb = coord.points[b];
+                            let dir = (pb - pa).normalize();
+                            let tan = [1.0, 0.0, 0.0, 1.0f32];
+                            let mid = (pa + pb) * 0.5;
+                            self.draw_calls.push(DrawCall {
+                                vertices: Arc::new(vec![
+                                    Vertex { position: [pa.x, pa.y, pa.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
+                                    Vertex { position: [pb.x, pb.y, pb.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
+                                ]),
+                                aabb: Some(rc3d_core::Aabb::from_point(mid)),
+                                node_type_label: Arc::from("IndexedLineSet"),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::Switch(sw) => {
                 match sw.which_child {
@@ -427,11 +484,13 @@ impl RenderCollector {
                 });
             }
             NodeData::AreaLight(light) => {
-                // Area lights rendered via cluster lighting with LTC approximation
-                // For now, traverse children like any grouping node
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
+                self.state.add_light(LightData {
+                    light_type: LightType::Point,
+                    direction: light.direction, location: light.position,
+                    color: light.color, intensity: light.intensity,
+                    cut_off_angle: 0.0, drop_off_rate: 0.0,
+                });
+                for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::Triangle(_) => {
                 let coord = self.state.coordinate();

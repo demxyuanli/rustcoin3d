@@ -220,20 +220,24 @@ pub struct OneShotEngine {
     pub triggered: bool,
     pub elapsed: f64,
     pub active: bool,
+    last_time: f64,
 }
 
 impl OneShotEngine {
     pub fn new(duration: f64) -> Self {
-        Self { duration, triggered: false, elapsed: 0.0, active: false }
+        Self { duration, triggered: false, elapsed: 0.0, active: false, last_time: 0.0 }
     }
     pub fn trigger(&mut self) { self.triggered = true; self.active = true; self.elapsed = 0.0; }
     pub fn is_active(&self) -> bool { self.active }
 }
 
 impl Engine for OneShotEngine {
-    fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
+    fn evaluate(&mut self, _graph: &mut SceneGraph, time: f64) {
         if !self.active { return; }
-        self.elapsed += 0.016; // ~60fps tick
+        if self.elapsed == 0.0 { self.last_time = time; }
+        let dt = (time - self.last_time).max(0.0).min(0.1);
+        self.last_time = time;
+        self.elapsed += dt;
         if self.elapsed >= self.duration { self.active = false; }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }

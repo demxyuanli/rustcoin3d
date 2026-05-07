@@ -532,10 +532,12 @@ impl Renderer {
         renderer
     }
 
-    pub(super) fn create_depth_texture(&mut self) {
+    pub(super) fn create_depth_texture_at(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
         let size = wgpu::Extent3d {
-            width: self.config.width,
-            height: self.config.height,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let desc = wgpu::TextureDescriptor {
@@ -564,6 +566,10 @@ impl Renderer {
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
         });
         self.gpu.depth_texture = Some((texture, view, depth_only));
+    }
+
+    pub(super) fn create_depth_texture(&mut self) {
+        self.create_depth_texture_at(self.config.width, self.config.height);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -716,6 +722,12 @@ impl Renderer {
     }
     pub fn viewport_layout_mut(&mut self) -> &mut ViewportLayout {
         &mut self.frame.viewport_layout
+    }
+
+    /// Update post-processing effect parameters at runtime.
+    pub fn set_post_effect_params(&mut self, vignette: f32, chromatic: f32, bloom_str: f32, grain: f32) {
+        let params = crate::post_processor::PostEffectParams { vignette, chromatic, bloom_str, grain };
+        self.queue.write_buffer(&self.gpu.post_fx_pipelines.post_params_buf, 0, bytemuck::bytes_of(&params));
     }
 
     pub fn ibl_preset_name(&self) -> &'static str {

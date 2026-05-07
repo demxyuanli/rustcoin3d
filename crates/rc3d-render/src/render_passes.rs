@@ -55,12 +55,25 @@ pub(crate) struct PassContext<'a> {
     pub camera_inv_proj: Mat4,
 }
 
+/// Final color target for the frame (swapchain or an application-owned render target).
+pub(crate) enum FramePresentation<'a> {
+    Swapchain,
+    /// Same render path as the swapchain (`hdr_off`, `ldr_fxaa_off` enforced by callers for correct resolve).
+    OffscreenSurface {
+        output_texture: &'a wgpu::Texture,
+        output_view: &'a wgpu::TextureView,
+        width_px: u32,
+        height_px: u32,
+    },
+}
+
 pub(super) fn execute_passes(
     renderer: &mut crate::renderer::Renderer,
     ctx: &PassContext<'_>,
     draw_calls: &[DrawCall],
     _frame_counter: u64,
     mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    presentation: FramePresentation<'_>,
 ) -> FrameStats {
     RC3D_RENDER_GRAPH_OK.get_or_init(|| {
         let g = RenderGraph::rc3d_forward_default();
@@ -74,17 +87,42 @@ pub(super) fn execute_passes(
         }
     });
 
-    let output = match renderer.surface.get_current_texture() {
-        Ok(o) => o,
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-            renderer.surface.configure(&renderer.device, &renderer.config);
-            return FrameStats::default();
-        }
-        Err(_) => return FrameStats::default(),
+    let mut acquired_swapchain: Option<(wgpu::SurfaceTexture, wgpu::TextureView)> = None;
+
+    let (eff_width, eff_height, scene_tex_raw): (u32, u32, *const wgpu::Texture) = match &presentation {
+        FramePresentation::Swapchain => match renderer.surface.get_current_texture() {
+            Ok(output) => {
+                let tex_ptr = std::ptr::from_ref(&output.texture);
+                let v = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                acquired_swapchain = Some((output, v));
+                (renderer.config.width, renderer.config.height, tex_ptr)
+            }
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                renderer.surface.configure(&renderer.device, &renderer.config);
+                return FrameStats::default();
+            }
+            Err(_) => return FrameStats::default(),
+        },
+        FramePresentation::OffscreenSurface {
+            output_texture,
+            width_px,
+            height_px,
+            ..
+        } => (*width_px, *height_px, std::ptr::from_ref(output_texture)),
     };
-    let view = output
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
+
+    let view: &wgpu::TextureView = match acquired_swapchain.as_ref() {
+        Some((_s, vw)) => vw,
+        None => match &presentation {
+            FramePresentation::OffscreenSurface { output_view, .. } => output_view,
+            FramePresentation::Swapchain => unreachable!(),
+        },
+    };
+
+    let ew = eff_width.max(1);
+    let eh = eff_height.max(1);
 
     if renderer.gpu.depth_texture.is_none() {
         renderer.create_depth_texture();
@@ -398,8 +436,8 @@ pub(super) fn execute_passes(
             }
 
             if !point_lights.is_empty() || !spot_lights.is_empty() {
-                let w = renderer.config.width.max(1);
-                let h = renderer.config.height.max(1);
+                let w = ew;
+                let h = eh;
                 culler.cull_lights(
                     &renderer.device,
                     &renderer.queue,
@@ -428,6 +466,14 @@ pub(super) fn execute_passes(
             &scene_pl,
         );
         renderer.write_gpu_timestamp(&mut encoder); // solid end
+
+        // Section cap pass — fill cut surfaces
+        if !renderer.frame.clip_planes.is_empty() {
+            renderer.render_section_caps_from_ctx(
+                &mut encoder, shade_view, &depth_view, ctx.visible,
+                ctx.solid_order, ctx.mesh_handles,
+            );
+        }
     }
 
     if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe {
@@ -469,7 +515,7 @@ pub(super) fn execute_passes(
             } else if use_ldr_fxaa {
                 std::ptr::from_ref(renderer.gpu.ldr_shade_tex.as_ref().expect("LDR shade texture"))
             } else {
-                std::ptr::from_ref(&output.texture)
+                scene_tex_raw
             };
             crate::selection_outline::encode_selection_outline_pass(
                 renderer,
@@ -478,6 +524,8 @@ pub(super) fn execute_passes(
                 shade_view,
                 shade_fmt,
                 scene_tex_ptr,
+                ew,
+                eh,
             );
         } else if run_geom_sel_edge && !defer_line_overlays {
             pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
@@ -538,8 +586,8 @@ pub(super) fn execute_passes(
         let _span_post = tracy_client::span!("post");
         if let Some(ref fx) = renderer.gpu.post_fx {
             let pl = &renderer.gpu.post_fx_pipelines;
-            let w = renderer.config.width.max(1);
-            let h = renderer.config.height.max(1);
+            let w = ew;
+            let h = eh;
             let proj = ctx.camera_proj.to_cols_array_2d();
             let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
 
@@ -663,8 +711,8 @@ pub(super) fn execute_passes(
     {
         let geom = pass_viewport::ViewportBorderGeometry::build(
             &renderer.frame.viewport_layout,
-            renderer.config.width,
-            renderer.config.height,
+            ew,
+            eh,
         );
         let has_splits = !geom.split_lines.is_empty();
         let has_active = !geom.active_lines.is_empty();
@@ -684,8 +732,8 @@ pub(super) fn execute_passes(
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&renderer.gpu.pipelines.viewport_border_lines);
-            let wpx = renderer.config.width.max(1) as f32;
-            let hpx = renderer.config.height.max(1) as f32;
+            let wpx = ew as f32;
+            let hpx = eh as f32;
             // `border_lines` uses window pixel coords (origin top-left, +y down).
             let screen_mvp = Mat4::orthographic_rh_gl(0.0, wpx, hpx, 0.0, -1.0, 1.0).to_cols_array_2d();
             // Split borders
@@ -758,13 +806,16 @@ pub(super) fn execute_passes(
         }
     }
     if let Some(cb) = &mut post_swapchain_overlay {
-        cb(&mut encoder, &view);
+        cb(&mut encoder, view);
     }
 
     renderer.prune_mesh_cache();
     renderer.resolve_gpu_timestamps(&mut encoder);
     renderer.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    if let Some((surface_tex, vw)) = acquired_swapchain.take() {
+        drop(vw);
+        surface_tex.present();
+    }
 
     let total_visible_triangles: u64 = ctx.visible
         .iter()

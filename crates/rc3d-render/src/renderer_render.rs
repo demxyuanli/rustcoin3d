@@ -5,7 +5,6 @@ use slotmap::Key;
 use rc3d_core::DisplayMode;
 use rc3d_scene::SceneGraph;
 use crate::adaptive_quality::AdaptiveQuality;
-use crate::asset_manager::MESH_CACHE_MAX;
 use crate::cluster::{ClusterRenderer, ClusterSet};
 use crate::frustum::Frustum;
 use crate::gpu_skinning::GpuSkinningPass;
@@ -20,11 +19,13 @@ use super::renderer_types::FrameStats;
 use super::PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
 
 impl super::Renderer {
-    pub fn render_draw_calls_with_overlay(
-        &mut self,
+    fn render_draw_calls_core<'p>(
+        &'p mut self,
         draw_calls: &[DrawCall],
         scene: &SceneGraph,
         post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+        presentation: render_passes::FramePresentation<'p>,
+        ssao_projection: Option<(Mat4, Mat4)>,
     ) -> FrameStats {
         self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
@@ -340,18 +341,23 @@ impl super::Renderer {
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
             );
 
-        let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        let near = 0.1f32;
-        let far = 1000.0f32;
-        let fov = 60.0f32.to_radians();
-        let f = 1.0 / (fov / 2.0).tan();
-        let camera_proj = Mat4::from_cols_array_2d(&[
-            [f / aspect, 0.0, 0.0, 0.0],
-            [0.0, f, 0.0, 0.0],
-            [0.0, 0.0, far / (far - near), 1.0],
-            [0.0, 0.0, -near * far / (far - near), 0.0],
-        ]);
-        let camera_inv_proj = camera_proj.inverse();
+        let (camera_proj, camera_inv_proj) = if let Some((p, ip)) = ssao_projection {
+            (p, ip)
+        } else {
+            let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
+            let near = 0.1f32;
+            let far = 1000.0f32;
+            let fov = 60.0f32.to_radians();
+            let f = 1.0 / (fov / 2.0).tan();
+            let camera_proj = Mat4::from_cols_array_2d(&[
+                [f / aspect, 0.0, 0.0, 0.0],
+                [0.0, f, 0.0, 0.0],
+                [0.0, 0.0, far / (far - near), 1.0],
+                [0.0, 0.0, -near * far / (far - near), 0.0],
+            ]);
+            let camera_inv_proj = camera_proj.inverse();
+            (camera_proj, camera_inv_proj)
+        };
 
         let mut csm_view_proj = [Mat4::IDENTITY; CSM_CASCADE_COUNT];
         let mut csm_split_depths = [0.0f32; CSM_CASCADE_COUNT];
@@ -442,6 +448,7 @@ impl super::Renderer {
             draw_calls,
             self.frame.frame_counter,
             post_swapchain_overlay,
+            presentation,
         );
         let gpu_pass = self.read_gpu_timestamps();
         stats.gpu_pass_times_us = gpu_pass;
@@ -454,6 +461,73 @@ impl super::Renderer {
         );
         stats.diagnostics = Some(diagnostics.clone());
         self.frame.last_diagnostics = Some(diagnostics);
+        stats
+    }
+
+    pub fn render_draw_calls_with_overlay(
+        &mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> FrameStats {
+        self.render_draw_calls_core(
+            draw_calls,
+            scene,
+            post_swapchain_overlay,
+            render_passes::FramePresentation::Swapchain,
+            None,
+        )
+    }
+
+    pub fn render_draw_calls_to_viewport_texture<'t>(
+        &'t mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        viewport_texture: &'t wgpu::Texture,
+        viewport_view: &'t wgpu::TextureView,
+        viewport_width_px: u32,
+        viewport_height_px: u32,
+        projection: Mat4,
+        inverse_projection: Mat4,
+    ) -> FrameStats {
+        let vw = viewport_width_px.max(1);
+        let vh = viewport_height_px.max(1);
+
+        let saved_depth = self.gpu.depth_texture.take();
+        self.create_depth_texture_at(vw, vh);
+
+        let saved_hdr = self.hdr_post_processing;
+        let saved_fxaa = self.enable_ldr_fxaa;
+        let saved_hud = self.hud_enabled;
+        let saved_hzb = self.gpu.hzb.take();
+
+        self.hdr_post_processing = false;
+        self.enable_ldr_fxaa = false;
+        self.hud_enabled = false;
+
+        if let Some(ref baker) = self.gpu.hzb_baker {
+            let bgl = &baker.downsample_bgl;
+            self.gpu.hzb = Some(crate::hzb::HzbPyramids::new(&self.device, bgl, vw, vh));
+        }
+
+        let stats = self.render_draw_calls_core(
+            draw_calls,
+            scene,
+            None,
+            render_passes::FramePresentation::OffscreenSurface {
+                output_texture: viewport_texture,
+                output_view: viewport_view,
+                width_px: vw,
+                height_px: vh,
+            },
+            Some((projection, inverse_projection)),
+        );
+
+        self.gpu.depth_texture = saved_depth;
+        self.hdr_post_processing = saved_hdr;
+        self.enable_ldr_fxaa = saved_fxaa;
+        self.hud_enabled = saved_hud;
+        self.gpu.hzb = saved_hzb;
         stats
     }
 
@@ -479,6 +553,18 @@ impl super::Renderer {
         if let Some(hud) = &mut self.gpu.hud {
             hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
         }
+    }
+
+    /// Render section caps from scene context (called from render_passes).
+    pub fn render_section_caps_from_ctx(
+        &mut self, encoder: &mut wgpu::CommandEncoder, shade_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView, draw_calls: &[&crate::render_action::DrawCall],
+        solid_order: &[usize], mesh_handles: &[Option<crate::gpu_resource::MeshId>],
+    ) {
+        let cap_color = [0.5, 0.5, 0.5, 1.0];
+        let entries: Vec<(usize, crate::gpu_resource::MeshId)> = solid_order.iter()
+            .filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
+        self.render_section_caps(encoder, shade_view, depth_view, cap_color, &entries);
     }
 
     /// Render section plane cap surfaces for visible draw calls.
