@@ -121,6 +121,28 @@ pub enum AdaptiveControl {
 }
 
 impl Renderer {
+    pub fn ensure_decal_pass(&mut self) {
+        if self.gpu.decal_pass.is_none() {
+            self.gpu.decal_pass = Some(crate::render_passes::pass_effects::DecalPass::new(
+                &self.device, self.config.format,
+            ));
+        }
+    }
+    pub fn ensure_volume_pass(&mut self) {
+        if self.gpu.volume_pass.is_none() {
+            self.gpu.volume_pass = Some(crate::render_passes::pass_effects::VolumePass::new(
+                &self.device, self.config.format,
+            ));
+        }
+    }
+    pub fn ensure_point_cloud_pass(&mut self) {
+        if self.gpu.point_cloud_pass.is_none() {
+            self.gpu.point_cloud_pass = Some(crate::render_passes::pass_effects::PointCloudPass::new(
+                &self.device, self.config.format,
+            ));
+        }
+    }
+
     fn ensure_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
         let resolution = resolution.max(1);
         let cascade_count = cascade_count.max(1);

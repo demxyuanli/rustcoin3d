@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use wgpu::util::DeviceExt;
 
 mod pass_edge;
+pub(crate) mod pass_effects;
 mod pass_grid;
 pub(crate) mod pass_markup;
 mod pass_post;

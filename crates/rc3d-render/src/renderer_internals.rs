@@ -95,6 +95,9 @@ pub(crate) struct GpuInternals {
     pub cluster_lights: Option<ClusterLightResources>,
     pub cluster_light_culler: Option<ClusterLightCuller>,
     pub omni_shadow: Option<OmniShadowRenderer>,
+    pub decal_pass: Option<crate::render_passes::pass_effects::DecalPass>,
+    pub volume_pass: Option<crate::render_passes::pass_effects::VolumePass>,
+    pub point_cloud_pass: Option<crate::render_passes::pass_effects::PointCloudPass>,
     pub selection_outline_pipelines:
         Option<crate::selection_outline::SelectionOutlinePipelines>,
     pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
