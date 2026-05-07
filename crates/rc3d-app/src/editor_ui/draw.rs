@@ -18,6 +18,9 @@ pub(super) fn build_ui(
     ctx: &egui::Context,
     graph: &SceneGraph,
     ui_ctx: &EditorUiContext,
+    context_menu_pos: &mut Option<egui::Pos2>,
+    show_console: &mut bool,
+    console_entries: &[String],
     q: &mut VecDeque<EditorCommand>,
 ) {
     let mut push = |c: EditorCommand| q.push_back(c);
@@ -252,7 +255,87 @@ pub(super) fn build_ui(
 
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ctx, |_ui| {});
+        .show(ctx, |ui| {
+            // Right-click context menu detection
+            if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    *context_menu_pos = Some(pos);
+                }
+            }
+        });
+
+    // Right-click context menu window
+    if let Some(pos) = context_menu_pos {
+        egui::Window::new("##context_menu")
+            .fixed_pos(*pos)
+            .resizable(false)
+            .title_bar(false)
+            .auto_sized()
+            .show(ctx, |ui| {
+                ui.set_min_width(180.0);
+                ui.menu_button("Add", |ui| {
+                    create_node_menu(ui, None, &mut push);
+                });
+                ui.menu_button("View", |ui| {
+                    let presets = [
+                        (ViewPreset::Top, "Top"),
+                        (ViewPreset::Front, "Front"),
+                        (ViewPreset::Right, "Right"),
+                        (ViewPreset::Iso, "Iso"),
+                    ];
+                    for (preset, label) in presets {
+                        if ui.button(label).clicked() {
+                            push(EditorCommand::SetViewPreset(preset));
+                            *context_menu_pos = None;
+                        }
+                    }
+                });
+                if ui.button("Toggle Grid").clicked() {
+                    push(EditorCommand::SetGridEnabled(!ui_ctx.grid_enabled));
+                    *context_menu_pos = None;
+                }
+                if ui.button("Toggle Wireframe").clicked() {
+                    let mode = EditorDisplayMode::Wireframe;
+                    push(EditorCommand::SetDisplayMode(mode));
+                    *context_menu_pos = None;
+                }
+            });
+
+        // Close on click outside
+        if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)
+            || i.pointer.button_clicked(egui::PointerButton::Secondary))
+        {
+            if context_menu_pos.is_some() {
+                *context_menu_pos = None;
+            }
+        }
+    }
+
+    // Console panel (toggled with ` backtick key)
+    if *show_console {
+        egui::Window::new("Console")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([600.0, 200.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        // Handled by clearing the buffer — can't mutate console_entries here
+                    }
+                    if ui.button("Close").clicked() {
+                        *show_console = false;
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for entry in console_entries.iter().rev().take(100) {
+                            ui.label(entry);
+                        }
+                    });
+            });
+    }
 }
 
 fn create_node_menu<F: FnMut(EditorCommand)>(

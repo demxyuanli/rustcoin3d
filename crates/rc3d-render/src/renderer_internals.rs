@@ -42,6 +42,7 @@ pub(crate) struct FrameState {
     pub last_diagnostics: Option<FrameDiagnostics>,
     pub last_hud_update_frame: u64,
     pub viewport_layout: ViewportLayout,
+    #[allow(dead_code)]
     pub frame_stats: FrameStats,
     /// Effect commands collected during scene traversal (Decal, Volume, PointCloud).
     pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
@@ -77,6 +78,7 @@ pub(crate) struct GpuInternals {
     pub csm_shadow: Option<CsmShadowResources>,
     pub post_fx_pipelines: PostFxPipelines,
     pub post_fx: Option<PostFxTextures>,
+    #[allow(dead_code)]
     pub ssao_noise_tex: wgpu::Texture,
     pub ssao_noise_view: wgpu::TextureView,
     pub instance_buffer: wgpu::Buffer,
@@ -87,10 +89,12 @@ pub(crate) struct GpuInternals {
     pub gpu_query_slots: u32,
     pub gpu_query_period: f32,
     pub pipeline_cache: Option<PipelineCacheManager>,
+    #[allow(dead_code)]
     pub shader_cache: ShaderVariantCache,
     pub shader_reload: ShaderHotReload,
     pub auto_exposure: AutoExposure,
     pub taa_pass: Option<TaaPass>,
+    #[allow(dead_code)]
     pub taa_jitter: TaaJitter,
     pub motion_blur: Option<MotionBlurPass>,
     pub ssr_pass: Option<SsrPass>,

@@ -3,6 +3,7 @@
 /// A compute shader computes per-block log-luminance averages into a GPU buffer.
 /// The CPU reads back the buffer, computes the overall average, and applies
 /// temporal adaptation with separate up/down speeds (eyes adapt faster to bright than dark).
+#[allow(dead_code)]
 pub struct AutoExposure {
     pipeline: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,

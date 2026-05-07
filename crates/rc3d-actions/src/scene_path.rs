@@ -62,6 +62,7 @@ pub struct SearchAction {
     pub name_filter: Option<String>,
     pub type_filter: Option<String>,
     pub results: Vec<ScenePath>,
+    #[allow(dead_code)]
     current_path: ScenePath,
 }
 

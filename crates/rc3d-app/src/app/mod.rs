@@ -23,7 +23,7 @@ use rc3d_core::{
     math::{Mat4, Vec3},
     DisplayMode,
 };
-use rc3d_render::{FrameStats, Renderer};
+use rc3d_render::FrameStats;
 use rc3d_scene::SceneGraph;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
@@ -34,7 +34,7 @@ use winit::{
 
 use crate::adaptive_quality::AdaptiveQualityMode;
 use crate::camera_controller::CameraController;
-use crate::editor_ui::{EditorCommand, EditorUi};
+
 use crate::viewport_camera::{ViewportCamera, ViewportCameraSet};
 use crate::world::World;
 use fps_tracker::FpsTracker;

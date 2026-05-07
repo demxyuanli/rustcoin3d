@@ -31,7 +31,7 @@ const STREAM_LOD_TARGETS: &[usize] = &[
 ];
 const STREAM_STEP_MS: u64 = 180;
 
-pub(super) struct FullResPatch {
+pub(crate) struct FullResPatch {
     pub coord_node: rc3d_core::NodeId,
     pub ifs_node: rc3d_core::NodeId,
     pub tex_node: Option<rc3d_core::NodeId>,

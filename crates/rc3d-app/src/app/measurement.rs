@@ -1,6 +1,7 @@
 use rc3d_actions::Ray;
 use rc3d_core::math::Mat4;
 
+#[allow(dead_code)]
 pub(super) fn build_pick_ray(
     cursor_pos: (f64, f64),
     window_size: (u32, u32),

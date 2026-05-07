@@ -249,7 +249,7 @@ impl Default for SceneGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_data::{MaterialNode, TransformNode, GroupNode};
+    use crate::node_data::{MaterialNode, GroupNode};
 
     fn make_material() -> NodeData {
         NodeData::Material(MaterialNode::default())

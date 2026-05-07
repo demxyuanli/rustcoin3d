@@ -14,7 +14,7 @@ pub struct AssetHandle<T> {
 }
 
 #[derive(Clone)]
-enum AssetState<T> {
+pub(crate) enum AssetState<T> {
     Loading,
     Loaded(T),
     Failed(String),

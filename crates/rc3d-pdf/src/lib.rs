@@ -136,13 +136,10 @@ pub fn export_u3d_pdf(graph: &SceneGraph, title: &str) -> Result<Vec<u8>, String
     let root_count = graph.roots().len();
 
     // Collect node-type distribution
-    let mut type_counts: std::collections::HashMap<&str, u32> =
-        std::collections::HashMap::new();
+    let mut type_counts = std::collections::HashMap::new();
     {
         let mut n = 0;
-        let mut counts = std::collections::HashMap::new();
-        count_scene_nodes(graph, &mut n, &mut counts);
-        type_counts = counts;
+        count_scene_nodes(graph, &mut n, &mut type_counts);
     }
     let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
     types.sort_by(|a, b| b.1.cmp(&a.1));

@@ -25,6 +25,11 @@ pub struct EditorUi {
     clipped_primitives: Vec<egui::ClippedPrimitive>,
     pixels_per_point: f32,
     textures_to_free: Vec<egui::TextureId>,
+    /// Right-click context menu position in egui coordinates, if visible.
+    context_menu_pos: Option<egui::Pos2>,
+    /// Console log ring buffer.
+    console_entries: Vec<String>,
+    show_console: bool,
 }
 
 impl EditorUi {
@@ -55,6 +60,9 @@ impl EditorUi {
             clipped_primitives: Vec::new(),
             pixels_per_point: window.scale_factor() as f32,
             textures_to_free: Vec::new(),
+            context_menu_pos: None,
+            console_entries: Vec::new(),
+            show_console: false,
         }
     }
 
@@ -77,6 +85,19 @@ impl EditorUi {
         std::mem::take(&mut self.command_queue).into_iter()
     }
 
+    /// Push a log entry to the console ring buffer (max 200 entries).
+    pub fn push_log(&mut self, msg: &str) {
+        self.console_entries.push(msg.to_string());
+        if self.console_entries.len() > 200 {
+            self.console_entries.remove(0);
+        }
+    }
+
+    /// Toggle console panel visibility.
+    pub fn toggle_console(&mut self) {
+        self.show_console = !self.show_console;
+    }
+
     pub fn run(
         &mut self,
         window: &winit::window::Window,
@@ -85,8 +106,11 @@ impl EditorUi {
         ui_ctx: &EditorUiContext,
     ) {
         let raw_input = self.winit_state.take_egui_input(window);
+        let ctx_menu = &mut self.context_menu_pos;
+        let show_console = &mut self.show_console;
+        let console_ref = &mut self.console_entries;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            draw::build_ui(ctx, graph, ui_ctx, &mut self.command_queue);
+            draw::build_ui(ctx, graph, ui_ctx, ctx_menu, show_console, console_ref, &mut self.command_queue);
         });
         self.winit_state
             .handle_platform_output(window, full_output.platform_output);

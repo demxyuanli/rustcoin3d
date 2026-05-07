@@ -429,6 +429,7 @@ impl SelectionOutlinePipelines {
     }
 }
 
+#[allow(dead_code)]
 pub struct SelectionOutlineTargets {
     pub width: u32,
     pub height: u32,

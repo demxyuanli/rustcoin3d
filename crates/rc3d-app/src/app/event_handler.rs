@@ -153,12 +153,6 @@ pub(crate) fn window_event(
                                 renderer.set_display_mode(DisplayMode::Shaded);
                             }
                         }
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => {
-                            if let Some(ref mut cc) = app.state.camera_controller { if cc.walk_mode { cc.walk(0.0, -0.1, 0.0, 0.15); } }
-                        }
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyD) => {
-                            if let Some(ref mut cc) = app.state.camera_controller { if cc.walk_mode { cc.walk(0.0, 0.1, 0.0, 0.15); } }
-                        }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyE) => {
                             if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::ShadedWithEdges);
@@ -284,6 +278,27 @@ pub(crate) fn window_event(
                                     renderer.viewport_layout().active_id;
                             }
                         }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => {
+                            if app.input.ctrl_pressed {
+                                let roots: Vec<NodeId> = app.state.world.graph.roots().to_vec();
+                                app.state.world.graph.select_many(roots);
+                            } else if let Some(ref mut cc) = app.state.camera_controller {
+                                if cc.walk_mode { cc.walk(0.0, -0.1, 0.0, 0.15); }
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyD) => {
+                            if app.input.ctrl_pressed {
+                                let selected: Vec<NodeId> =
+                                    app.state.world.graph.selected_nodes().iter().copied().collect();
+                                for id in selected {
+                                    let _ = app.state.editor_commands.push_back(
+                                        EditorCommand::DuplicateNode(id),
+                                    );
+                                }
+                            } else if let Some(ref mut cc) = app.state.camera_controller {
+                                if cc.walk_mode { cc.walk(0.0, 0.1, 0.0, 0.15); }
+                            }
+                        }
                         winit::keyboard::PhysicalKey::Code(
                             winit::keyboard::KeyCode::Delete
                             | winit::keyboard::KeyCode::Backspace,
@@ -294,6 +309,13 @@ pub(crate) fn window_event(
                                 let _ = app.state.editor_commands.push_back(
                                     EditorCommand::DeleteNode(id),
                                 );
+                            }
+                        }
+                        winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::Backquote,
+                        ) => {
+                            if let Some(ref mut ui) = app.state.editor_ui {
+                                ui.toggle_console();
                             }
                         }
                         _ => {}

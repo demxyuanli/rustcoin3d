@@ -118,6 +118,7 @@ impl OmniShadowMap {
 }
 
 /// Render pipeline for omnidirectional shadow pass.
+#[allow(dead_code)]
 pub struct OmniShadowRenderer {
     pipeline: wgpu::RenderPipeline,
     shadow_bgl: wgpu::BindGroupLayout,

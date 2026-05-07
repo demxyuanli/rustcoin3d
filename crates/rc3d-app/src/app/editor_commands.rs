@@ -1,5 +1,5 @@
 use rc3d_actions::{
-    AddChildCommand, CreateNodeCommand, DeleteNodeCommand, RemoveChildCommand,
+    AddChildCommand, CreateNodeCommand, DeleteNodeCommand,
     SetFieldCommand, SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };
 use rc3d_core::math::{Mat4, Quat, Vec2, Vec3};

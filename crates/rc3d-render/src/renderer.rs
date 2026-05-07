@@ -18,7 +18,6 @@ pub use renderer_types::*;
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
 use crate::auto_exposure::AutoExposure;
-use crate::cluster::ClusterRenderer;
 use crate::cluster_lighting::{ClusterLightCuller, ClusterLightResources};
 use crate::color_grading::ColorGradingPass;
 use crate::dof_pass::DofPass;
@@ -29,18 +28,17 @@ use crate::hzb::{HzbBaker, HzbPyramids};
 use crate::motion_blur::MotionBlurPass;
 use crate::pipeline_cache::PipelineCacheManager;
 use crate::pipelines::PipelineSet;
-use crate::post_processor::{self, PostFxPipelines, PostFxTextures};
+use crate::post_processor::{self};
 use crate::shadow_omni::OmniShadowRenderer;
-use crate::shadow_pass::{self, CsmShadowResources};
+use crate::shadow_pass::{self};
 use crate::shader_permutation::ShaderVariantCache;
 use crate::shader_reload::ShaderHotReload;
-use crate::vertex::{InstanceData, LineVertex, MAX_INSTANCES};
+use crate::vertex::{InstanceData, MAX_INSTANCES};
 use crate::viewport::ViewportLayout;
 use crate::ssr_pass::SsrPass;
 use crate::taa::{TaaJitter, TaaPass};
 use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
-use crate::gpu_skinning::{GpuSkinningPass, GpuSkinningResources};
 use crate::ibl::IblPreset;
 use self::renderer_internals::{FrameState, GpuInternals};
 use crate::settings::RenderSettings;
@@ -744,13 +742,7 @@ impl Renderer {
     }
 
     // ── Internal accessors for render_passes (pub(crate)) ──
-    pub(crate) fn dev(&self) -> &wgpu::Device { &self.device }
-    pub(crate) fn que(&self) -> &wgpu::Queue { &self.queue }
-    pub(crate) fn surf(&self) -> &wgpu::Surface<'static> { &self.surface }
-    pub(crate) fn surface_config_ref(&self) -> &wgpu::SurfaceConfiguration { &self.config }
-    pub(crate) fn surface_config_mut(&mut self) -> &mut wgpu::SurfaceConfiguration { &mut self.config }
-
-    // ── Public accessors for viewport_layout ──
+    #[allow(dead_code)]
     pub fn viewport_layout(&self) -> &ViewportLayout {
         &self.frame.viewport_layout
     }

@@ -93,6 +93,7 @@ pub struct TestRun {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum EngineEvent {
     SceneLoaded,
     SceneReset,

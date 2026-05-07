@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use rc3d_render::FrameStats;
 
-pub(crate) struct FpsTracker {
+pub struct FpsTracker {
     samples: VecDeque<f32>,
     sum: f32,
     capacity: usize,
