@@ -320,8 +320,26 @@ impl RenderCollector {
             }
             // TODO: Decal shader at shaders/decal_project.wgsl — needs pipeline in post_processor.rs
             NodeData::Decal(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
-            // TODO: Reflection stencil pass at shaders/reflection_plane.wgsl — needs stencil buffer setup
-            NodeData::ReflectionPlane(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            NodeData::ReflectionPlane(rp) => {
+                if !rp.enabled { for &child in &entry.children { self.traverse_node(graph, child); } return; }
+                // Mirror view matrix across the reflection plane
+                let view = self.state.view_matrix();
+                let n = rp.normal.normalize();
+                let o = rp.origin;
+                let eye = view.inverse().w_axis.truncate();
+                let d = -(eye - o).dot(n);
+                let refl = Mat4::from_cols(
+                    Vec4::new(1.0-2.0*n.x*n.x, -2.0*n.y*n.x, -2.0*n.z*n.x, 0.0),
+                    Vec4::new(-2.0*n.x*n.y, 1.0-2.0*n.y*n.y, -2.0*n.z*n.y, 0.0),
+                    Vec4::new(-2.0*n.x*n.z, -2.0*n.y*n.z, 1.0-2.0*n.z*n.z, 0.0),
+                    Vec4::new(2.0*d*n.x, 2.0*d*n.y, 2.0*d*n.z, 1.0),
+                );
+                let mirrored = view * refl;
+                let saved = self.state.view_matrix();
+                self.state.set_view_matrix(mirrored);
+                for &child in &entry.children { self.traverse_node(graph, child); }
+                self.state.set_view_matrix(saved);
+            }
             // TODO: Stereo dual-viewport — needs second render pass with offset eye matrices
             NodeData::StereoCamera(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
             // TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
