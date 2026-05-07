@@ -74,7 +74,7 @@ impl App {
                 2.2,
             );
         }
-        Self {
+        let app = Self {
             state: AppState {
                 world: World::new(graph),
                 renderer: None,
@@ -136,7 +136,9 @@ impl App {
             panel_overlay_text_hook: None,
             panel_overlay_key_hook: None,
             panel_overlay_mouse_hook: None,
-        }
+        };
+        log_scene_stats(&app.state.world.graph);
+        app
     }
 
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
@@ -266,6 +268,28 @@ impl App {
     pub fn with_continuous_redraw(mut self, enabled: bool) -> Self {
         self.state.continuous_redraw = enabled;
         self
+    }
+}
+
+/// Log scene node statistics at startup for performance baselining.
+fn log_scene_stats(graph: &SceneGraph) {
+    let mut total = 0u32;
+    let mut type_counts: std::collections::HashMap<&str, u32> = Default::default();
+    for &root in graph.roots() {
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if let Some(entry) = graph.get(id) {
+                total += 1;
+                *type_counts.entry(entry.data.type_name()).or_default() += 1;
+                stack.extend(entry.children.iter().copied());
+            }
+        }
+    }
+    log::info!("Scene: {} nodes, {} roots", total, graph.roots().len());
+    let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
+    types.sort_by(|a, b| b.1.cmp(&a.1));
+    for (name, count) in types.iter().take(10) {
+        log::info!("  {}: {}", name, count);
     }
 }
 

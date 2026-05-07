@@ -4,6 +4,8 @@
 //! only visible tiles to the GPU. Uses an octree spatial index and
 //! LRU-based tile cache.
 
+use std::io::{Read, Seek, Write};
+
 use rc3d_core::math::Vec3;
 use rc3d_core::Aabb;
 use serde::{Deserialize, Serialize};
@@ -83,6 +85,14 @@ impl Octree {
         }
     }
 
+    /// Count of non-empty leaf nodes (tiles) in the octree.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            Octree::Leaf { points, .. } => if points.is_empty() { 0 } else { 1 },
+            Octree::Node { children, .. } => children.iter().map(|c| c.leaf_count()).sum(),
+        }
+    }
+
     fn leaf_points_by_index(&self, tile_id: usize) -> Option<Vec<Point>> {
         let mut current = 0usize;
         self.find_leaf_points(tile_id, &mut current)
@@ -91,6 +101,9 @@ impl Octree {
     fn find_leaf_points(&self, tile_id: usize, current: &mut usize) -> Option<Vec<Point>> {
         match self {
             Octree::Leaf { points, .. } => {
+                if points.is_empty() {
+                    return None;
+                }
                 let is_match = *current == tile_id;
                 *current += 1;
                 is_match.then(|| points.clone())
@@ -187,6 +200,10 @@ pub struct PointCloudOoc {
     pub total_points: u64,
     pub max_tiles: usize,
     pub file_path: Option<std::path::PathBuf>,
+    /// Lazily-loaded tile (offset, point_count) pairs from disk file.
+    stream_tile_offsets: Option<Vec<(u64, u32)>>,
+    /// Total tile count from disk file (set by load_offsets).
+    stream_tile_count: usize,
 }
 
 impl PointCloudOoc {
@@ -197,6 +214,8 @@ impl PointCloudOoc {
             total_points: 0,
             max_tiles,
             file_path: None,
+            stream_tile_offsets: None,
+            stream_tile_count: 0,
         }
     }
 
@@ -214,35 +233,104 @@ impl PointCloudOoc {
         self.file_path = Some(path);
     }
 
+    /// Number of leaf tiles.
+    pub fn tile_count(&self) -> usize {
+        if self.stream_tile_count > 0 {
+            self.stream_tile_count
+        } else {
+            self.octree.leaf_count()
+        }
+    }
+
+    /// Save octree tiles to a binary file.
+    ///
+    /// Format: `[tile_count: u32][offsets: u64*N][tile_data...]`
+    /// Each tile: `[point_count: u32][points: Point*count]`
+    pub fn save(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        let tiles: Vec<Vec<Point>> = (0..self.tile_count())
+            .filter_map(|i| self.octree.leaf_points_by_index(i))
+            .collect();
+        let n = tiles.len() as u32;
+        let header_size = 4u64 + 8 * n as u64;
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(&n.to_le_bytes())?;
+        let mut cursor = header_size;
+        for t in &tiles {
+            f.write_all(&cursor.to_le_bytes())?;
+            cursor += 4 + t.len() as u64 * 16;
+        }
+        // Pad to header_size if needed
+        let current = f.stream_position()?;
+        if current < header_size {
+            f.write_all(&vec![0u8; (header_size - current) as usize])?;
+        }
+        for t in &tiles {
+            f.write_all(&(t.len() as u32).to_le_bytes())?;
+            let byte_slice: &[u8] = unsafe {
+                std::slice::from_raw_parts(t.as_ptr() as *const u8, t.len() * 16)
+            };
+            f.write_all(byte_slice)?;
+        }
+        Ok(())
+    }
+
+    /// Load tile metadata from the backing file.
+    pub fn load_offsets(&mut self) -> Result<(), std::io::Error> {
+        let path = self.file_path.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no file path set")
+        })?;
+        let mut f = std::fs::File::open(path)?;
+        let mut buf4 = [0u8; 4];
+        f.read_exact(&mut buf4)?;
+        let n = u32::from_le_bytes(buf4) as usize;
+        let mut offsets = vec![0u64; n];
+        let mut buf8 = [0u8; 8];
+        for i in 0..n {
+            f.read_exact(&mut buf8)?;
+            offsets[i] = u64::from_le_bytes(buf8);
+        }
+        let mut info = Vec::with_capacity(n);
+        for i in 0..n {
+            f.seek(std::io::SeekFrom::Start(offsets[i]))?;
+            f.read_exact(&mut buf4)?;
+            let count = u32::from_le_bytes(buf4);
+            info.push((offsets[i], count));
+        }
+        self.stream_tile_offsets = Some(info);
+        self.stream_tile_count = n;
+        Ok(())
+    }
+
     /// Query visible points for a given frustum.
     pub fn query(&self, frustum: &[Vec3; 8]) -> Vec<Point> {
         self.octree.query_frustum(frustum)
     }
 
-    /// Stream a tile from storage into the LRU cache.
+    /// Stream a tile from disk or in-memory octree into the LRU cache.
     ///
-    /// Current implementation loads points from in-memory octree leaves.
-    ///
-    /// ## Disk I/O (planned)
-    ///
-    /// To enable true out-of-core streaming, a binary point format is needed:
-    ///
-    /// ```text
-    /// [TileHeader; N]  // one per tile: offset: u64, count: u32
-    /// [Point; count_0] // tile 0 points (16 bytes each)
-    /// [Point; count_1] // tile 1 points
-    /// ...
-    /// ```
-    ///
-    /// Tile headers are stored at the start of a `.bin` companion file.
-    /// On first access, read the header table, then seek to the tile offset
-    /// and deserialize `count` points into the cache.
+    /// If a backing file is set, reads from disk. Falls back to octree lookup.
     pub fn stream_tile(&mut self, tile_id: usize, frame: u64) -> Option<&TileCache> {
         if let Some(tile) = self.tile_cache.get_mut(&tile_id) {
             tile.last_used_frame = frame;
             return self.tile_cache.get(&tile_id);
         }
-
+        // Try disk
+        if self.stream_tile_offsets.is_none() && self.file_path.is_some() {
+            let _ = self.load_offsets();
+        }
+        if let Some(ref offsets) = self.stream_tile_offsets {
+            if tile_id < offsets.len() {
+                if let Ok(points) = read_tile_from_disk(
+                    self.file_path.as_ref().unwrap(), offsets, tile_id,
+                ) {
+                    self.tile_cache.put(tile_id, TileCache {
+                        points, last_used_frame: frame, loaded: true,
+                    });
+                    return self.tile_cache.get(&tile_id);
+                }
+            }
+        }
+        // Fallback to memory
         let points = self.octree.leaf_points_by_index(tile_id)?;
         self.tile_cache.put(tile_id, TileCache {
             points,
@@ -254,6 +342,23 @@ impl PointCloudOoc {
 
     /// Total point count.
     pub fn count(&self) -> u64 { self.total_points }
+}
+
+/// Read a tile's points from disk.
+fn read_tile_from_disk(
+    path: &std::path::Path,
+    offsets: &[(u64, u32)],
+    tile_id: usize,
+) -> Result<Vec<Point>, std::io::Error> {
+    let (offset, count) = offsets[tile_id];
+    let mut f = std::fs::File::open(path)?;
+    f.seek(std::io::SeekFrom::Start(offset + 4))?;
+    let mut points = vec![Point::default(); count as usize];
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts_mut(points.as_mut_ptr() as *mut u8, count as usize * 16)
+    };
+    f.read_exact(byte_slice)?;
+    Ok(points)
 }
 
 #[cfg(test)]
@@ -332,5 +437,53 @@ mod tests {
         assert!(tile.loaded);
         assert_eq!(tile.last_used_frame, 42);
         assert!(!tile.points.is_empty());
+    }
+
+    #[test]
+    fn save_and_stream_tile_from_disk_roundtrip() {
+        let mut pc = PointCloudOoc::new(64);
+        pc.build(
+            (0..200)
+                .map(|i| Point {
+                    x: i as f32 * 0.1, y: 0.0, z: 0.0,
+                    r: (i % 255) as u8, a: 255, ..Default::default()
+                })
+                .collect(),
+            50,
+        );
+        let tile_count = pc.tile_count();
+        assert!(tile_count >= 2, "expected at least 2 tiles, got {tile_count}");
+
+        let tmp = std::env::temp_dir().join("rc3d_pc_rt.bin");
+        pc.save(&tmp).expect("save");
+
+        let mut pc2 = PointCloudOoc::new(64);
+        pc2.set_file(tmp.clone());
+        for i in 0..tile_count {
+            let tile = pc2.stream_tile(i, 1).expect("stream from disk");
+            assert!(tile.loaded, "tile {i} not loaded");
+            assert!(!tile.points.is_empty(), "tile {i} empty");
+        }
+
+        let mut total = 0usize;
+        for i in 0..tile_count {
+            if let Some(t) = pc2.tile_cache.get(&i) { total += t.points.len(); }
+        }
+        assert_eq!(total, 200);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn stream_tile_falls_back_to_memory_when_no_file() {
+        let mut pc = PointCloudOoc::new(64);
+        pc.build(
+            vec![Point { x: 1.0, y: 0.0, z: 0.0, r: 100, a: 255, ..Default::default() }],
+            1,
+        );
+        let tile = pc.stream_tile(0, 5).expect("memory fallback");
+        assert!(tile.loaded);
+        assert_eq!(tile.points.len(), 1);
+        assert_eq!(tile.points[0].r, 100);
     }
 }
