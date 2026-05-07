@@ -92,6 +92,7 @@ fn build_pbr_scene() -> SceneGraph {
             direction: Vec3::new(-0.5, -0.8, -0.3).normalize(),
             color: Vec3::new(1.0, 0.95, 0.9),
             intensity: 1.5,
+            light_group: None,
         }),
     );
 
@@ -102,6 +103,7 @@ fn build_pbr_scene() -> SceneGraph {
             direction: Vec3::new(0.7, -0.3, 0.5).normalize(),
             color: Vec3::new(0.6, 0.7, 1.0),
             intensity: 0.6,
+            light_group: None,
         }),
     );
 
@@ -116,6 +118,7 @@ fn build_pbr_scene() -> SceneGraph {
             ),
             color: Vec3::new(1.0, 0.9, 0.8),
             intensity: 20.0,
+            light_group: None,
         }),
     );
 

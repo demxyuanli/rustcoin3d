@@ -170,6 +170,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
                 color: Vec3::ONE,
                 intensity: 1.0,
+            light_group: None,
             }),
         );
         graph.insert_child(
@@ -179,6 +180,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
                 color: Vec3::new(0.9, 0.92, 1.0),
                 intensity: 0.5,
+            light_group: None,
             }),
         );
     }
@@ -206,6 +208,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(-1.0, -0.8, -0.6).normalize(),
                 color: Vec3::ONE,
                 intensity: 2.4,
+            light_group: None,
             }),
         );
     }

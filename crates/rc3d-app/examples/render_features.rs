@@ -474,6 +474,7 @@ fn ensure_scene_setup(mut graph: SceneGraph) -> SceneGraph {
                 direction: Vec3::new(-1.0, -0.8, -0.6).normalize(),
                 color: Vec3::new(1.0, 0.95, 0.9),
                 intensity: 1.2,
+            light_group: None,
             }),
         );
         // Fill light
@@ -484,6 +485,7 @@ fn ensure_scene_setup(mut graph: SceneGraph) -> SceneGraph {
                 direction: Vec3::new(0.8, -0.4, 1.0).normalize(),
                 color: Vec3::new(0.7, 0.8, 1.0),
                 intensity: 0.5,
+            light_group: None,
             }),
         );
         // Point light for dynamic shadow demo
@@ -494,6 +496,7 @@ fn ensure_scene_setup(mut graph: SceneGraph) -> SceneGraph {
                 location: Vec3::new(2.0, 3.0, 2.0),
                 color: Vec3::new(1.0, 0.6, 0.3),
                 intensity: 10.0,
+            light_group: None,
             }),
         );
     }
@@ -551,6 +554,7 @@ fn attach_panel_demo_lights(graph: &mut SceneGraph) -> ([NodeId; 3], [f32; 3]) {
             location: Vec3::new(-2.0, 1.5, 2.0),
             color: Vec3::new(0.8, 0.9, 1.0),
             intensity: base[0],
+            light_group: None,
         }),
     );
     let l1 = graph.add_child(
@@ -559,6 +563,7 @@ fn attach_panel_demo_lights(graph: &mut SceneGraph) -> ([NodeId; 3], [f32; 3]) {
             location: Vec3::new(0.0, 2.0, 2.0),
             color: Vec3::new(1.0, 0.9, 0.6),
             intensity: base[1],
+            light_group: None,
         }),
     );
     let l2 = graph.add_child(
@@ -567,6 +572,7 @@ fn attach_panel_demo_lights(graph: &mut SceneGraph) -> ([NodeId; 3], [f32; 3]) {
             location: Vec3::new(2.0, 2.5, 2.0),
             color: Vec3::new(1.0, 0.6, 0.5),
             intensity: base[2],
+            light_group: None,
         }),
     );
     ([l0, l1, l2], base)

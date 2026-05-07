@@ -72,6 +72,7 @@ fn build_shadow_scene() -> SceneGraph {
             direction: Vec3::new(-0.5, -0.8, -0.3).normalize(),
             color: Vec3::new(1.0, 0.95, 0.9),
             intensity: 1.2,
+            light_group: None,
         }),
     );
 
@@ -87,6 +88,7 @@ fn build_shadow_scene() -> SceneGraph {
             location: Vec3::ZERO,
             color: Vec3::new(0.8, 0.5, 0.3),
             intensity: 30.0,
+            light_group: None,
         }),
     );
     // Visible marker for point light
@@ -128,6 +130,7 @@ fn build_shadow_scene() -> SceneGraph {
             direction: Vec3::new(3.0, -5.0, -3.0).normalize(),
             color: Vec3::new(0.3, 0.7, 1.0),
             intensity: 40.0,
+            light_group: None,
             cut_off_angle: 0.5,
             drop_off_rate: 4.0,
         }),

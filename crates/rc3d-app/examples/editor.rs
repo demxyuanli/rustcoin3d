@@ -72,6 +72,7 @@ fn build_demo_scene() -> SceneGraph {
             direction: Vec3::new(-0.5, -0.8, -0.3).normalize(),
             color: Vec3::new(1.0, 0.95, 0.9),
             intensity: 1.2,
+            light_group: None,
         }),
     );
     graph.add_child(
@@ -80,6 +81,7 @@ fn build_demo_scene() -> SceneGraph {
             direction: Vec3::new(0.6, -0.4, 0.5).normalize(),
             color: Vec3::new(0.6, 0.7, 1.0),
             intensity: 0.5,
+            light_group: None,
         }),
     );
 
@@ -115,6 +117,7 @@ fn build_demo_scene() -> SceneGraph {
             location: Vec3::new(0.0, 5.0, 0.0),
             color: Vec3::new(1.0, 0.95, 0.85),
             intensity: 40.0,
+            light_group: None,
         }),
     );
 

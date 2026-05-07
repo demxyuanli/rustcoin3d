@@ -27,6 +27,7 @@ fn main() {
             direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
             color: Vec3::ONE,
             intensity: 1.0,
+            light_group: None,
         }),
     );
 

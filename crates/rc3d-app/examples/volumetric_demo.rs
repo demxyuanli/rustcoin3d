@@ -72,6 +72,7 @@ fn build_fog_scene() -> SceneGraph {
             direction: Vec3::new(-0.4, -0.5, 0.6).normalize(),
             color: Vec3::new(1.0, 0.9, 0.7), // warm
             intensity: 3.0,
+            light_group: None,
         }),
     );
 
@@ -102,6 +103,7 @@ fn build_fog_scene() -> SceneGraph {
                 location: Vec3::ZERO,
                 color,
                 intensity: 15.0,
+            light_group: None,
             }),
         );
         // Small visible sphere at light position
