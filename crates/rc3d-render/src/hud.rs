@@ -5,6 +5,31 @@ use glyphon::{
 
 use crate::renderer::FrameStats;
 
+fn compose_hud_text(
+    overlay_lines: &[String],
+    fps: f32,
+    frame_time_ms: f32,
+    stats: &FrameStats,
+    mode_name: &str,
+) -> String {
+    let mut text = String::new();
+    if !overlay_lines.is_empty() {
+        text.push_str(&overlay_lines.join("\n"));
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "FPS: {fps:.1} | Frame: {frame_time_ms:.2}ms\nTri: {} | Draws: {} | Culled: {}\nMode: {mode_name}",
+        stats.visible_triangles, stats.visible_draw_calls, stats.culled_draw_calls
+    ));
+    if let Some(times) = stats.gpu_pass_times_us {
+        text.push_str(&format!(
+            "\nGPU: shadow={:.0}us solid={:.0}us post={:.0}us total={:.0}us",
+            times[0], times[1], times[2], times[3]
+        ));
+    }
+    text
+}
+
 pub struct HudRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -14,6 +39,8 @@ pub struct HudRenderer {
     buffer: Buffer,
     width: u32,
     height: u32,
+    /// User-defined overlay text lines displayed above FPS stats.
+    pub overlay_lines: Vec<String>,
 }
 
 impl HudRenderer {
@@ -52,6 +79,7 @@ impl HudRenderer {
             buffer,
             width,
             height,
+            overlay_lines: Vec::new(),
         };
         hud.viewport.update(queue, Resolution { width, height });
         hud
@@ -74,16 +102,7 @@ impl HudRenderer {
         stats: &FrameStats,
         mode_name: &str,
     ) {
-        let mut text = format!(
-            "FPS: {fps:.1} | Frame: {frame_time_ms:.2}ms\nTri: {} | Draws: {} | Culled: {}\nMode: {mode_name}",
-            stats.visible_triangles, stats.visible_draw_calls, stats.culled_draw_calls
-        );
-        if let Some(times) = stats.gpu_pass_times_us {
-            text.push_str(&format!(
-                "\nGPU: shadow={:.0}us solid={:.0}us post={:.0}us total={:.0}us",
-                times[0], times[1], times[2], times[3]
-            ));
-        }
+        let text = compose_hud_text(&self.overlay_lines, fps, frame_time_ms, stats, mode_name);
         self.buffer.set_text(
             &mut self.font_system,
             &text,
@@ -124,5 +143,31 @@ impl HudRenderer {
         if let Err(e) = self.text_renderer.render(&self.atlas, &self.viewport, pass) {
             log::error!("HUD render: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_hud_text_prepends_overlay_lines() {
+        let stats = FrameStats {
+            visible_triangles: 12,
+            visible_draw_calls: 3,
+            culled_draw_calls: 1,
+            ..Default::default()
+        };
+        let text = compose_hud_text(
+            &["hello".to_string(), "world".to_string()],
+            60.0,
+            16.67,
+            &stats,
+            "Shaded",
+        );
+
+        assert!(text.starts_with("hello\nworld\nFPS: 60.0"));
+        assert!(text.contains("Tri: 12 | Draws: 3 | Culled: 1"));
+        assert!(text.contains("Mode: Shaded"));
     }
 }

@@ -39,6 +39,17 @@ impl super::Renderer {
             }
         }
 
+        if let Some(hud) = &mut self.gpu.hud {
+            hud.overlay_lines = render_passes::pass_text::collect_text_nodes(scene)
+                .into_iter()
+                .map(|cmd| {
+                    let _style = (cmd.screen_pos, cmd.size, cmd.color, cmd.is_3d);
+                    cmd.string
+                })
+                .collect();
+        }
+        let effect_commands = render_passes::pass_effects::collect_effect_nodes(scene);
+
         if draw_calls.is_empty() {
             return FrameStats::default();
         }
@@ -319,6 +330,7 @@ impl super::Renderer {
         self.gpu.phong_pool.reset();
         self.gpu.shadow_pool.reset();
         self.gpu.flat_pool.reset();
+        self.gpu.section_cap_pool.reset();
         self.gpu.outline_pool.reset();
 
         let base_mode = if self.frame.performance_mode_active {
@@ -440,6 +452,7 @@ impl super::Renderer {
             run_shadow_pass,
             camera_proj,
             camera_inv_proj,
+            effect_commands: &effect_commands,
         };
 
         let mut stats = render_passes::execute_passes(
@@ -557,60 +570,90 @@ impl super::Renderer {
 
     /// Render section caps from scene context (called from render_passes).
     pub fn render_section_caps_from_ctx(
-        &mut self, encoder: &mut wgpu::CommandEncoder, shade_view: &wgpu::TextureView,
-        depth_view: &wgpu::TextureView, draw_calls: &[&crate::render_action::DrawCall],
-        solid_order: &[usize], mesh_handles: &[Option<crate::gpu_resource::MeshId>],
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        shade_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        draw_calls: &[&crate::render_action::DrawCall],
+        solid_order: &[usize],
+        mesh_handles: &[Option<crate::gpu_resource::MeshId>],
+        scene_pl: &crate::pipelines::DepthModePipelines,
     ) {
-        let cap_color = [0.5, 0.5, 0.5, 1.0];
-        let entries: Vec<(usize, crate::gpu_resource::MeshId)> = solid_order.iter()
-            .filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
-        self.render_section_caps(encoder, shade_view, depth_view, cap_color, &entries);
+        let cap_specs: Vec<([f32; 4], [f32; 4])> = self
+            .frame
+            .section_cap_tints
+            .iter()
+            .zip(self.frame.clip_planes.iter())
+            .filter_map(|(t, p)| t.map(|c| (*p, c)))
+            .collect();
+        if cap_specs.is_empty() {
+            return;
+        }
+        let entries: Vec<(usize, crate::gpu_resource::MeshId)> =
+            solid_order.iter().filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
+        self.render_section_caps(
+            encoder,
+            shade_view,
+            depth_view,
+            scene_pl,
+            &cap_specs,
+            &entries,
+            draw_calls,
+        );
     }
 
-    /// Render section plane cap surfaces for visible draw calls.
-    /// Renders back-faces of clipped geometry to fill the cut boundary.
+    /// Fills the open cross section with flat color by rasterizing mesh triangles and
+    /// keeping fragments within a narrow band of each cap plane (`section_cap.wgsl`).
     pub fn render_section_caps(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         shade_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
-        cap_color: [f32; 4],
-        draw_calls: &[(usize, crate::gpu_resource::MeshId)],
+        scene_pl: &crate::pipelines::DepthModePipelines,
+        cap_specs: &[([f32; 4], [f32; 4])],
+        entries: &[(usize, crate::gpu_resource::MeshId)],
+        draw_calls: &[&crate::render_action::DrawCall],
     ) {
-        if draw_calls.is_empty() {
+        if cap_specs.is_empty() || entries.is_empty() {
             return;
         }
-        let ident = glam::Mat4::IDENTITY.to_cols_array_2d();
-        let cap_uniforms = crate::vertex::FlatUniforms {
-            mvp: ident,
-            color: cap_color,
-        };
-        if let Some(offset) = self.gpu.flat_pool.push_flat(&cap_uniforms) {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Section Cap"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: shade_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Section cap"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: shade_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Render back-faces with cap color to fill clip boundary
-            pass.set_pipeline(&self.gpu.pipelines.forward.edge_overlay);
-            pass.set_bind_group(0, self.gpu.flat_pool.bind_group(), &[offset]);
-            for &(_, mesh_id) in draw_calls {
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&scene_pl.section_cap_fill);
+        const MIN_BAND: f32 = 5e-4;
+        for &(plane, cap_color) in cap_specs {
+            for &(idx, mesh_id) in entries {
+                let dc = draw_calls[idx];
+                let cap_uniforms = crate::vertex::SectionCapUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    color: cap_color,
+                    plane,
+                    params: [MIN_BAND, 0.0, 0.0, 0.0],
+                };
+                let Some(offset) = self.gpu.section_cap_pool.push_section_cap(&cap_uniforms) else {
+                    continue;
+                };
+                pass.set_bind_group(0, self.gpu.section_cap_pool.bind_group(), &[offset]);
                 if let Some(mesh) = self.gpu.gpu_meshes.get(mesh_id) {
                     pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     if let Some(ref ib) = mesh.index_buffer {

@@ -1,7 +1,9 @@
 use slotmap::new_key_type;
 use wgpu::util::DeviceExt;
 
-use crate::vertex::{FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms, ShadowDrawUniforms, Vertex};
+use crate::vertex::{
+    FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms, SectionCapUniforms, ShadowDrawUniforms, Vertex,
+};
 
 new_key_type! {
     pub struct MeshId;
@@ -222,6 +224,43 @@ impl GpuUniformPool {
         }
     }
 
+    /// Same bind group layout as [`PipelineSet::flat_bgl`] / flat passes; buffer holds [`SectionCapUniforms`] strides.
+    pub fn new_section_cap(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, capacity: usize) -> Self {
+        let raw_stride = std::mem::size_of::<SectionCapUniforms>() as u64;
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
+        let size = stride * capacity as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Section Cap Uniform Pool"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group_layout = layout.clone();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Section Cap Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
+    }
+
     pub fn new_flat(device: &wgpu::Device, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<FlatUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
@@ -387,6 +426,10 @@ impl GpuUniformPool {
     }
 
     pub fn push_flat(&mut self, uniforms: &FlatUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    pub fn push_section_cap(&mut self, uniforms: &SectionCapUniforms) -> Option<u32> {
         self.push_bytes(bytemuck::bytes_of(uniforms))
     }
 

@@ -32,6 +32,8 @@ use super::renderer_types::{FrameDiagnostics, FrameStats};
 pub(crate) struct FrameState {
     pub markup_vertices: Vec<LineVertex>,
     pub clip_planes: Vec<[f32; 4]>,
+    /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
+    pub section_cap_tints: Vec<Option<[f32; 4]>>,
     pub scene_vp: Mat4,
     pub scene_camera_pos: Vec3,
     pub animation_time_sec: f32,
@@ -41,6 +43,8 @@ pub(crate) struct FrameState {
     pub last_hud_update_frame: u64,
     pub viewport_layout: ViewportLayout,
     pub frame_stats: FrameStats,
+    /// Effect commands collected during scene traversal (Decal, Volume, PointCloud).
+    pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
 }
 
 pub(crate) struct GpuInternals {
@@ -48,6 +52,7 @@ pub(crate) struct GpuInternals {
     pub phong_pool: GpuUniformPool,
     pub shadow_pool: GpuUniformPool,
     pub flat_pool: GpuUniformPool,
+    pub section_cap_pool: GpuUniformPool,
     pub outline_pool: GpuUniformPool,
     pub gpu_meshes: GpuResourceManager,
     pub gpu_skinning_pass: Option<GpuSkinningPass>,

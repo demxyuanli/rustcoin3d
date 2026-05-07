@@ -112,6 +112,18 @@ pub struct FlatUniforms {
     pub color: [f32; 4],
 }
 
+/// Uniforms for procedural section-cap fill (plane-distance discard in fragment shader).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SectionCapUniforms {
+    pub mvp: [[f32; 4]; 4],
+    pub model: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    pub plane: [f32; 4],
+    /// x = minimum world-space half-thickness; yzw unused.
+    pub params: [f32; 4],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct OutlineUniforms {

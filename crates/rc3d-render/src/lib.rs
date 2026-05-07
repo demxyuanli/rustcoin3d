@@ -55,6 +55,7 @@ pub use material_library::{MaterialId, MaterialLibrary};
 pub use volumetric_fog::VolumetricFogPass;
 pub use motion_blur::MotionBlurPass;
 pub use hud::HudRenderer;
+pub use render_passes::pass_effects::EffectCommands;
 pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
 pub use render_action::{

@@ -546,16 +546,20 @@ pub(crate) fn window_event(
                             section.apply(&app.state.world.graph, r);
                         }
                         let mut merged = section.planes;
+                        let mut merged_caps = section.cap_tints;
                         if app.editor.axis_clip[0] {
                             merged.push([1.0, 0.0, 0.0, 0.0]);
+                            merged_caps.push(None);
                         }
                         if app.editor.axis_clip[1] {
                             merged.push([0.0, 1.0, 0.0, 0.0]);
+                            merged_caps.push(None);
                         }
                         if app.editor.axis_clip[2] {
                             merged.push([0.0, 0.0, 1.0, 0.0]);
+                            merged_caps.push(None);
                         }
-                        renderer.set_clip_planes(merged);
+                        renderer.set_clip_planes(merged, merged_caps);
                     }
                     app.state.world.evaluate_engines();
 
@@ -640,6 +644,10 @@ pub(crate) fn window_event(
 
                     let markup_root = app.state.world.graph.roots().first().copied().unwrap_or_default();
                     renderer.collect_markup_vertices(&app.state.world.graph, markup_root);
+
+                    renderer.set_effect_commands(
+                        std::mem::take(&mut app.state.world.collector.effect_commands),
+                    );
 
                     if !app.state.world.collector.draw_calls.is_empty() {
                         let mut overlay = None;

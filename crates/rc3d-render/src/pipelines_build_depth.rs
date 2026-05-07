@@ -10,6 +10,7 @@ pub(super) fn build_depth_mode_pipelines(
     outline_pll: &wgpu::PipelineLayout,
     lit_shader: &wgpu::ShaderModule,
     flat_shader: &wgpu::ShaderModule,
+    section_cap_shader: &wgpu::ShaderModule,
     outline_shader: &wgpu::ShaderModule,
 ) -> super::DepthModePipelines {
     let stencil_op_keep = |cmp: wgpu::CompareFunction| wgpu::StencilFaceState {
@@ -331,6 +332,50 @@ pub(super) fn build_depth_mode_pipelines(
         cache: None,
     });
 
+    let section_cap_fill = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Section cap fill"),
+        layout: Some(flat_pll),
+        vertex: wgpu::VertexState {
+            module: section_cap_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Vertex::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: section_cap_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: false,
+            depth_compare: depth_cmp_overlay,
+            stencil: stencil_unchanged.clone(),
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 1.0,
+                clamp: 0.0,
+            },
+        }),
+        multisample: ms,
+        multiview: None,
+        cache: None,
+    });
+
     let solid_alpha = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("PBR solid alpha"),
         layout: Some(lit_pll),
@@ -413,6 +458,7 @@ pub(super) fn build_depth_mode_pipelines(
         edge_overlay,
         selection_fill,
         selection_edge,
+        section_cap_fill,
         outline,
     }
 }

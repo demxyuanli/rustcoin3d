@@ -16,6 +16,8 @@ pub struct DepthModePipelines {
     pub edge_overlay: wgpu::RenderPipeline,
     pub selection_fill: wgpu::RenderPipeline,
     pub selection_edge: wgpu::RenderPipeline,
+    /// Procedural fill for mesh / section-plane intersection (triangle mesh + plane-distance discard).
+    pub section_cap_fill: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
 }
 
@@ -92,6 +94,10 @@ impl PipelineSet {
         let flat_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Flat Color Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/flat_color.wgsl").into()),
+        });
+        let section_cap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Section Cap Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/section_cap.wgsl").into()),
         });
         let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Outline Shader"),
@@ -376,6 +382,7 @@ impl PipelineSet {
             &outline_pll,
             &pbr_shader,
             &flat_shader,
+            &section_cap_shader,
             &outline_shader,
         );
         let reverse = build_depth_mode_pipelines(
@@ -388,6 +395,7 @@ impl PipelineSet {
             &outline_pll,
             &pbr_shader,
             &flat_shader,
+            &section_cap_shader,
             &outline_shader,
         );
 
@@ -402,6 +410,7 @@ impl PipelineSet {
             &outline_pll,
             &pbr_shader,
             &flat_shader,
+            &section_cap_shader,
             &outline_shader,
         );
         let reverse_hdr = build_depth_mode_pipelines(
@@ -414,6 +423,7 @@ impl PipelineSet {
             &outline_pll,
             &pbr_shader,
             &flat_shader,
+            &section_cap_shader,
             &outline_shader,
         );
 

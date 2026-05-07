@@ -257,6 +257,8 @@ pub struct RenderCollector {
     pub inside_annotation: bool,
     /// Stereo rendering mode (set by StereoCameraNode).
     pub stereo_mode: Option<rc3d_scene::node_data::StereoMode>,
+    /// Effect draw commands collected during traversal (Decal, Volume, PointCloud).
+    pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
 }
 
 impl RenderCollector {
@@ -281,6 +283,7 @@ impl RenderCollector {
             tex2_transform: None,
             inside_annotation: false,
             stereo_mode: None,
+            effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
         }
     }
 
@@ -318,8 +321,21 @@ impl RenderCollector {
             NodeData::Group(_) | NodeData::File(_) => {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
-            // TODO: Decal shader at shaders/decal_project.wgsl — needs pipeline in post_processor.rs
-            NodeData::Decal(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            NodeData::Decal(decal) => {
+                self.effect_commands.decals.push(crate::render_passes::pass_effects::DecalDrawCommand {
+                    model_matrix: self.state.model_matrix(),
+                    position: decal.position,
+                    direction: decal.direction,
+                    size: decal.size,
+                    texture_path: decal.texture_path.clone(),
+                    color: decal.color,
+                    opacity: decal.opacity,
+                    is_overlay: self.inside_annotation,
+                });
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::ReflectionPlane(rp) => {
                 if !rp.enabled { for &child in &entry.children { self.traverse_node(graph, child); } return; }
                 // Mirror view matrix across the reflection plane
@@ -344,10 +360,32 @@ impl RenderCollector {
             NodeData::StereoCamera(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
             // TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
             NodeData::RayTracing(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
-            // TODO: Volume ray-march shader at shaders/volume_raymarch.wgsl — needs compute dispatch pipeline
-            NodeData::Volume(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
-            // TODO: Point sprite shader at shaders/point_cloud.wgsl — needs vertex pipeline with PointList topology
-            NodeData::PointCloud(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            NodeData::Volume(volume) => {
+                self.effect_commands.volumes.push(crate::render_passes::pass_effects::VolumeDrawCommand {
+                    model_matrix: self.state.model_matrix(),
+                    dimensions: volume.dimensions,
+                    texture_path: volume.texture_path.clone(),
+                    density_scale: volume.density_scale,
+                    color_map: volume.color_map,
+                    is_overlay: self.inside_annotation,
+                });
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
+            NodeData::PointCloud(point_cloud) => {
+                self.effect_commands.point_clouds.push(crate::render_passes::pass_effects::PointCloudDrawCommand {
+                    model_matrix: self.state.model_matrix(),
+                    file_path: point_cloud.file_path.clone(),
+                    max_visible_points: point_cloud.max_visible_points,
+                    point_size: point_cloud.point_size,
+                    color: point_cloud.color,
+                    is_overlay: self.inside_annotation,
+                });
+                for &child in &entry.children {
+                    self.traverse_node(graph, child);
+                }
+            }
             NodeData::Billboard(b) => {
                 let current = self.state.model_matrix();
                 let inv = self.state.view_matrix().inverse();
@@ -403,7 +441,10 @@ impl RenderCollector {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::Annotation(_) => {
+                let was_inside_annotation = self.inside_annotation;
+                self.inside_annotation = true;
                 for &child in &entry.children { self.traverse_node(graph, child); }
+                self.inside_annotation = was_inside_annotation;
             }
             NodeData::Environment(env) => {
                 self.ambient_intensity = env.ambient_intensity;
@@ -1192,5 +1233,102 @@ impl rc3d_actions::Action for RenderCollector {
 
     fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
         self.traverse(graph, root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rc3d_core::math::Vec3;
+    use rc3d_scene::{
+        AnnotationNode, Coordinate3Node, GroupNode, IndexedLineSetNode, NodeData, SceneGraph,
+    };
+
+    #[test]
+    fn annotation_children_emit_overlay_draw_calls() {
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Group(GroupNode));
+        let annotation = graph.add_child(root, NodeData::Annotation(AnnotationNode));
+        graph.add_child(
+            annotation,
+            NodeData::Coordinate3(Coordinate3Node::from_points(vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+            ])),
+        );
+        graph.add_child(
+            annotation,
+            NodeData::IndexedLineSet(IndexedLineSetNode {
+                coord_index: vec![0, 1],
+                line_width: 1.0,
+            }),
+        );
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        assert_eq!(collector.draw_calls.len(), 1);
+        assert!(collector.draw_calls[0].is_overlay);
+        assert!(!collector.inside_annotation);
+    }
+
+    #[test]
+    fn collector_collects_effect_commands_from_decal_volume_pointcloud() {
+        use rc3d_scene::node_data::{
+            DecalNode, PointCloudNode, SeparatorNode, VolumeNode,
+        };
+
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        graph.add_child(root, NodeData::Decal(DecalNode {
+            position: Vec3::new(1.0, 0.0, 0.0),
+            direction: Vec3::NEG_Y,
+            size: [2.0, 2.0],
+            texture_path: "d.png".to_string(),
+            color: [1.0, 0.0, 0.0, 0.5],
+            opacity: 0.8,
+        }));
+        graph.add_child(root, NodeData::Volume(VolumeNode {
+            dimensions: [32, 32, 32],
+            texture_path: "v.raw".to_string(),
+            density_scale: 1.0,
+            color_map: [[0.0; 4]; 4],
+        }));
+        graph.add_child(root, NodeData::PointCloud(PointCloudNode {
+            file_path: "p.bin".to_string(),
+            max_visible_points: 1000,
+            point_size: 2.0,
+            color: [0.0, 1.0, 0.0, 1.0],
+        }));
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        assert_eq!(collector.effect_commands.decals.len(), 1);
+        assert_eq!(collector.effect_commands.decals[0].texture_path, "d.png");
+        assert_eq!(collector.effect_commands.volumes.len(), 1);
+        assert_eq!(collector.effect_commands.volumes[0].texture_path, "v.raw");
+        assert_eq!(collector.effect_commands.point_clouds.len(), 1);
+        assert_eq!(collector.effect_commands.point_clouds[0].file_path, "p.bin");
+        assert_eq!(collector.effect_commands.point_clouds[0].max_visible_points, 1000);
+    }
+
+    #[test]
+    fn inside_annotation_sets_is_overlay_on_effect_commands() {
+        use rc3d_scene::node_data::{AnnotationNode, DecalNode, SeparatorNode};
+
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        let annotation = graph.add_child(root, NodeData::Annotation(AnnotationNode::default()));
+        graph.add_child(annotation, NodeData::Decal(DecalNode {
+            texture_path: "overlay.png".to_string(),
+            ..Default::default()
+        }));
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        assert_eq!(collector.effect_commands.decals.len(), 1);
+        assert!(collector.effect_commands.decals[0].is_overlay);
     }
 }

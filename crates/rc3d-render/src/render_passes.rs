@@ -17,7 +17,7 @@ mod pass_post;
 mod pass_selection;
 mod pass_shadow;
 mod pass_solid;
-mod pass_text;
+pub(crate) mod pass_text;
 mod pass_viewport;
 mod pass_wireframe;
 
@@ -54,6 +54,7 @@ pub(crate) struct PassContext<'a> {
     pub camera_proj: Mat4,
     /// Camera inverse projection matrix
     pub camera_inv_proj: Mat4,
+    pub effect_commands: &'a pass_effects::EffectCommands,
 }
 
 /// Final color target for the frame (swapchain or an application-owned render target).
@@ -468,12 +469,50 @@ pub(super) fn execute_passes(
         );
         renderer.write_gpu_timestamp(&mut encoder); // solid end
 
-        // Section cap pass — fill cut surfaces
-        if !renderer.frame.clip_planes.is_empty() {
+        let want_section_caps = !renderer.frame.clip_planes.is_empty()
+            && renderer.frame.section_cap_tints.iter().any(|c| c.is_some());
+        if want_section_caps {
             renderer.render_section_caps_from_ctx(
-                &mut encoder, shade_view, &depth_view, ctx.visible,
-                ctx.solid_order, ctx.mesh_handles,
+                &mut encoder,
+                shade_view,
+                &depth_view,
+                ctx.visible,
+                ctx.solid_order,
+                ctx.mesh_handles,
+                &scene_pl,
             );
+        }
+    }
+
+    // ── Effect passes (Decal, Volume, PointCloud) ──
+    if !ctx.effect_commands.is_empty() {
+        if !ctx.effect_commands.decals.is_empty() {
+            renderer.ensure_decal_pass();
+            if let Some(ref pass) = renderer.gpu.decal_pass {
+                pass.encode(
+                    &renderer.device, &renderer.queue, &mut encoder,
+                    shade_view, &depth_read_view, &ctx.effect_commands.decals, ew, eh,
+                );
+            }
+        }
+        if !ctx.effect_commands.volumes.is_empty() {
+            renderer.ensure_volume_pass();
+            if let Some(ref pass) = renderer.gpu.volume_pass {
+                pass.encode(
+                    &renderer.device, &renderer.queue, &mut encoder,
+                    shade_view, &depth_read_view, &ctx.effect_commands.volumes, ew, eh,
+                );
+            }
+        }
+        if !ctx.effect_commands.point_clouds.is_empty() {
+            renderer.ensure_point_cloud_pass();
+            if let Some(ref pass) = renderer.gpu.point_cloud_pass {
+                pass.encode(
+                    &renderer.device, &renderer.queue, &mut encoder,
+                    shade_view, &depth_read_view, &ctx.effect_commands.point_clouds,
+                    ctx.camera_proj, ctx.camera_inv_proj, ew, eh,
+                );
+            }
         }
     }
 
@@ -694,6 +733,7 @@ pub(super) fn execute_passes(
     renderer.gpu.phong_pool.flush(&renderer.queue);
     renderer.gpu.shadow_pool.flush(&renderer.queue);
     renderer.gpu.flat_pool.flush(&renderer.queue);
+    renderer.gpu.section_cap_pool.flush(&renderer.queue);
 
     // Ground plane grid overlay
     if renderer.grid_enabled {

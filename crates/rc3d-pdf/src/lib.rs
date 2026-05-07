@@ -131,14 +131,38 @@ fn count_recursive(
 /// 4. Embed U3D stream in PDF with 3D annotation
 pub fn export_u3d_pdf(graph: &SceneGraph, title: &str) -> Result<Vec<u8>, String> {
     let mut doc = PdfDocument::new(title);
+
+    let node_count = count_total(graph);
+    let root_count = graph.roots().len();
+
+    // Collect node-type distribution
+    let mut type_counts: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    {
+        let mut n = 0;
+        let mut counts = std::collections::HashMap::new();
+        count_scene_nodes(graph, &mut n, &mut counts);
+        type_counts = counts;
+    }
+    let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
+    types.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let bounds_line = "Bounding box: (not computed — offline)";
+
     let content = format!(
-        "3D PDF Export (U3D placeholder)\n\n\
-         Scene: {} nodes, {} roots\n\n\
-         To enable full 3D PDF with U3D/PRC embedding:\n\
-         1. Install libu3d native library\n\
-         2. Build with 'u3d' feature flag\n\
-         3. Use export_u3d_pdf_with_library()",
-        count_total(graph), graph.roots().len()
+        "3D PDF Export — Scene Statistics\n\n\
+         Scene: {title}\n\
+         Total nodes: {node_count}\n\
+         Root nodes: {root_count}\n\
+         {bounds_line}\n\n\
+         Node type distribution:\n{}\n\
+         \n\
+         Note: Full 3D embedding (U3D/PRC) requires a native C library.\n\
+         See crate documentation for integration path.",
+        types.iter()
+            .map(|(name, count)| format!("  {}: {}", name, count))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
     doc.add_page(&content);
     Ok(doc.to_bytes())

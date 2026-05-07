@@ -143,6 +143,11 @@ impl Renderer {
         }
     }
 
+    /// Set effect commands for this frame (called by app layer after traversal).
+    pub fn set_effect_commands(&mut self, cmds: crate::render_passes::pass_effects::EffectCommands) {
+        self.frame.effect_commands = cmds;
+    }
+
     fn ensure_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
         let resolution = resolution.max(1);
         let cascade_count = cascade_count.max(1);
@@ -337,6 +342,7 @@ impl Renderer {
         let phong_pool = GpuUniformPool::new_phong(&device, 1024);
         let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 1024);
         let flat_pool = GpuUniformPool::new_flat(&device, 2048);
+        let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 1024);
         let outline_pool = GpuUniformPool::new_outline(&device, 1024);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
@@ -439,6 +445,7 @@ impl Renderer {
             frame: FrameState {
                 markup_vertices: Vec::new(),
                 clip_planes: Vec::new(),
+                section_cap_tints: Vec::new(),
                 scene_vp: Mat4::IDENTITY,
                 scene_camera_pos: Vec3::ZERO,
                 animation_time_sec: 0.0,
@@ -448,6 +455,7 @@ impl Renderer {
                 last_hud_update_frame: 0,
                 viewport_layout: ViewportLayout::new(),
                 frame_stats: FrameStats::default(),
+                effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
             },
             // GPU internals
             gpu: GpuInternals {
@@ -455,6 +463,7 @@ impl Renderer {
                 phong_pool,
                 shadow_pool,
                 flat_pool,
+                section_cap_pool,
                 outline_pool,
                 gpu_meshes: GpuResourceManager::new(),
                 gpu_skinning_pass: None,
@@ -869,8 +878,14 @@ impl Renderer {
         }
     }
 
-    pub fn set_clip_planes(&mut self, planes: Vec<[f32; 4]>) {
+    pub fn set_clip_planes(&mut self, planes: Vec<[f32; 4]>, mut cap_tints: Vec<Option<[f32; 4]>>) {
+        if cap_tints.len() < planes.len() {
+            cap_tints.resize(planes.len(), None);
+        } else if cap_tints.len() > planes.len() {
+            cap_tints.truncate(planes.len());
+        }
         self.frame.clip_planes = planes;
+        self.frame.section_cap_tints = cap_tints;
     }
 
     pub fn collect_markup_vertices(&mut self, graph: &rc3d_scene::SceneGraph, root: rc3d_core::NodeId) {
@@ -909,8 +924,12 @@ impl Renderer {
         };
         if let Some(pos) = self.frame.clip_planes.iter().position(|p| p[0] == normal[0] && p[1] == normal[1] && p[2] == normal[2]) {
             self.frame.clip_planes.remove(pos);
+            if pos < self.frame.section_cap_tints.len() {
+                self.frame.section_cap_tints.remove(pos);
+            }
         } else {
             self.frame.clip_planes.push(normal);
+            self.frame.section_cap_tints.push(None);
         }
     }
 
