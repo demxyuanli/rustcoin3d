@@ -239,6 +239,17 @@ pub struct RenderCollector {
     pub material_library: Option<MaterialLibrary>,
     mesh_cache: HashMap<ShapeKey, CachedShapeData>,
     hidden_nodes: HashSet<NodeId>,
+    /// Environment state (accumulated from EnvironmentNode)
+    pub ambient_intensity: f32,
+    pub ambient_color: rc3d_core::math::Vec3,
+    pub fog_color: rc3d_core::math::Vec3,
+    pub fog_visibility: f32,
+    /// Shape hints (vertex ordering for face culling)
+    pub vertex_ordering: i32,
+    /// Material binding mode (0=default, 1=overall, 2=per_part, 3=per_face, 4=per_vertex)
+    pub material_binding: i32,
+    /// Texture coordinate transform (2D scale+rotation+translation)
+    pub tex2_transform: Option<(rc3d_core::math::Vec2, f32, rc3d_core::math::Vec2)>,
 }
 
 impl RenderCollector {
@@ -254,6 +265,13 @@ impl RenderCollector {
             material_library: None,
             mesh_cache: HashMap::new(),
             hidden_nodes: HashSet::new(),
+            ambient_intensity: 0.2,
+            ambient_color: rc3d_core::math::Vec3::ONE,
+            fog_color: rc3d_core::math::Vec3::ONE,
+            fog_visibility: 0.0,
+            vertex_ordering: 0,
+            material_binding: 0,
+            tex2_transform: None,
         }
     }
 
@@ -289,9 +307,6 @@ impl RenderCollector {
                 self.state.pop_all();
             }
             NodeData::Group(_)
-            | NodeData::ShapeHints(_)
-            | NodeData::Texture2Transform(_)
-            | NodeData::MaterialBinding(_)
             | NodeData::File(_)
             | NodeData::Decal(_)
             | NodeData::ReflectionPlane(_)
@@ -329,10 +344,42 @@ impl RenderCollector {
                 }
                 self.state.set_model_matrix(base);
             }
+            NodeData::ShapeHints(sh) => {
+                self.vertex_ordering = match sh.vertex_ordering {
+                    rc3d_scene::node_data::VertexOrdering::Clockwise => 1,
+                    rc3d_scene::node_data::VertexOrdering::CounterClockwise => 2,
+                    _ => 0,
+                };
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::MaterialBinding(mb) => {
+                self.material_binding = match mb.value {
+                    rc3d_scene::node_data::MaterialBinding::Overall => 1,
+                    rc3d_scene::node_data::MaterialBinding::PerPart => 2,
+                    rc3d_scene::node_data::MaterialBinding::PerFace => 3,
+                    rc3d_scene::node_data::MaterialBinding::PerVertex => 4,
+                    _ => 0,
+                };
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Texture2Transform(t2t) => {
+                self.tex2_transform = Some((
+                    rc3d_core::math::Vec2::new(t2t.translation[0], t2t.translation[1]),
+                    t2t.rotation,
+                    rc3d_core::math::Vec2::new(t2t.scale[0], t2t.scale[1]),
+                ));
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
             NodeData::Annotation(_) => {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
-            NodeData::Environment(_) => {
+            NodeData::Environment(env) => {
+                self.ambient_intensity = env.ambient_intensity;
+                self.ambient_color = env.ambient_color;
+                if env.fog_visibility > 0.0 {
+                    self.fog_color = env.fog_color;
+                    self.fog_visibility = env.fog_visibility;
+                }
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::IndexedLineSet(ils) => {
