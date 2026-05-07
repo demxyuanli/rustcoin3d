@@ -1,5 +1,5 @@
 //! BlendNode animation demo — clip blending with weight parameter.
-use rc3d_app::App; use rc3d_core::math::{Quat, Vec3};
+use rc3d_app::App; use rc3d_core::math::{Mat4, Vec3};
 use rc3d_scene::{animation::{BlendNode, AnimationClip, Joint, JointKeyframe, JointTrack, Skeleton}, node_data::*};
 
 fn main() {

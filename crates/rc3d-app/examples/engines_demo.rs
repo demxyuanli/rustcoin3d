@@ -14,10 +14,10 @@ fn main() {
     g.add_child(cube_node, NodeData::Cube(CubeNode::default()));
     // Register engines
     let mut registry = EngineRegistry::new();
-    registry.push(Box::new(ElapsedTimeEngine::new(cube_node, 0.5f64.to_radians(), Vec3::Y))); // rotation speed
-    registry.push(Box::new(SineOscillatorEngine { node_id: cube_node, field: SineField::Scale, amplitude: 0.2, frequency: 2.0, phase: 0.0 }));
-    registry.push(Box::new(OneShotEngine::new(3.0)));
-    registry.push(Box::new(CounterEngine::new(0, 5, 1)));
+    registry.add(ElapsedTimeEngine::new(cube_node, 0.5, Vec3::Y));
+    registry.add(SineOscillatorEngine::new(cube_node, 2.0, 0.2, SineField::ScaleX));
+    registry.add(OneShotEngine::new(3.0));
+    registry.add(CounterEngine::new(0, 5, 1));
     let mut app = App::new(g).with_engines(registry);
     winit::event_loop::EventLoop::new().unwrap().run_app(&mut app).expect("event loop");
 }

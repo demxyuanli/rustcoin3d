@@ -427,14 +427,13 @@ impl RenderCollector {
                             let mid = (pa + pb) * 0.5;
                             self.draw_calls.push(DrawCall {
                                 vertices: Arc::new(vec![
-            is_overlay: self.inside_annotation,
                                     Vertex { position: [pa.x, pa.y, pa.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
                                     Vertex { position: [pb.x, pb.y, pb.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
                                 ]),
+                                is_overlay: self.inside_annotation,
                                 aabb: Some(rc3d_core::Aabb::from_point(mid)),
                                 node_type_label: Arc::from("IndexedLineSet"),
-                                            is_overlay: self.inside_annotation,
-                ..Default::default()
+                                ..Default::default()
                             });
                         }
                     }
