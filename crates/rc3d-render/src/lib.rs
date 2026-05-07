@@ -18,6 +18,7 @@ pub mod offscreen;
 pub mod ibl;
 pub mod material_library;
 pub mod motion_blur;
+pub mod pass_graph;
 pub mod pipeline_cache;
 pub mod pipelines;
 pub mod post_processor;
