@@ -1331,4 +1331,101 @@ mod tests {
         assert_eq!(collector.effect_commands.decals.len(), 1);
         assert!(collector.effect_commands.decals[0].is_overlay);
     }
+
+    #[test]
+    fn collector_produces_draw_calls_for_all_geometry_types() {
+        use rc3d_scene::node_data::{
+            ConeNode, CubeNode, CylinderNode, MaterialNode, SeparatorNode, SphereNode,
+            TransformNode, TriangleNode,
+        };
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        graph.add_child(root, NodeData::Material(MaterialNode::default()));
+        let geom = graph.add_child(
+            root,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(1.0, 0.0, 0.0))),
+        );
+        graph.add_child(geom, NodeData::Cube(CubeNode::default()));
+        graph.add_child(geom, NodeData::Sphere(SphereNode::default()));
+        graph.add_child(geom, NodeData::Cone(ConeNode::default()));
+        graph.add_child(geom, NodeData::Cylinder(CylinderNode::default()));
+        // Triangle and other unit shapes produce valid draw calls
+        graph.add_child(root, NodeData::Triangle(TriangleNode));
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        assert!(
+            collector.draw_calls.len() >= 4,
+            "expected at least 4 draw calls (Cube/Sphere/Cone/Cylinder), got {}",
+            collector.draw_calls.len()
+        );
+    }
+
+    #[test]
+    fn nested_transform_chains_to_children() {
+        use rc3d_scene::node_data::{CubeNode, SeparatorNode, TransformNode};
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        let parent = graph.add_child(
+            root,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(1.0, 2.0, 3.0))),
+        );
+        let child = graph.add_child(
+            parent,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(4.0, 5.0, 6.0))),
+        );
+        graph.add_child(child, NodeData::Cube(CubeNode::default()));
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        assert!(!collector.draw_calls.is_empty());
+        let dc = &collector.draw_calls[0];
+        let expected = Vec3::new(5.0, 7.0, 9.0);
+        let actual = dc.model_matrix.w_axis.truncate();
+        assert!(
+            (actual - expected).length() < 0.01,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn empty_scene_produces_no_draw_calls() {
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(
+            rc3d_scene::node_data::SeparatorNode,
+        ));
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+        assert!(collector.draw_calls.is_empty());
+        assert!(collector.effect_commands.is_empty());
+    }
+
+    #[test]
+    fn annotation_marks_draw_calls_and_effects_as_overlay() {
+        use rc3d_scene::node_data::{
+            AnnotationNode, CubeNode, DecalNode, MaterialNode, SeparatorNode,
+        };
+        let mut graph = SceneGraph::new();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        let ann = graph.add_child(root, NodeData::Annotation(AnnotationNode::default()));
+        graph.add_child(ann, NodeData::Material(MaterialNode::default()));
+        graph.add_child(ann, NodeData::Cube(CubeNode::default()));
+        graph.add_child(ann, NodeData::Decal(DecalNode {
+            texture_path: "ann_decal.png".to_string(),
+            ..Default::default()
+        }));
+
+        let mut collector = RenderCollector::new();
+        collector.traverse(&graph, root);
+
+        // All draw calls under annotation should have is_overlay
+        for dc in &collector.draw_calls {
+            assert!(dc.is_overlay, "draw call should be overlay inside annotation");
+        }
+        for dc in &collector.effect_commands.decals {
+            assert!(dc.is_overlay, "decal should be overlay inside annotation");
+        }
+    }
 }
