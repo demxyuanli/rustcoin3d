@@ -1,5 +1,6 @@
 pub mod adaptive_quality;
 pub mod asset_manager;
+pub mod dirty_flags;
 pub mod auto_exposure;
 pub mod async_loader;
 pub mod cluster;

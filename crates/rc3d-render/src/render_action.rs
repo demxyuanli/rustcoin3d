@@ -1429,3 +1429,207 @@ mod tests {
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Incremental traversal adapter: dirty flag propagation + FlatDrawCache fill
+// ──────────────────────────────────────────────────────────────────────────
+
+use crate::flat_draw_cache::{CachedDrawMetadata, DrawFlags, FlatDrawCache, GpuDrawData, MaterialUniform};
+use crate::global_tables::TexturePathTable;
+use crate::render_passes::pass_effects::EffectCommands;
+
+/// Thread-local output from traversing a subtree.
+/// This is merged into FlatDrawCache by the caller.
+#[derive(Default)]
+pub struct TraversalChunk {
+    pub gpu_data: Vec<GpuDrawData>,
+    pub metadata: Vec<CachedDrawMetadata>,
+    pub effects: EffectCommands,
+    pub node_to_draw: std::collections::HashMap<rc3d_core::NodeId, usize>,
+    pub total_triangles: u64,
+}
+
+/// Merge a traversal chunk into the FlatDrawCache.
+pub fn merge_chunk_into_cache(cache: &mut FlatDrawCache, chunk: TraversalChunk) {
+    let base = cache.gpu_data.len();
+    cache.gpu_data.extend(chunk.gpu_data);
+    cache.metadata.extend(chunk.metadata);
+    cache.total_triangles += chunk.total_triangles;
+    for (node_id, local_idx) in chunk.node_to_draw {
+        cache.node_to_draw.insert(node_id, base + local_idx);
+    }
+    // Effect commands are appended
+    cache.effect_commands.decals.extend(chunk.effects.decals);
+    cache.effect_commands.volumes.extend(chunk.effects.volumes);
+    cache
+        .effect_commands
+        .point_clouds
+        .extend(chunk.effects.point_clouds);
+}
+
+/// Invalidate a cached subtree — remove its entries from the cache.
+/// Zeroes out the gpu_data entry so it will be skipped during rendering.
+pub fn invalidate_cache_for_subtree(cache: &mut FlatDrawCache, node: rc3d_core::NodeId) {
+    if let Some(&idx) = cache.node_to_draw.get(&node) {
+        cache.gpu_data[idx] = GpuDrawData::zeroed();
+    }
+}
+
+/// Incremental traversal: collect draw data from dirty subtrees into FlatDrawCache.
+/// Static subtrees are reused from previous frames' cache.
+pub fn traverse_into_cache(
+    graph: &SceneGraph,
+    cache: &mut FlatDrawCache,
+    texture_table: &mut TexturePathTable,
+    hidden_nodes: &HashSet<rc3d_core::NodeId>,
+) {
+    let dirty_roots = crate::dirty_flags::collect_dirty_roots(graph);
+
+    if dirty_roots.is_empty() {
+        // Nothing changed — reuse cache as-is, just keep groups sorted
+        cache.ensure_groups_sorted();
+        return;
+    }
+
+    // Count total nodes to decide full vs incremental rebuild
+    let total_nodes = count_all_nodes(graph);
+    if dirty_roots.len() as f64 > total_nodes as f64 * 0.5 {
+        // Full rebuild
+        cache.clear();
+        for &root in graph.roots() {
+            let mut collector = RenderCollector::new();
+            collector.set_hidden_nodes(hidden_nodes);
+            collector.traverse(graph, root);
+            convert_collector_to_cache(&collector, texture_table, cache);
+        }
+    } else {
+        // Incremental: remove dirty entries, re-traverse dirty subtrees
+        for &dirty_root in &dirty_roots {
+            invalidate_cache_for_subtree(cache, dirty_root);
+            let mut collector = RenderCollector::new();
+            collector.set_hidden_nodes(hidden_nodes);
+            collector.traverse(graph, dirty_root);
+            convert_collector_to_cache(&collector, texture_table, cache);
+        }
+    }
+
+    cache.groups_dirty = true;
+    cache.ensure_groups_sorted();
+    // Note: caller is responsible for clear_all_dirty_flags
+}
+
+fn count_all_nodes(graph: &SceneGraph) -> usize {
+    graph.roots().iter().map(|&r| count_subtree(graph, r)).sum()
+}
+
+fn count_subtree(graph: &SceneGraph, node: rc3d_core::NodeId) -> usize {
+    let Some(entry) = graph.get(node) else {
+        return 0;
+    };
+    1 + entry
+        .children
+        .iter()
+        .map(|&c| count_subtree(graph, c))
+        .sum::<usize>()
+}
+
+/// Temporary adapter: convert existing RenderCollector output into FlatDrawCache.
+/// This allows incremental migration — the old traverse_node code still works,
+/// we just convert the output at the end.
+pub fn convert_collector_to_cache(
+    collector: &RenderCollector,
+    texture_table: &mut TexturePathTable,
+    cache: &mut FlatDrawCache,
+) {
+    for dc in &collector.draw_calls {
+        let mut flags = DrawFlags::empty();
+        if !dc.edge_positions.is_empty() {
+            flags |= DrawFlags::HAS_EDGES;
+        }
+        if dc.is_overlay {
+            flags |= DrawFlags::OVERLAY;
+        }
+        if dc.selected {
+            flags |= DrawFlags::SELECTED;
+        }
+        if dc.alpha_mode != rc3d_scene::AlphaMode::Opaque {
+            flags |= DrawFlags::TRANSPARENT;
+        }
+        if dc.depth_reversed_z {
+            flags |= DrawFlags::DEPTH_REVERSED;
+        }
+        if dc.projection_orthographic {
+            flags |= DrawFlags::ORTHOGRAPHIC;
+        }
+
+        let gpu = GpuDrawData {
+            model_matrix: dc.model_matrix.to_cols_array_2d(),
+            material_id: 0, // Will be populated by material system later
+            light_set_id: 0,
+            vertex_offset: 0,
+            vertex_count: 0,
+            index_offset: 0,
+            index_count: 0,
+            draw_flags: flags.bits(),
+            instance_count: 1,
+            _pad: 0,
+        };
+
+        let albedo_tex_id = dc
+            .albedo_path
+            .as_ref()
+            .map_or(u16::MAX, |p| texture_table.intern(p));
+
+        let meta = CachedDrawMetadata {
+            mesh_hash: dc.mesh_hash.unwrap_or(0),
+            bvh_node_id: None,
+            material_params: MaterialUniform {
+                base_color: [
+                    dc.base_color.x,
+                    dc.base_color.y,
+                    dc.base_color.z,
+                    dc.opacity,
+                ],
+                emissive_color: [
+                    dc.emissive_color.x,
+                    dc.emissive_color.y,
+                    dc.emissive_color.z,
+                    1.0,
+                ],
+                metallic_roughness_anisotropic: [
+                    dc.metallic,
+                    dc.roughness,
+                    dc.anisotropic,
+                    0.0,
+                ],
+            },
+            albedo_tex_id,
+            normal_tex_id: u16::MAX,
+            mr_tex_id: u16::MAX,
+            emissive_tex_id: u16::MAX,
+            occlusion_tex_id: u16::MAX,
+            atlas_layer: 0,
+            alpha_mode: dc.alpha_mode as u32,
+            alpha_cutoff: dc.alpha_cutoff,
+            double_sided: dc.double_sided as u32,
+            _pad: [0; 2],
+        };
+
+        cache.gpu_data.push(gpu);
+        cache.metadata.push(meta);
+    }
+
+    // Transfer effect commands
+    cache
+        .effect_commands
+        .decals
+        .extend(collector.effect_commands.decals.clone());
+    cache
+        .effect_commands
+        .volumes
+        .extend(collector.effect_commands.volumes.clone());
+    cache
+        .effect_commands
+        .point_clouds
+        .extend(collector.effect_commands.point_clouds.clone());
+}
