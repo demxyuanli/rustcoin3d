@@ -5,6 +5,11 @@ cache/**
 pipeline_cache.bin
 *.txt
 *.bak
-.vscode/**
 .gitignore
+CLAUDE.md
+.github/**
+.vscode/**
+test_data/**
+.cargo/**
+Cargo.lock
 
