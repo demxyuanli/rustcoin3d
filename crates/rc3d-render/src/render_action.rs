@@ -315,16 +315,21 @@ impl RenderCollector {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_)
-            | NodeData::File(_)
-            | NodeData::Decal(_)
-            | NodeData::ReflectionPlane(_)
-            | NodeData::StereoCamera(_)
-            | NodeData::RayTracing(_)
-            | NodeData::Volume(_)
-            | NodeData::PointCloud(_) => {
+            NodeData::Group(_) | NodeData::File(_) => {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
+            // TODO: Decal shader at shaders/decal_project.wgsl — needs pipeline in post_processor.rs
+            NodeData::Decal(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            // TODO: Reflection stencil pass at shaders/reflection_plane.wgsl — needs stencil buffer setup
+            NodeData::ReflectionPlane(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            // TODO: Stereo dual-viewport — needs second render pass with offset eye matrices
+            NodeData::StereoCamera(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            // TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
+            NodeData::RayTracing(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            // TODO: Volume ray-march shader at shaders/volume_raymarch.wgsl — needs compute dispatch pipeline
+            NodeData::Volume(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
+            // TODO: Point sprite shader at shaders/point_cloud.wgsl — needs vertex pipeline with PointList topology
+            NodeData::PointCloud(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
             NodeData::Billboard(b) => {
                 let current = self.state.model_matrix();
                 let inv = self.state.view_matrix().inverse();
