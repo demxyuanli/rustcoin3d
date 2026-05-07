@@ -94,25 +94,41 @@ impl IntersectionDetectionAction {
 
         match &entry.data {
             NodeData::Separator(_) => {
-                for &child in &entry.children {
-                    self.traverse(graph, child);
+                let saved = self.model();
+                for &child in &entry.children { self.traverse(graph, child); }
+                self.model_stack.pop();
+                self.model_stack.push(saved);
+            }
+            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::EventCallback(_) | NodeData::SectionPlane(_) | NodeData::Text2(_) | NodeData::Text3(_) | NodeData::Markup(_) | NodeData::Measurement(_) | NodeData::MorphTarget(_) | NodeData::SkinnedMesh(_) => {
+                for &child in &entry.children { self.traverse(graph, child); }
+            }
+            NodeData::Switch(sw) => {
+                match sw.which_child {
+                    -2 => {},
+                    -1 => { for &child in &sw.children { self.traverse(graph, child); } }
+                    idx if idx >= 0 => {
+                        let i = idx as usize;
+                        if i < sw.children.len() { self.traverse(graph, sw.children[i]); }
+                    }
+                    _ => {}
                 }
             }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::Billboard(_)
-            | NodeData::EventCallback(_)
-            | NodeData::SectionPlane(_)
-            | NodeData::Switch(_)
-            | NodeData::Lod(_)
-            | NodeData::MultipleCopy(_)
-            | NodeData::Text2(_)
-            | NodeData::Text3(_)
-            | NodeData::Markup(_)
-            | NodeData::Measurement(_)
-            | NodeData::MorphTarget(_)
-            | NodeData::SkinnedMesh(_) => {
-                for &child in &entry.children {
-                    self.traverse(graph, child);
+            NodeData::Lod(lod) => {
+                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
+                if let Some(level_data) = lod.levels.get(level) {
+                    for &child in &level_data.children { self.traverse(graph, child); }
                 }
+            }
+            NodeData::MultipleCopy(mc) => {
+                let base = self.model();
+                for &copy_mat in &mc.copies {
+                    self.model_stack.pop(); self.model_stack.push(base * copy_mat);
+                    for &child in &mc.children { self.traverse(graph, child); }
+                }
+                self.model_stack.pop(); self.model_stack.push(base);
+            }
+            NodeData::Billboard(_) | NodeData::ResetTransform(_) | NodeData::ExplodedView(_) => {
+                for &child in &entry.children { self.traverse(graph, child); }
             }
             NodeData::HandlerNode(h) => {
                 h.traverse(graph, node, &entry.children, &mut |id| self.traverse(graph, id));
