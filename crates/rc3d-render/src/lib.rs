@@ -7,6 +7,7 @@ pub mod cluster_lighting;
 pub mod color_grading;
 pub mod dof_pass;
 pub mod frustum;
+pub mod global_tables;
 pub mod gpu_resource;
 pub mod gpu_skinning;
 pub mod hud;
