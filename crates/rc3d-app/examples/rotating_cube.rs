@@ -5,6 +5,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    log::info!("=== {} demo ===", "Rotating Cube");
     print_rotating_cube_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();

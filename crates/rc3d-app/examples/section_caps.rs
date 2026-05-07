@@ -8,6 +8,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    log::info!("=== {} demo ===", "Section Caps");
     print_section_help();
 
     let mut graph = rc3d_scene::SceneGraph::new();

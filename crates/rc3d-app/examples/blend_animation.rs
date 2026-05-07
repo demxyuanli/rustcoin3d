@@ -4,6 +4,7 @@ use rc3d_scene::{animation::{BlendNode, AnimationClip, Joint, JointKeyframe, Joi
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
+    log::info!("=== {} demo ===", "Blend Animation");
     g.add_child(root, NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(Vec3::new(3.0, 2.0, 5.0), Vec3::ZERO, Vec3::Y, std::f32::consts::FRAC_PI_4, 800.0/600.0)));
     g.add_child(root, NodeData::DirectionalLight(DirectionalLightNode { direction: Vec3::new(-1.0,-1.0,-1.0).normalize(), color: Vec3::ONE, intensity: 1.0, light_group: None }));
     g.add_child(root, NodeData::Material(MaterialNode { base_color: Vec3::new(0.3, 0.7, 0.9), roughness: 0.4, ..Default::default() }));

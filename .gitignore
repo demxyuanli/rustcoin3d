@@ -15,3 +15,15 @@ Cargo.lock
 
 # Added by code-review-graph
 .code-review-graph/
+.cursorrules
+.mcp.json
+.opencode.json
+.windsurfrules
+GEMINI.md
+AGENTS.md
+findings.md
+progress.md
+task_plan.md
+.kiro/**
+docs/superpowers/**
+.gitignore

@@ -8,6 +8,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    log::info!("=== {} demo ===", "IV Import");
     print_iv_viewer_help();
 
     let args: Vec<String> = env::args().collect();
