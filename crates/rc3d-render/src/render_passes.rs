@@ -172,15 +172,11 @@ pub(super) fn execute_passes(
 
     renderer.encode_skinning_compute(&mut encoder, ctx.visible, ctx.mesh_handles);
 
-    // GPU timestamp: frame start
-    renderer.write_gpu_timestamp(&mut encoder);
-
     let ti_shadow = renderer.gpu_timer.begin(&mut encoder, "CSM Shadow");
     if ctx.run_shadow_pass {
         #[cfg(feature = "profiler")]
         let _span_shadow = tracy_client::span!("shadow");
         pass_shadow::pass_shadow_depth(renderer, &mut encoder, ctx);
-        renderer.write_gpu_timestamp(&mut encoder); // shadow end
     }
     renderer.gpu_timer.end(&mut encoder, ti_shadow);
 
@@ -470,8 +466,6 @@ pub(super) fn execute_passes(
             meshlet_hzb_prepass_done,
             &scene_pl,
         );
-        renderer.write_gpu_timestamp(&mut encoder); // solid end
-
         let want_section_caps = !renderer.frame.clip_planes.is_empty()
             && renderer.frame.section_cap_tints.iter().any(|c| c.is_some());
         if want_section_caps {
@@ -732,7 +726,6 @@ pub(super) fn execute_passes(
             pass_post::pass_tonemap_hdr_to_post_ldr(&mut encoder, pl, fx, ctx.bg_color);
             // Blit to swapchain
             pass_post::pass_blit_post_ldr_to_swapchain(&mut encoder, pl, fx, &view, ctx.bg_color);
-            renderer.write_gpu_timestamp(&mut encoder); // post end
         }
     }
     renderer.gpu_timer.end(&mut encoder, ti_post);
@@ -862,7 +855,6 @@ pub(super) fn execute_passes(
     renderer.gpu_timer.end(&mut encoder, ti_hud);
 
     renderer.prune_mesh_cache();
-    renderer.resolve_gpu_timestamps(&mut encoder);
     renderer.gpu_timer.resolve(&mut encoder);
     renderer.queue.submit(std::iter::once(encoder.finish()));
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
@@ -877,8 +869,9 @@ pub(super) fn execute_passes(
     for i in (0..gpu_timestamps.len()).step_by(2) {
         if i + 1 < gpu_timestamps.len() {
             let label = renderer.gpu_timer.labels.get(i / 2).copied().unwrap_or("?");
-            let dur_ns = gpu_timestamps[i + 1].saturating_sub(gpu_timestamps[i]);
-            gpu_sections_data.push((label, dur_ns as f64 / 1_000_000.0));
+            let dur_ticks = gpu_timestamps[i + 1].saturating_sub(gpu_timestamps[i]);
+            let dur_us = dur_ticks as f64 * renderer.gpu_timer.timestamp_period_ns as f64 / 1_000.0;
+            gpu_sections_data.push((label, dur_us));
         }
     }
 

@@ -84,10 +84,6 @@ pub(crate) struct GpuInternals {
     pub instance_buffer: wgpu::Buffer,
     pub ibl_instance_bind_group: wgpu::BindGroup,
     pub timing_supported: bool,
-    pub gpu_query_set: Option<wgpu::QuerySet>,
-    pub gpu_query_buffer: Option<wgpu::Buffer>,
-    pub gpu_query_slots: u32,
-    pub gpu_query_period: f32,
     pub pipeline_cache: Option<PipelineCacheManager>,
     #[allow(dead_code)]
     pub shader_cache: ShaderVariantCache,

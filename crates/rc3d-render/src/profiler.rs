@@ -1,3 +1,4 @@
+use std::sync::mpsc;
 use std::time::Instant;
 
 /// GPU timestamp query wrapper — captures wgpu timestamp at begin/end of each pass.
@@ -7,13 +8,17 @@ pub struct GpuTimer {
     staging_buf: wgpu::Buffer,
     capacity: u32,
     next_slot: u32,
-    /// Timestamps read back from previous frame (ns).
+    /// Raw timestamp ticks read back from previous frame (in GPU clock ticks, not ns).
+    /// Multiply by `timestamp_period_ns` to get nanoseconds.
     pub last_timestamps: Vec<u64>,
+    /// Labels for each timestamp pair, in begin() order. Index = slot index.
     pub labels: Vec<&'static str>,
+    /// GPU timestamp period in nanoseconds (from `queue.get_timestamp_period()`).
+    pub timestamp_period_ns: f32,
 }
 
 impl GpuTimer {
-    pub fn new(device: &wgpu::Device, capacity: u32) -> Self {
+    pub fn new(device: &wgpu::Device, capacity: u32, timestamp_period_ns: f32) -> Self {
         let set = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("Frame Timer Queries"),
             ty: wgpu::QueryType::Timestamp,
@@ -40,10 +45,12 @@ impl GpuTimer {
             next_slot: 0,
             last_timestamps: Vec::new(),
             labels: Vec::new(),
+            timestamp_period_ns,
         }
     }
 
-    pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder, label: &'static str) -> u32 {
+    /// Begin a timestamp span. Returns `Some(slot)` on success or `None` when at capacity.
+    pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder, label: &'static str) -> Option<u32> {
         let idx = self.next_slot;
         if idx < self.capacity {
             encoder.write_timestamp(&self.set, idx * 2);
@@ -52,14 +59,19 @@ impl GpuTimer {
             } else {
                 self.labels[idx as usize] = label;
             }
+            self.next_slot += 1;
+            Some(idx)
+        } else {
+            None
         }
-        self.next_slot += 1;
-        idx
     }
 
-    pub fn end(&self, encoder: &mut wgpu::CommandEncoder, idx: u32) {
-        if idx < self.capacity {
-            encoder.write_timestamp(&self.set, idx * 2 + 1);
+    /// End a timestamp span. Pass the `Option<u32>` returned by `begin()`.
+    pub fn end(&self, encoder: &mut wgpu::CommandEncoder, idx: Option<u32>) {
+        if let Some(idx) = idx {
+            if idx < self.capacity {
+                encoder.write_timestamp(&self.set, idx * 2 + 1);
+            }
         }
     }
 
@@ -84,7 +96,7 @@ impl GpuTimer {
 
     pub fn collect(&mut self, device: &wgpu::Device) {
         let buf_slice = self.staging_buf.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         buf_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
@@ -131,10 +143,27 @@ impl CpuSpanCollector {
     }
 }
 
-/// Structured per-frame timing report.
-#[derive(Default, Clone, Debug)]
-pub struct FrameTimingReport {
-    pub cpu_total_ms: f64,
-    pub gpu_total_ms: f64,
-    pub sections: Vec<(&'static str, f64, f64)>, // (label, cpu_ms, gpu_ms)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_span_measures_duration() {
+        let mut collector = CpuSpanCollector::default();
+        collector.begin_frame();
+        let result = collector.measure("test_op", || 42);
+        assert_eq!(result, 42);
+        assert_eq!(collector.spans().len(), 1);
+        assert_eq!(collector.spans()[0].0, "test_op");
+        assert!(collector.total_ms() >= 0.0);
+    }
+
+    #[test]
+    fn cpu_span_multiple_measures() {
+        let mut collector = CpuSpanCollector::default();
+        collector.begin_frame();
+        collector.measure("op1", || std::thread::sleep(std::time::Duration::from_millis(1)));
+        collector.measure("op2", || std::thread::sleep(std::time::Duration::from_millis(1)));
+        assert_eq!(collector.spans().len(), 2);
+    }
 }

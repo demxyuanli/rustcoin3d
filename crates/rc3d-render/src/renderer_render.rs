@@ -472,7 +472,35 @@ impl super::Renderer {
             post_swapchain_overlay,
             presentation,
         );
-        let gpu_pass = self.read_gpu_timestamps();
+        let gpu_pass = {
+            let timestamps = &self.gpu_timer.last_timestamps;
+            let labels = &self.gpu_timer.labels;
+            let period_ns = self.gpu_timer.timestamp_period_ns as f64;
+            let mut shadow = 0.0f64;
+            let mut solid = 0.0f64;
+            let mut post = 0.0f64;
+            let mut total = 0.0f64;
+            for i in (0..timestamps.len()).step_by(2) {
+                if i + 1 < timestamps.len() {
+                    let dur_us =
+                        (timestamps[i + 1].saturating_sub(timestamps[i]) as f64) * period_ns
+                            / 1_000.0;
+                    total += dur_us;
+                    let label = labels.get(i / 2).copied().unwrap_or("?");
+                    match label {
+                        "CSM Shadow" => shadow = dur_us,
+                        "Solid+Outline" => solid = dur_us,
+                        "PostProcess" => post = dur_us,
+                        _ => {}
+                    }
+                }
+            }
+            if timestamps.len() >= 2 {
+                Some([shadow, solid, post, total])
+            } else {
+                None
+            }
+        };
         stats.gpu_pass_times_us = gpu_pass;
         let diagnostics = self.build_frame_diagnostics(
             &visible,

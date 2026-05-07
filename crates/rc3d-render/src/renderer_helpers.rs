@@ -1,5 +1,3 @@
-use std::sync::mpsc;
-
 use wgpu::util::DeviceExt;
 
 use crate::gpu_resource::{EdgeLineKind, GpuMesh, GpuUniformPool};
@@ -111,75 +109,6 @@ impl Renderer {
             &mut self.gpu.gpu_meshes,
             Some(&mut self.gpu.skinned_mesh_resources),
         );
-    }
-
-    pub(crate) fn write_gpu_timestamp(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let Some(ref qs) = self.gpu.gpu_query_set {
-            if self.gpu.gpu_query_slots < 16 {
-                encoder.write_timestamp(qs, self.gpu.gpu_query_slots);
-                self.gpu.gpu_query_slots += 1;
-            }
-        }
-    }
-
-    pub(crate) fn resolve_gpu_timestamps(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if let (Some(ref qs), Some(ref qb)) = (&self.gpu.gpu_query_set, &self.gpu.gpu_query_buffer) {
-            let written = self.gpu.gpu_query_slots.min(16);
-            if written > 0 {
-                encoder.resolve_query_set(qs, 0..written, qb, 0);
-            }
-        }
-    }
-
-    pub(crate) fn read_gpu_timestamps(&mut self) -> Option<[f64; 4]> {
-        let qb = self.gpu.gpu_query_buffer.as_ref()?;
-        let written = (self.gpu.gpu_query_slots.min(16)) as usize;
-        if written < 8 {
-            self.gpu.gpu_query_slots = 0;
-            return None;
-        }
-        let size = (written as u64) * 8;
-        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("GPU query staging readback"),
-            size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("GPU query copy encoder"),
-            });
-        encoder.copy_buffer_to_buffer(qb, 0, &staging, 0, size);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        let slice = staging.slice(..);
-        let (tx, rx) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r.is_ok());
-        });
-        let _ = self.device.poll(wgpu::Maintain::Wait);
-        let mapped = rx.recv().ok().unwrap_or(false);
-        if !mapped {
-            self.gpu.gpu_query_slots = 0;
-            return None;
-        }
-        let data = slice.get_mapped_range();
-        let ticks: Vec<u64> = bytemuck::cast_slice::<u8, u64>(&data).to_vec();
-        drop(data);
-        staging.unmap();
-        self.gpu.gpu_query_slots = 0;
-        if ticks.len() < 8 {
-            return None;
-        }
-        let to_us = |a: u64, b: u64| -> f64 {
-            let ns = (b.saturating_sub(a) as f64) * self.gpu.gpu_query_period as f64;
-            ns / 1000.0
-        };
-        let shadow = to_us(ticks[0], ticks[1]);
-        let solid = to_us(ticks[2], ticks[3]);
-        let post = to_us(ticks[4], ticks[5]);
-        let total = to_us(ticks[6], ticks[7]);
-        Some([shadow, solid, post, total])
     }
 
     pub(crate) fn build_frame_diagnostics(

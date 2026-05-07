@@ -110,7 +110,6 @@ pub struct Renderer {
     // ── Profiler tier ──
     pub gpu_timer: crate::profiler::GpuTimer,
     pub cpu_span: crate::profiler::CpuSpanCollector,
-    pub frame_timing: crate::profiler::FrameTimingReport,
 
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
@@ -297,26 +296,6 @@ impl Renderer {
             .await
             .expect("failed to create device");
 
-        // GPU timestamp query setup
-        let gpu_query_period = queue.get_timestamp_period(); // in nanoseconds
-        let (gpu_query_set, gpu_query_buffer) = if timing_supported {
-            let query_count = 16u32; // 8 start/end pairs per frame
-            let qs = device.create_query_set(&wgpu::QuerySetDescriptor {
-                label: Some("GPU timestamps"),
-                ty: wgpu::QueryType::Timestamp,
-                count: query_count,
-            });
-            let qb = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("GPU query resolve"),
-                size: query_count as u64 * 8, // u64 per timestamp
-                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
-            (Some(qs), Some(qb))
-        } else {
-            (None, None)
-        };
-
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -418,7 +397,7 @@ impl Renderer {
 
         // Clone before move into struct (wgpu objects are Arc-internally cheap to clone)
         let auto_exposure = AutoExposure::new(&device, config.width, config.height);
-        let gpu_timer = crate::profiler::GpuTimer::new(&device, 32);
+        let gpu_timer = crate::profiler::GpuTimer::new(&device, 32, queue.get_timestamp_period());
         let mut renderer = Self {
             device,
             queue,
@@ -448,7 +427,6 @@ impl Renderer {
             // Profiler
             gpu_timer,
             cpu_span: crate::profiler::CpuSpanCollector::default(),
-            frame_timing: crate::profiler::FrameTimingReport::default(),
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),
@@ -500,10 +478,6 @@ impl Renderer {
                 instance_buffer,
                 ibl_instance_bind_group,
                 timing_supported,
-                gpu_query_set,
-                gpu_query_buffer,
-                gpu_query_slots: 0,
-                gpu_query_period,
                 pipeline_cache: None,
                 shader_cache,
                 shader_reload: ShaderHotReload::new(),
