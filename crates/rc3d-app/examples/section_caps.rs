@@ -1,3 +1,7 @@
+//! Section plane cap — sphere clipped by a plane with filled cross-section.
+//! Camera: left or middle drag = orbit, right drag = pan, wheel = zoom.
+
+use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
@@ -9,8 +13,9 @@ fn main() {
     let mut graph = rc3d_scene::SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
+    let eye = Vec3::new(3.0, 2.5, 4.0);
     let camera = PerspectiveCameraNode::look_at(
-        Vec3::new(3.0, 2.5, 4.0),
+        eye,
         Vec3::ZERO,
         Vec3::Y,
         std::f32::consts::FRAC_PI_4,
@@ -48,7 +53,14 @@ fn main() {
         }),
     );
 
-    let mut app = App::new(graph);
+    let dist = eye.length();
+    let mut ctrl = CameraController::new(Vec3::ZERO, dist);
+    ctrl.yaw = eye.x.atan2(eye.z);
+    ctrl.pitch = (eye.y / dist).asin();
+
+    let mut app = App::new(graph)
+        .with_camera_controller(ctrl)
+        .with_window_title("section_caps");
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
@@ -63,5 +75,7 @@ fn print_section_help() {
     println!("  cap_enabled=true with red cap_color");
     println!("  The cut surface should appear filled (not hollow)");
     println!("Controls:");
-    println!("  Orbit to inspect the cut surface");
+    println!("  Left / middle drag: orbit camera");
+    println!("  Right drag: pan");
+    println!("  Mouse wheel: zoom");
 }

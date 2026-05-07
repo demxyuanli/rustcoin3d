@@ -4,6 +4,7 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init();
+    log::info!("=== {} demo ===", "scripted_scene");
     let script = r#"
         add_cube(0.0, 0.0, 0.0);
         add_cube(2.0, 0.0, 0.0);
