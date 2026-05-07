@@ -1,5 +1,5 @@
 use rc3d_actions::{LightData, LightType, State};
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{Mat4, Vec3, Vec4};
 use rc3d_core::{DisplayMode, NodeId};
 use rc3d_scene::{NodeData, SceneGraph};
 use slotmap::Key;
@@ -427,6 +427,7 @@ impl RenderCollector {
                             let mid = (pa + pb) * 0.5;
                             self.draw_calls.push(DrawCall {
                                 vertices: Arc::new(vec![
+            is_overlay: self.inside_annotation,
                                     Vertex { position: [pa.x, pa.y, pa.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
                                     Vertex { position: [pb.x, pb.y, pb.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
                                 ]),
@@ -970,6 +971,7 @@ impl RenderCollector {
 
         self.draw_calls.push(DrawCall {
             vertices,
+            is_overlay: self.inside_annotation,
             indices,
             edge_positions,
             wireframe_edge_positions,
@@ -1063,6 +1065,7 @@ impl RenderCollector {
 
         self.draw_calls.push(DrawCall {
             vertices: Arc::new(vertices),
+            is_overlay: self.inside_annotation,
             indices: indices.map(Arc::new),
             edge_positions: Arc::new(edge_feature),
             wireframe_edge_positions: Arc::new(edge_wireframe),
