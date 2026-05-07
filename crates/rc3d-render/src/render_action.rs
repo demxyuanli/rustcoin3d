@@ -144,6 +144,8 @@ pub struct DrawCall {
     /// Align with camera projection (e.g. `PerspectiveCameraNode::reverse_depth` in `rc3d-scene`) and
     /// renderer depth ops; inferred via `rc3d_core::depth_reversed_z_from_projection`.
     pub depth_reversed_z: bool,
+    /// Overlay draw call: rendered without depth test (Annotation children).
+    pub is_overlay: bool,
     pub node_type_label: Arc<str>,
     /// Instance transforms for GPU instancing (e.g., MultipleCopy).
     /// If set, the draw call is instanced with these model matrices.
@@ -201,6 +203,7 @@ impl Default for DrawCall {
             meshlet_data: None,
             projection_orthographic: false,
             depth_reversed_z: false,
+            is_overlay: false,
             node_type_label: Arc::from("Unknown"),
             instance_transforms: None,
             morph_weights: Vec::new(),
@@ -250,6 +253,10 @@ pub struct RenderCollector {
     pub material_binding: i32,
     /// Texture coordinate transform (2D scale+rotation+translation)
     pub tex2_transform: Option<(rc3d_core::math::Vec2, f32, rc3d_core::math::Vec2)>,
+    /// True while traversing inside an Annotation node.
+    pub inside_annotation: bool,
+    /// Stereo rendering mode (set by StereoCameraNode).
+    pub stereo_mode: Option<rc3d_scene::node_data::StereoMode>,
 }
 
 impl RenderCollector {
@@ -272,6 +279,8 @@ impl RenderCollector {
             vertex_ordering: 0,
             material_binding: 0,
             tex2_transform: None,
+            inside_annotation: false,
+            stereo_mode: None,
         }
     }
 
@@ -400,7 +409,8 @@ impl RenderCollector {
                                 ]),
                                 aabb: Some(rc3d_core::Aabb::from_point(mid)),
                                 node_type_label: Arc::from("IndexedLineSet"),
-                                ..Default::default()
+                                            is_overlay: self.inside_annotation,
+                ..Default::default()
                             });
                         }
                     }
