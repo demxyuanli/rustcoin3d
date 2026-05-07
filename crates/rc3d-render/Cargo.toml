@@ -21,6 +21,7 @@ winit = { workspace = true }
 glyphon = { workspace = true }
 bitflags = "2"
 twox-hash = "1.6.3"
+rayon = { workspace = true }
 image = { workspace = true }
 half = "2"
 tracy-client = { workspace = true, optional = true, features = ["enable"] }

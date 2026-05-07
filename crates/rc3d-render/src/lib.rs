@@ -15,6 +15,7 @@ pub mod gpu_skinning;
 pub mod hud;
 pub mod hzb;
 pub mod offscreen;
+pub mod parallel_traversal;
 pub mod ibl;
 pub mod material_library;
 pub mod motion_blur;
