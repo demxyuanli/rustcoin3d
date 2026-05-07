@@ -139,16 +139,19 @@ pub(crate) fn window_event(
                         }
                     }
                     match key {
-                        // Walk mode keys (WASD + QE) when camera controller has walk_mode enabled
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
-                            let walk = app.state.camera_controller.as_ref().map(|c| c.walk_mode).unwrap_or(false);
-                            if walk { if let Some(ref mut cc) = app.state.camera_controller { cc.walk(0.1, 0.0, 0.0, 0.15); } }
-                            else if let Some(renderer) = &mut app.state.renderer { renderer.set_display_mode(DisplayMode::Wireframe); }
+                            if app.state.camera_controller.as_ref().map(|c| c.walk_mode).unwrap_or(false) {
+                                if let Some(ref mut cc) = app.state.camera_controller { cc.walk(0.1, 0.0, 0.0, 0.15); }
+                            } else if let Some(renderer) = &mut app.state.renderer {
+                                renderer.set_display_mode(DisplayMode::Wireframe);
+                            }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyS) => {
-                            let walk = app.state.camera_controller.as_ref().map(|c| c.walk_mode).unwrap_or(false);
-                            if walk { if let Some(ref mut cc) = app.state.camera_controller { cc.walk(-0.1, 0.0, 0.0, 0.15); } }
-                            else if let Some(renderer) = &mut app.state.renderer { renderer.set_display_mode(DisplayMode::Shaded); }
+                            if app.state.camera_controller.as_ref().map(|c| c.walk_mode).unwrap_or(false) {
+                                if let Some(ref mut cc) = app.state.camera_controller { cc.walk(-0.1, 0.0, 0.0, 0.15); }
+                            } else if let Some(renderer) = &mut app.state.renderer {
+                                renderer.set_display_mode(DisplayMode::Shaded);
+                            }
                         }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => {
                             if let Some(ref mut cc) = app.state.camera_controller { if cc.walk_mode { cc.walk(0.0, -0.1, 0.0, 0.15); } }
@@ -156,14 +159,7 @@ pub(crate) fn window_event(
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyD) => {
                             if let Some(ref mut cc) = app.state.camera_controller { if cc.walk_mode { cc.walk(0.0, 0.1, 0.0, 0.15); } }
                         }
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ) => {
-                            if let Some(ref mut cc) = app.state.camera_controller { if cc.walk_mode { cc.walk(0.0, 0.0, -0.1, 0.15); } }
-                        }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyE) => {
-                            let walk = app.state.camera_controller.as_ref().map(|c| c.walk_mode).unwrap_or(false);
-                            if walk { if let Some(ref mut cc) = app.state.camera_controller { cc.walk(0.0, 0.0, 0.1, 0.15); } }
-                            else if let Some(renderer) = &mut app.state.renderer { renderer.set_display_mode(DisplayMode::ShadedWithEdges); }
-                        }
                             if let Some(renderer) = &mut app.state.renderer {
                                 renderer.set_display_mode(DisplayMode::ShadedWithEdges);
                             }
