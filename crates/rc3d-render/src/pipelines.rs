@@ -1,9 +1,24 @@
 use crate::shader_permutation::{ShaderFeatures, ShaderVariantCache};
 use crate::vertex::{LineVertex, Vertex};
+use bitflags::bitflags;
 
 #[path = "pipelines_build_depth.rs"]
 mod pipelines_build_depth;
 use pipelines_build_depth::build_depth_mode_pipelines;
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct PbrFeatures: u32 {
+        const HAS_ALBEDO_TEX    = 1 << 0;
+        const HAS_NORMAL_TEX    = 1 << 1;
+        const HAS_MR_TEX        = 1 << 2;
+        const HAS_EMISSIVE_TEX  = 1 << 3;
+        const HAS_OCCLUSION_TEX = 1 << 4;
+        const HAS_IBL           = 1 << 5;
+        const HAS_SHADOWS       = 1 << 6;
+        const IS_TRANSPARENT    = 1 << 7;
+    }
+}
 
 /// Render pipelines for one depth convention (forward-Z: Less / clear 1, reverse-Z: Greater / clear 0).
 #[derive(Clone)]
@@ -563,4 +578,87 @@ impl PipelineSet {
             grid_lines_reverse,
         }
     }
+}
+
+/// Cache for per-material shader variants.
+/// Uses LRU eviction (max 16 variants) to bound memory.
+pub struct PbrVariantCache {
+    cache: lru::LruCache<PbrFeatures, wgpu::ShaderModule>,
+}
+
+impl PbrVariantCache {
+    pub fn new() -> Self {
+        Self {
+            cache: lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap()),
+        }
+    }
+
+    /// Get or create a shader module for the given feature set.
+    /// Shader variants are created by prepending `#define` directives.
+    pub fn get_or_create(
+        &mut self,
+        device: &wgpu::Device,
+        features: PbrFeatures,
+    ) -> &wgpu::ShaderModule {
+        self.cache.get_or_insert(features, || {
+            Self::build_variant(device, features)
+        })
+    }
+
+    fn build_variant(device: &wgpu::Device, features: PbrFeatures) -> wgpu::ShaderModule {
+        let defines = format!(
+            "const HAS_ALBEDO_TEX: u32 = {}u;\n\
+             const HAS_NORMAL_TEX: u32 = {}u;\n\
+             const HAS_MR_TEX: u32 = {}u;\n\
+             const HAS_EMISSIVE_TEX: u32 = {}u;\n\
+             const HAS_OCCLUSION_TEX: u32 = {}u;\n\
+             const HAS_IBL: u32 = {}u;\n\
+             const HAS_SHADOWS: u32 = {}u;\n\
+             const IS_TRANSPARENT: u32 = {}u;\n",
+            features.contains(PbrFeatures::HAS_ALBEDO_TEX) as u32,
+            features.contains(PbrFeatures::HAS_NORMAL_TEX) as u32,
+            features.contains(PbrFeatures::HAS_MR_TEX) as u32,
+            features.contains(PbrFeatures::HAS_EMISSIVE_TEX) as u32,
+            features.contains(PbrFeatures::HAS_OCCLUSION_TEX) as u32,
+            features.contains(PbrFeatures::HAS_IBL) as u32,
+            features.contains(PbrFeatures::HAS_SHADOWS) as u32,
+            features.contains(PbrFeatures::IS_TRANSPARENT) as u32,
+        );
+
+        // Load base PBR shader and prepend defines
+        let base = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders/pbr.wgsl")
+        ).unwrap_or_else(|_| String::from("// pbr shader not found"));
+
+        let full = format!("// Auto-generated variant: {:?}\n{}\n{}", features, defines, base);
+
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&format!("PBR variant {:?}", features)),
+            source: wgpu::ShaderSource::Wgsl(full.into()),
+        })
+    }
+}
+
+/// Compute PbrFeatures from a DrawCall's material properties.
+/// Used to select the appropriate shader variant at draw time.
+pub fn features_for_draw(
+    has_albedo_tex: bool,
+    has_normal_tex: bool,
+    has_mr_tex: bool,
+    has_emissive_tex: bool,
+    has_occlusion_tex: bool,
+    has_ibl: bool,
+    has_shadows: bool,
+    is_transparent: bool,
+) -> PbrFeatures {
+    let mut f = PbrFeatures::empty();
+    if has_albedo_tex { f |= PbrFeatures::HAS_ALBEDO_TEX; }
+    if has_normal_tex { f |= PbrFeatures::HAS_NORMAL_TEX; }
+    if has_mr_tex { f |= PbrFeatures::HAS_MR_TEX; }
+    if has_emissive_tex { f |= PbrFeatures::HAS_EMISSIVE_TEX; }
+    if has_occlusion_tex { f |= PbrFeatures::HAS_OCCLUSION_TEX; }
+    if has_ibl { f |= PbrFeatures::HAS_IBL; }
+    if has_shadows { f |= PbrFeatures::HAS_SHADOWS; }
+    if is_transparent { f |= PbrFeatures::IS_TRANSPARENT; }
+    f
 }
