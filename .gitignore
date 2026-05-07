@@ -1,0 +1,9 @@
+.claude/**
+target/**
+cache/**
+.cursor/
+pipeline_cache.bin
+*.txt
+*.bak
+.gitignore
+

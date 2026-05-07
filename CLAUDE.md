@@ -1,3 +1,28 @@
+# rustcoin3d — Industrial 3D Engine
+
+Coin3D/HOOPS-aligned 3D visualization engine in Rust + wgpu.
+
+## Architecture
+- **18 crates** in workspace, 47 NodeData variants, 12 engines, 19 examples
+- Layers: core → fields → scene → actions/engine → io → render → gizmo → app
+- Scene graph: Coin3D-style SlotMap<NodeId, NodeEntry>, Action/Visitor traversal
+- Renderer: wgpu cluster-deferred PBR, CSM shadows, HZB occlusion, TAA/SSR/SSAO
+
+## Key Patterns
+- NodeData enum in `crates/rc3d-scene/src/node_data.rs` — all node types defined here
+- Match arms must cover ALL variants across 7+ crates: render_action, ray_pick, get_bounding_box, intersection_detection, light_subsystem, lod_update, pass_text, editor_ui/draw
+- Add new node: 1) struct + Default, 2) enum variant, 3) Clone/type_name/field_descriptors/Serialize/Deserialize arms, 4) all external match arms
+- Serialization: manual Serialize/Deserialize for NodeData, HandlerNode→DummyHandler
+- Engines in `crates/rc3d-engine/src/engine.rs` — evaluate() takes &mut SceneGraph + time
+
+## Development
+```bash
+rtk cargo check --workspace              # fast check
+rtk cargo test                           # 171 tests
+rtk cargo build -p rc3d-app --examples   # build all examples
+rtk cargo build -p rc3d-cli-editor       # CLI binary
+```
+
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
 
