@@ -42,6 +42,7 @@ impl SceneGraph {
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
+            dirty_flags: 0,
         });
         self.roots.push(id);
         id
@@ -59,6 +60,7 @@ impl SceneGraph {
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
+            dirty_flags: 0,
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             entry.children.push(id);
@@ -78,6 +80,7 @@ impl SceneGraph {
             display_mode: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
+            dirty_flags: 0,
         });
         if let Some(entry) = self.nodes.get_mut(parent) {
             let idx = index.min(entry.children.len());
