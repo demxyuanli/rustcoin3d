@@ -16,6 +16,8 @@ struct BvhNode {
     data: [u32; 2],
     /// Whether this is a leaf node.
     is_leaf: bool,
+    /// Parent node index (None for root).
+    parent: Option<usize>,
 }
 
 /// Spatial acceleration structure built from axis-aligned bounding boxes.
@@ -27,6 +29,8 @@ pub struct Bvh {
     item_ids: Vec<u32>,
     /// Per-item AABBs (indexed by item_indices).
     item_aabbs: Vec<Aabb>,
+    /// Maps original item index -> BVH leaf node index.
+    item_to_leaf: Vec<usize>,
 }
 
 impl Bvh {
@@ -38,6 +42,7 @@ impl Bvh {
                 item_indices: Vec::new(),
                 item_ids: Vec::new(),
                 item_aabbs: Vec::new(),
+                item_to_leaf: Vec::new(),
             };
         }
         let item_aabbs: Vec<Aabb> = items.iter().map(|(a, _)| a.clone()).collect();
@@ -45,8 +50,24 @@ impl Bvh {
         let mut nodes = Vec::new();
         let mut item_indices = Vec::new();
         let work: Vec<u32> = (0..items.len() as u32).collect();
-        Self::build_recursive(&work, items, &mut nodes, &mut item_indices);
-        Self { nodes, item_indices, item_ids, item_aabbs }
+        Self::build_recursive(&work, items, &mut nodes, &mut item_indices, None);
+
+        // Build item_to_leaf map by scanning all leaf nodes
+        let mut item_to_leaf = vec![usize::MAX; items.len()];
+        for (node_idx, node) in nodes.iter().enumerate() {
+            if node.is_leaf {
+                let first = node.data[0] as usize;
+                let count = node.data[1] as usize;
+                for j in first..first + count {
+                    let internal_idx = item_indices[j] as usize;
+                    if internal_idx < item_to_leaf.len() {
+                        item_to_leaf[internal_idx] = node_idx;
+                    }
+                }
+            }
+        }
+
+        Self { nodes, item_indices, item_ids, item_aabbs, item_to_leaf }
     }
 
     /// Build from a slice of AABBs (IDs are 0..N).
@@ -60,6 +81,7 @@ impl Bvh {
         items: &[(Aabb, u32)],
         nodes: &mut Vec<BvhNode>,
         item_indices: &mut Vec<u32>,
+        parent_idx: Option<usize>,
     ) -> usize {
         // Compute union AABB
         let mut union_aabb = items[idxs[0] as usize].0.clone();
@@ -79,6 +101,7 @@ impl Bvh {
                 aabb: union_aabb,
                 data: [first, count],
                 is_leaf: true,
+                parent: parent_idx,
             });
             return idx;
         }
@@ -109,10 +132,11 @@ impl Bvh {
             aabb: union_aabb,
             data: [0, 0],
             is_leaf: false,
+            parent: parent_idx,
         });
 
-        let left_idx = Self::build_recursive(left_slice, items, nodes, item_indices);
-        let right_idx = Self::build_recursive(right_slice, items, nodes, item_indices);
+        let left_idx = Self::build_recursive(left_slice, items, nodes, item_indices, Some(node_idx));
+        let right_idx = Self::build_recursive(right_slice, items, nodes, item_indices, Some(node_idx));
 
         nodes[node_idx].data = [left_idx as u32, right_idx as u32];
         node_idx
@@ -205,6 +229,79 @@ impl Bvh {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+
+    /// Update specific item AABBs without full rebuild.
+    ///
+    /// `updates` contains (item_index, new_aabb) pairs for items whose AABB has changed.
+    /// `items` is the full list of (Aabb, u32) pairs with current AABBs, used for fallback.
+    ///
+    /// If more than 50% of items are dirty, falls back to full rebuild.
+    pub fn incremental_update(&mut self, updates: &[(usize, Aabb)], items: &[(Aabb, u32)]) {
+        let total = items.len();
+        if total == 0 || updates.is_empty() {
+            return;
+        }
+
+        // Fall back to full rebuild if > 50% of items changed
+        if updates.len() as f64 > total as f64 * 0.5 {
+            *self = Bvh::build(items);
+            return;
+        }
+
+        // Update per-item AABBs so query_aabb individual checks work correctly
+        for &(item_idx, ref new_aabb) in updates {
+            if item_idx < self.item_aabbs.len() {
+                self.item_aabbs[item_idx] = new_aabb.clone();
+            }
+        }
+
+        // Find affected leaf nodes and recompute their union AABBs from all contained items
+        let mut dirty = std::collections::HashSet::new();
+        for &(item_idx, _) in updates {
+            if item_idx < self.item_to_leaf.len() {
+                let leaf_idx = self.item_to_leaf[item_idx];
+                let node = &self.nodes[leaf_idx];
+                let first = node.data[0] as usize;
+                let count = node.data[1] as usize;
+                let mut union_aabb = self.item_aabbs[self.item_indices[first] as usize].clone();
+                for j in first + 1..first + count {
+                    let internal_idx = self.item_indices[j] as usize;
+                    union_aabb = union_aabb.union(&self.item_aabbs[internal_idx]);
+                }
+                self.nodes[leaf_idx].aabb = union_aabb;
+                if let Some(parent) = self.nodes[leaf_idx].parent {
+                    if parent < self.nodes.len() {
+                        dirty.insert(parent);
+                    }
+                }
+            }
+        }
+
+        // Bottom-up refit: propagate AABB changes upward through internal nodes
+        while !dirty.is_empty() {
+            let mut next = std::collections::HashSet::new();
+            for &node_idx in &dirty {
+                if !self.nodes[node_idx].is_leaf {
+                    let left = self.nodes[node_idx].data[0] as usize;
+                    let right = self.nodes[node_idx].data[1] as usize;
+                    if left < self.nodes.len() && right < self.nodes.len() {
+                        let new_aabb = self.nodes[left].aabb.union(&self.nodes[right].aabb);
+                        let changed = self.nodes[node_idx].aabb.min != new_aabb.min
+                            || self.nodes[node_idx].aabb.max != new_aabb.max;
+                        if changed {
+                            self.nodes[node_idx].aabb = new_aabb;
+                            if let Some(parent) = self.nodes[node_idx].parent {
+                                if parent < self.nodes.len() {
+                                    next.insert(parent);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            dirty = next;
+        }
+    }
 }
 
 /// Ray-AABB intersection test (slab method). Returns entry distance or None.
@@ -273,5 +370,41 @@ mod tests {
         let mut out = Vec::new();
         bvh.query_ray(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn incremental_update_vs_full_rebuild() {
+        let items: Vec<(Aabb, u32)> = (0..10)
+            .map(|i| {
+                let a = Aabb {
+                    min: Vec3::new(i as f32, 0.0, 0.0),
+                    max: Vec3::new(i as f32 + 0.5, 0.5, 0.5),
+                };
+                (a, i)
+            })
+            .collect();
+
+        let mut bvh = Bvh::build(&items);
+
+        // Move item 3 far away
+        let new_aabb = Aabb {
+            min: Vec3::new(0.0, 5.0, 0.0),
+            max: Vec3::new(0.5, 5.5, 0.5),
+        };
+        let updates = vec![(3usize, new_aabb)];
+        bvh.incremental_update(&updates, &items);
+
+        // Verify the moved item is found by query_aabb
+        let query_aabb = Aabb {
+            min: Vec3::new(0.0, 5.0, 0.0),
+            max: Vec3::new(0.5, 5.5, 0.5),
+        };
+        let mut results = Vec::new();
+        bvh.query_aabb(&query_aabb, &mut results);
+        assert!(
+            results.contains(&3),
+            "Should find the moved AABB, got: {:?}",
+            results
+        );
     }
 }
