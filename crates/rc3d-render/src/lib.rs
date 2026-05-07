@@ -39,6 +39,7 @@ pub mod ssr_pass;
 pub mod taa;
 pub mod texture_cache;
 pub mod texture_format;
+pub mod texture_streaming;
 pub mod vertex;
 pub mod viewport;
 pub mod volumetric_fog;
