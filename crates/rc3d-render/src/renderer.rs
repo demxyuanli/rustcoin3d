@@ -107,6 +107,11 @@ pub struct Renderer {
     // ── Frame state tier ──
     pub(crate) frame: FrameState,
 
+    // ── Profiler tier ──
+    pub gpu_timer: crate::profiler::GpuTimer,
+    pub cpu_span: crate::profiler::CpuSpanCollector,
+    pub frame_timing: crate::profiler::FrameTimingReport,
+
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
 }
@@ -413,6 +418,7 @@ impl Renderer {
 
         // Clone before move into struct (wgpu objects are Arc-internally cheap to clone)
         let auto_exposure = AutoExposure::new(&device, config.width, config.height);
+        let gpu_timer = crate::profiler::GpuTimer::new(&device, 32);
         let mut renderer = Self {
             device,
             queue,
@@ -439,6 +445,10 @@ impl Renderer {
             xray_mode: false,
             screen_space_selection_outline: true,
             ibl_preset,
+            // Profiler
+            gpu_timer,
+            cpu_span: crate::profiler::CpuSpanCollector::default(),
+            frame_timing: crate::profiler::FrameTimingReport::default(),
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),

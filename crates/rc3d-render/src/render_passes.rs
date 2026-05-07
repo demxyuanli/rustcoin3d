@@ -175,12 +175,14 @@ pub(super) fn execute_passes(
     // GPU timestamp: frame start
     renderer.write_gpu_timestamp(&mut encoder);
 
+    let ti_shadow = renderer.gpu_timer.begin(&mut encoder, "CSM Shadow");
     if ctx.run_shadow_pass {
         #[cfg(feature = "profiler")]
         let _span_shadow = tracy_client::span!("shadow");
         pass_shadow::pass_shadow_depth(renderer, &mut encoder, ctx);
         renderer.write_gpu_timestamp(&mut encoder); // shadow end
     }
+    renderer.gpu_timer.end(&mut encoder, ti_shadow);
 
     let mode = ctx.mode;
 
@@ -455,6 +457,7 @@ pub(super) fn execute_passes(
         }
     }
 
+    let ti_solid = renderer.gpu_timer.begin(&mut encoder, "Solid+Outline");
     if solid_mode {
         #[cfg(feature = "profiler")]
         let _span_solid = tracy_client::span!("solid");
@@ -483,7 +486,9 @@ pub(super) fn execute_passes(
             );
         }
     }
+    renderer.gpu_timer.end(&mut encoder, ti_solid);
 
+    let ti_effects = renderer.gpu_timer.begin(&mut encoder, "Effects");
     // ── Effect passes (Decal, Volume, PointCloud) ──
     if !ctx.effect_commands.is_empty() {
         if !ctx.effect_commands.decals.is_empty() {
@@ -515,6 +520,7 @@ pub(super) fn execute_passes(
             }
         }
     }
+    renderer.gpu_timer.end(&mut encoder, ti_effects);
 
     if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe {
         #[cfg(feature = "profiler")]
@@ -621,6 +627,7 @@ pub(super) fn execute_passes(
         }
     }
 
+    let ti_post = renderer.gpu_timer.begin(&mut encoder, "PostProcess");
     if renderer.hdr_post_processing {
         #[cfg(feature = "profiler")]
         let _span_post = tracy_client::span!("post");
@@ -728,12 +735,15 @@ pub(super) fn execute_passes(
             renderer.write_gpu_timestamp(&mut encoder); // post end
         }
     }
+    renderer.gpu_timer.end(&mut encoder, ti_post);
 
     renderer.gpu.outline_pool.flush(&renderer.queue);
     renderer.gpu.phong_pool.flush(&renderer.queue);
     renderer.gpu.shadow_pool.flush(&renderer.queue);
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.section_cap_pool.flush(&renderer.queue);
+
+    let ti_hud = renderer.gpu_timer.begin(&mut encoder, "HUD+Overlay");
 
     // Ground plane grid overlay
     if renderer.grid_enabled {
@@ -849,13 +859,27 @@ pub(super) fn execute_passes(
     if let Some(cb) = &mut post_swapchain_overlay {
         cb(&mut encoder, view);
     }
+    renderer.gpu_timer.end(&mut encoder, ti_hud);
 
     renderer.prune_mesh_cache();
     renderer.resolve_gpu_timestamps(&mut encoder);
+    renderer.gpu_timer.resolve(&mut encoder);
     renderer.queue.submit(std::iter::once(encoder.finish()));
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
         drop(vw);
         surface_tex.present();
+    }
+
+    renderer.gpu_timer.collect(&renderer.device);
+    let gpu_timestamps = &renderer.gpu_timer.last_timestamps;
+
+    let mut gpu_sections_data = Vec::new();
+    for i in (0..gpu_timestamps.len()).step_by(2) {
+        if i + 1 < gpu_timestamps.len() {
+            let label = renderer.gpu_timer.labels.get(i / 2).copied().unwrap_or("?");
+            let dur_ns = gpu_timestamps[i + 1].saturating_sub(gpu_timestamps[i]);
+            gpu_sections_data.push((label, dur_ns as f64 / 1_000_000.0));
+        }
     }
 
     let total_visible_triangles: u64 = ctx.visible
@@ -876,5 +900,8 @@ pub(super) fn execute_passes(
         culled_draw_calls: draw_calls.len().saturating_sub(ctx.visible.len()),
         gpu_pass_times_us: None,
         diagnostics: None,
+        frame_time_ms: renderer.cpu_span.total_ms(),
+        cpu_sections: renderer.cpu_span.spans().to_vec(),
+        gpu_sections: gpu_sections_data,
     }
 }

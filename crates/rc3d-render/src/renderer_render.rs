@@ -27,6 +27,7 @@ impl super::Renderer {
         presentation: render_passes::FramePresentation<'p>,
         ssao_projection: Option<(Mat4, Mat4)>,
     ) -> FrameStats {
+        self.cpu_span.begin_frame();
         self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
         self.frame.animation_time_sec += dt_sec;
@@ -59,31 +60,33 @@ impl super::Renderer {
         self.frame.scene_vp = vp;
         let frustum = Frustum::from_view_projection(vp);
 
-        let bvh_items: Vec<(rc3d_core::Aabb, u32)> = draw_calls
-            .iter()
-            .enumerate()
-            .filter_map(|(i, dc)| dc.aabb.as_ref().map(|a| (a.clone(), i as u32)))
-            .collect();
-        let bvh = rc3d_core::Bvh::build(&bvh_items);
+        let visible: Vec<&DrawCall> = self.cpu_span.measure("bvh_frustum_cull", || {
+            let bvh_items: Vec<(rc3d_core::Aabb, u32)> = draw_calls
+                .iter()
+                .enumerate()
+                .filter_map(|(i, dc)| dc.aabb.as_ref().map(|a| (a.clone(), i as u32)))
+                .collect();
+            let bvh = rc3d_core::Bvh::build(&bvh_items);
 
-        let mut visible_indices: Vec<usize> = Vec::with_capacity(draw_calls.len());
-        if bvh.is_empty() {
-            visible_indices.extend(0..draw_calls.len());
-        } else {
-            let mut bvh_out = Vec::new();
-            bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut bvh_out);
-            for &idx in &bvh_out {
-                visible_indices.push(idx as usize);
-            }
-            for (i, dc) in draw_calls.iter().enumerate() {
-                if dc.aabb.is_none() {
-                    visible_indices.push(i);
+            let mut visible_indices: Vec<usize> = Vec::with_capacity(draw_calls.len());
+            if bvh.is_empty() {
+                visible_indices.extend(0..draw_calls.len());
+            } else {
+                let mut bvh_out = Vec::new();
+                bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut bvh_out);
+                for &idx in &bvh_out {
+                    visible_indices.push(idx as usize);
                 }
+                for (i, dc) in draw_calls.iter().enumerate() {
+                    if dc.aabb.is_none() {
+                        visible_indices.push(i);
+                    }
+                }
+                visible_indices.sort_unstable();
+                visible_indices.dedup();
             }
-            visible_indices.sort_unstable();
-            visible_indices.dedup();
-        }
-        let visible: Vec<&DrawCall> = visible_indices.iter().map(|&i| &draw_calls[i]).collect();
+            visible_indices.iter().map(|&i| &draw_calls[i]).collect()
+        });
 
         if let Some(head) = visible.first() {
             let dz = head.depth_reversed_z;
@@ -123,68 +126,110 @@ impl super::Renderer {
             }
         }
 
-        let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
-        for dc in &visible {
-            let handle = if dc.vertices.is_empty() {
-                if let Some(md) = dc.meshlet_data.as_ref() {
-                    let ptr = Arc::as_ptr(md) as u64;
-                    if let Some(mesh_id) = self.gpu.assets.mesh_touch(&ptr, self.frame.frame_counter) {
-                        Some(mesh_id)
+        let mesh_handles = self.cpu_span.measure("mesh_upload", || {
+            let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
+            for dc in &visible {
+                let handle = if dc.vertices.is_empty() {
+                    if let Some(md) = dc.meshlet_data.as_ref() {
+                        let ptr = Arc::as_ptr(md) as u64;
+                        if let Some(mesh_id) = self.gpu.assets.mesh_touch(&ptr, self.frame.frame_counter) {
+                            Some(mesh_id)
+                        } else {
+                            let verts: Vec<crate::vertex::Vertex> =
+                                md.vertices
+                                    .iter()
+                                    .map(|mv| crate::vertex::Vertex {
+                                        position: mv.position,
+                                        normal: mv.normal,
+                                        texcoord: mv.texcoord,
+                                        tangent: mv.tangent,
+                                    })
+                                    .collect();
+                            let mesh_id = self.gpu.gpu_meshes.upload_mesh(
+                                &self.device,
+                                &verts,
+                                Some(&md.indices),
+                                &[],
+                                &[],
+                            );
+                            self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
+                            Some(mesh_id)
+                        }
                     } else {
-                        let verts: Vec<crate::vertex::Vertex> =
-                            md.vertices
-                                .iter()
-                                .map(|mv| crate::vertex::Vertex {
-                                    position: mv.position,
-                                    normal: mv.normal,
-                                    texcoord: mv.texcoord,
-                                    tangent: mv.tangent,
-                                })
-                                .collect();
-                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
-                            &self.device,
-                            &verts,
-                            Some(&md.indices),
-                            &[],
-                            &[],
-                        );
-                        self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
-                        Some(mesh_id)
+                        None
                     }
                 } else {
-                    None
-                }
-            } else {
-                let base_hash = dc.mesh_hash.unwrap_or_else(|| {
-                    let ptr_key = (
-                        Arc::as_ptr(&dc.vertices) as u64,
-                        dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
-                    );
-                    let mut h = twox_hash::XxHash64::with_seed(0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.1);
-                    std::hash::Hasher::finish(&h)
-                });
-                let hash = if let Some(ref skin) = dc.skinning {
-                    let mut h = twox_hash::XxHash64::with_seed(0);
-                    std::hash::Hasher::write_u64(&mut h, base_hash);
-                    std::hash::Hasher::write_u64(&mut h, Arc::as_ptr(skin) as u64);
-                    std::hash::Hasher::finish(&h)
-                } else {
-                    base_hash
-                };
-                if let Some(mesh_id) = self.gpu.assets.mesh_touch(&hash, self.frame.frame_counter) {
-                    Some(mesh_id)
-                } else {
-                    if let Some(ref skin) = dc.skinning {
-                        let verts = &*dc.vertices;
-                        let skin_slice = skin.skin_data.as_slice();
-                        if verts.len() != skin_slice.len() {
-                            log::warn!(
-                                "skinning data len {} != mesh verts {}; using rigid mesh",
-                                skin_slice.len(),
-                                verts.len()
+                    let base_hash = dc.mesh_hash.unwrap_or_else(|| {
+                        let ptr_key = (
+                            Arc::as_ptr(&dc.vertices) as u64,
+                            dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
+                        );
+                        let mut h = twox_hash::XxHash64::with_seed(0);
+                        std::hash::Hasher::write_u64(&mut h, ptr_key.0);
+                        std::hash::Hasher::write_u64(&mut h, ptr_key.1);
+                        std::hash::Hasher::finish(&h)
+                    });
+                    let hash = if let Some(ref skin) = dc.skinning {
+                        let mut h = twox_hash::XxHash64::with_seed(0);
+                        std::hash::Hasher::write_u64(&mut h, base_hash);
+                        std::hash::Hasher::write_u64(&mut h, Arc::as_ptr(skin) as u64);
+                        std::hash::Hasher::finish(&h)
+                    } else {
+                        base_hash
+                    };
+                    if let Some(mesh_id) = self.gpu.assets.mesh_touch(&hash, self.frame.frame_counter) {
+                        Some(mesh_id)
+                    } else {
+                        if let Some(ref skin) = dc.skinning {
+                            let verts = &*dc.vertices;
+                            let skin_slice = skin.skin_data.as_slice();
+                            if verts.len() != skin_slice.len() {
+                                log::warn!(
+                                    "skinning data len {} != mesh verts {}; using rigid mesh",
+                                    skin_slice.len(),
+                                    verts.len()
+                                );
+                                let mesh_id = self.gpu.gpu_meshes.upload_mesh(
+                                    &self.device,
+                                    &dc.vertices,
+                                    dc.indices.as_ref().map(|a| a.as_slice()),
+                                    &dc.edge_positions,
+                                    &dc.wireframe_edge_positions,
+                                );
+                                self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                                Some(mesh_id)
+                            } else {
+                            let pass = self
+                                .gpu.gpu_skinning_pass
+                                .get_or_insert_with(|| GpuSkinningPass::new(&self.device));
+                            let positions: Vec<[f32; 3]> = verts.iter().map(|v| v.position).collect();
+                            let normals: Vec<[f32; 3]> = verts.iter().map(|v| v.normal).collect();
+                            let texcoords: Vec<[f32; 2]> = verts.iter().map(|v| v.texcoord).collect();
+                            let tangents: Vec<[f32; 4]> = verts.iter().map(|v| v.tangent).collect();
+                            let max_bones = skin.skeleton.joint_count().max(1) as u32;
+                            let resources = pass.create_skinned_mesh(
+                                &self.device,
+                                &positions,
+                                &normals,
+                                &texcoords,
+                                &tangents,
+                                skin_slice,
+                                max_bones,
                             );
+                            let dst_vb = resources.dst_vertex_buffer.clone();
+                            let mesh_id = self.gpu.gpu_meshes.insert_skinned_mesh(
+                                &self.device,
+                                dst_vb,
+                                verts.len() as u32,
+                                dc.indices.as_ref().map(|a| a.as_slice()),
+                                &dc.edge_positions,
+                                &dc.wireframe_edge_positions,
+                            );
+                            self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
+                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                            Some(mesh_id)
+                            }
+                        } else {
                             let mesh_id = self.gpu.gpu_meshes.upload_mesh(
                                 &self.device,
                                 &dc.vertices,
@@ -194,106 +239,70 @@ impl super::Renderer {
                             );
                             self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
                             Some(mesh_id)
-                        } else {
-                        let pass = self
-                            .gpu.gpu_skinning_pass
-                            .get_or_insert_with(|| GpuSkinningPass::new(&self.device));
-                        let positions: Vec<[f32; 3]> = verts.iter().map(|v| v.position).collect();
-                        let normals: Vec<[f32; 3]> = verts.iter().map(|v| v.normal).collect();
-                        let texcoords: Vec<[f32; 2]> = verts.iter().map(|v| v.texcoord).collect();
-                        let tangents: Vec<[f32; 4]> = verts.iter().map(|v| v.tangent).collect();
-                        let max_bones = skin.skeleton.joint_count().max(1) as u32;
-                        let resources = pass.create_skinned_mesh(
-                            &self.device,
-                            &positions,
-                            &normals,
-                            &texcoords,
-                            &tangents,
-                            skin_slice,
-                            max_bones,
-                        );
-                        let dst_vb = resources.dst_vertex_buffer.clone();
-                        let mesh_id = self.gpu.gpu_meshes.insert_skinned_mesh(
-                            &self.device,
-                            dst_vb,
-                            verts.len() as u32,
-                            dc.indices.as_ref().map(|a| a.as_slice()),
-                            &dc.edge_positions,
-                            &dc.wireframe_edge_positions,
-                        );
-                        self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
-                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
-                        Some(mesh_id)
                         }
-                    } else {
-                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
-                            &self.device,
-                            &dc.vertices,
-                            dc.indices.as_ref().map(|a| a.as_slice()),
-                            &dc.edge_positions,
-                            &dc.wireframe_edge_positions,
-                        );
-                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
-                        Some(mesh_id)
                     }
-                }
-            };
-            mesh_handles.push(handle);
-        }
-
-        let mut solid_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
-            .collect();
-        solid_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::vec4_array_sort_key(dc.light_dirs),
-                sort_keys::vec4_array_sort_key(dc.light_colors),
-                sort_keys::vec4_array_sort_key(dc.light_types),
-                sort_keys::vec4_array_sort_key(dc.light_positions),
-                sort_keys::vec4_array_sort_key(dc.spot_params),
-                dc.light_count,
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                sort_keys::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
-                sort_keys::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
-                sort_keys::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
-                dc.shininess.to_bits(),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
-        });
-        let mut edge_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| !visible[i].edge_positions.is_empty())
-            .collect();
-        edge_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
-        });
-        let mut selected_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
-            .collect();
-        selected_order.sort_by_key(|&i| {
-            let dc = visible[i];
-            (
-                sort_keys::display_mode_sort_key(dc.display_mode),
-                mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-            )
+                };
+                mesh_handles.push(handle);
+            }
+            mesh_handles
         });
 
-        let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-        self.frame.scene_camera_pos = camera_pos_vec;
-        let mut transparent_order: Vec<usize> = (0..visible.len())
-            .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
-            .collect();
-        transparent_order.sort_unstable_by(|&a, &b| {
-            let pos_a = visible[a].model_matrix.w_axis.truncate();
-            let pos_b = visible[b].model_matrix.w_axis.truncate();
-            let da = pos_a.distance(camera_pos_vec);
-            let db = pos_b.distance(camera_pos_vec);
-            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+        let (solid_order, edge_order, selected_order, transparent_order) = self.cpu_span.measure("sorting", || {
+            let mut solid_order: Vec<usize> = (0..visible.len())
+                .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
+                .collect();
+            solid_order.sort_by_key(|&i| {
+                let dc = visible[i];
+                (
+                    sort_keys::vec4_array_sort_key(dc.light_dirs),
+                    sort_keys::vec4_array_sort_key(dc.light_colors),
+                    sort_keys::vec4_array_sort_key(dc.light_types),
+                    sort_keys::vec4_array_sort_key(dc.light_positions),
+                    sort_keys::vec4_array_sort_key(dc.spot_params),
+                    dc.light_count,
+                    sort_keys::display_mode_sort_key(dc.display_mode),
+                    sort_keys::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
+                    sort_keys::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
+                    sort_keys::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
+                    dc.shininess.to_bits(),
+                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
+                )
+            });
+            let mut edge_order: Vec<usize> = (0..visible.len())
+                .filter(|&i| !visible[i].edge_positions.is_empty())
+                .collect();
+            edge_order.sort_by_key(|&i| {
+                let dc = visible[i];
+                (
+                    sort_keys::display_mode_sort_key(dc.display_mode),
+                    sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
+                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
+                )
+            });
+            let mut selected_order: Vec<usize> = (0..visible.len())
+                .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
+                .collect();
+            selected_order.sort_by_key(|&i| {
+                let dc = visible[i];
+                (
+                    sort_keys::display_mode_sort_key(dc.display_mode),
+                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
+                )
+            });
+
+            let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
+            self.frame.scene_camera_pos = camera_pos_vec;
+            let mut transparent_order: Vec<usize> = (0..visible.len())
+                .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
+                .collect();
+            transparent_order.sort_unstable_by(|&a, &b| {
+                let pos_a = visible[a].model_matrix.w_axis.truncate();
+                let pos_b = visible[b].model_matrix.w_axis.truncate();
+                let da = pos_a.distance(camera_pos_vec);
+                let db = pos_b.distance(camera_pos_vec);
+                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            (solid_order, edge_order, selected_order, transparent_order)
         });
 
         let mut meshlet_indices: Vec<usize> = Vec::new();

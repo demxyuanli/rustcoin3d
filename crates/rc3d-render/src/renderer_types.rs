@@ -6,6 +6,9 @@ pub struct FrameStats {
     /// Approximate GPU time per pass in microseconds: [shadow, solid, post, total]
     pub gpu_pass_times_us: Option<[f64; 4]>,
     pub diagnostics: Option<FrameDiagnostics>,
+    pub frame_time_ms: f64,
+    pub cpu_sections: Vec<(&'static str, f64)>,
+    pub gpu_sections: Vec<(&'static str, f64)>,
 }
 
 #[derive(Clone, Debug, Default)]

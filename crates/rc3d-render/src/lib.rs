@@ -37,6 +37,7 @@ pub mod texture_format;
 pub mod vertex;
 pub mod viewport;
 pub mod volumetric_fog;
+pub mod profiler;
 
 pub use asset_manager::GpuAssetManager;
 pub use async_loader::{AssetHandle, AsyncAssetManager};
