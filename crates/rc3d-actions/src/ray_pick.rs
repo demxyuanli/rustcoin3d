@@ -3,7 +3,7 @@ use rc3d_core::NodeId;
 use rc3d_mesh::{Bvh, BvhTriangle};
 use rc3d_scene::{NodeData, SceneGraph};
 
-use crate::State;
+use crate::{MaterialElement, State};
 
 /// Use BVH ray cast when fan triangle count reaches this threshold.
 const IFS_BVH_TRIANGLE_THRESHOLD: usize = 4096;
@@ -217,10 +217,33 @@ impl RayPickAction {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::Billboard(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) => {
+            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) => {
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Billboard(b) => {
+                let current = self.state.model_matrix();
+                let inv = self.state.view_matrix().inverse();
+                let facing = if b.axis_aligned {
+                    let fwd = Vec3::new(inv.w_axis.x, 0.0, inv.w_axis.z).normalize();
+                    Mat4::look_at_rh(Vec3::ZERO, fwd, Vec3::Y)
+                } else { Mat4::from_cols(inv.x_axis, inv.y_axis, inv.z_axis, Mat4::IDENTITY.w_axis) };
+                self.state.set_model_matrix(current * facing);
+                for &child in &entry.children { self.traverse_node(graph, child); }
+                self.state.set_model_matrix(current);
+            }
+            NodeData::ResetTransform(_) => {
+                let saved = self.state.model_matrix();
+                self.state.set_model_matrix(Mat4::IDENTITY);
+                for &child in &entry.children { self.traverse_node(graph, child); }
+                self.state.set_model_matrix(saved);
+            }
+            NodeData::ExplodedView(ev) => {
+                let base = self.state.model_matrix();
                 for &child in &entry.children {
+                    self.state.set_model_matrix(base * Mat4::from_translation(ev.direction * ev.factor));
                     self.traverse_node(graph, child);
                 }
+                self.state.set_model_matrix(base);
             }
             NodeData::Switch(sw) => {
                 match sw.which_child {
@@ -312,10 +335,34 @@ impl RayPickAction {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
             }
-            NodeData::Coordinate3(_) | NodeData::TextureCoordinate2(_) | NodeData::Normal(_) | NodeData::Material(_) => {}
-            NodeData::DirectionalLight(_)
-            | NodeData::PointLight(_)
-            | NodeData::SpotLight(_) | NodeData::AreaLight(_) => {}
+            NodeData::Coordinate3(coord) => {
+                self.state.set_coordinate(coord.point.clone());
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::TextureCoordinate2(tex) => {
+                self.state.set_texture_coordinate2(tex.point.clone());
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Normal(norm) => {
+                self.state.set_normal(norm.vector.clone());
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::Material(mat) => {
+                self.state.set_material(MaterialElement {
+                    diffuse: mat.diffuse_color, ambient: mat.ambient_color,
+                    specular: mat.specular_color, shininess: mat.shininess,
+                    base_color: mat.base_color, metallic: mat.metallic, roughness: mat.roughness,
+                    albedo_texture: mat.albedo_texture.clone(), normal_texture: mat.normal_texture.clone(),
+                    opacity: mat.opacity, emissive_color: mat.emissive_color,
+                    emissive_texture: mat.emissive_texture.clone(),
+                    metallic_roughness_texture: mat.metallic_roughness_texture.clone(),
+                    occlusion_texture: mat.occlusion_texture.clone(),
+                    alpha_mode: mat.alpha_mode, alpha_cutoff: mat.alpha_cutoff,
+                    double_sided: mat.double_sided, anisotropic: mat.anisotropic,
+                });
+                for &child in &entry.children { self.traverse_node(graph, child); }
+            }
+            NodeData::DirectionalLight(_) | NodeData::PointLight(_) | NodeData::SpotLight(_) | NodeData::AreaLight(_) => {}
             // Shape nodes: do intersection test
             NodeData::Triangle(_) => {
                 if !self.is_pickable() { return; }
