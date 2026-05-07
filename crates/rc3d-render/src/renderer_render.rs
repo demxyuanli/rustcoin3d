@@ -27,6 +27,9 @@ impl super::Renderer {
         presentation: render_passes::FramePresentation<'p>,
         ssao_projection: Option<(Mat4, Mat4)>,
     ) -> FrameStats {
+        // Poll completed texture streaming loads from background threads
+        self.texture_streamer.poll_completed(&self.device, &self.queue);
+
         self.cpu_span.begin_frame();
         self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);

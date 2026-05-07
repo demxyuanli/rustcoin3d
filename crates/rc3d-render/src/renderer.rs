@@ -111,6 +111,11 @@ pub struct Renderer {
     pub gpu_timer: crate::profiler::GpuTimer,
     pub cpu_span: crate::profiler::CpuSpanCollector,
 
+    // ── Render cache tier ──
+    pub draw_cache: crate::flat_draw_cache::FlatDrawCache,
+    pub texture_table: crate::global_tables::TexturePathTable,
+    pub texture_streamer: crate::texture_streaming::TextureStreamer,
+
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
 }
@@ -427,6 +432,10 @@ impl Renderer {
             // Profiler
             gpu_timer,
             cpu_span: crate::profiler::CpuSpanCollector::default(),
+            // Render cache
+            draw_cache: crate::flat_draw_cache::FlatDrawCache::new(),
+            texture_table: crate::global_tables::TexturePathTable::new(),
+            texture_streamer: crate::texture_streaming::TextureStreamer::new(),
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),
@@ -446,6 +455,7 @@ impl Renderer {
             // GPU internals
             gpu: GpuInternals {
                 pipelines,
+                pbr_variant_cache: crate::pipelines::PbrVariantCache::new(),
                 phong_pool,
                 shadow_pool,
                 flat_pool,

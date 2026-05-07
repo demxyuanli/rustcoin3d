@@ -50,6 +50,8 @@ pub(crate) struct FrameState {
 
 pub(crate) struct GpuInternals {
     pub pipelines: PipelineSet,
+    #[allow(dead_code)]
+    pub pbr_variant_cache: crate::pipelines::PbrVariantCache,
     pub phong_pool: GpuUniformPool,
     pub shadow_pool: GpuUniformPool,
     pub flat_pool: GpuUniformPool,
