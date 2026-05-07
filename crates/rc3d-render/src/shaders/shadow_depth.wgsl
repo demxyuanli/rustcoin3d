@@ -2,7 +2,7 @@ struct ShadowUniforms {
     shadow_mvp: mat4x4<f32>,
 }
 
-@group(0) @binding(0) var<uniform> su: ShadowUniforms;
+@group(0) @binding(0) var<uniform> su: array<ShadowUniforms, 4>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -11,6 +11,9 @@ struct VertexInput {
 }
 
 @vertex
-fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
-    return su.shadow_mvp * vec4<f32>(in.position, 1.0);
+fn vs_main(
+    in: VertexInput,
+    @builtin(instance_index) instance_idx: u32,
+) -> @builtin(position) vec4<f32> {
+    return su[instance_idx].shadow_mvp * vec4<f32>(in.position, 1.0);
 }

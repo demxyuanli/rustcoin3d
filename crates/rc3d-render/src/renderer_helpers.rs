@@ -32,6 +32,31 @@ impl Renderer {
         }
     }
 
+    /// Batched draw with instance count for CSM layered shadow rendering.
+    /// Like `draw_mesh_batched` but passes `instance_count` so each instance
+    /// gets a distinct `@builtin(instance_index)` in the vertex shader.
+    pub(crate) fn draw_mesh_instanced(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        mesh_id: crate::gpu_resource::MeshId,
+        instance_count: u32,
+        last_bound: &mut Option<crate::gpu_resource::MeshId>,
+    ) {
+        let Some(mesh) = self.get_mesh(mesh_id) else { return };
+        if last_bound.map_or(true, |id| id != mesh_id) {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            if let Some(index_buffer) = &mesh.index_buffer {
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            *last_bound = Some(mesh_id);
+        }
+        if mesh.index_buffer.is_some() {
+            pass.draw_indexed(0..mesh.index_count, 0, 0..instance_count);
+        } else {
+            pass.draw(0..mesh.vertex_count, 0..instance_count);
+        }
+    }
+
     pub(crate) fn draw_edges_batched(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

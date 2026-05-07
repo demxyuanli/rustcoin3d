@@ -318,6 +318,7 @@ impl GpuUniformPool {
     }
 
     /// Pool for per-draw shadow MVP; `layout` must match [PipelineSet::shadow_draw_bgl].
+    /// The shader expects `array<ShadowDrawUniforms, 4>` so the binding must span 4 strides.
     pub fn new_shadow_pool(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, capacity: usize) -> Self {
         let raw_stride = std::mem::size_of::<ShadowDrawUniforms>() as u64;
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
@@ -337,7 +338,10 @@ impl GpuUniformPool {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &buffer,
                     offset: 0,
-                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                    size: Some(
+                        std::num::NonZero::new(stride * 4)
+                            .expect("shadow uniform stride * 4 must be non-zero"),
+                    ),
                 }),
             }],
             label: Some("Shadow Uniform Pool BG"),
@@ -439,6 +443,26 @@ impl GpuUniformPool {
 
     pub fn push_shadow(&mut self, uniforms: &ShadowDrawUniforms) -> Option<u32> {
         self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    /// Push an array of shadow uniforms for layered CSM rendering.
+    /// Writes 4 `ShadowDrawUniforms` at consecutive aligned offsets and returns the base offset.
+    pub fn push_shadow_array(&mut self, uniforms: &[ShadowDrawUniforms; 4]) -> Option<u32> {
+        if self.cursor + 4 > self.capacity {
+            return None;
+        }
+        let stride = self.stride as usize;
+        let base_offset = self.cursor * stride;
+        for (i, u) in uniforms.iter().enumerate() {
+            let offset = base_offset + i * stride;
+            self.staging[offset..offset + std::mem::size_of::<ShadowDrawUniforms>()]
+                .copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let end = base_offset + 4 * stride;
+        self.written_end = self.written_end.max(end);
+        let offset_u32 = base_offset as u32;
+        self.cursor += 4;
+        Some(offset_u32)
     }
 
     pub fn flush(&self, queue: &wgpu::Queue) {
