@@ -192,11 +192,8 @@ pub(super) fn draw_opaque_triangle_batches(
 
             for &i in &standard_draws {
                 let dc = ctx.visible[i];
-                // Use raw key value for mesh grouping
-                let mesh_hash = ctx.mesh_handles[i].map(|m| {
-                    use slotmap::Key;
-                    m.data().as_ffi()
-                }).unwrap_or(i as u64);
+                // Group by draw call's mesh_hash (same geometry = same hash)
+                let mesh_hash = dc.mesh_hash.unwrap_or(i as u64);
                 let mat_key = material_key(dc);
                 let diffuse = if ctx.mode == DisplayMode::HiddenLine {
                     [0.08, 0.08, 0.08, 1.0]

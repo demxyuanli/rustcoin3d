@@ -102,9 +102,9 @@ fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_idx: u32, @builtin(ins
         }
     }
 
-    // World / clip from per-draw uniforms so solid pass matches edge pass (flat MVP) reliably.
-    let world_pos4 = u.model * vec4<f32>(pos, 1.0);
-    out.clip_position = u.mvp * vec4<f32>(pos, 1.0);
+    // World from uniform model (same for group), clip from per-instance MVP.
+    let world_pos4 = inst.model * vec4<f32>(pos, 1.0);
+    out.clip_position = inst.mvp * vec4<f32>(pos, 1.0);
     out.world_pos = world_pos4.xyz;
     let world_normal = normalize((u.model * vec4<f32>(nrm, 0.0)).xyz);
     out.world_normal = world_normal;
