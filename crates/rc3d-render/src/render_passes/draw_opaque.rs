@@ -18,7 +18,9 @@ fn pack_morph_weights(weights: &[f32]) -> [f32; MAX_MORPH_WEIGHTS] {
     packed
 }
 
-/// Fast material identity hash from texture paths.
+/// Fast material identity hash from texture paths + PBR parameters.
+/// Pure-color materials with different base_color/metallic/roughness
+/// produce different keys, avoiding stale bind group cache hits.
 fn material_key(dc: &DrawCall) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = twox_hash::XxHash64::with_seed(0);
@@ -27,6 +29,12 @@ fn material_key(dc: &DrawCall) -> u64 {
     dc.metallic_roughness_path.hash(&mut h);
     dc.emissive_path.hash(&mut h);
     dc.occlusion_path.hash(&mut h);
+    dc.base_color.x.to_bits().hash(&mut h);
+    dc.base_color.y.to_bits().hash(&mut h);
+    dc.base_color.z.to_bits().hash(&mut h);
+    dc.metallic.to_bits().hash(&mut h);
+    dc.roughness.to_bits().hash(&mut h);
+    dc.opacity.to_bits().hash(&mut h);
     h.finish()
 }
 
