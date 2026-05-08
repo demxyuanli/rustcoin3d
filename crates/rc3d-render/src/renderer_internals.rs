@@ -86,7 +86,6 @@ pub(crate) struct GpuInternals {
     pub instance_buffer: wgpu::Buffer,
     pub ibl_instance_bind_group: wgpu::BindGroup,
     pub timing_supported: bool,
-    pub multiview_supported: bool,
     pub pipeline_cache: Option<PipelineCacheManager>,
     #[allow(dead_code)]
     pub shader_cache: ShaderVariantCache,
