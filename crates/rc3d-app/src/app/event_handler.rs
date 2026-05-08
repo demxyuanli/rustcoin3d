@@ -597,11 +597,14 @@ pub(crate) fn window_event(
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
-                    let current_vp = renderer.frame_vp();
-                    let camera_static = app.state.world.prev_camera_vp
-                        .map_or(false, |p| {
-                            (p - current_vp).to_cols_array().iter().all(|&v| v.abs() < 0.0001)
-                        });
+                    // VP saved after last render. Compare element-wise with tolerance.
+                    let camera_static = app.state.world.prev_camera_vp.map_or(false, |prev| {
+                        let curr = renderer.frame_vp();
+                        let a = prev.to_cols_array_2d();
+                        let b = curr.to_cols_array_2d();
+                        a.iter().flatten().zip(b.iter().flatten())
+                            .all(|(x, y)| (x - y).abs() < 0.01)
+                    });
                     let can_skip = dirty_roots.is_empty()
                         && camera_static
                         && !app.state.world.cached_draw_calls.is_empty();
@@ -623,7 +626,6 @@ pub(crate) fn window_event(
                         drop(dirty_roots);
                         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     }
-                    app.state.world.prev_camera_vp = Some(renderer.frame_vp());
                     app.state.last_camera_eye = app.state.world.collector.camera_pos;
                     gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
 
@@ -726,6 +728,7 @@ pub(crate) fn window_event(
                         app.state.last_frame_time_ms = frame_time_ms;
                         app.state.fps_tracker.push(frame_time_ms);
                         app.state.last_render_stats = stats;
+                        app.state.world.prev_camera_vp = Some(renderer.frame_vp());
                         let idle_for_secs = app.state.adaptive_last_interaction.elapsed().as_secs_f32();
                         let has_dynamic_scene = app.state.world.engines.is_some();
                         let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
