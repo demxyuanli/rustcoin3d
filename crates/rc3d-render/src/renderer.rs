@@ -116,6 +116,11 @@ pub struct Renderer {
     pub texture_table: crate::global_tables::TexturePathTable,
     pub texture_streamer: crate::texture_streaming::TextureStreamer,
 
+    // ── Material bind group cache ──
+    /// Cached PBR material bind group, keyed by hash of (albedo, normal, mr, emissive, occlusion) texture IDs.
+    pub(crate) last_material_bg_key: u64,
+    pub(crate) last_material_bg: Option<wgpu::BindGroup>,
+
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
 }
@@ -436,6 +441,8 @@ impl Renderer {
             draw_cache: crate::flat_draw_cache::FlatDrawCache::new(),
             texture_table: crate::global_tables::TexturePathTable::new(),
             texture_streamer: crate::texture_streaming::TextureStreamer::new(),
+            last_material_bg_key: 0,
+            last_material_bg: None,
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),

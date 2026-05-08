@@ -91,6 +91,7 @@ impl GpuTimer {
                 (self.next_slot * 2 * 8) as u64,
             );
         }
+        self.labels.truncate(self.next_slot as usize);
         self.next_slot = 0;
     }
 
@@ -104,7 +105,8 @@ impl GpuTimer {
         if let Ok(Ok(())) = rx.recv() {
             let view = buf_slice.get_mapped_range();
             let timestamps: &[u64] = bytemuck::cast_slice(&view);
-            self.last_timestamps = timestamps.to_vec();
+            let active_count = (self.labels.len() * 2).min(timestamps.len());
+            self.last_timestamps = timestamps[..active_count].to_vec();
             drop(view);
         }
         self.staging_buf.unmap();

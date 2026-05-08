@@ -18,6 +18,18 @@ fn pack_morph_weights(weights: &[f32]) -> [f32; MAX_MORPH_WEIGHTS] {
     packed
 }
 
+/// Fast material identity hash from texture paths.
+fn material_key(dc: &DrawCall) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = twox_hash::XxHash64::with_seed(0);
+    dc.albedo_path.hash(&mut h);
+    dc.normal_path.hash(&mut h);
+    dc.metallic_roughness_path.hash(&mut h);
+    dc.emissive_path.hash(&mut h);
+    dc.occlusion_path.hash(&mut h);
+    h.finish()
+}
+
 pub(super) fn albedo_material_bind_group<'a>(
     texture_cache: &'a mut crate::texture_cache::TextureCache,
     device: &wgpu::Device,
@@ -135,12 +147,19 @@ pub(super) fn draw_opaque_triangle_batches(
                 shadow_params: ctx.shadow_params,
             };
             if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
-                let mat_bg = albedo_material_bind_group(
-                    &mut renderer.gpu.texture_cache, &renderer.device,
-                    &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
-                );
+                let key = material_key(dc);
+                if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
+                    let bg = albedo_material_bind_group(
+                        &mut renderer.gpu.texture_cache, &renderer.device,
+                        &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                    );
+                    renderer.last_material_bg_key = key;
+                    renderer.last_material_bg = Some(bg.clone());
+                }
                 pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
-                pass.set_bind_group(1, mat_bg, &[]);
+                if let Some(ref mat_bg) = renderer.last_material_bg {
+                    pass.set_bind_group(1, mat_bg, &[]);
+                }
                 match &renderer.gpu.csm_shadow {
                     Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
                     None => log::error!("CSM shadow missing; shadow bind group not set"),
@@ -198,12 +217,19 @@ pub(super) fn draw_opaque_triangle_batches(
                 }];
                 renderer.queue.write_buffer(&renderer.gpu.instance_buffer, 0, bytemuck::cast_slice(&one));
 
-                let mat_bg = albedo_material_bind_group(
-                    &mut renderer.gpu.texture_cache, &renderer.device,
-                    &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
-                );
+                let key = material_key(dc);
+                if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
+                    let mat_bg = albedo_material_bind_group(
+                        &mut renderer.gpu.texture_cache, &renderer.device,
+                        &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                    );
+                    renderer.last_material_bg_key = key;
+                    renderer.last_material_bg = Some(mat_bg.clone());
+                }
                 pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
-                pass.set_bind_group(1, mat_bg, &[]);
+                if let Some(ref mat_bg) = renderer.last_material_bg {
+                    pass.set_bind_group(1, mat_bg, &[]);
+                }
                 match &renderer.gpu.csm_shadow {
                     Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
                     None => log::error!("CSM shadow missing; shadow bind group not set"),
