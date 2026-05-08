@@ -181,22 +181,29 @@ impl CameraController {
     /// Update a camera node in the scene graph from current state.
     pub fn update_camera_node(&self, graph: &mut SceneGraph, camera_node: NodeId, aspect: f32) {
         let eye = self.eye_position();
-        if let Some(entry) = graph.get_mut(camera_node) {
+        let changed = if let Some(entry) = graph.get_mut(camera_node) {
             match &mut entry.data {
                 NodeData::PerspectiveCamera(cam) => {
+                    let moved = (cam.position - eye).length_squared() > 0.0001;
                     cam.position = eye;
                     cam.orientation = Mat4::look_at_rh(eye, self.target, self.up);
                     cam.aspect = aspect;
+                    moved
                 }
                 NodeData::OrthographicCamera(cam) => {
+                    let moved = (cam.position - eye).length_squared() > 0.0001;
                     cam.position = eye;
                     let height = self.distance * 1.2;
                     cam.height = height;
                     cam.aspect = aspect;
+                    moved
                 }
-                _ => {}
+                _ => false,
             }
-            // Mark camera node dirty so incremental traversal knows to re-traverse.
+        } else {
+            false
+        };
+        if changed {
             rc3d_render::dirty_flags::mark_node_dirty(
                 graph,
                 camera_node,

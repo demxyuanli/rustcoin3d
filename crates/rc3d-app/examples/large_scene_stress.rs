@@ -84,14 +84,14 @@ fn build_large_scene(count: usize) -> SceneGraph {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // Camera — far back to see the whole scene
+    // Camera — wide FOV, far back to see dense grid
     graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-            Vec3::new(0.0, 30.0, 50.0),
-            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::new(0.0, 40.0, 3.0),
+            Vec3::new(0.0, 2.0, 0.0),
             Vec3::Y,
-            std::f32::consts::FRAC_PI_4,
+            1.2,  // wide FOV (~69°)
             800.0 / 600.0,
         )),
     );
@@ -107,11 +107,12 @@ fn build_large_scene(count: usize) -> SceneGraph {
         }),
     );
 
-    // Grid of objects in XZ plane, stacked in layers
-    let layers = 5;
+    // Dense grid: fewer layers, more objects per layer (xz plane).
+    // Tight spacing to maximize visible density.
+    let layers = 3;
     let per_layer = count / layers;
     let cols = (per_layer as f32).sqrt().ceil() as i32;
-    let spacing = 2.5f32;
+    let spacing = 1.2f32;
 
     let colors = [
         Vec3::new(0.8, 0.3, 0.3), Vec3::new(0.3, 0.8, 0.3),
@@ -121,7 +122,7 @@ fn build_large_scene(count: usize) -> SceneGraph {
     ];
 
     for layer in 0..layers {
-        let y_base = layer as f32 * 3.0;
+        let y_base = layer as f32 * 1.5;
         for i in 0..per_layer.min(cols as usize * cols as usize) {
             let row = i as i32 / cols;
             let col = i as i32 % cols;
@@ -147,12 +148,12 @@ fn build_large_scene(count: usize) -> SceneGraph {
             );
             // Mix of geometry types
             let _ = match i % 5 {
-                0 => graph.add_child(sep, NodeData::Cube(CubeNode::default())),
-                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.8 })),
-                2 => graph.add_child(sep, NodeData::Cone(ConeNode::default())),
+                0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.5, height: 0.5, depth: 0.5 })),
+                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.35 })),
+                2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.3, height: 0.8 })),
                 3 => graph.add_child(
                     sep,
-                    NodeData::Cube(CubeNode { width: 0.6, height: 2.0, depth: 0.6 }),
+                    NodeData::Cube(CubeNode { width: 0.3, height: 1.0, depth: 0.3 }),
                 ),
                 _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode::default())),
             };
