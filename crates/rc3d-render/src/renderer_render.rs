@@ -291,7 +291,7 @@ impl super::Renderer {
             let mut solid_order: Vec<usize> = (0..visible.len())
                 .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
                 .collect();
-            solid_order.sort_by_key(|&i| {
+            solid_order.sort_unstable_by_key(|&i| {
                 let dc = visible[i];
                 (
                     sort_keys::vec4_array_sort_key(dc.light_dirs),
@@ -311,7 +311,7 @@ impl super::Renderer {
             let mut edge_order: Vec<usize> = (0..visible.len())
                 .filter(|&i| !visible[i].edge_positions.is_empty())
                 .collect();
-            edge_order.sort_by_key(|&i| {
+            edge_order.sort_unstable_by_key(|&i| {
                 let dc = visible[i];
                 (
                     sort_keys::display_mode_sort_key(dc.display_mode),
@@ -322,7 +322,7 @@ impl super::Renderer {
             let mut selected_order: Vec<usize> = (0..visible.len())
                 .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
                 .collect();
-            selected_order.sort_by_key(|&i| {
+            selected_order.sort_unstable_by_key(|&i| {
                 let dc = visible[i];
                 (
                     sort_keys::display_mode_sort_key(dc.display_mode),

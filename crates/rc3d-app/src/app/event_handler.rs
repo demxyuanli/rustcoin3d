@@ -596,8 +596,13 @@ pub(crate) fn window_event(
                     app.state.world.collector.global_display_mode = renderer.display_mode();
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
+                    let _t0 = std::time::Instant::now();
                     for &root in app.state.world.graph.roots() {
                         app.state.world.collector.traverse(&app.state.world.graph, root);
+                    }
+                    let traversal_ms = _t0.elapsed().as_secs_f64() * 1000.0;
+                    if app.state.world.graph.roots().len() > 1 || traversal_ms > 5.0 {
+                        log::info!("Scene traversal: {:.2}ms ({} nodes)", traversal_ms, app.state.world.graph.roots().len());
                     }
                     app.state.last_camera_eye = app.state.world.collector.camera_pos;
                     gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
