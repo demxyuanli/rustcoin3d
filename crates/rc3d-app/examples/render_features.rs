@@ -18,6 +18,7 @@ use std::env;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use rc3d_actions::CameraFitConfig;
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::control_panel::{preset_for_render_features_panel, RenderFeaturePanelState};
 use rc3d_app::{AdaptiveQualityMode, App};
@@ -177,6 +178,7 @@ fn main() {
 
     // Add camera and lights if missing
     graph = ensure_scene_setup(graph);
+    rc3d_actions::fit_camera_to_scene(&mut graph, CameraFitConfig::default());
     let material_ids = collect_material_nodes(&graph);
     let (demo_light_ids, base_light_intensities) = attach_panel_demo_lights(&mut graph);
     let debug_overlay_root = attach_render_debug_overlay(&mut graph);

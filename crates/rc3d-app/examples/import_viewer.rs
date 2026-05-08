@@ -2,7 +2,7 @@ use std::env;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rc3d_actions::GetBoundingBoxAction;
+use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::control_panel::{preset_for_import_viewer_panel, RenderFeaturePanelState};
 use rc3d_app::{AdaptiveQualityMode, App};
@@ -125,7 +125,7 @@ fn main() {
 
     let mut graph = ensure_camera_and_light(graph, high_contrast);
     let anim_root = insert_animation_root(&mut graph);
-    let (target, orbit_radius) = fit_camera_to_scene(&mut graph);
+    let (target, orbit_radius) = fit_camera_to_scene(&mut graph, CameraFitConfig::default());
     let debug_overlay_root =
         attach_import_debug_overlay(&mut graph, anim_root, target, orbit_radius);
     let _controller_root = find_first_camera_node(&graph).unwrap_or(graph.roots()[0]);
@@ -700,59 +700,6 @@ fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
     }
     for child in children {
         boost_contrast_recursive(graph, child);
-    }
-}
-
-fn fit_camera_to_scene(graph: &mut rc3d_scene::SceneGraph) -> (Vec3, f32) {
-    let mut bbox_action = GetBoundingBoxAction::new();
-    rc3d_actions::apply_to_all_roots(&mut bbox_action, graph);
-    let bbox = bbox_action.bounding_box;
-    if !bbox.min.x.is_finite() || !bbox.max.x.is_finite() {
-        return (Vec3::ZERO, 10.0);
-    }
-    let center = bbox.center();
-    let extent = bbox.size();
-    let radius = extent.length().max(1.0) * 0.5;
-    let eye = center + Vec3::new(radius * 1.5, radius * 1.1, radius * 2.0);
-    let near = (radius * 0.001).max(0.01);
-    let far = (radius * 20.0).max(100.0);
-
-    for &root in graph.roots().to_vec().iter() {
-        apply_camera_fit_recursive(graph, root, eye, center, near, far);
-    }
-    (center, radius * 2.2)
-}
-
-fn apply_camera_fit_recursive(
-    graph: &mut rc3d_scene::SceneGraph,
-    node: NodeId,
-    eye: Vec3,
-    target: Vec3,
-    near: f32,
-    far: f32,
-) {
-    let children = graph.children(node).unwrap_or(&[]).to_vec();
-    if let Some(entry) = graph.get_mut(node) {
-        match &mut entry.data {
-            NodeData::PerspectiveCamera(cam) => {
-                let fov = cam.fov;
-                let aspect = cam.aspect;
-                *cam = PerspectiveCameraNode::look_at(eye, target, Vec3::Y, fov, aspect);
-                cam.near = near;
-                cam.far = far;
-            }
-            NodeData::OrthographicCamera(cam) => {
-                cam.position = eye;
-                cam.orientation = Mat4::look_at_rh(eye, target, Vec3::Y);
-                cam.near = near;
-                cam.far = far;
-                cam.height = (target - eye).length().max(1.0);
-            }
-            _ => {}
-        }
-    }
-    for child in children {
-        apply_camera_fit_recursive(graph, child, eye, target, near, far);
     }
 }
 

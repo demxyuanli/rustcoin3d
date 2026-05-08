@@ -2,6 +2,7 @@ pub mod action;
 pub mod event;
 pub mod light_subsystem;
 pub mod element;
+pub mod camera_fit;
 pub mod get_bounding_box;
 pub mod handle_event;
 pub mod lod_update;
@@ -18,6 +19,7 @@ pub use action::{Action, ActionKind, apply_to_all_roots, par_apply_to_all_roots}
 pub use event::{Event, EventContext};
 pub use light_subsystem::LightSubsystem;
 pub use element::*;
+pub use camera_fit::{fit_camera_to_scene, CameraFitConfig};
 pub use get_bounding_box::GetBoundingBoxAction;
 pub use handle_event::HandleEventAction;
 pub use lod_update::update_all_lod_nodes;

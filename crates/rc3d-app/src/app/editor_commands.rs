@@ -1,5 +1,5 @@
 use rc3d_actions::{
-    AddChildCommand, CreateNodeCommand, DeleteNodeCommand,
+    AddChildCommand, CameraFitConfig, CreateNodeCommand, DeleteNodeCommand,
     SetFieldCommand, SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };
 use rc3d_core::math::{Mat4, Quat, Vec2, Vec3};
@@ -165,6 +165,14 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                     app.state.world.graph.clear_selection();
                     app.editor.measurements.clear();
                     app.editor.measurement_first_point = None;
+                    let (center, orbit_dist) = rc3d_actions::fit_camera_to_scene(
+                        &mut app.state.world.graph,
+                        CameraFitConfig::default(),
+                    );
+                    if let Some(ctrl) = app.active_camera_controller_mut() {
+                        ctrl.target = center;
+                        ctrl.distance = orbit_dist;
+                    }
                     gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
                     log::info!("Imported scene: {}", path.display());
                 }
