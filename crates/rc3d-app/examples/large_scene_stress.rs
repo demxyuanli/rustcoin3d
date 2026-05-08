@@ -84,7 +84,18 @@ fn build_large_scene(count: usize) -> SceneGraph {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // No scene camera — use CameraController (cube-proven default)
+    // Scene camera — updated by CameraController each frame.
+    // Initial position matches CameraController::new(eye, distance).
+    graph.add_child(
+        root,
+        NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
+            Vec3::new(0.0, 8.0, 12.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            std::f32::consts::FRAC_PI_4,
+            800.0 / 600.0,
+        )),
+    );
 
     // Directional light
     graph.add_child(
