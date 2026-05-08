@@ -21,7 +21,7 @@ use super::PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
 impl super::Renderer {
     fn render_draw_calls_core<'p>(
         &'p mut self,
-        draw_calls: &[DrawCall],
+        _draw_calls: &[DrawCall], // replaced by internal cache_to_draw_calls
         scene: &SceneGraph,
         post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
         presentation: render_passes::FramePresentation<'p>,
@@ -31,6 +31,29 @@ impl super::Renderer {
         self.texture_streamer.poll_completed(&self.device, &self.queue);
 
         self.cpu_span.begin_frame();
+
+        // ── Incremental traversal → FlatDrawCache ──
+        // Only re-traverses dirty subtrees; static subtrees reuse cached data.
+        self.cpu_span.measure("traversal", || {
+            crate::render_action::traverse_into_cache(
+                scene,
+                &mut self.draw_cache,
+                &mut self.texture_table,
+                &std::collections::HashSet::new(),
+            );
+        });
+
+        // ── Adapter: FlatDrawCache → Vec<DrawCall> ──
+        let draw_calls = crate::render_action::cache_to_draw_calls(
+            &self.draw_cache,
+            &self.texture_table,
+        );
+        // Also merge effect commands from cache
+        let effect_commands = if draw_calls.is_empty() {
+            self.draw_cache.effect_commands.clone()
+        } else {
+            crate::render_passes::pass_effects::collect_effect_nodes(scene)
+        };
         self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
         self.frame.animation_time_sec += dt_sec;
@@ -52,8 +75,6 @@ impl super::Renderer {
                 })
                 .collect();
         }
-        let effect_commands = render_passes::pass_effects::collect_effect_nodes(scene);
-
         if draw_calls.is_empty() {
             return FrameStats::default();
         }
@@ -470,7 +491,7 @@ impl super::Renderer {
         let mut stats = render_passes::execute_passes(
             self,
             &ctx,
-            draw_calls,
+            &draw_calls,
             self.frame.frame_counter,
             post_swapchain_overlay,
             presentation,

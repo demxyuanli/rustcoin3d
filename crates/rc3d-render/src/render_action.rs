@@ -1633,3 +1633,75 @@ pub fn convert_collector_to_cache(
         .point_clouds
         .extend(collector.effect_commands.point_clouds.clone());
 }
+
+// ── Adapter: FlatDrawCache → Vec<DrawCall> ──
+
+fn tex_id_to_arcstr(
+    table: &crate::global_tables::TexturePathTable,
+    id: u16,
+) -> Option<Arc<str>> {
+    if id == u16::MAX {
+        None
+    } else {
+        table.get(id).cloned()
+    }
+}
+
+/// Convert FlatDrawCache back to legacy Vec<DrawCall> for existing render path.
+pub fn cache_to_draw_calls(
+    cache: &crate::flat_draw_cache::FlatDrawCache,
+    texture_table: &crate::global_tables::TexturePathTable,
+) -> Vec<DrawCall> {
+    use crate::flat_draw_cache::DrawFlags;
+
+    if cache.gpu_data.is_empty() {
+        return Vec::new();
+    }
+
+    cache
+        .gpu_data
+        .iter()
+        .zip(cache.metadata.iter())
+        .map(|(gpu, meta)| {
+            let model_matrix = glam::Mat4::from_cols_array_2d(&gpu.model_matrix);
+            let flags = DrawFlags::from_bits_truncate(gpu.draw_flags);
+            let base = meta.material_params.base_color;
+            let mr = meta.material_params.metallic_roughness_anisotropic;
+            let em = meta.material_params.emissive_color;
+
+            DrawCall {
+                model_matrix,
+                mvp: model_matrix,
+                camera_pos: Vec3::ZERO,
+                base_color: Vec3::new(base[0], base[1], base[2]),
+                metallic: mr[0],
+                roughness: mr[1],
+                anisotropic: mr[2],
+                opacity: base[3],
+                emissive_color: Vec3::new(em[0], em[1], em[2]),
+                albedo_path: tex_id_to_arcstr(texture_table, meta.albedo_tex_id),
+                normal_path: tex_id_to_arcstr(texture_table, meta.normal_tex_id),
+                metallic_roughness_path: tex_id_to_arcstr(texture_table, meta.mr_tex_id),
+                emissive_path: tex_id_to_arcstr(texture_table, meta.emissive_tex_id),
+                occlusion_path: tex_id_to_arcstr(texture_table, meta.occlusion_tex_id),
+                alpha_mode: match meta.alpha_mode {
+                    1 => rc3d_scene::AlphaMode::Mask,
+                    2 => rc3d_scene::AlphaMode::Blend,
+                    _ => rc3d_scene::AlphaMode::Opaque,
+                },
+                alpha_cutoff: meta.alpha_cutoff,
+                double_sided: meta.double_sided != 0,
+                mesh_hash: if meta.mesh_hash != 0 {
+                    Some(meta.mesh_hash)
+                } else {
+                    None
+                },
+                selected: flags.contains(DrawFlags::SELECTED),
+                is_overlay: flags.contains(DrawFlags::OVERLAY),
+                depth_reversed_z: flags.contains(DrawFlags::DEPTH_REVERSED),
+                projection_orthographic: flags.contains(DrawFlags::ORTHOGRAPHIC),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
