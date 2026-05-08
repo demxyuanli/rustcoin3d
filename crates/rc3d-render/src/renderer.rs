@@ -459,6 +459,8 @@ impl Renderer {
                 frame_stats: FrameStats::default(),
                 effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
                 cached_bvh: None,
+                has_text_nodes: true,    // optimistic; auto-disabled after 2 empty frames
+                has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
             },
             // GPU internals
             gpu: GpuInternals {

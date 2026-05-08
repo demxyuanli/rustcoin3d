@@ -48,6 +48,10 @@ pub(crate) struct FrameState {
     pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
     /// Cached BVH + its items for incremental update (avoids full rebuild each frame).
     pub cached_bvh: Option<(rc3d_core::Bvh, Vec<(rc3d_core::Aabb, u32)>)>,
+    /// Fast-path: skip full-scene text traversal when no Text2/Text3 nodes.
+    pub has_text_nodes: bool,
+    /// Fast-path: skip full-scene effect traversal when no Decal/Volume/PointCloud nodes.
+    pub has_effect_nodes: bool,
 }
 
 pub(crate) struct GpuInternals {

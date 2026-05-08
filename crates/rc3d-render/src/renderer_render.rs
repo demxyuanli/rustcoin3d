@@ -52,16 +52,38 @@ impl super::Renderer {
             }
         }
 
+        // Fast-path: auto-learn whether scene has text/effect nodes.
+        // First 2 frames always traverse to detect; after that, skip if empty.
         if let Some(hud) = &mut self.gpu.hud {
-            hud.overlay_lines = render_passes::pass_text::collect_text_nodes(scene)
+            hud.overlay_lines = if self.frame.has_text_nodes || self.frame.frame_counter < 2 {
+                let lines: Vec<String> = self.cpu_span.measure("text_collect", || {
+                    render_passes::pass_text::collect_text_nodes(scene)
+                })
                 .into_iter()
                 .map(|cmd| {
-                    let _style = (cmd.screen_pos, cmd.size, cmd.color, cmd.is_3d);
+                    let _ = (cmd.screen_pos, cmd.size, cmd.color, cmd.is_3d);
                     cmd.string
                 })
                 .collect();
+                if lines.is_empty() && self.frame.frame_counter >= 2 {
+                    self.frame.has_text_nodes = false;
+                }
+                lines
+            } else {
+                Vec::new()
+            };
         }
-        let effect_commands = render_passes::pass_effects::collect_effect_nodes(scene);
+        let effect_commands = if self.frame.has_effect_nodes || self.frame.frame_counter < 2 {
+            let cmds = self.cpu_span.measure("effect_collect", || {
+                render_passes::pass_effects::collect_effect_nodes(scene)
+            });
+            if cmds.is_empty() && self.frame.frame_counter >= 2 {
+                self.frame.has_effect_nodes = false;
+            }
+            cmds
+        } else {
+            crate::render_passes::pass_effects::EffectCommands::default()
+        };
 
         if draw_calls.is_empty() {
             return FrameStats::default();
