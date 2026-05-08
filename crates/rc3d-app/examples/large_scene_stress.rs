@@ -44,7 +44,7 @@ fn main() {
         ..Default::default()
     }));
 
-    let scene = build_large_scene(1000);
+    let scene = build_large_scene(10000);
     let state_clone = state.clone();
 
     // Target at grid center, distance enough for full visibility (~14-unit grid)

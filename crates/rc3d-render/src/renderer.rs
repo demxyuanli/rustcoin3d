@@ -331,11 +331,11 @@ impl Renderer {
         let pipelines = PipelineSet::create(&device, config.format, &mut shader_cache);
         let selection_outline_pipelines =
             crate::selection_outline::SelectionOutlinePipelines::new(&device, &pipelines.flat_bgl);
-        let phong_pool = GpuUniformPool::new_phong(&device, 1024);
-        let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 1024);
-        let flat_pool = GpuUniformPool::new_flat(&device, 2048);
-        let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 1024);
-        let outline_pool = GpuUniformPool::new_outline(&device, 1024);
+        let phong_pool = GpuUniformPool::new_phong(&device, 16384);
+        let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 16384);
+        let flat_pool = GpuUniformPool::new_flat(&device, 8192);
+        let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 8192);
+        let outline_pool = GpuUniformPool::new_outline(&device, 8192);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
         let csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
