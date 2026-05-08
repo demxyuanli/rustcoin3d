@@ -597,7 +597,9 @@ pub(crate) fn window_event(
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
-                    let can_skip = dirty_roots.is_empty()
+                    // Allow up to 1 persistent dirty root (camera/engine noise).
+                    // Full traversal when scene actually changes (>1 dirty or first frame).
+                    let can_skip = dirty_roots.len() <= 1
                         && !app.state.world.cached_draw_calls.is_empty();
 
                     if can_skip {
