@@ -458,6 +458,7 @@ impl Renderer {
                 viewport_layout: ViewportLayout::new(),
                 frame_stats: FrameStats::default(),
                 effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
+                cached_bvh: None,
             },
             // GPU internals
             gpu: GpuInternals {

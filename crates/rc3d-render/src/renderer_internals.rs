@@ -46,6 +46,8 @@ pub(crate) struct FrameState {
     pub frame_stats: FrameStats,
     /// Effect commands collected during scene traversal (Decal, Volume, PointCloud).
     pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
+    /// Cached BVH + its items for incremental update (avoids full rebuild each frame).
+    pub cached_bvh: Option<(rc3d_core::Bvh, Vec<(rc3d_core::Aabb, u32)>)>,
 }
 
 pub(crate) struct GpuInternals {

@@ -78,7 +78,35 @@ impl super::Renderer {
                 .enumerate()
                 .filter_map(|(i, dc)| dc.aabb.as_ref().map(|a| (a.clone(), i as u32)))
                 .collect();
-            let bvh = rc3d_core::Bvh::build(&bvh_items);
+
+            // Incremental BVH: reuse previous frame's BVH when item count matches.
+            let bvh = if let Some((ref mut cached, ref mut cached_items)) = self.frame.cached_bvh {
+                if cached_items.len() == bvh_items.len() {
+                    let updates: Vec<(usize, rc3d_core::Aabb)> = bvh_items.iter()
+                        .enumerate()
+                        .filter(|(i, (aabb, _))| {
+                            cached_items.get(*i).map_or(true, |(old, _)| {
+                                old.min != aabb.min || old.max != aabb.max
+                            })
+                        })
+                        .map(|(i, (aabb, _))| (i, aabb.clone()))
+                        .collect();
+                    cached.incremental_update(&updates, &bvh_items);
+                    // Update cached items for next frame
+                    *cached_items = bvh_items;
+                } else {
+                    *cached = rc3d_core::Bvh::build(&bvh_items);
+                    *cached_items = bvh_items;
+                }
+                // Use the cached BVH for querying (reference valid for scope)
+                &*cached
+            } else {
+                self.frame.cached_bvh = Some((
+                    rc3d_core::Bvh::build(&bvh_items),
+                    bvh_items,
+                ));
+                &self.frame.cached_bvh.as_ref().unwrap().0
+            };
 
             let mut visible_indices: Vec<usize> = Vec::with_capacity(draw_calls.len());
             if bvh.is_empty() {
