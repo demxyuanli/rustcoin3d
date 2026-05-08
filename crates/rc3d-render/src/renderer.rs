@@ -284,11 +284,13 @@ impl Renderer {
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-            | wgpu::Features::PIPELINE_CACHE;
+            | wgpu::Features::PIPELINE_CACHE
+            | wgpu::Features::MULTIVIEW;
         let features = adapter.features() & requested_features;
         let wireframe_supported = features.contains(wgpu::Features::POLYGON_MODE_LINE);
         let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let multiview_supported = features.contains(wgpu::Features::MULTIVIEW);
 
         let (device, queue) = adapter
             .request_device(
@@ -488,6 +490,7 @@ impl Renderer {
                 instance_buffer,
                 ibl_instance_bind_group,
                 timing_supported,
+                multiview_supported,
                 pipeline_cache: None,
                 shader_cache,
                 shader_reload: ShaderHotReload::new(),
