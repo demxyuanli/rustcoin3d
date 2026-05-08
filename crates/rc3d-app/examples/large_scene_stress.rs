@@ -47,7 +47,8 @@ fn main() {
     let scene = build_large_scene(10000);
     let state_clone = state.clone();
 
-    let ctrl = CameraController::new(Vec3::new(0.0, 8.0, 12.0), 18.0);
+    // Target at grid center, distance enough for full visibility (~14-unit grid)
+    let ctrl = CameraController::new(Vec3::new(0.0, 1.0, 0.0), 22.0);
     let mut app = App::new(scene)
         .with_camera_controller(ctrl)
         .with_continuous_redraw(true)
@@ -89,8 +90,8 @@ fn build_large_scene(count: usize) -> SceneGraph {
     graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-            Vec3::new(0.0, 8.0, 12.0),
-            Vec3::ZERO,
+            Vec3::new(0.0, 12.0, 21.0),
+            Vec3::new(0.0, 1.0, 0.0),
             Vec3::Y,
             std::f32::consts::FRAC_PI_4,
             800.0 / 600.0,
