@@ -1485,8 +1485,8 @@ pub fn traverse_into_cache(
 ) {
     let dirty_roots = crate::dirty_flags::collect_dirty_roots(graph);
 
-    if dirty_roots.is_empty() {
-        // Nothing changed — reuse cache as-is, just keep groups sorted
+    if dirty_roots.is_empty() && !cache.gpu_data.is_empty() {
+        // Nothing changed AND cache is populated — reuse as-is
         cache.ensure_groups_sorted();
         return;
     }
