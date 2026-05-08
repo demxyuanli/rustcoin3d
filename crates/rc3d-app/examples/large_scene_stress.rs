@@ -44,7 +44,7 @@ fn main() {
         ..Default::default()
     }));
 
-    let scene = build_large_scene(10000);
+    let scene = build_large_scene(1000);
     let state_clone = state.clone();
 
     // Target at grid center, distance enough for full visibility (~14-unit grid)
@@ -144,11 +144,11 @@ fn build_large_scene(count: usize) -> SceneGraph {
                 ..Default::default()
             }));
             let _ = match i % 5 {
-                0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.15, height: 0.15, depth: 0.15 })),
-                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.1 })),
-                2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.08, height: 0.2 })),
-                3 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.07, height: 0.22, depth: 0.07 })),
-                _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode::default())),
+                0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.2, height: 0.2, depth: 0.2 })),
+                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.12 })),
+                2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.12, height: 0.25 })),
+                3 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.1, height: 0.25, depth: 0.1 })),
+                _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode { radius: 0.08, height: 0.2 })),
             };
         }
     }
