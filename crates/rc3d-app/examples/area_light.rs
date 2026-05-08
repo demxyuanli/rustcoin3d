@@ -1,5 +1,5 @@
 //! AreaLight demo — rectangle and disc area lights with soft falloff.
-use rc3d_app::App;
+use rc3d_app::{App, CameraController};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 
@@ -25,5 +25,6 @@ fn main() {
     // Sphere receiving area light
     g.add_child(root, NodeData::Material(MaterialNode { base_color: Vec3::new(0.8, 0.3, 0.3), roughness: 0.3, ..Default::default() }));
     g.add_child(root, NodeData::Sphere(SphereNode { radius: 1.0 }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 10.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

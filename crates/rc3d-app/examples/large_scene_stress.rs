@@ -8,7 +8,7 @@
 //!   F: Toggle frustum culling stats
 //!   Q: Show quality level
 //!   Mouse drag: orbit camera
-//!   ESC: exit
+//!   Escape: clear selection | close window to quit
 
 use std::sync::{Arc, Mutex};
 
@@ -37,7 +37,7 @@ fn main() {
 
     println!("Large scene stress test — 10,000 objects");
     println!("Usage: cargo run -p rc3d-app --example large_scene_stress --release");
-    println!("Keys: 1-5 density | F cull stats | Q quality | ESC exit");
+    println!("Keys: 1-5 density | F cull stats | Q quality | Esc clears selection");
 
     let state = Arc::new(Mutex::new(StressState {
         target_count: 10000,
@@ -69,7 +69,7 @@ fn main() {
                     s.culled, percentage, s.target_count),
                 "".to_string(),
                 "[1] 1K  [2] 2K  [3] 5K  [4] 10K  [5] 20K".to_string(),
-                "[F] Cull stats  [Q] Quality  [ESC] Exit".to_string(),
+                "[F] Cull stats  [Q] Quality  [Esc] Clear selection".to_string(),
             ];
             lines.join("\n")
         });
@@ -84,17 +84,7 @@ fn build_large_scene(count: usize) -> SceneGraph {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // Camera — elevated angle, moderate distance
-    graph.add_child(
-        root,
-        NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-            Vec3::new(0.0, 20.0, 18.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::Y,
-            std::f32::consts::FRAC_PI_3,  // 60° FOV
-            800.0 / 600.0,
-        )),
-    );
+    // No scene camera — use CameraController (cube-proven default)
 
     // Directional light
     graph.add_child(

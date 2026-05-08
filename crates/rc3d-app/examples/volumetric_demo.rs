@@ -10,7 +10,8 @@
 //!   1-4: Fog density presets (light/medium/heavy/off)
 //!   5-6: Adjust height falloff
 //!   Mouse drag: orbit camera
-
+//!   Escape: clear selection | close window to quit
+//!
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
 use rc3d_core::{math::Vec3, DisplayMode};
@@ -44,7 +45,7 @@ fn print_volumetric_demo_help() {
     println!("  1-4: Fog density presets (light/medium/heavy/off)");
     println!("  5-6: Adjust fog height/falloff");
     println!("  Mouse drag: orbit camera");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Volumetric fog + HDR post-processing enabled by default");
 }

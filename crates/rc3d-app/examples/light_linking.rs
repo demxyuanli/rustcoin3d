@@ -1,5 +1,5 @@
 //! Light linking demo — light_group include/exclude for selective illumination.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -18,5 +18,6 @@ fn main() {
     g.add_child(root, NodeData::Transform(TransformNode::from_translation(Vec3::new(2.5, 0.0, 0.0))));
     g.add_child(root, NodeData::Sphere(SphereNode { radius: 0.8 }));
     println!("Light linking: left sphere=group A (red light), right=group B (blue light)");
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::new(1.75, 0.0, 0.0), 10.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

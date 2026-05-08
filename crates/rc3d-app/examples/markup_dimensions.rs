@@ -1,4 +1,4 @@
-use rc3d_app::App;
+use rc3d_app::{App, CameraController};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 
@@ -71,7 +71,9 @@ fn main() {
         }),
     );
 
-    let mut app = App::new(graph);
+    let markup_center = Vec3::new(200.0, 150.0, 0.0);
+    let orbit = CameraController::new(markup_center, 380.0);
+    let mut app = App::new(graph).with_camera_controller(orbit);
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
@@ -87,4 +89,9 @@ fn print_markup_help() {
     println!("  Radial dimension (center-to-perimeter)");
     println!("  Diameter dimension (through-center with cross)");
     println!("  Leader line with anchor dot");
+    println!("Controls:");
+    println!(
+        "  Middle mouse drag: orbit | Right drag: pan | Scroll wheel: zoom — Left drag also orbits here"
+    );
+    println!("  W / S / E / H: display mode shortcuts | Escape: clear selection");
 }

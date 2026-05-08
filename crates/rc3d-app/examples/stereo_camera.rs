@@ -1,5 +1,5 @@
 //! StereoCamera demo — side-by-side stereo rendering with interocular distance.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -11,5 +11,6 @@ fn main() {
     // StereoCamera wrapping the base camera
     g.add_child(root, NodeData::StereoCamera(StereoCameraNode { base_camera: cam_id, interocular_distance: 0.065, convergence_distance: 2.0, mode: StereoMode::SideBySide }));
     println!("Stereo camera configured: SideBySide mode, interocular=0.065m, convergence=2.0m");
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 8.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

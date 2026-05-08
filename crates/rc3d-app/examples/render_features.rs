@@ -10,7 +10,7 @@
 //!   +/-: Adjust exposure
 //!   V: Toggle vsync
 //!   H: Toggle HUD
-//!   ESC: Exit
+//!   Escape: clear selection | close window to quit
 //!
 //! Usage: render_features <file.gltf|file.glb|file.obj|file.stl>
 
@@ -409,7 +409,7 @@ fn print_render_features_help() {
     println!("  H: Toggle HUD");
     println!("  Mouse drag: orbit camera");
     println!("  Embedded panel HUD: clickable checkbox/slider + F5/F6/F7/F8/F9 and [ / ]");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Full post-processing feature toggle matrix");
     println!("  --no-panel");
@@ -699,29 +699,4 @@ fn has_node_type_recursive(
         }
     }
     false
-}
-
-fn find_camera_node(graph: &SceneGraph) -> Option<NodeId> {
-    for &root in graph.roots() {
-        if let Some(id) = find_camera_recursive(graph, root) {
-            return Some(id);
-        }
-    }
-    None
-}
-
-fn find_camera_recursive(graph: &SceneGraph, node: NodeId) -> Option<NodeId> {
-    let entry = graph.get(node)?;
-    if matches!(
-        entry.data,
-        NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_)
-    ) {
-        return Some(node);
-    }
-    for &child in &entry.children {
-        if let Some(id) = find_camera_recursive(graph, child) {
-            return Some(id);
-        }
-    }
-    None
 }

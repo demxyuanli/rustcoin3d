@@ -1,6 +1,6 @@
 //! Curve viewer — demonstrates IndexedLineSet for parametric curve visualization.
 //! For full NURBS integration, see crates/rc3d-nurbs/ (curve, surface, tessellator).
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -15,5 +15,6 @@ fn main() {
     g.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(points)));
     g.add_child(root, NodeData::IndexedLineSet(IndexedLineSetNode { coord_index: indices, line_width: 3.0 }));
     println!("Curve: {} points → {} line segments", n+1, n);
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::new(2.0, 0.0, 0.0), 8.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

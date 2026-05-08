@@ -887,7 +887,7 @@ pub(super) fn execute_passes(
             }
         })
         .sum();
-    FrameStats {
+    let stats = FrameStats {
         visible_triangles: total_visible_triangles,
         visible_draw_calls: ctx.visible.len(),
         culled_draw_calls: draw_calls.len().saturating_sub(ctx.visible.len()),
@@ -896,5 +896,25 @@ pub(super) fn execute_passes(
         frame_time_ms: renderer.cpu_span.total_ms(),
         cpu_sections: renderer.cpu_span.spans().to_vec(),
         gpu_sections: gpu_sections_data,
+    };
+
+    // Periodic per-pass GPU timing report (every 60 frames)
+    if renderer.frame.frame_counter % 60 == 0 && !stats.gpu_sections.is_empty() {
+        let parts: Vec<String> = stats.gpu_sections.iter()
+            .map(|(label, us)| format!("{}={:.0}us", label, us))
+            .collect();
+        let cpu_parts: Vec<String> = stats.cpu_sections.iter()
+            .map(|(label, ms)| format!("{}={:.2}ms", label, ms))
+            .collect();
+        log::info!(
+            "GPU: {} | CPU: {} | frame={:.2}ms draws={} tris={}",
+            parts.join(" "),
+            cpu_parts.join(" "),
+            stats.frame_time_ms,
+            stats.visible_draw_calls,
+            stats.visible_triangles,
+        );
     }
+
+    stats
 }

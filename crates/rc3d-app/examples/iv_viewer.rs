@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use rc3d_app::App;
+use rc3d_app::{App, camera_controller_from_scene_bounds};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 
@@ -44,7 +44,8 @@ fn main() {
     let iv_out = rc3d_io::write_iv(&graph);
     println!("--- Serialized .iv ---\n{iv_out}");
 
-    let mut app = App::new(graph);
+    let orbit = camera_controller_from_scene_bounds(&graph, Vec3::ZERO, 10.0);
+    let mut app = App::new(graph).with_camera_controller(orbit);
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)
@@ -55,8 +56,13 @@ fn print_iv_viewer_help() {
     println!("IV viewer example");
     println!("Usage: cargo run -p rc3d-app --example iv_viewer -- <file.iv>");
     println!("Controls:");
-    println!("  Mouse drag: orbit (if camera controller is enabled by app defaults)");
-    println!("  ESC: exit");
+    println!(
+        "  Middle mouse drag: orbit | Right drag: pan | Scroll wheel: zoom — Left drag also orbits here"
+    );
+    println!(
+        "  Orbit pivot from scene bounding box where possible | W/S/E/H: display mode shortcuts"
+    );
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  IV parse + round-trip serialization output");
 }

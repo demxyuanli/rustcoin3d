@@ -48,7 +48,7 @@ fn main() {
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
         let (target, orbit_radius) = fit_camera_to_scene(&mut app.state.world.graph);
-        let controller_root = find_first_camera_node(&app.state.world.graph)
+        let _controller_root = find_first_camera_node(&app.state.world.graph)
             .or_else(|| app.state.world.graph.roots().first().copied())
             .expect("non-empty graph after load");
         app.state.camera_controller = Some(CameraController::new(target, orbit_radius));
@@ -67,7 +67,7 @@ fn print_import_viewer_async_help() {
     );
     println!("Controls:");
     println!("  Mouse drag: orbit camera after scene is loaded");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Background loading + deferred graph apply");
     println!("  STL input enables high-contrast light preset by default");

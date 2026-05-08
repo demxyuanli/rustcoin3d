@@ -8,7 +8,7 @@
 //!   3: Toggle spot light shadow
 //!   +/-: Adjust shadow bias
 //!   Mouse drag: orbit camera
-
+//!   Escape: clear selection | close window to quit
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
 use rc3d_core::{math::Vec3, DisplayMode};
@@ -44,7 +44,7 @@ fn print_shadow_demo_help() {
     println!("  3: Toggle spot-light shadow");
     println!("  +/-: Adjust shadow bias");
     println!("  Mouse drag: orbit camera");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Directional + point + spot shadow types in one scene");
 }

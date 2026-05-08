@@ -1,5 +1,5 @@
 //! ExplodedView demo — assembly explosion along direction.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -16,5 +16,6 @@ fn main() {
         g.add_child(ev, NodeData::Transform(TransformNode::from_translation(Vec3::new(0.0, i as f32*1.1, 0.0))));
         g.add_child(ev, NodeData::Cube(CubeNode { width: 1.0, height: 0.8, depth: 0.6 }));
     }
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::new(0.0, 0.8, 0.0), 10.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

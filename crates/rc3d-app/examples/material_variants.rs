@@ -1,5 +1,5 @@
 //! MaterialBinding + ShapeHints + Texture2Transform demo.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -20,5 +20,6 @@ fn main() {
     }
     // Texture2Transform: rotate texture coordinates
     g.add_child(root, NodeData::Texture2Transform(Texture2TransformNode { rotation: 0.5, ..Default::default() }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 10.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

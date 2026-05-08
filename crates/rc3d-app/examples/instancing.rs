@@ -1,5 +1,5 @@
 //! MultipleCopy + Switch + Lod demo — scenegraph traversal variants.
-use rc3d_app::App; use rc3d_core::math::{Mat4, Vec3}; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::{Mat4, Vec3}; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -18,5 +18,6 @@ fn main() {
     // Lod: simple two-level LOD
     let lod_levels = vec![LodLevel { children: vec![sw], max_distance: 10.0 }];
     g.add_child(root, NodeData::Lod(LodNode { levels: lod_levels, current_level: 0 }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::new(2.0, 0.0, 0.0), 12.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

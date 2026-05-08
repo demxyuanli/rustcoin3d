@@ -47,6 +47,11 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 if app.state.editor_ui_enabled {
                     renderer.set_hud_enabled(false);
                 }
+                if let Some((vig, chr, bloom, grain)) =
+                    app.state.initial_post_effect_params.take()
+                {
+                    renderer.set_post_effect_params(vig, chr, bloom, grain);
+                }
             }
             if let Some(window) = &app.state.window {
                 window.set_visible(true);
@@ -597,9 +602,7 @@ pub(crate) fn window_event(
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
-                    // Allow up to 1 persistent dirty root (camera/engine noise).
-                    // Full traversal when scene actually changes (>1 dirty or first frame).
-                    let can_skip = dirty_roots.len() <= 1
+                    let can_skip = dirty_roots.is_empty()
                         && !app.state.world.cached_draw_calls.is_empty();
 
                     if can_skip {

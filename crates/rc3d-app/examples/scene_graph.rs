@@ -34,7 +34,7 @@ fn main() {
     );
 
     // Camera with orbit controller
-    let camera_id = graph.add_child(
+    let _camera_id = graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
             Vec3::new(0.0, 3.0, 8.0),
@@ -144,8 +144,10 @@ fn print_scene_graph_help() {
     println!("Scene graph example");
     println!("Usage: cargo run -p rc3d-app --example scene_graph");
     println!("Controls:");
-    println!("  Mouse drag: orbit camera");
-    println!("  ESC: exit");
+    println!(
+        "  Middle mouse drag: orbit | Right drag: pan | Scroll wheel: zoom — Left drag also orbits here"
+    );
+    println!("  W / S / E / H: display mode shortcuts | Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Trace: RUST_LOG=rc3d_app=trace — wheel logs HandleEventAction EventCallback discovery.");
     println!("  Multiple node hierarchy with per-node material and transform");

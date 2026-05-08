@@ -1,5 +1,5 @@
 //! ReflectionPlane demo — mirror reflection of geometry.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -13,5 +13,6 @@ fn main() {
     g.add_child(root, NodeData::Sphere(SphereNode { radius: 0.5 }));
     // Reflection plane at Y=0 — renders mirrored sphere below
     g.add_child(root, NodeData::ReflectionPlane(ReflectionPlaneNode { normal: Vec3::Y, origin: Vec3::ZERO, enabled: true }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::new(0.0, 0.5, 0.0), 9.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

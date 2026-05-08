@@ -13,7 +13,7 @@ fn main() {
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
     // Camera
-    let camera_id = graph.add_child(
+    let _camera_id = graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
             Vec3::new(3.0, 3.0, 5.0),
@@ -64,8 +64,11 @@ fn print_rotating_cube_help() {
     println!("Rotating cube example");
     println!("Usage: cargo run -p rc3d-app --example rotating_cube");
     println!("Controls:");
-    println!("  Mouse drag: orbit camera");
-    println!("  ESC: exit");
+    println!(
+        "  Middle drag: orbit | Right: pan | Wheel: zoom — Left drag also orbits (no pick callback)"
+    );
+    println!("  W / S / E / H: display mode shortcuts");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Engine-driven transform animation is enabled by default");
 }

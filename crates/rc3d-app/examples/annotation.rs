@@ -1,5 +1,5 @@
 //! Annotation demo — children rendered as overlay without depth test.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -12,5 +12,6 @@ fn main() {
     // Annotation — children render on top regardless of depth
     let ann = g.add_child(root, NodeData::Annotation(AnnotationNode));
     g.add_child(ann, NodeData::Text2(Text2Node { string: "OVERLAY TEXT".into(), position: [200.0, 100.0], size: 32.0, color: [1.0, 0.8, 0.0, 1.0] }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 8.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

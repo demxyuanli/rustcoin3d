@@ -1,5 +1,5 @@
 //! IndexedLineSet demo — wireframe edges and grid lines.
-use rc3d_app::App; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController}; use rc3d_core::math::Vec3; use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -12,5 +12,6 @@ fn main() {
     for i in -n..=n { coord.push(Vec3::new(-n as f32, 0.0, i as f32)); coord.push(Vec3::new(n as f32, 0.0, i as f32)); let b = ((n*2+1)*2+(i+n)*2) as i32; indices.push(b); indices.push(b+1); }
     g.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(coord)));
     g.add_child(root, NodeData::IndexedLineSet(IndexedLineSetNode { coord_index: indices, line_width: 1.0 }));
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 28.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

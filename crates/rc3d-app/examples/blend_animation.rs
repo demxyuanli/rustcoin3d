@@ -1,6 +1,9 @@
 //! BlendNode animation demo — clip blending with weight parameter.
-use rc3d_app::App; use rc3d_core::math::{Mat4, Vec3};
-use rc3d_scene::{animation::{BlendNode, AnimationClip, Joint, JointKeyframe, JointTrack, Skeleton}, node_data::*};
+use rc3d_app::{App, CameraController}; use rc3d_core::math::{Mat4, Vec3};
+use rc3d_scene::{
+    animation::{AnimationClip, BlendNode, Joint, Skeleton},
+    node_data::*,
+};
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -16,5 +19,6 @@ fn main() {
     let walk = AnimationClip { name: "walk".into(), duration: 0.5, tracks: vec![] };
     let blend = BlendNode::Blend { left: Box::new(BlendNode::Clip { clip: idle, speed: 1.0, start_time: 0.0 }), right: Box::new(BlendNode::Clip { clip: walk, speed: 1.0, start_time: 0.0 }), weight: 0.5 };
     if let Some(_pose) = blend.sample(0.0, &skeleton) { println!("Blend tree sampled successfully at time 0"); }
-    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g)).expect("event loop");
+    let orbit = CameraController::new(Vec3::ZERO, 10.0);
+    winit::event_loop::EventLoop::new().unwrap().run_app(&mut App::new(g).with_camera_controller(orbit)).expect("event loop");
 }

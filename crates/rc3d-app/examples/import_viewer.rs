@@ -487,7 +487,7 @@ fn print_import_viewer_help() {
     println!("Controls:");
     println!("  Mouse drag: orbit camera");
     println!("  Embedded panel HUD: clickable checkbox/slider + F5/F6/F7/F8/F9 and [ / ]");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  --high-contrast=on|off");
     println!("  --no-panel");

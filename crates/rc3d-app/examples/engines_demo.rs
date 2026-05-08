@@ -1,8 +1,11 @@
 //! Engine demo: ElapsedTime + SineOscillator + Calculator + OneShot + Counter.
-use rc3d_app::App; use rc3d_core::math::Vec3;
-use rc3d_engine::engine::{ElapsedTimeEngine, SineOscillatorEngine, SineField, CalculatorEngine,
-    OneShotEngine, CounterEngine, EngineRegistry};
-use rc3d_core::FieldId; use rc3d_scene::node_data::*;
+use rc3d_app::{App, CameraController};
+use rc3d_core::math::Vec3;
+use rc3d_engine::engine::{
+    CounterEngine, ElapsedTimeEngine, EngineRegistry, OneShotEngine, SineField,
+    SineOscillatorEngine,
+};
+use rc3d_scene::node_data::*;
 
 fn main() {
     env_logger::init(); let mut g = rc3d_scene::SceneGraph::new(); let root = g.add_root(NodeData::Separator(SeparatorNode));
@@ -20,6 +23,8 @@ fn main() {
     registry.add(SineOscillatorEngine::new(cube_node, 2.0, 0.2, SineField::ScaleX));
     registry.add(OneShotEngine::new(3.0));
     registry.add(CounterEngine::new(0, 5, 1));
-    let mut app = App::new(g).with_engines(registry);
+    let mut app = App::new(g)
+        .with_camera_controller(CameraController::new(Vec3::new(2.0, 0.0, 0.0), 11.0))
+        .with_engines(registry);
     winit::event_loop::EventLoop::new().unwrap().run_app(&mut app).expect("event loop");
 }

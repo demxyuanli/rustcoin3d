@@ -11,7 +11,7 @@ fn main() {
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
     // Camera — position controlled by CameraController
-    let camera_id = graph.add_child(
+    let _camera_id = graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
             Vec3::new(0.0, 3.0, 8.0),
@@ -147,9 +147,10 @@ fn print_picking_help() {
     println!("Picking example");
     println!("Usage: cargo run -p rc3d-app --example picking");
     println!("Controls:");
-    println!("  Left click: pick object and highlight material");
-    println!("  Middle mouse drag: orbit camera (right: pan, wheel: zoom)");
-    println!("  ESC: exit");
+    println!("  Left click: pick object and highlight material (does not orbit)");
+    println!("  Middle mouse drag: orbit | Right: pan | Wheel: zoom");
+    println!("  W / S / E / H: display mode shortcuts");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  Picking callback is enabled by default");
 }

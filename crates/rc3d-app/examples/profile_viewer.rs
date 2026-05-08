@@ -7,7 +7,7 @@
 //!   1-4: Change scene complexity (10/100/500/2000 objects)
 //!   P: Print frame timing report to console
 //!   Mouse drag: orbit camera
-//!   ESC: exit
+//!   Escape: clear selection | close window to quit
 
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +33,7 @@ fn main() {
 
     println!("Profile viewer");
     println!("Usage: cargo run -p rc3d-app --example profile_viewer");
-    println!("Keys: 1-4 scene complexity | P print report | ESC exit");
+    println!("Keys: 1-4 scene complexity | P print report | Esc clears selection");
 
     let state = Arc::new(Mutex::new(ProfileState {
         object_count: 100,
@@ -66,7 +66,7 @@ fn main() {
                 lines.push(format!("  {:>16}: {:>6.2}ms", label, ms));
             }
             lines.push("".to_string());
-            lines.push("[1-4] Complexity  [P] Print report  [ESC] Exit".to_string());
+            lines.push("[1-4] Complexity  [P] Print report  [Esc] Clear selection".to_string());
             lines.join("\n")
         })
         .with_panel_overlay_key_hook({

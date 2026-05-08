@@ -1,4 +1,4 @@
-use rc3d_app::App;
+use rc3d_app::{App, camera_controller_from_scene_bounds};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 
@@ -28,7 +28,8 @@ fn main() {
         )),
     );
 
-    let mut app = App::new(graph);
+    let orbit = camera_controller_from_scene_bounds(&graph, Vec3::new(1.0, 0.5, 0.5), 8.0);
+    let mut app = App::new(graph).with_camera_controller(orbit);
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)

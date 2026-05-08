@@ -80,7 +80,7 @@ fn generate_cube_fbx() -> Vec<u8> {
     let material_id: i64 = 2;
     let model_id: i64 = 3;
     {
-        let mut aw = w.new_node("Objects").expect("node");
+        let aw = w.new_node("Objects").expect("node");
         drop(aw);
 
         // Geometry
@@ -232,7 +232,7 @@ fn generate_cube_fbx() -> Vec<u8> {
 
     // Connections
     {
-        let mut aw = w.new_node("Connections").expect("node");
+        let aw = w.new_node("Connections").expect("node");
         drop(aw);
 
         // Geometry -> Model (OO = object-object connection)

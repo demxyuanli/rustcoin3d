@@ -8,7 +8,7 @@
 //!   Q: Show current quality level
 //!   L: Lock/unlock quality level
 //!   Mouse drag: orbit camera
-//!   ESC: exit
+//!   Escape: clear selection | close window to quit
 
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +34,7 @@ fn main() {
 
     println!("Adaptive quality stress test");
     println!("Usage: cargo run -p rc3d-app --example adaptive_stress_test");
-    println!("Keys: +/- objects | Q quality | L lock | ESC exit");
+    println!("Keys: +/- objects | Q quality | L lock | Escape clears selection");
 
     let state = Arc::new(Mutex::new(StressState {
         object_count: 800,
@@ -69,7 +69,7 @@ fn main() {
                 "  Low     — 20-30fps, no SSAO/Bloom, 1 cascade @ 512×512".to_string(),
                 "  Minimal — <20fps, no post, flat shading, 1 cascade @ 256×256".to_string(),
                 "".to_string(),
-                "[+/-] Complexity  [L] Quality Lock  [Q] Quality  [ESC] Exit".to_string(),
+                "[+/-] Complexity  [L] Quality Lock  [Q] Quality  [Esc] Clear selection".to_string(),
             ];
             lines.join("\n")
         })

@@ -82,6 +82,7 @@ impl App {
                 camera_controller: None,
                 viewport_cameras: ViewportCameraSet::new(),
                 initial_display_mode: DisplayMode::ShadedWithEdges,
+                initial_post_effect_params: None,
                 enable_hdr_post_processing: false,
                 adaptive_quality_mode: AdaptiveQualityMode::On,
                 adaptive_last_interaction: Instant::now(),
@@ -231,6 +232,18 @@ impl App {
 
     pub fn with_hdr_post_processing(mut self, enabled: bool) -> Self {
         self.state.enable_hdr_post_processing = enabled;
+        self
+    }
+
+    pub fn with_initial_post_effect_params(
+        mut self,
+        vignette: f32,
+        chromatic_aberration: f32,
+        bloom_strength: f32,
+        grain: f32,
+    ) -> Self {
+        self.state.initial_post_effect_params =
+            Some((vignette, chromatic_aberration, bloom_strength, grain));
         self
     }
 

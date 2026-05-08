@@ -17,7 +17,7 @@
 //! Keys:
 //!   V: Print shader variant stats
 //!   Mouse drag: orbit camera
-//!   ESC: exit
+//!   Escape: clear selection | close window to quit
 
 use std::sync::{Arc, Mutex};
 
@@ -41,7 +41,7 @@ fn main() {
 
     println!("PBR Shader Variant Viewer");
     println!("Usage: cargo run -p rc3d-app --example pbr_variant_viewer");
-    println!("Keys: V print variants | ESC exit");
+    println!("Keys: V print variants | Esc clears selection");
     println!("Demonstrates 8 material types exercising different PbrFeatures combinations.");
 
     let state = Arc::new(Mutex::new(VariantState {
@@ -74,7 +74,7 @@ fn main() {
                 "  7. Emissive-only     — HAS_EMISSIVE_TEX".to_string(),
                 "  8. Metallic-only     — HAS_MR_TEX (no albedo)".to_string(),
                 "".to_string(),
-                "[V] Print variant info  [ESC] Exit".to_string(),
+                "[V] Print variant info  [Esc] Clear selection".to_string(),
             ];
             lines.join("\n")
         })

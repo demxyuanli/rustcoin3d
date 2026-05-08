@@ -18,6 +18,7 @@ pub struct AppState {
     pub camera_controller: Option<CameraController>,
     pub viewport_cameras: ViewportCameraSet,
     pub initial_display_mode: DisplayMode,
+    pub initial_post_effect_params: Option<(f32, f32, f32, f32)>,
     pub enable_hdr_post_processing: bool,
     pub adaptive_quality_mode: AdaptiveQualityMode,
     pub adaptive_last_interaction: Instant,

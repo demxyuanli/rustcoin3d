@@ -11,6 +11,7 @@
 //!   L: Cycle IBL preset (neutral/studio/warm)
 //!   1-4: Change shadow cascade count
 //!   F: Cycle display mode
+//!   Escape: clear selection | close window to quit
 
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
@@ -18,7 +19,6 @@ use rc3d_core::{math::Vec3, DisplayMode};
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 
-const SPHERE_SEGMENTS: u32 = 32;
 const GRID_SIZE: usize = 7;
 const SPACING: f32 = 2.5;
 
@@ -60,7 +60,7 @@ fn print_pbr_materials_help() {
     println!("  Mouse drag: orbit camera");
     println!("  L: Cycle IBL preset");
     println!("  F: Cycle display mode");
-    println!("  ESC: exit");
+    println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  HDR post-processing enabled by default");
 }
