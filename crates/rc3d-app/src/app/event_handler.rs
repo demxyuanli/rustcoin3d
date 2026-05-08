@@ -596,14 +596,34 @@ pub(crate) fn window_event(
                     app.state.world.collector.global_display_mode = renderer.display_mode();
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
-                    let _t0 = std::time::Instant::now();
-                    for &root in app.state.world.graph.roots() {
-                        app.state.world.collector.traverse(&app.state.world.graph, root);
+                    let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
+                    let current_vp = renderer.frame_vp();
+                    let camera_static = app.state.world.prev_camera_vp
+                        .map_or(false, |p| {
+                            (p - current_vp).to_cols_array().iter().all(|&v| v.abs() < 0.0001)
+                        });
+                    let can_skip = dirty_roots.is_empty()
+                        && camera_static
+                        && !app.state.world.cached_draw_calls.is_empty();
+
+                    if can_skip {
+                        app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                    } else {
+                        let _t0 = std::time::Instant::now();
+                        for &root in app.state.world.graph.roots() {
+                            app.state.world.collector.traverse(&app.state.world.graph, root);
+                        }
+                        let traversal_ms = _t0.elapsed().as_secs_f64() * 1000.0;
+                        if traversal_ms > 5.0 {
+                            log::info!("Scene traversal: {:.2}ms ({} nodes, {} dirty roots)",
+                                traversal_ms, app.state.world.graph.roots().len(), dirty_roots.len());
+                        }
+                        app.state.world.cached_draw_calls = app.state.world.collector.draw_calls.clone();
+                        // Drop dirty_roots borrow before mutable access
+                        drop(dirty_roots);
+                        rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     }
-                    let traversal_ms = _t0.elapsed().as_secs_f64() * 1000.0;
-                    if app.state.world.graph.roots().len() > 1 || traversal_ms > 5.0 {
-                        log::info!("Scene traversal: {:.2}ms ({} nodes)", traversal_ms, app.state.world.graph.roots().len());
-                    }
+                    app.state.world.prev_camera_vp = Some(renderer.frame_vp());
                     app.state.last_camera_eye = app.state.world.collector.camera_pos;
                     gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
 

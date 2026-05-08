@@ -822,6 +822,11 @@ impl Renderer {
         self.global_display_mode
     }
 
+    /// Current scene view-projection matrix (set during last render).
+    pub fn frame_vp(&self) -> glam::Mat4 {
+        self.frame.scene_vp
+    }
+
     pub fn performance_mode_active(&self) -> bool {
         self.frame.performance_mode_active
     }
