@@ -1,4 +1,5 @@
 use super::PassContext;
+use crate::frustum::Frustum;
 use crate::vertex::{ShadowDrawUniforms, CSM_CASCADE_COUNT};
 
 pub(super) fn pass_shadow_depth(
@@ -12,15 +13,19 @@ pub(super) fn pass_shadow_depth(
 
     let cascade_count = csm.cascade_count.min(CSM_CASCADE_COUNT as u32);
 
-    // Per-cascade render passes using per-layer D2 views.
-    // The shader expects array<ShadowUniforms, 4> binding (remnant of layered
-    // rendering support); non-instanced draws always read su[0], so we push
-    // the active cascade VP as the first element and fill the rest with dummy.
+    // Build per-cascade frustums once for CPU-side pre-culling.
+    // Each cascade only submits draws whose AABB intersects its frustum.
+    let cascade_frustums: Vec<Frustum> = (0..cascade_count)
+        .map(|c| Frustum::from_view_projection(ctx.csm_view_proj[c as usize]))
+        .collect();
+
     let dummy = ShadowDrawUniforms {
         shadow_mvp: [[0.0; 4]; 4],
     };
 
     for cascade_idx in 0..cascade_count {
+        let cascade_frustum = &cascade_frustums[cascade_idx as usize];
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(&format!("CSM Shadow cascade {}", cascade_idx)),
             color_attachments: &[],
@@ -41,6 +46,15 @@ pub(super) fn pass_shadow_depth(
 
         for &draw_idx in ctx.solid_order {
             let dc = ctx.visible[draw_idx];
+
+            // ── Cascade frustum culling ──
+            // Skip draws whose AABB does not intersect this cascade's frustum.
+            if let Some(ref aabb) = dc.aabb {
+                if !cascade_frustum.intersects_aabb(aabb) {
+                    continue;
+                }
+            }
+
             let mesh_id = match ctx.mesh_handles[draw_idx] {
                 Some(id) => id,
                 None => continue,
