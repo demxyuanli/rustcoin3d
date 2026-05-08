@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use rc3d_core::aabb::Aabb;
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
@@ -87,6 +88,8 @@ pub struct CameraController {
     pub bookmarks: [Option<CameraBookmark>; 9],
     /// Active fly-to animation state.
     fly_to: Option<FlyToState>,
+    /// Set when camera position actually changed (user input or animation).
+    pub position_changed: Cell<bool>,
 }
 
 impl CameraController {
@@ -103,6 +106,7 @@ impl CameraController {
             walk_mode: false,
             bookmarks: [None; 9],
             fly_to: None,
+            position_changed: Cell::new(true), // first frame needs traversal
         }
     }
 
@@ -111,6 +115,7 @@ impl CameraController {
         self.yaw -= dx;
         self.pitch -= dy;
         self.pitch = self.pitch.clamp(-1.5, 1.5);
+        self.position_changed.set(true);
     }
 
     /// Pan the target perpendicular to the view direction.
@@ -120,12 +125,14 @@ impl CameraController {
         let speed = self.distance * 0.002;
         self.target -= right * dx * speed;
         self.target += up * dy * speed;
+        self.position_changed.set(true);
     }
 
     /// Zoom by a multiplicative factor (scroll delta).
     pub fn zoom(&mut self, delta: f32) {
         self.distance *= 1.0 - delta * 0.1;
         self.distance = self.distance.max(0.01);
+        self.position_changed.set(true);
     }
 
     /// Walk forward/right relative to the current view direction.
@@ -135,6 +142,7 @@ impl CameraController {
         let rgt = self.right_vector();
         let delta = fwd * forward + rgt * right + self.up * up_down;
         self.target += delta * speed;
+        self.position_changed.set(true);
     }
 
     /// Turn the view via mouse delta (first-person look).
@@ -142,6 +150,7 @@ impl CameraController {
         self.yaw -= dx * 0.005;
         self.pitch -= dy * 0.005;
         self.pitch = self.pitch.clamp(-1.5, 1.5);
+        self.position_changed.set(true);
     }
 
     /// Toggle walk mode on/off.
@@ -176,39 +185,35 @@ impl CameraController {
         let (yaw, pitch) = preset.yaw_pitch();
         self.yaw = yaw;
         self.pitch = pitch;
+        self.position_changed.set(true);
     }
 
     /// Update a camera node in the scene graph from current state.
     pub fn update_camera_node(&self, graph: &mut SceneGraph, camera_node: NodeId, aspect: f32) {
         let eye = self.eye_position();
-        let changed = if let Some(entry) = graph.get_mut(camera_node) {
+        if let Some(entry) = graph.get_mut(camera_node) {
             match &mut entry.data {
                 NodeData::PerspectiveCamera(cam) => {
-                    let moved = (cam.position - eye).length_squared() > 0.0001;
                     cam.position = eye;
                     cam.orientation = Mat4::look_at_rh(eye, self.target, self.up);
                     cam.aspect = aspect;
-                    moved
                 }
                 NodeData::OrthographicCamera(cam) => {
-                    let moved = (cam.position - eye).length_squared() > 0.0001;
                     cam.position = eye;
                     let height = self.distance * 1.2;
                     cam.height = height;
                     cam.aspect = aspect;
-                    moved
                 }
-                _ => false,
+                _ => {}
             }
-        } else {
-            false
-        };
-        if changed {
-            rc3d_render::dirty_flags::mark_node_dirty(
-                graph,
-                camera_node,
-                rc3d_scene::node_entry::dirty_flags::TRANSFORM,
-            );
+            if self.position_changed.get() {
+                rc3d_render::dirty_flags::mark_node_dirty(
+                    graph,
+                    camera_node,
+                    rc3d_scene::node_entry::dirty_flags::TRANSFORM,
+                );
+                self.position_changed.set(false);
+            }
         }
     }
 

@@ -84,36 +84,33 @@ fn build_large_scene(count: usize) -> SceneGraph {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // Camera — wide FOV, far back to see dense grid
+    // Camera — high overhead, wide FOV, looking down at the entire dense arena
     graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-            Vec3::new(0.0, 40.0, 3.0),
-            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(0.0, 25.0, 0.1),
+            Vec3::new(0.0, 0.5, 0.0),
             Vec3::Y,
-            1.2,  // wide FOV (~69°)
+            1.3,  // ~74° FOV
             800.0 / 600.0,
         )),
     );
 
-    // Directional light for CSM shadow stress
+    // Directional light
     graph.add_child(
         root,
         NodeData::DirectionalLight(DirectionalLightNode {
-            direction: Vec3::new(-0.5, -0.8, -0.3).normalize(),
+            direction: Vec3::new(-0.3, -1.0, -0.2).normalize(),
             color: Vec3::new(1.0, 0.95, 0.85),
             intensity: 1.0,
             light_group: None,
         }),
     );
 
-    // Dense grid: fewer layers, more objects per layer (xz plane).
-    // Tight spacing to maximize visible density.
-    let layers = 3;
-    let per_layer = count / layers;
-    let cols = (per_layer as f32).sqrt().ceil() as i32;
-    let spacing = 1.2f32;
-
+    // Concentric ring layout — center dense, edges sparser.
+    // All objects visible from overhead camera.
+    let rings = 5;
+    let objects_per_ring = count / rings;
     let colors = [
         Vec3::new(0.8, 0.3, 0.3), Vec3::new(0.3, 0.8, 0.3),
         Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.8, 0.8, 0.3),
@@ -121,42 +118,51 @@ fn build_large_scene(count: usize) -> SceneGraph {
         Vec3::new(0.6, 0.6, 0.6), Vec3::new(0.9, 0.5, 0.2),
     ];
 
-    for layer in 0..layers {
-        let y_base = layer as f32 * 1.5;
-        for i in 0..per_layer.min(cols as usize * cols as usize) {
-            let row = i as i32 / cols;
-            let col = i as i32 % cols;
-            let x = col as f32 * spacing - cols as f32 * spacing * 0.5;
-            let z = row as f32 * spacing - cols as f32 * spacing * 0.5;
+    let mut placed = 0usize;
+    for ring in 0..rings {
+        let radius = 1.0 + ring as f32 * 1.8;
+        let count_in_ring = objects_per_ring;
+        let y_layers = 3;
+        let per_y_layer = count_in_ring / y_layers;
 
-            let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
-            graph.add_child(
-                sep,
-                NodeData::Transform(TransformNode::from_translation(Vec3::new(x, y_base, z))),
-            );
-            let color = colors[i % colors.len()];
-            graph.add_child(
-                sep,
-                NodeData::Material(MaterialNode {
-                    base_color: color,
-                    diffuse_color: color,
-                    metallic: (i % 4) as f32 * 0.3,
-                    roughness: 0.2 + (i % 8) as f32 * 0.1,
-                    opacity: 1.0,
-                    ..Default::default()
-                }),
-            );
-            // Mix of geometry types
-            let _ = match i % 5 {
-                0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.5, height: 0.5, depth: 0.5 })),
-                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.35 })),
-                2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.3, height: 0.8 })),
-                3 => graph.add_child(
+        for yl in 0..y_layers {
+            let y = yl as f32 * 0.8;
+            for i in 0..per_y_layer {
+                if placed >= count {
+                    break;
+                }
+                let angle = (i as f32 / per_y_layer as f32) * std::f32::consts::TAU;
+                let jitter = (ring as f32 * 0.3 + i as f32 * 0.1).sin() * 0.3;
+                let r = radius + jitter;
+                let x = r * angle.cos();
+                let z = r * angle.sin();
+
+                let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+                graph.add_child(
                     sep,
-                    NodeData::Cube(CubeNode { width: 0.3, height: 1.0, depth: 0.3 }),
-                ),
-                _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode::default())),
-            };
+                    NodeData::Transform(TransformNode::from_translation(Vec3::new(x, y, z))),
+                );
+                let color = colors[placed % colors.len()];
+                graph.add_child(
+                    sep,
+                    NodeData::Material(MaterialNode {
+                        base_color: color,
+                        diffuse_color: color,
+                        metallic: (i % 4) as f32 * 0.3,
+                        roughness: 0.2 + (i % 8) as f32 * 0.1,
+                        opacity: 1.0,
+                        ..Default::default()
+                    }),
+                );
+                let _ = match placed % 5 {
+                    0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.3, height: 0.3, depth: 0.3 })),
+                    1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.2 })),
+                    2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.15, height: 0.4 })),
+                    3 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.15, height: 0.5, depth: 0.15 })),
+                    _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode::default())),
+                };
+                placed += 1;
+            }
         }
     }
 
@@ -180,9 +186,9 @@ fn build_large_scene(count: usize) -> SceneGraph {
     graph.add_child(
         floor,
         NodeData::Cube(CubeNode {
-            width: cols as f32 * spacing + 5.0,
-            height: 0.2,
-            depth: cols as f32 * spacing + 5.0,
+            width: 14.0,
+            height: 0.15,
+            depth: 14.0,
         }),
     );
 
