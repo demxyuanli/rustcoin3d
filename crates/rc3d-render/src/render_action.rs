@@ -1634,6 +1634,69 @@ pub fn convert_collector_to_cache(
         .extend(collector.effect_commands.point_clouds.clone());
 }
 
+// ── Cache population: Vec<DrawCall> → FlatDrawCache ──
+
+/// Populate FlatDrawCache from existing DrawCall data.
+/// Called each frame as a side effect: the render loop consumes DrawCalls
+/// directly, while the cache is built for future incremental traversal.
+pub fn populate_cache_from_draw_calls(
+    cache: &mut crate::flat_draw_cache::FlatDrawCache,
+    draw_calls: &[DrawCall],
+    texture_table: &mut crate::global_tables::TexturePathTable,
+) {
+    cache.clear();
+    for dc in draw_calls {
+        let mut flags = crate::flat_draw_cache::DrawFlags::empty();
+        if !dc.edge_positions.is_empty() { flags |= crate::flat_draw_cache::DrawFlags::HAS_EDGES; }
+        if dc.is_overlay { flags |= crate::flat_draw_cache::DrawFlags::OVERLAY; }
+        if dc.selected { flags |= crate::flat_draw_cache::DrawFlags::SELECTED; }
+        if dc.alpha_mode != rc3d_scene::AlphaMode::Opaque { flags |= crate::flat_draw_cache::DrawFlags::TRANSPARENT; }
+        if dc.depth_reversed_z { flags |= crate::flat_draw_cache::DrawFlags::DEPTH_REVERSED; }
+        if dc.projection_orthographic { flags |= crate::flat_draw_cache::DrawFlags::ORTHOGRAPHIC; }
+
+        cache.gpu_data.push(crate::flat_draw_cache::GpuDrawData {
+            model_matrix: dc.model_matrix.to_cols_array_2d(),
+            material_id: 0,
+            light_set_id: 0,
+            vertex_offset: 0,
+            vertex_count: dc.vertices.len() as u32,
+            index_offset: 0,
+            index_count: dc.indices.as_ref().map_or(0, |i| i.len() as u32),
+            draw_flags: flags.bits(),
+            instance_count: 1,
+            _pad: 0,
+        });
+
+        let albedo_id = dc.albedo_path.as_deref().map_or(u16::MAX, |p| texture_table.intern(p));
+        let normal_id = dc.normal_path.as_deref().map_or(u16::MAX, |p| texture_table.intern(p));
+        let mr_id = dc.metallic_roughness_path.as_deref().map_or(u16::MAX, |p| texture_table.intern(p));
+        let emissive_id = dc.emissive_path.as_deref().map_or(u16::MAX, |p| texture_table.intern(p));
+        let occlusion_id = dc.occlusion_path.as_deref().map_or(u16::MAX, |p| texture_table.intern(p));
+
+        cache.metadata.push(crate::flat_draw_cache::CachedDrawMetadata {
+            mesh_hash: dc.mesh_hash.unwrap_or(0),
+            material_params: crate::flat_draw_cache::MaterialUniform {
+                base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, dc.opacity],
+                emissive_color: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, 1.0],
+                metallic_roughness_anisotropic: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
+            },
+            albedo_tex_id: albedo_id,
+            normal_tex_id: normal_id,
+            mr_tex_id: mr_id,
+            emissive_tex_id: emissive_id,
+            occlusion_tex_id: occlusion_id,
+            alpha_mode: match dc.alpha_mode {
+                rc3d_scene::AlphaMode::Opaque => 0,
+                rc3d_scene::AlphaMode::Mask => 1,
+                rc3d_scene::AlphaMode::Blend => 2,
+            },
+            alpha_cutoff: dc.alpha_cutoff,
+            double_sided: dc.double_sided as u32,
+            ..Default::default()
+        });
+    }
+}
+
 // ── Adapter: FlatDrawCache → Vec<DrawCall> ──
 
 fn tex_id_to_arcstr(
