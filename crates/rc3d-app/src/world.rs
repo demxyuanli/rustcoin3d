@@ -16,7 +16,6 @@ pub struct World {
     pub sensor_registry: SensorRegistry,
     /// Cached draw calls from previous frame for static-scene skip.
     pub cached_draw_calls: Vec<rc3d_render::render_action::DrawCall>,
-    pub prev_camera_vp: Option<rc3d_core::math::Mat4>,
 }
 
 impl World {
@@ -31,7 +30,6 @@ impl World {
             collector: RenderCollector::new(),
             sensor_registry: SensorRegistry::new(),
             cached_draw_calls: Vec::new(),
-            prev_camera_vp: None,
         }
     }
 

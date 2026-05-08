@@ -196,6 +196,12 @@ impl CameraController {
                 }
                 _ => {}
             }
+            // Mark camera node dirty so incremental traversal knows to re-traverse.
+            rc3d_render::dirty_flags::mark_node_dirty(
+                graph,
+                camera_node,
+                rc3d_scene::node_entry::dirty_flags::TRANSFORM,
+            );
         }
     }
 

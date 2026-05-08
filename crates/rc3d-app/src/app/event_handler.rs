@@ -597,16 +597,7 @@ pub(crate) fn window_event(
                     app.state.world.collector.material_library = Some(app.state.world.materials.clone());
                     app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
-                    // VP saved after last render. Compare element-wise with tolerance.
-                    let camera_static = app.state.world.prev_camera_vp.map_or(false, |prev| {
-                        let curr = renderer.frame_vp();
-                        let a = prev.to_cols_array_2d();
-                        let b = curr.to_cols_array_2d();
-                        a.iter().flatten().zip(b.iter().flatten())
-                            .all(|(x, y)| (x - y).abs() < 0.01)
-                    });
                     let can_skip = dirty_roots.is_empty()
-                        && camera_static
                         && !app.state.world.cached_draw_calls.is_empty();
 
                     if can_skip {
@@ -728,7 +719,6 @@ pub(crate) fn window_event(
                         app.state.last_frame_time_ms = frame_time_ms;
                         app.state.fps_tracker.push(frame_time_ms);
                         app.state.last_render_stats = stats;
-                        app.state.world.prev_camera_vp = Some(renderer.frame_vp());
                         let idle_for_secs = app.state.adaptive_last_interaction.elapsed().as_secs_f32();
                         let has_dynamic_scene = app.state.world.engines.is_some();
                         let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
