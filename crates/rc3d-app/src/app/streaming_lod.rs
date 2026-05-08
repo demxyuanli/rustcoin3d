@@ -1,5 +1,7 @@
 use rc3d_core::math::Vec3;
 use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::node_entry::dirty_flags::GEOMETRY;
+use rc3d_render::dirty_flags::mark_node_dirty;
 
 type MeshLodStage = (Vec<Vec3>, Option<Vec<[f32; 2]>>, Vec<i32>);
 
@@ -53,22 +55,29 @@ pub(super) fn apply_lod_stage_to_graph(
     stage: &MeshLodStage,
 ) {
     let (points, tex, coord_index) = stage;
-    if let Some(coord_mut) = graph.get_mut(coord_id) {
-        if let NodeData::Coordinate3(c) = &mut coord_mut.data {
-            c.point = points.clone();
+    {
+        if let Some(coord_mut) = graph.get_mut(coord_id) {
+            if let NodeData::Coordinate3(c) = &mut coord_mut.data {
+                c.point = points.clone();
+            }
         }
-    }
-    if let (Some(tid), Some(tex_pts)) = (tex_node, tex.as_ref()) {
-        if let Some(tex_mut) = graph.get_mut(tid) {
-            if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
-                t.point = tex_pts.clone();
+        if let (Some(tid), Some(tex_pts)) = (tex_node, tex.as_ref()) {
+            if let Some(tex_mut) = graph.get_mut(tid) {
+                if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
+                    t.point = tex_pts.clone();
+                }
+            }
+        }
+        if let Some(ifs_mut) = graph.get_mut(ifs_id) {
+            if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
+                ifs.coord_index = coord_index.clone();
             }
         }
     }
-    if let Some(ifs_mut) = graph.get_mut(ifs_id) {
-        if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
-            ifs.coord_index = coord_index.clone();
-        }
+    mark_node_dirty(graph, coord_id, GEOMETRY);
+    mark_node_dirty(graph, ifs_id, GEOMETRY);
+    if let Some(tid) = tex_node {
+        mark_node_dirty(graph, tid, GEOMETRY);
     }
 }
 
@@ -84,22 +93,29 @@ impl FullResPatch {
     }
 
     pub fn apply_full_to_graph(self, graph: &mut SceneGraph) {
-        if let Some(coord_mut) = graph.get_mut(self.coord_node) {
-            if let NodeData::Coordinate3(c) = &mut coord_mut.data {
-                c.point = self.full_points;
+        {
+            if let Some(coord_mut) = graph.get_mut(self.coord_node) {
+                if let NodeData::Coordinate3(c) = &mut coord_mut.data {
+                    c.point = self.full_points;
+                }
             }
-        }
-        if let (Some(tex_id), Some(full_tex)) = (self.tex_node, self.full_tex) {
-            if let Some(tex_mut) = graph.get_mut(tex_id) {
-                if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
-                    t.point = full_tex;
+            if let (Some(tex_id), Some(full_tex)) = (self.tex_node, self.full_tex) {
+                if let Some(tex_mut) = graph.get_mut(tex_id) {
+                    if let NodeData::TextureCoordinate2(t) = &mut tex_mut.data {
+                        t.point = full_tex;
+                    }
+                }
+            }
+            if let Some(ifs_mut) = graph.get_mut(self.ifs_node) {
+                if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
+                    ifs.coord_index = self.full_coord_index;
                 }
             }
         }
-        if let Some(ifs_mut) = graph.get_mut(self.ifs_node) {
-            if let NodeData::IndexedFaceSet(ifs) = &mut ifs_mut.data {
-                ifs.coord_index = self.full_coord_index;
-            }
+        mark_node_dirty(graph, self.coord_node, GEOMETRY);
+        mark_node_dirty(graph, self.ifs_node, GEOMETRY);
+        if let Some(tid) = self.tex_node {
+            mark_node_dirty(graph, tid, GEOMETRY);
         }
     }
 
