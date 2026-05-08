@@ -35,6 +35,7 @@ impl Renderer {
     /// Batched draw with instance count for CSM layered shadow rendering.
     /// Like `draw_mesh_batched` but passes `instance_count` so each instance
     /// gets a distinct `@builtin(instance_index)` in the vertex shader.
+    #[allow(dead_code)]
     pub(crate) fn draw_mesh_instanced(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
