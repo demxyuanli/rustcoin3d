@@ -73,6 +73,13 @@ pub(super) fn draw_opaque_triangle_batches(
     pass.set_pipeline(solid_pipeline);
     pass.set_stencil_reference(1);
 
+    // Set static bind groups once for the entire pass (same for all draws)
+    match &renderer.gpu.csm_shadow {
+        Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
+        None => log::error!("CSM shadow missing; shadow bind group not set"),
+    }
+    pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
+
     let mut clip_arr = [[0.0f32; 4]; 6];
     for (i, cp) in renderer.frame.clip_planes.iter().enumerate() {
         if i < 6 {
@@ -160,11 +167,6 @@ pub(super) fn draw_opaque_triangle_batches(
                 if let Some(ref mat_bg) = renderer.last_material_bg {
                     pass.set_bind_group(1, mat_bg, &[]);
                 }
-                match &renderer.gpu.csm_shadow {
-                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
-                    None => log::error!("CSM shadow missing; shadow bind group not set"),
-                }
-                pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
                 if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                     if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
                         cluster_renderer.draw_clustered(pass, cluster_set);
@@ -230,11 +232,6 @@ pub(super) fn draw_opaque_triangle_batches(
                 if let Some(ref mat_bg) = renderer.last_material_bg {
                     pass.set_bind_group(1, mat_bg, &[]);
                 }
-                match &renderer.gpu.csm_shadow {
-                    Some(csm) => pass.set_bind_group(2, &csm.bind_group, &[]),
-                    None => log::error!("CSM shadow missing; shadow bind group not set"),
-                }
-                pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
 
                 if let Some(mesh_id) = ctx.mesh_handles[i] {
                     renderer.draw_mesh_batched(pass, mesh_id, &mut last_bound_mesh);
