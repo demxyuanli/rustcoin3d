@@ -184,7 +184,7 @@ pub(super) fn execute_passes(
 
     let solid_mode = matches!(
         mode,
-        DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
+        DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine | DisplayMode::Flat
     );
 
     let hzb_need_max = !ctx.meshlet_indices.is_empty()
@@ -857,13 +857,25 @@ pub(super) fn execute_passes(
 
     renderer.prune_mesh_cache();
     renderer.gpu_timer.resolve(&mut encoder);
+    let t0 = std::time::Instant::now();
     renderer.queue.submit(std::iter::once(encoder.finish()));
+    let t_submit = t0.elapsed().as_secs_f64() * 1000.0;
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
         drop(vw);
         surface_tex.present();
     }
+    let t_present = t0.elapsed().as_secs_f64() * 1000.0 - t_submit;
 
+    let t_collect = std::time::Instant::now();
     renderer.gpu_timer.collect(&renderer.device);
+    let t_collect = t_collect.elapsed().as_secs_f64() * 1000.0;
+
+    if renderer.frame.frame_counter % 10 == 0 {
+        log::info!(
+            "CPU submit/present/collect: submit={:.1}ms present={:.1}ms collect={:.1}ms",
+            t_submit, t_present, t_collect
+        );
+    }
     let gpu_timestamps = &renderer.gpu_timer.last_timestamps;
 
     let mut gpu_sections_data = Vec::new();
