@@ -167,14 +167,14 @@ fn select_cascade_blended(view_depth: f32) -> CascadeSelection {
         let blend_start = split - blend_half;
         let blend_end = split + blend_half;
         if view_depth < blend_start {
-            return CascadeSelection{ cascade_a: i, cascade_b: i, blend: 0.0 };
+            return CascadeSelection(i, i, 0.0);
         }
         if view_depth < blend_end {
             let t = clamp((view_depth - blend_start) / (blend_end - blend_start), 0.0, 1.0);
-            return CascadeSelection{ cascade_a: i, cascade_b: i + 1u, blend: t };
+            return CascadeSelection(i, i + 1u, t);
         }
     }
-    return CascadeSelection{ cascade_a: CSM_CASCADE_COUNT - 1u, cascade_b: CSM_CASCADE_COUNT - 1u, blend: 0.0 };
+    return CascadeSelection(CSM_CASCADE_COUNT - 1u, CSM_CASCADE_COUNT - 1u, 0.0);
 }
 
 fn shadow_factor_csm_blended(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, sel: CascadeSelection) -> f32 {
