@@ -52,6 +52,7 @@ pub(crate) struct FrameState {
     pub has_text_nodes: bool,
     /// Fast-path: skip full-scene effect traversal when no Decal/Volume/PointCloud nodes.
     pub has_effect_nodes: bool,
+    pub gpu_cull_ready: bool,
     /// Reusable allocations for frustum culling (cleared each frame, avoids re-allocation).
     pub bvh_out: Vec<u32>,
     pub visible_indices: Vec<usize>,

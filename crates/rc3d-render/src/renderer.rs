@@ -470,6 +470,7 @@ impl Renderer {
                 cached_bvh: None,
                 has_text_nodes: true,    // optimistic; auto-disabled after 2 empty frames
                 has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
+                gpu_cull_ready: false,
                 bvh_out: Vec::with_capacity(1024),
                 visible_indices: Vec::with_capacity(1024),
                 solid_order_buf: Vec::with_capacity(1024),

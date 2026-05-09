@@ -37,26 +37,25 @@ impl super::Renderer {
             pool.begin_frame();
         }
 
-        // ── GPU cull: read back previous frame's visible count ──
-        if self.gpu.gpu_cull_enabled {
+        // ── GPU cull: read back previous frame's total visible count ──
+        if self.gpu.gpu_cull_enabled
+            && self.frame.frame_counter > 2
+            && self.frame.gpu_cull_ready
+        {
             if let Some(ref staging) = self.gpu.gpu_cull_staging {
                 let slice = staging.slice(..);
-                // map_async requires a callback; we poll via device.poll()
                 slice.map_async(wgpu::MapMode::Read, |_| {});
-                // Brief poll — if not ready yet, skip (frame-delayed readback)
                 self.device.poll(wgpu::Maintain::Wait);
-                if self.frame.frame_counter > 2 {
-                    let mapped = staging.slice(..).get_mapped_range();
-                    if mapped.len() >= 4 {
-                        let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
-                        if count > 0 {
-                            log::info!("GPU cull: {} visible objects (frame {})",
-                                count, self.frame.frame_counter);
-                        }
-                    }
-                    drop(mapped);
-                    staging.unmap();
+                let mapped = staging.slice(..).get_mapped_range();
+                if mapped.len() >= 4 {
+                    let gpu_count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
+                    // GPU cull loop is closed when count matches CPU expectation
+                    log::info!("GPU cull: {} visible objects (CPU: {})",
+                        gpu_count, self.frame.visible_indices.len());
                 }
+                drop(mapped);
+                staging.unmap();
+                self.frame.gpu_cull_ready = false;
             }
         }
 

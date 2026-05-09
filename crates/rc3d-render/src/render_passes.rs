@@ -193,6 +193,7 @@ pub(super) fn execute_passes(
             {
                 encoder.copy_buffer_to_buffer(indirect_buf, 4, staging, 0, 4);
             }
+            renderer.frame.gpu_cull_ready = true;
         }
     }
 
