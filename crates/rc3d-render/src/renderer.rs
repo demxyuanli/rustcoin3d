@@ -542,6 +542,7 @@ impl Renderer {
                 gpu_cull_pass: None,
                 gpu_cull_bg: None,
                 frustum_uniform: None,
+                gpu_cull_staging: None,
                 gpu_cull_enabled: false,
                 max_gpu_cull_objects: 65536,
             },
@@ -697,6 +698,12 @@ impl Renderer {
             self.gpu.frustum_uniform.as_ref().unwrap(),
             self.gpu.instance_indices_buffer.as_ref().unwrap(),
         );
+        self.gpu.gpu_cull_staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Cull Readback"),
+            size: 8, // visible count (u32) + padding
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }));
         self.gpu.gpu_cull_pass = Some(cull_pass);
         self.gpu.gpu_cull_bg = Some(bg);
         self.gpu.gpu_cull_enabled = true;

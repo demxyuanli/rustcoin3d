@@ -186,6 +186,13 @@ pub(super) fn execute_passes(
                 let _span_cull = tracy_client::span!("gpu_cull");
                 cull_pass.dispatch(&mut encoder, bg, obj_count as u32);
             }
+
+            // Copy visible count (first indirect_args[0].instance_count) to staging for readback
+            if let (Some(ref indirect_buf), Some(ref staging)) =
+                (&renderer.gpu.indirect_args_buffer, &renderer.gpu.gpu_cull_staging)
+            {
+                encoder.copy_buffer_to_buffer(indirect_buf, 4, staging, 0, 4);
+            }
         }
     }
 

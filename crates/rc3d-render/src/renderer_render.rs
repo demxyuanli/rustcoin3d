@@ -37,6 +37,29 @@ impl super::Renderer {
             pool.begin_frame();
         }
 
+        // ── GPU cull: read back previous frame's visible count ──
+        if self.gpu.gpu_cull_enabled {
+            if let Some(ref staging) = self.gpu.gpu_cull_staging {
+                let slice = staging.slice(..);
+                // map_async requires a callback; we poll via device.poll()
+                slice.map_async(wgpu::MapMode::Read, |_| {});
+                // Brief poll — if not ready yet, skip (frame-delayed readback)
+                self.device.poll(wgpu::Maintain::Wait);
+                if self.frame.frame_counter > 2 {
+                    let mapped = staging.slice(..).get_mapped_range();
+                    if mapped.len() >= 4 {
+                        let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
+                        if count > 0 {
+                            log::info!("GPU cull: {} visible objects (frame {})",
+                                count, self.frame.frame_counter);
+                        }
+                    }
+                    drop(mapped);
+                    staging.unmap();
+                }
+            }
+        }
+
         // ── Populate FlatDrawCache as side effect (for future incremental traversal) ──
         self.cpu_span.measure("cache_update", || {
             crate::render_action::populate_cache_from_draw_calls(
@@ -57,8 +80,10 @@ impl super::Renderer {
             }
             if let Some(ref pool) = self.gpu.assets.mesh_pool {
                 log::info!(
-                    "MeshPool: {}/{} slots used, {} uploads/frame",
+                    "MeshPool: {}/{} slots, {} MB / {} MB, {} uploads/frame",
                     pool.len(), crate::mesh_pool::DEFAULT_POOL_SIZE,
+                    pool.total_bytes() / (1024 * 1024),
+                    crate::mesh_pool::DEFAULT_MAX_POOL_BYTES / (1024 * 1024),
                     pool.uploads_this_frame(),
                 );
             }

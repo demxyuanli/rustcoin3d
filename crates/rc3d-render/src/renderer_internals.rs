@@ -135,6 +135,8 @@ pub(crate) struct GpuInternals {
     pub gpu_cull_pass: Option<crate::gpu_culling::GpuCullPass>,
     pub gpu_cull_bg: Option<wgpu::BindGroup>,
     pub frustum_uniform: Option<wgpu::Buffer>,
+    /// Staging buffer for reading back GPU cull instance count.
+    pub gpu_cull_staging: Option<wgpu::Buffer>,
     pub gpu_cull_enabled: bool,
     pub max_gpu_cull_objects: u64,
 }
