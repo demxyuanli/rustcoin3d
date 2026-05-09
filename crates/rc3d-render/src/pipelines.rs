@@ -27,6 +27,8 @@ pub struct DepthModePipelines {
     pub solid_alpha: wgpu::RenderPipeline,
     /// Phong solid with color writes disabled (depth/stencil only), for same-frame HZB prepass.
     pub solid_depth_prepass: wgpu::RenderPipeline,
+    /// Flat color solid: MVP + uniform color, no lighting/PBR.
+    pub flat_solid: wgpu::RenderPipeline,
     pub wireframe: wgpu::RenderPipeline,
     pub edge_overlay: wgpu::RenderPipeline,
     pub selection_fill: wgpu::RenderPipeline,

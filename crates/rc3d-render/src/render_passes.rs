@@ -291,6 +291,8 @@ pub(super) fn execute_passes(
                 &hzb.max_pyramid,
                 &hzb.min_pyramid,
             );
+            // Save max-pyramid view for next frame's occlusion culling
+            renderer.gpu.prev_hzb_view = Some(hzb.max_pyramid.full_view.clone());
         } else {
             meshlet_hzb_prepass_done = false;
             break 'hzb_prepass;
@@ -453,6 +455,123 @@ pub(super) fn execute_passes(
         }
     }
 
+    // ── HZB occlusion culling dispatch ──
+    // Build sphere data for all solid draws and test against previous frame's HZB.
+    // Results are written to occlusion_visibility for potential use by the vertex shader
+    // or CPU readback in future frames.
+    if let (Some(ref pipeline), Some(ref bgl)) = (
+        renderer.gpu.occlusion_cull_pipeline.as_ref(),
+        renderer.gpu.occlusion_cull_bgl.as_ref(),
+    ) {
+        if let Some(ref prev_hzb_view) = renderer.gpu.prev_hzb_view {
+            let hzb = renderer.gpu.hzb.as_ref();
+            let instance_count = ctx.solid_order.len() as u32;
+            if instance_count > 0 {
+                // Build sphere data: (world_center.x, world_center.y, world_center.z, radius)
+                let mut sphere_data: Vec<[f32; 4]> = Vec::with_capacity(instance_count as usize);
+                for &idx in ctx.solid_order {
+                    let dc = ctx.visible[idx];
+                    // Use model matrix translation as center, estimate radius from AABB if available
+                    let (_cols, _rot, trans) = dc.model_matrix.to_scale_rotation_translation();
+                    let center = trans;
+                    let radius = if let Some(ref aabb) = dc.aabb {
+                        (aabb.max - aabb.min).length() * 0.5 + 0.01
+                    } else {
+                        0.5 // default radius for objects without AABB
+                    };
+                    sphere_data.push([center.x, center.y, center.z, radius]);
+                }
+
+                renderer.queue.write_buffer(
+                    &renderer.gpu.occlusion_spheres, 0,
+                    bytemuck::cast_slice(&sphere_data),
+                );
+
+                // Clear visibility to 0
+                let vis_words = ((instance_count + 31) / 32) as u64;
+                let zeros = vec![0u32; vis_words as usize];
+                renderer.queue.write_buffer(
+                    &renderer.gpu.occlusion_visibility, 0,
+                    bytemuck::cast_slice(&zeros),
+                );
+
+                let hzb_width = hzb.map_or(1, |h| h.max_pyramid.width);
+                let hzb_height = hzb.map_or(1, |h| h.max_pyramid.height);
+                let hzb_mips = hzb.map_or(1, |h| h.max_pyramid.mip_count);
+
+                #[repr(C)]
+                #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+                struct CullUniforms {
+                    view_proj: [[f32; 4]; 4],
+                    hzb_width: f32,
+                    hzb_height: f32,
+                    hzb_mip_count: f32,
+                    instance_count: u32,
+                    _pad: [u32; 3],
+                }
+
+                let cull_uniforms = CullUniforms {
+                    view_proj: renderer.frame.scene_vp.to_cols_array_2d(),
+                    hzb_width: hzb_width as f32,
+                    hzb_height: hzb_height as f32,
+                    hzb_mip_count: hzb_mips as f32,
+                    instance_count,
+                    _pad: [0; 3],
+                };
+
+                let uniform_buf = renderer.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("HZB cull uniforms"),
+                        contents: bytemuck::bytes_of(&cull_uniforms),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    },
+                );
+
+                let hzb_sampler = renderer.gpu.prev_hzb_sampler.as_ref();
+
+                if let Some(sampler) = hzb_sampler {
+                    let bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("HZB occlusion cull BG"),
+                        layout: bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: uniform_buf.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: renderer.gpu.occlusion_spheres.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: renderer.gpu.occlusion_visibility.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(prev_hzb_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                        ],
+                    });
+
+                    {
+                        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("HZB occlusion cull"),
+                            timestamp_writes: None,
+                        });
+                        cpass.set_pipeline(pipeline);
+                        cpass.set_bind_group(0, &bg, &[]);
+                        let wg_count = (instance_count + 63) / 64;
+                        cpass.dispatch_workgroups(wg_count, 1, 1);
+                    }
+                }
+            }
+        }
+    }
+
     let ti_solid = renderer.gpu_timer.begin(&mut encoder, "Solid+Outline");
     if solid_mode {
         #[cfg(feature = "profiler")]
@@ -516,7 +635,7 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_effects);
 
-    if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe {
+    if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe && mode != DisplayMode::Flat {
         #[cfg(feature = "profiler")]
         let _span_wireframe = tracy_client::span!("wireframe");
         pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
@@ -533,7 +652,8 @@ pub(super) fn execute_passes(
 
     let edge_worthy = !ctx.performance_mode_active
         && ctx.adaptive_quality != AdaptiveQuality::Low
-        && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
+        && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine)
+        && mode != DisplayMode::Flat;
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
     let defer_line_overlays = use_ldr_fxaa;
     if (edge_worthy || has_overlay) && !defer_line_overlays {
@@ -542,7 +662,7 @@ pub(super) fn execute_passes(
         pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
-    if has_selection && !ctx.performance_mode_active {
+    if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat {
         pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         if ss_outline {
             let shade_fmt = if renderer.hdr_post_processing {
@@ -605,7 +725,7 @@ pub(super) fn execute_passes(
         if edge_worthy || has_overlay {
             pass_edge::pass_edge_overlay(renderer, &mut encoder, &view, &depth_view, ctx, edge_worthy, &scene_pl);
         }
-        if has_selection && !ctx.performance_mode_active {
+        if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat {
             if run_geom_sel_edge {
                 pass_selection::pass_selection_edge(renderer, &mut encoder, &view, &depth_view, ctx, &scene_pl);
             }

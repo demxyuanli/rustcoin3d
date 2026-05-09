@@ -168,6 +168,11 @@ pub(crate) fn window_event(
                                 renderer.set_display_mode(DisplayMode::HiddenLine);
                             }
                         }
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyK) => {
+                            if let Some(renderer) = &mut app.state.renderer {
+                                renderer.set_display_mode(DisplayMode::Flat);
+                            }
+                        }
                         winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => {
                             app.editor.axis_clip[0] = !app.editor.axis_clip[0];
                         }

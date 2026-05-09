@@ -3,6 +3,7 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
+use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{Coordinate3Node, IndexedFaceSetNode, MaterialNode, SeparatorNode};
 
@@ -200,6 +201,9 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
     for (chunk_points, chunk_indices) in chunks {
         graph.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(chunk_points)));
         graph.add_child(root, NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index: chunk_indices }));
+    }
+    if let Some(root_entry) = graph.get_mut(root) {
+        root_entry.display_mode = Some(DisplayMode::Flat);
     }
     graph
 }

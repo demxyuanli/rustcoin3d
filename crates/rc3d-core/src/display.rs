@@ -7,4 +7,5 @@ pub enum DisplayMode {
     Shaded,
     Wireframe,
     HiddenLine,
+    Flat,
 }

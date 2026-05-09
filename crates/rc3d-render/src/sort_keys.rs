@@ -8,6 +8,7 @@ pub fn display_mode_sort_key(mode: DisplayMode) -> u8 {
         DisplayMode::ShadedWithEdges => 1,
         DisplayMode::Wireframe => 2,
         DisplayMode::HiddenLine => 3,
+        DisplayMode::Flat => 4,
     }
 }
 

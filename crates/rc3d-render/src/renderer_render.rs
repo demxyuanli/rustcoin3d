@@ -422,7 +422,8 @@ impl super::Renderer {
             && matches!(
                 mode,
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
-            );
+            )
+            && mode != DisplayMode::Flat;
 
         let (camera_proj, camera_inv_proj) = if let Some((p, ip)) = ssao_projection {
             (p, ip)

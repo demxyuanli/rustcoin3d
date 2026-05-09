@@ -199,6 +199,40 @@ pub(super) fn build_depth_mode_pipelines(
         cache: None,
     });
 
+    let flat_solid = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Flat solid"),
+        layout: Some(flat_pll),
+        vertex: wgpu::VertexState {
+            module: flat_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Vertex::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: flat_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(depth_stencil.clone()),
+        multisample: ms,
+        multiview: None,
+        cache: None,
+    });
+
     let edge_overlay = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(flat_pll),
@@ -454,6 +488,7 @@ pub(super) fn build_depth_mode_pipelines(
         solid,
         solid_alpha,
         solid_depth_prepass,
+        flat_solid,
         wireframe,
         edge_overlay,
         selection_fill,
