@@ -29,7 +29,7 @@ fn normal_cdf(x: f64) -> f64 {
 const STREAM_SIGMA: f64 = 0.22;
 const STREAM_DURATION_S: f64 = 2.2;
 const STREAM_LOD_TARGETS: &[usize] = &[
-    12_000, 30_000, 60_000, 110_000, 180_000, 280_000, 430_000, 660_000, 1_000_000, 1_600_000,
+    12_000, 30_000, 60_000, 110_000, 180_000, 280_000, 430_000, 660_000,
 ];
 const STREAM_STEP_MS: u64 = 180;
 

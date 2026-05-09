@@ -45,7 +45,7 @@ use streaming_lod::{
 
 type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
 const APPROX_VERTEX_BYTES: usize = 48;
-const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 240 * 1024 * 1024;
+const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct App {
     pub state: AppState,

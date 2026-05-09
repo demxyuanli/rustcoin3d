@@ -196,7 +196,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
             ..Default::default()
         }),
     );
-    const MAX_VERTICES_PER_CHUNK: usize = 4_000_000;
+    const MAX_VERTICES_PER_CHUNK: usize = 2_000_000;
     let chunks = split_indexed_face_set_into_chunks(&points, &coord_index, MAX_VERTICES_PER_CHUNK);
     for (chunk_points, chunk_indices) in chunks {
         graph.add_child(root, NodeData::Coordinate3(Coordinate3Node::from_points(chunk_points)));
