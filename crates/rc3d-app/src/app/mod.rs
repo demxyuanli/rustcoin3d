@@ -46,6 +46,7 @@ use streaming_lod::{
 type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
 const APPROX_VERTEX_BYTES: usize = 48;
 const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 128 * 1024 * 1024;
+const MAX_SAFE_TRIANGLES: usize = 1_000_000;
 
 pub struct App {
     pub state: AppState,
@@ -346,7 +347,8 @@ impl App {
             let budget = gaussian_triangle_budget(t_s, patch.total_full_tris);
             let estimated_vertex_bytes =
                 patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
-            let skip_full_restore = estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES;
+            let skip_full_restore = estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES
+                || patch.total_full_tris > MAX_SAFE_TRIANGLES;
 
             if budget >= patch.total_full_tris || t_s >= 2.2 {
                 if skip_full_restore {
@@ -399,11 +401,14 @@ impl App {
             let total_tris = total_indices / 4;
             let estimated_vertex_bytes =
                 patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
-            if estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES {
+            if estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES || total_tris > MAX_SAFE_TRIANGLES {
                 log::warn!(
-                    "Skip full-resolution restore (estimated_vertex_bytes={} > limit={}), keep streamed LOD",
+                    "Skip full-resolution restore (points={}, ~{}K tris, vertex_bytes={}, limits: {}MB / {}M tris)",
+                    total_points,
+                    total_tris / 1000,
                     estimated_vertex_bytes,
-                    MAX_SAFE_VERTEX_BUFFER_BYTES,
+                    MAX_SAFE_VERTEX_BUFFER_BYTES / (1024 * 1024),
+                    MAX_SAFE_TRIANGLES / 1_000_000,
                 );
             } else {
                 patch.apply_full_to_graph(&mut self.state.world.graph);
