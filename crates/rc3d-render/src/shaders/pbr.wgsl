@@ -177,16 +177,6 @@ fn select_cascade_blended(view_depth: f32) -> CascadeSelection {
     return CascadeSelection{ cascade_a: CSM_CASCADE_COUNT - 1u, cascade_b: CSM_CASCADE_COUNT - 1u, blend: 0.0 };
 }
 
-// Select CSM cascade based on view-space depth (unblended, kept for reference)
-fn select_cascade(view_depth: f32) -> u32 {
-    for (var i = 0u; i < CSM_CASCADE_COUNT - 1u; i = i + 1u) {
-        if view_depth < u.csm_split_depths[i] {
-            return i;
-        }
-    }
-    return CSM_CASCADE_COUNT - 1u;
-}
-
 fn shadow_factor_csm_blended(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, sel: CascadeSelection) -> f32 {
     let s0 = shadow_factor_csm(world_pos, world_normal, light_dir, sel.cascade_a);
     if sel.blend <= 0.001 {
