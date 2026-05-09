@@ -187,11 +187,19 @@ pub(super) fn execute_passes(
                 cull_pass.dispatch(&mut encoder, bg, obj_count as u32);
             }
 
-            // Copy visible count (first indirect_args[0].instance_count) to staging for readback
-            if let (Some(ref indirect_buf), Some(ref staging)) =
-                (&renderer.gpu.indirect_args_buffer, &renderer.gpu.gpu_cull_staging)
+            // Copy visible count + instance indices to staging for frame-delayed readback
+            if let (Some(ref indirect_buf), Some(ref instance_buf), Some(ref staging)) =
+                (&renderer.gpu.indirect_args_buffer,
+                 &renderer.gpu.instance_indices_buffer,
+                 &renderer.gpu.gpu_cull_staging)
             {
+                // Copy instance_count from indirect_args[0] → staging[0..4]
                 encoder.copy_buffer_to_buffer(indirect_buf, 4, staging, 0, 4);
+                // Copy instance_indices → staging[4..]
+                let idx_size = (obj_count as u64 * 4).min(staging.size() - 4);
+                if idx_size > 0 {
+                    encoder.copy_buffer_to_buffer(instance_buf, 0, staging, 4, idx_size);
+                }
             }
             renderer.frame.gpu_cull_ready = true;
         }

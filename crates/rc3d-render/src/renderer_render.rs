@@ -37,21 +37,38 @@ impl super::Renderer {
             pool.begin_frame();
         }
 
-        // ── GPU cull: read back previous frame's total visible count ──
+        // ── GPU cull: read back previous frame's instance count + indices ──
+        let mut gpu_visible: Option<Vec<usize>> = None;
         if self.gpu.gpu_cull_enabled
             && self.frame.frame_counter > 2
             && self.frame.gpu_cull_ready
         {
             if let Some(ref staging) = self.gpu.gpu_cull_staging {
-                let slice = staging.slice(..);
-                slice.map_async(wgpu::MapMode::Read, |_| {});
+                let buf_slice = staging.slice(..);
+                buf_slice.map_async(wgpu::MapMode::Read, |_| {});
                 self.device.poll(wgpu::Maintain::Wait);
-                let mapped = staging.slice(..).get_mapped_range();
-                if mapped.len() >= 4 {
-                    let gpu_count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
-                    // GPU cull loop is closed when count matches CPU expectation
-                    log::info!("GPU cull: {} visible objects (CPU: {})",
-                        gpu_count, self.frame.visible_indices.len());
+                let mapped = buf_slice.get_mapped_range();
+                let byte_count = mapped.len();
+                if byte_count >= 4 {
+                    let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
+                    let count = (count as usize).min(draw_calls.len());
+                    let mut indices = Vec::with_capacity(count);
+                    for i in 0..count {
+                        let off = 4 + i * 4;
+                        if off + 4 <= byte_count {
+                            let idx = u32::from_le_bytes([
+                                mapped[off], mapped[off+1], mapped[off+2], mapped[off+3]
+                            ]) as usize;
+                            if idx < draw_calls.len() {
+                                indices.push(idx);
+                            }
+                        }
+                    }
+                    if !indices.is_empty() {
+                        log::info!("GPU cull: {} visible (CPU: {})",
+                            indices.len(), self.frame.visible_indices.len());
+                        gpu_visible = Some(indices);
+                    }
                 }
                 drop(mapped);
                 staging.unmap();
@@ -203,6 +220,15 @@ impl super::Renderer {
             }
             self.frame.visible_indices.iter().map(|&i| &draw_calls[i]).collect()
         });
+
+        // ── GPU cull replacement: if readback has fresh indices, replace CPU cull ──
+        let visible = if let Some(ref gpu_indices) = gpu_visible {
+            self.frame.visible_indices.clear();
+            self.frame.visible_indices.extend(gpu_indices.iter().copied());
+            self.frame.visible_indices.iter().map(|&i| &draw_calls[i]).collect()
+        } else {
+            visible
+        };
 
         // ── GPU compute culling (runs alongside CPU culling for now) ──
         if self.gpu.gpu_cull_enabled {

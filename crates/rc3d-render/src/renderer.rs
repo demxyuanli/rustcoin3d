@@ -708,7 +708,7 @@ impl Renderer {
         );
         self.gpu.gpu_cull_staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("GPU Cull Readback"),
-            size: 8, // visible count (u32) + padding
+            size: 4 + 4 * max_objects, // count (u32) + indices (u32 each)
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         }));
