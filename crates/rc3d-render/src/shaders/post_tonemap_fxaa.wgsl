@@ -102,5 +102,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let grain_noise = fract(sin(dot(i.clip_pos.xy, vec2<f32>(12.9898, 78.233))) * 43758.5453);
     let grain_ldr = vig_ldr + (grain_noise - 0.5) * params.grain;
 
-    return vec4<f32>(grain_ldr, 1.0);
+    // Dither to break sRGB quantization banding (especially visible in dark vignette)
+    let dither = (grain_noise - 0.5) / 255.0;
+    let dithered = grain_ldr + dither;
+
+    return vec4<f32>(dithered, 1.0);
 }
