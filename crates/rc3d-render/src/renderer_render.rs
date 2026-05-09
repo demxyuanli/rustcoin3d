@@ -155,6 +155,12 @@ impl super::Renderer {
         let first = &draw_calls[0];
         let vp = first.mvp * first.model_matrix.inverse();
         self.frame.scene_vp = vp;
+        // Camera moved? Force re-cull even if AABBs are static.
+        let camera_moved = vp != self.frame.last_vp;
+        if camera_moved {
+            self.frame.static_frame_count = 0;
+        }
+        self.frame.last_vp = vp;
         let frustum = Frustum::from_view_projection(vp);
 
         let visible: Vec<&DrawCall> = self.cpu_span.measure("bvh_frustum_cull", || {
@@ -189,34 +195,53 @@ impl super::Renderer {
                         })
                         .map(|(i, (aabb, _))| (i, aabb.clone()))
                         .collect();
+                    let fully_static = updates.is_empty();
                     cached.incremental_update(&updates, &bvh_items);
                     *_items = bvh_items;
+                    if fully_static {
+                        self.frame.bvh_fully_static = true;
+                        self.frame.static_frame_count += 1;
+                    } else {
+                        self.frame.bvh_fully_static = false;
+                        self.frame.static_frame_count = 0;
+                    }
                     &*cached
                 }
                 _ => {
+                    self.frame.bvh_fully_static = false;
+                    self.frame.static_frame_count = 0;
                     let bvh = rc3d_core::Bvh::build(&bvh_items);
                     self.frame.cached_bvh = Some((bvh, bvh_items));
                     &self.frame.cached_bvh.as_ref().unwrap().0
                 }
             };
 
-            // Reuse frame-local allocation Vecs to avoid per-frame allocation
-            self.frame.visible_indices.clear();
-            if bvh.is_empty() {
-                self.frame.visible_indices.extend(0..draw_calls.len());
+            // Static frame fast path: if BVH is fully static for 2+ consecutive frames,
+            // reuse cached visible indices and skip the BVH query entirely.
+            if self.frame.bvh_fully_static && self.frame.static_frame_count >= 2 {
+                self.frame.visible_indices.clear();
+                self.frame.visible_indices.extend_from_slice(&self.frame.static_visible_indices);
             } else {
-                self.frame.bvh_out.clear();
-                bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut self.frame.bvh_out);
-                for &idx in &self.frame.bvh_out {
-                    self.frame.visible_indices.push(idx as usize);
-                }
-                for (i, dc) in draw_calls.iter().enumerate() {
-                    if dc.aabb.is_none() {
-                        self.frame.visible_indices.push(i);
+                self.frame.visible_indices.clear();
+                if bvh.is_empty() {
+                    self.frame.visible_indices.extend(0..draw_calls.len());
+                } else {
+                    self.frame.bvh_out.clear();
+                    bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut self.frame.bvh_out);
+                    for &idx in &self.frame.bvh_out {
+                        self.frame.visible_indices.push(idx as usize);
                     }
+                    for (i, dc) in draw_calls.iter().enumerate() {
+                        if dc.aabb.is_none() {
+                            self.frame.visible_indices.push(i);
+                        }
+                    }
+                    self.frame.visible_indices.sort_unstable();
+                    self.frame.visible_indices.dedup();
                 }
-                self.frame.visible_indices.sort_unstable();
-                self.frame.visible_indices.dedup();
+                // Cache visible indices for static frame reuse
+                self.frame.static_visible_indices.clear();
+                self.frame.static_visible_indices.extend_from_slice(&self.frame.visible_indices);
             }
             self.frame.visible_indices.iter().map(|&i| &draw_calls[i]).collect()
         });

@@ -54,6 +54,14 @@ pub(crate) struct FrameState {
     pub has_effect_nodes: bool,
     pub gpu_cull_ready: bool,
     pub parallel_traversal_enabled: bool,
+    /// Static frame: true when BVH had zero dirty AABBs this frame.
+    pub bvh_fully_static: bool,
+    /// Static frame: cached visible indices from previous static frame.
+    pub static_visible_indices: Vec<usize>,
+    /// Static frame: how many consecutive static frames we've had.
+    pub static_frame_count: u64,
+    /// Previous frame's view-projection for camera change detection.
+    pub last_vp: glam::Mat4,
     /// Reusable allocations for frustum culling (cleared each frame, avoids re-allocation).
     pub bvh_out: Vec<u32>,
     pub visible_indices: Vec<usize>,

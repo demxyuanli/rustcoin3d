@@ -472,6 +472,10 @@ impl Renderer {
                 has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
                 gpu_cull_ready: false,
                 parallel_traversal_enabled: false,
+                bvh_fully_static: false,
+                static_visible_indices: Vec::with_capacity(1024),
+                static_frame_count: 0,
+                last_vp: glam::Mat4::IDENTITY,
                 bvh_out: Vec::with_capacity(1024),
                 visible_indices: Vec::with_capacity(1024),
                 solid_order_buf: Vec::with_capacity(1024),
