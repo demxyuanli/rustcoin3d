@@ -644,7 +644,7 @@ pub(crate) fn window_event(
                                 mvp: vp,
                                 model_matrix: Mat4::IDENTITY,
                                 camera_pos: app.state.world.collector.camera_pos,
-                                light_count: 0,
+                                light_set_id: 0,
                                 overlay_color: Some([1.0, 1.0, 0.0, 1.0]),
                                 display_mode: DisplayMode::ShadedWithEdges,
                                 projection_orthographic: app.state
@@ -677,7 +677,7 @@ pub(crate) fn window_event(
                                     mvp: vp,
                                     model_matrix: Mat4::IDENTITY,
                                     camera_pos: app.state.world.collector.camera_pos,
-                                    light_count: 0,
+                                    light_set_id: 0,
                                     overlay_color: Some(color),
                                     display_mode: DisplayMode::ShadedWithEdges,
                                     projection_orthographic: app.state
@@ -698,6 +698,14 @@ pub(crate) fn window_event(
                     renderer.set_effect_commands(
                         std::mem::take(&mut app.state.world.collector.effect_commands),
                     );
+                    // Transfer light-set table from traversal to renderer.
+                    // Only take from collector when traversal actually ran (not cached),
+                    // otherwise the collector's table is empty from the previous take.
+                    if !can_skip {
+                        let light_sets =
+                            std::mem::take(&mut app.state.world.collector.light_sets);
+                        renderer.set_light_sets(light_sets);
+                    }
 
                     if !app.state.world.collector.draw_calls.is_empty() {
                         let mut overlay = None;
