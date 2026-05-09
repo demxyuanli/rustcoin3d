@@ -41,9 +41,21 @@ impl GpuAssetManager {
     }
 
     /// Insert or touch a mesh entry. If the cache is full, the least recently used entry
-    /// is evicted. Caller is responsible for freeing the evicted GPU resources.
-    pub fn mesh_insert(&mut self, key: u64, mesh_id: MeshId, frame: u64) -> Option<(MeshId, u64)> {
-        self.mesh_cache.push(key, (mesh_id, frame)).map(|(_, v)| v)
+    /// is evicted. If `gpu_meshes` is provided, the evicted mesh's GPU resources are freed.
+    pub fn mesh_insert(
+        &mut self,
+        key: u64,
+        mesh_id: MeshId,
+        frame: u64,
+        gpu_meshes: Option<&mut GpuResourceManager>,
+    ) -> Option<(MeshId, u64)> {
+        let evicted = self.mesh_cache.push(key, (mesh_id, frame)).map(|(_, v)| v);
+        if let (Some((evicted_id, _)), Some(gpu)) = (&evicted, gpu_meshes) {
+            if *evicted_id != mesh_id {
+                gpu.remove(*evicted_id);
+            }
+        }
+        evicted
     }
 
     /// Access a mesh entry, promoting it to most-recently used.
@@ -135,7 +147,7 @@ mod tests {
     fn test_mesh_insert_and_touch() {
         let mut m = GpuAssetManager::new();
         let id = MeshId::default();
-        m.mesh_insert(1, id, 10);
+        m.mesh_insert(1, id, 10, None);
         assert_eq!(m.mesh_cache_len(), 1);
 
         // Touch updates frame and promotes
@@ -149,12 +161,12 @@ mod tests {
         let mut m = GpuAssetManager::new();
         // Fill to capacity (256)
         for i in 0..MESH_CACHE_MAX as u64 {
-            m.mesh_insert(i, MeshId::default(), i);
+            m.mesh_insert(i, MeshId::default(), i, None);
         }
         assert_eq!(m.mesh_cache_len(), MESH_CACHE_MAX);
 
         // Insert one more — should evict LRU (key 0)
-        m.mesh_insert(MESH_CACHE_MAX as u64 + 1, MeshId::default(), 0);
+        m.mesh_insert(MESH_CACHE_MAX as u64 + 1, MeshId::default(), 0, None);
         assert_eq!(m.mesh_cache_len(), MESH_CACHE_MAX);
         assert!(m.mesh_get(&0).is_none()); // evicted
         assert!(m.mesh_get(&1).is_some()); // still there
@@ -164,13 +176,13 @@ mod tests {
     fn test_mesh_touch_promotes() {
         let mut m = GpuAssetManager::new();
         for i in 0..(MESH_CACHE_MAX / 2) as u64 {
-            m.mesh_insert(i, MeshId::default(), i);
+            m.mesh_insert(i, MeshId::default(), i, None);
         }
         // Touch key 0 to promote it to MRU
         m.mesh_touch(&0, 100);
         // Fill up to capacity — key 0 should survive evictions
         for i in (MESH_CACHE_MAX / 2) as u64..MESH_CACHE_MAX as u64 + 10 {
-            m.mesh_insert(i, MeshId::default(), i);
+            m.mesh_insert(i, MeshId::default(), i, None);
         }
         assert!(m.mesh_get(&0).is_some(), "touched mesh should survive eviction");
     }
@@ -178,7 +190,7 @@ mod tests {
     #[test]
     fn test_mesh_remove() {
         let mut m = GpuAssetManager::new();
-        m.mesh_insert(42, MeshId::default(), 0);
+        m.mesh_insert(42, MeshId::default(), 0, None);
         let removed = m.mesh_remove(&42);
         assert!(removed.is_some());
         assert_eq!(m.mesh_cache_len(), 0);
@@ -187,7 +199,7 @@ mod tests {
     #[test]
     fn test_invalidate_all() {
         let mut m = GpuAssetManager::new();
-        m.mesh_insert(1, MeshId::default(), 0);
+        m.mesh_insert(1, MeshId::default(), 0, None);
         m.invalidate_all();
         assert_eq!(m.mesh_cache_len(), 0);
     }
@@ -196,7 +208,7 @@ mod tests {
     fn test_prune_stale_meshes() {
         let mut m = GpuAssetManager::new();
         let mut gpu = GpuResourceManager::new();
-        m.mesh_insert(100, MeshId::default(), 10);
+        m.mesh_insert(100, MeshId::default(), 10, None);
         // At frame 400 (> 300 idle), the mesh should be pruned
         m.prune_stale_meshes(400, &mut gpu, None);
         assert_eq!(m.mesh_cache_len(), 0);

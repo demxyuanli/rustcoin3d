@@ -731,13 +731,14 @@ pub(crate) fn window_event(
                     let markup_root = app.state.world.graph.roots().first().copied().unwrap_or_default();
                     renderer.collect_markup_vertices(&app.state.world.graph, markup_root);
 
-                    renderer.set_effect_commands(
-                        std::mem::take(&mut app.state.world.collector.effect_commands),
-                    );
-                    // Transfer light-set table from traversal to renderer.
-                    // Only take from collector when traversal actually ran (not cached),
-                    // otherwise the collector's table is empty from the previous take.
-                    if !can_skip {
+                    // Transfer effect commands and light-set table from traversal
+                    // to renderer. Only take when a full traversal actually ran;
+                    // both the can_skip and camera_only paths skip traversal so
+                    // the collector's tables would be empty after a previous take.
+                    if !can_skip && !camera_only {
+                        renderer.set_effect_commands(
+                            std::mem::take(&mut app.state.world.collector.effect_commands),
+                        );
                         let light_sets =
                             std::mem::take(&mut app.state.world.collector.light_sets);
                         renderer.set_light_sets(light_sets);

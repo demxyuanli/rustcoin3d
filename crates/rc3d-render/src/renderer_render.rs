@@ -274,7 +274,7 @@ impl super::Renderer {
                             &[],
                             &[],
                         );
-                        self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
+                        self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter, Some(&mut self.gpu.gpu_meshes));
                         Some(mesh_id)
                     }
                 } else {
@@ -318,7 +318,7 @@ impl super::Renderer {
                                 &dc.edge_positions,
                                 &dc.wireframe_edge_positions,
                             );
-                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter, Some(&mut self.gpu.gpu_meshes));
                             Some(mesh_id)
                         } else {
                             let pass = self
@@ -348,7 +348,7 @@ impl super::Renderer {
                                 &dc.wireframe_edge_positions,
                             );
                             self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
-                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter, Some(&mut self.gpu.gpu_meshes));
                             Some(mesh_id)
                         }
                     } else {
@@ -359,7 +359,7 @@ impl super::Renderer {
                             &dc.edge_positions,
                             &dc.wireframe_edge_positions,
                         );
-                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter, Some(&mut self.gpu.gpu_meshes));
                         Some(mesh_id)
                     }
                 }

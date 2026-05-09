@@ -9,7 +9,7 @@ use std::thread;
 use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_core::NodeId;
 use rc3d_scene::node_data::*;
@@ -245,30 +245,6 @@ fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
     for child in children {
         boost_contrast_recursive(graph, child);
     }
-}
-
-fn has_directional_light(graph: &rc3d_scene::SceneGraph) -> bool {
-    for &root in graph.roots() {
-        if has_directional_light_recursive(graph, root) {
-            return true;
-        }
-    }
-    false
-}
-
-fn has_directional_light_recursive(graph: &rc3d_scene::SceneGraph, node: NodeId) -> bool {
-    let Some(entry) = graph.get(node) else {
-        return false;
-    };
-    if matches!(entry.data, NodeData::DirectionalLight(_)) {
-        return true;
-    }
-    for &child in &entry.children {
-        if has_directional_light_recursive(graph, child) {
-            return true;
-        }
-    }
-    false
 }
 
 fn find_first_camera_node(graph: &rc3d_scene::SceneGraph) -> Option<NodeId> {

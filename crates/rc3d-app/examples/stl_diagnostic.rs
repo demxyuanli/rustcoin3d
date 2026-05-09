@@ -66,7 +66,7 @@ fn main() {
     let stage_for_text = stage.clone();
     let stage_for_key = stage.clone();
 
-    let app = App::new(graph)
+    let mut app = App::new(graph)
         .with_camera_controller(ctrl)
         .with_initial_display_mode(display_mode)
         .with_hdr_post_processing(hdr)

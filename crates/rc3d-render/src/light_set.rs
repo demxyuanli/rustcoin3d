@@ -49,10 +49,20 @@ impl LightSetTable {
         }
     }
 
-    /// Look up a light set by index.
+    /// Look up a light set by index. Returns a zeroed fallback if the
+    /// table is empty (can happen when the camera-only fast-path reuses
+    /// cached draw calls before the first full traversal completes).
     #[inline]
     pub fn get(&self, id: u32) -> &PackedLights {
-        &self.sets[id as usize]
+        static EMPTY: PackedLights = (
+            [[0.0; 4]; MAX_LIGHTS],
+            [[0.0; 4]; MAX_LIGHTS],
+            [[0.0; 4]; MAX_LIGHTS],
+            [[0.0; 4]; MAX_LIGHTS],
+            [[0.0; 4]; MAX_LIGHTS],
+            0,
+        );
+        self.sets.get(id as usize).unwrap_or(&EMPTY)
     }
 
     /// Number of unique light sets stored.
