@@ -1,32 +1,21 @@
-//! Large scene stress test — 10,000 objects exercising all optimized paths.
-//!
-//! Tests: CSM cascade frustum pre-cull, incremental BVH, material bind group
-//! cache, flat draw cache, adaptive quality at scale.
+//! Large scene stress test — tests instanced draw batching, traversal, GPU pipelines.
 //!
 //! Keys:
-//!   1-5: Object count (1K/2K/5K/10K/20K)
-//!   F: Toggle frustum culling stats
-//!   Q: Show quality level
+//!   1-5: Object count presets (1K/2K/5K/10K/20K)
 //!   Mouse drag: orbit camera
 //!   Escape: clear selection | close window to quit
 
 use std::sync::{Arc, Mutex};
 
 use rc3d_app::camera_controller::CameraController;
-use rc3d_app::App;
+use rc3d_app::{AdaptiveQualityMode, App};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 
 #[derive(Clone, Default)]
 struct StressState {
-    object_count: usize,
-    frame_time_ms: f64,
-    quality: String,
-    draws: usize,
-    tris: u64,
-    culled: usize,
-    target_count: usize,
+    drawable_objects: usize,
 }
 
 fn main() {
@@ -35,44 +24,28 @@ fn main() {
     )
     .init();
 
-    println!("Large scene stress test — 10,000 objects");
-    println!("Usage: cargo run -p rc3d-app --example large_scene_stress --release");
-    println!("Keys: 1-5 density | F cull stats | Q quality | Esc clears selection");
+    let target = 10000;
+    let (scene, object_count) = build_large_scene(target);
+
+    println!("Scene built: {} drawable objects", object_count);
 
     let state = Arc::new(Mutex::new(StressState {
-        target_count: 10000,
-        ..Default::default()
+        drawable_objects: object_count,
     }));
 
-    let scene = build_large_scene(10000);
     let state_clone = state.clone();
 
-    // Target at grid center, distance enough for full visibility (~14-unit grid)
     let ctrl = CameraController::new(Vec3::new(0.0, 1.0, 0.0), 22.0);
     let mut app = App::new(scene)
         .with_camera_controller(ctrl)
         .with_continuous_redraw(true)
+        .with_adaptive_quality_mode(AdaptiveQualityMode::Off)
         .with_panel_overlay_text_hook(move || {
             let s = state_clone.lock().unwrap();
-            let fps = 1000.0 / s.frame_time_ms.max(0.01);
-            let percentage = if s.draws > 0 {
-                s.culled * 100 / (s.draws + s.culled)
-            } else {
-                0
-            };
-            let lines = vec![
-                "=== Large Scene Stress Test ===".to_string(),
-                format!("Objects: {}  |  Frame: {:.2}ms ({:.0}fps)",
-                    s.object_count, s.frame_time_ms, fps),
-                format!("Quality: {}  |  Draws: {}  |  Tris: {}",
-                    s.quality, s.draws, s.tris),
-                format!("Culled: {} ({}%)  |  Target: {}",
-                    s.culled, percentage, s.target_count),
-                "".to_string(),
-                "[1] 1K  [2] 2K  [3] 5K  [4] 10K  [5] 20K".to_string(),
-                "[F] Cull stats  [Q] Quality  [Esc] Clear selection".to_string(),
-            ];
-            lines.join("\n")
+            format!(
+                "=== Large Scene Stress ===\nScene objects: {}\n[1]1K [2]2K [3]5K [4]10K [5]20K",
+                s.drawable_objects,
+            )
         });
 
     winit::event_loop::EventLoop::new()
@@ -81,12 +54,10 @@ fn main() {
         .expect("event loop error");
 }
 
-fn build_large_scene(count: usize) -> SceneGraph {
+fn build_large_scene(target_count: usize) -> (SceneGraph, usize) {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    // Scene camera — updated by CameraController each frame.
-    // Initial position matches CameraController::new(eye, distance).
     graph.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
@@ -98,7 +69,6 @@ fn build_large_scene(count: usize) -> SceneGraph {
         )),
     );
 
-    // Directional light
     graph.add_child(
         root,
         NodeData::DirectionalLight(DirectionalLightNode {
@@ -109,47 +79,60 @@ fn build_large_scene(count: usize) -> SceneGraph {
         }),
     );
 
-    // Ultra-dense XZ grid with tiny objects. Compact area so most fit in view.
-    let layers = 6;
-    let per_layer = count / layers;
-    let cols = (per_layer as f32).sqrt().ceil() as i32;
-    let spacing = 0.35f32;
-    let half = cols as f32 * spacing * 0.5;
-
     let colors = [
-        Vec3::new(0.8, 0.3, 0.3), Vec3::new(0.3, 0.8, 0.3),
-        Vec3::new(0.3, 0.3, 0.8), Vec3::new(0.8, 0.8, 0.3),
-        Vec3::new(0.8, 0.3, 0.8), Vec3::new(0.3, 0.8, 0.8),
-        Vec3::new(0.6, 0.6, 0.6), Vec3::new(0.9, 0.5, 0.2),
+        Vec3::new(0.85, 0.25, 0.25),
+        Vec3::new(0.25, 0.85, 0.25),
+        Vec3::new(0.25, 0.35, 0.95),
+        Vec3::new(0.90, 0.80, 0.15),
+        Vec3::new(0.85, 0.25, 0.75),
+        Vec3::new(0.25, 0.85, 0.80),
+        Vec3::new(0.70, 0.70, 0.70),
+        Vec3::new(0.95, 0.55, 0.15),
     ];
 
+    let layers = 6;
+    let per_layer = target_count / layers;
+    let cols = (per_layer as f32).sqrt().ceil() as usize;
+    let spacing = 0.35f32;
+    let half = cols as f32 * spacing * 0.5;
+    let size = 0.18f32;
+    let mut drawable_count = 0usize;
+
     for layer in 0..layers {
-        let y_base = layer as f32 * 0.35;
-        for i in 0..per_layer.min(cols as usize * cols as usize) {
-            let row = i as i32 / cols;
-            let col = i as i32 % cols;
+        let y = layer as f32 * 0.35;
+        for idx in 0..per_layer {
+            let row = idx / cols;
+            let col = idx % cols;
             let x = col as f32 * spacing - half;
             let z = row as f32 * spacing - half;
+            let color_idx = idx % colors.len();
+            let shape_idx = idx % 5;
 
             let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
-            graph.add_child(sep, NodeData::Transform(
-                TransformNode::from_translation(Vec3::new(x, y_base, z)),
-            ));
-            graph.add_child(sep, NodeData::Material(MaterialNode {
-                base_color: colors[i % 8],
-                diffuse_color: colors[i % 8],
-                metallic: (i % 4) as f32 * 0.3,
-                roughness: 0.2 + (i % 8) as f32 * 0.1,
-                opacity: 1.0,
-                ..Default::default()
-            }));
-            let _ = match i % 5 {
-                0 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.2, height: 0.2, depth: 0.2 })),
-                1 => graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 0.12 })),
-                2 => graph.add_child(sep, NodeData::Cone(ConeNode { bottom_radius: 0.12, height: 0.25 })),
-                3 => graph.add_child(sep, NodeData::Cube(CubeNode { width: 0.1, height: 0.25, depth: 0.1 })),
-                _ => graph.add_child(sep, NodeData::Cylinder(CylinderNode { radius: 0.08, height: 0.2 })),
+            graph.add_child(
+                sep,
+                NodeData::Transform(TransformNode::from_translation(Vec3::new(x, y, z))),
+            );
+            graph.add_child(
+                sep,
+                NodeData::Material(MaterialNode {
+                    base_color: colors[color_idx],
+                    diffuse_color: colors[color_idx],
+                    metallic: (shape_idx as f32) * 0.2,
+                    roughness: 0.25 + (color_idx as f32) * 0.08,
+                    opacity: 1.0,
+                    ..Default::default()
+                }),
+            );
+
+            let shape = match shape_idx {
+                0 => NodeData::Cube(CubeNode { width: size, height: size, depth: size }),
+                1 => NodeData::Sphere(SphereNode { radius: size * 0.55 }),
+                2 => NodeData::Cone(ConeNode { bottom_radius: size * 0.55, height: size }),
+                _ => NodeData::Cylinder(CylinderNode { radius: size * 0.4, height: size }),
             };
+            graph.add_child(sep, shape);
+            drawable_count += 1;
         }
     }
 
@@ -178,6 +161,7 @@ fn build_large_scene(count: usize) -> SceneGraph {
             depth: cols as f32 * spacing + 2.0,
         }),
     );
+    drawable_count += 1;
 
-    graph
+    (graph, drawable_count)
 }

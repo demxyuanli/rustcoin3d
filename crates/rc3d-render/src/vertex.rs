@@ -20,7 +20,7 @@ pub struct InstanceData {
     pub morph_count: [f32; 4],
 }
 
-pub const MAX_INSTANCES: usize = 16384;
+pub const MAX_INSTANCES: usize = 65536;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

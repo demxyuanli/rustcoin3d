@@ -102,11 +102,11 @@ fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_idx: u32, @builtin(ins
         }
     }
 
-    // World / clip from per-draw uniforms so solid pass matches edge pass (flat MVP) reliably.
-    let world_pos4 = u.model * vec4<f32>(pos, 1.0);
-    out.clip_position = u.mvp * vec4<f32>(pos, 1.0);
+    // World / clip from per-instance data so instanced draws get correct transform.
+    let world_pos4 = inst.model * vec4<f32>(pos, 1.0);
+    out.clip_position = inst.mvp * vec4<f32>(pos, 1.0);
     out.world_pos = world_pos4.xyz;
-    let world_normal = normalize((u.model * vec4<f32>(nrm, 0.0)).xyz);
+    let world_normal = normalize((inst.model * vec4<f32>(nrm, 0.0)).xyz);
     out.world_normal = world_normal;
     out.uv = in.texcoord;
     var tangent_w = in.tangent.w;
@@ -117,7 +117,7 @@ fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_idx: u32, @builtin(ins
         tangent_w = -tangent_w;
     }
     out.world_tangent = vec4<f32>(
-        normalize((u.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz),
+        normalize((inst.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz),
         tangent_w,
     );
     let view_pos4 = u.csm_view_proj[0] * world_pos4;
@@ -150,7 +150,34 @@ fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> v
     return f0 + (max(vec3<f32>(1.0 - roughness), f0) - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
-// Select CSM cascade based on view-space depth
+// Select CSM cascade with blend zone for smooth transitions.
+const CSM_BLEND_ZONE: f32 = 0.08; // ±8% blend zone around each split
+
+struct CascadeSelection {
+    cascade_a: u32,
+    cascade_b: u32,
+    blend: f32, // 0.0 = fully cascade_a, 1.0 = fully cascade_b
+}
+
+fn select_cascade_blended(view_depth: f32) -> CascadeSelection {
+    for (var i = 0u; i < CSM_CASCADE_COUNT - 1u; i = i + 1u) {
+        let split = u.csm_split_depths[i];
+        if split <= 0.0 { continue; }
+        let blend_half = split * CSM_BLEND_ZONE;
+        let blend_start = split - blend_half;
+        let blend_end = split + blend_half;
+        if view_depth < blend_start {
+            return CascadeSelection{ cascade_a: i, cascade_b: i, blend: 0.0 };
+        }
+        if view_depth < blend_end {
+            let t = clamp((view_depth - blend_start) / (blend_end - blend_start), 0.0, 1.0);
+            return CascadeSelection{ cascade_a: i, cascade_b: i + 1u, blend: t };
+        }
+    }
+    return CascadeSelection{ cascade_a: CSM_CASCADE_COUNT - 1u, cascade_b: CSM_CASCADE_COUNT - 1u, blend: 0.0 };
+}
+
+// Select CSM cascade based on view-space depth (unblended, kept for reference)
 fn select_cascade(view_depth: f32) -> u32 {
     for (var i = 0u; i < CSM_CASCADE_COUNT - 1u; i = i + 1u) {
         if view_depth < u.csm_split_depths[i] {
@@ -158,6 +185,15 @@ fn select_cascade(view_depth: f32) -> u32 {
         }
     }
     return CSM_CASCADE_COUNT - 1u;
+}
+
+fn shadow_factor_csm_blended(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, sel: CascadeSelection) -> f32 {
+    let s0 = shadow_factor_csm(world_pos, world_normal, light_dir, sel.cascade_a);
+    if sel.blend <= 0.001 {
+        return s0;
+    }
+    let s1 = shadow_factor_csm(world_pos, world_normal, light_dir, sel.cascade_b);
+    return mix(s0, s1, sel.blend);
 }
 
 fn shadow_factor_csm(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, cascade_idx: u32) -> f32 {
@@ -302,8 +338,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef HAS_SHADOW
         var sh = 1.0;
         if (light_type == 0) {
-            let cascade_idx = select_cascade(view_depth);
-            sh = shadow_factor_csm(in.world_pos, in.world_normal, -light_dir, cascade_idx);
+            let cascade_sel = select_cascade_blended(view_depth);
+            sh = shadow_factor_csm_blended(in.world_pos, in.world_normal, -light_dir, cascade_sel);
         }
 #else
         let sh = 1.0;

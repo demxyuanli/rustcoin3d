@@ -32,14 +32,15 @@ impl Renderer {
         }
     }
 
-    /// Batched draw with instance count for CSM layered shadow rendering.
-    /// Like `draw_mesh_batched` but passes `instance_count` so each instance
-    /// gets a distinct `@builtin(instance_index)` in the vertex shader.
-    #[allow(dead_code)]
+    /// Instanced draw for solid pass batching. Each instance reads distinct
+    /// model/mvp/data from the SSBO via `@builtin(instance_index)`.
+    /// `first_instance` is the global offset into the instance SSBO so each
+    /// subgroup writes to a non-overlapping region.
     pub(crate) fn draw_mesh_instanced(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         mesh_id: crate::gpu_resource::MeshId,
+        first_instance: u32,
         instance_count: u32,
         last_bound: &mut Option<crate::gpu_resource::MeshId>,
     ) {
@@ -52,9 +53,9 @@ impl Renderer {
             *last_bound = Some(mesh_id);
         }
         if mesh.index_buffer.is_some() {
-            pass.draw_indexed(0..mesh.index_count, 0, 0..instance_count);
+            pass.draw_indexed(0..mesh.index_count, 0, first_instance..first_instance + instance_count);
         } else {
-            pass.draw(0..mesh.vertex_count, 0..instance_count);
+            pass.draw(0..mesh.vertex_count, first_instance..first_instance + instance_count);
         }
     }
 

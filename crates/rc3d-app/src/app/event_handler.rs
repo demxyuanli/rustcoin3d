@@ -728,6 +728,13 @@ pub(crate) fn window_event(
                         app.state.last_frame_time = now;
                         app.state.last_frame_time_ms = frame_time_ms;
                         app.state.fps_tracker.push(frame_time_ms);
+                        if renderer.frame_counter() % 60 == 0 {
+                            log::info!(
+                                "CPU frame time: {:.1}ms ({:.0}fps)",
+                                frame_time_ms,
+                                1000.0 / frame_time_ms.max(0.001)
+                            );
+                        }
                         app.state.last_render_stats = stats;
                         let idle_for_secs = app.state.adaptive_last_interaction.elapsed().as_secs_f32();
                         let has_dynamic_scene = app.state.world.engines.is_some();

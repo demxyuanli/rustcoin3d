@@ -565,6 +565,14 @@ impl super::Renderer {
             }
         };
         stats.gpu_pass_times_us = gpu_pass;
+        if self.frame.frame_counter % 10 == 0 {
+            if let Some([shadow, solid, post, total]) = gpu_pass {
+                log::info!(
+                    "GPU pass timings (us): shadow={:.0} solid={:.0} post={:.0} total={:.0}",
+                    shadow, solid, post, total
+                );
+            }
+        }
         let diagnostics = self.build_frame_diagnostics(
             &visible,
             &mesh_handles,
