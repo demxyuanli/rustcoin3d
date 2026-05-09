@@ -294,7 +294,7 @@ Mouse: click checkbox/slider | Keyboard: Up/Down Left/Right Enter\n\
 
 fn make_slider(value: f32, min: f32, max: f32, width: usize) -> String {
     let t = if max > min {
-        ((value - min) / (max - min)).clamp(0.0, 1.0)
+        rc3d_core::utils::math::remap(value, min, max)
     } else {
         0.0
     };
@@ -383,7 +383,7 @@ fn apply_render_features_panel_mouse(
     let mut s = state.lock().expect("panel state lock");
     let slider_left = HUD_LEFT + 200.0;
     let slider_right = slider_left + 120.0;
-    let slider_norm = ((x - slider_left) / (slider_right - slider_left)).clamp(0.0, 1.0);
+    let slider_norm = rc3d_core::utils::math::remap(x, slider_left, slider_right);
     match idx {
         0 => s.show_model = !s.show_model,
         1 => s.show_debug_overlay = !s.show_debug_overlay,

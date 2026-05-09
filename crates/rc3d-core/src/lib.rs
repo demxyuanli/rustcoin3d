@@ -6,6 +6,7 @@ pub mod error;
 pub mod id;
 pub mod math;
 pub mod projection;
+pub mod utils;
 
 pub use aabb::*;
 pub use bvh::*;

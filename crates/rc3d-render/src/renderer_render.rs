@@ -309,27 +309,28 @@ impl super::Renderer {
             mesh_handles
         });
 
+        // Pre-compute light sort hashes (single u64 instead of 389-byte tuple)
+        let light_hashes: Vec<u64> = visible.iter().map(|dc| {
+            use std::hash::{Hash, Hasher};
+            let mut h = twox_hash::XxHash64::with_seed(0);
+            for row in &dc.light_dirs { h.write(bytemuck::bytes_of(row)); }
+            for row in &dc.light_colors { h.write(bytemuck::bytes_of(row)); }
+            for row in &dc.light_types { h.write(bytemuck::bytes_of(row)); }
+            for row in &dc.light_positions { h.write(bytemuck::bytes_of(row)); }
+            for row in &dc.spot_params { h.write(bytemuck::bytes_of(row)); }
+            (dc.light_count as u64).hash(&mut h);
+            (dc.diffuse_color.x.to_bits()).hash(&mut h);
+            (dc.ambient_color.x.to_bits()).hash(&mut h);
+            (dc.specular_color.x.to_bits()).hash(&mut h);
+            dc.shininess.to_bits().hash(&mut h);
+            h.finish()
+        }).collect();
+
         let (solid_order, edge_order, selected_order, transparent_order) = self.cpu_span.measure("sorting", || {
             let mut solid_order: Vec<usize> = (0..visible.len())
                 .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
                 .collect();
-            solid_order.sort_unstable_by_key(|&i| {
-                let dc = visible[i];
-                (
-                    sort_keys::vec4_array_sort_key(dc.light_dirs),
-                    sort_keys::vec4_array_sort_key(dc.light_colors),
-                    sort_keys::vec4_array_sort_key(dc.light_types),
-                    sort_keys::vec4_array_sort_key(dc.light_positions),
-                    sort_keys::vec4_array_sort_key(dc.spot_params),
-                    dc.light_count,
-                    sort_keys::display_mode_sort_key(dc.display_mode),
-                    sort_keys::color_sort_key([dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]),
-                    sort_keys::color_sort_key([dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0]),
-                    sort_keys::color_sort_key([dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0]),
-                    dc.shininess.to_bits(),
-                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-                )
-            });
+            solid_order.sort_unstable_by_key(|&i| light_hashes[i]);
             let mut edge_order: Vec<usize> = (0..visible.len())
                 .filter(|&i| !visible[i].edge_positions.is_empty())
                 .collect();

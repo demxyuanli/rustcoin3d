@@ -300,7 +300,7 @@ fn log_scene_stats(graph: &SceneGraph) {
     }
     log::info!("Scene: {} nodes, {} roots", total, graph.roots().len());
     let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
-    types.sort_by(|a, b| b.1.cmp(&a.1));
+    rc3d_core::utils::sort::sort_by_count_desc(&mut types);
     for (name, count) in types.iter().take(10) {
         log::info!("  {}: {}", name, count);
     }

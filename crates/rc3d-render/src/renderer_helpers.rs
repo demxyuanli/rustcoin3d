@@ -170,7 +170,7 @@ impl Renderer {
                 triangles: tris,
             })
             .collect();
-        node_type_stats.sort_by(|a, b| b.draw_calls.cmp(&a.draw_calls));
+        rc3d_core::utils::sort::sort_by_key_count_desc(&mut node_type_stats, |s| s.draw_calls);
         node_type_stats.truncate(12);
 
         let mut estimated_batch_count = 0usize;
@@ -228,7 +228,7 @@ impl Renderer {
         }
 
         let mut missed_vec: Vec<(String, usize)> = missed_reasons.into_iter().collect();
-        missed_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        rc3d_core::utils::sort::sort_by_count_desc(&mut missed_vec);
 
         FrameDiagnostics {
             frame_index: self.frame.frame_counter,

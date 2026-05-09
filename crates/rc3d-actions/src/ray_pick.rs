@@ -375,7 +375,7 @@ impl RayPickAction {
                     if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
                         let point = self.ray.origin + self.ray.direction * t;
                         let c = (v1 - v0).cross(v2 - v0);
-                        let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                        let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                         let face_index = if self.mode != PickMode::Node { Some(0) } else { None };
                         let edge_index = if self.mode == PickMode::Edge {
                             Some(closest_edge_from_bary(&bary))
@@ -559,7 +559,7 @@ impl RayPickAction {
                                 best_t = t;
                                 let point = self.ray.origin + self.ray.direction * t;
                                 let c = (v1 - v0).cross(v2 - v0);
-                                let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                                let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                                 best_hit = Some((point, normal, tri_idx, bary));
                             }
                         }
@@ -629,7 +629,7 @@ impl RayPickAction {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
                     let c = (br - bl).cross(tip - bl);
-                    let normal = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                    let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                     best_hit = Some((point, normal, tri_idx, bary));
                 }
             }
@@ -678,7 +678,7 @@ impl RayPickAction {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
                     let c = (br - bl).cross(tl - bl);
-                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                    let n = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                     best_hit = Some((point, n, tri_idx, bary));
                 }
             }
@@ -688,7 +688,7 @@ impl RayPickAction {
                     best_t = t;
                     let point = self.ray.origin + self.ray.direction * t;
                     let c = (tr - br).cross(tl - br);
-                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                    let n = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                     best_hit = Some((point, n, tri_idx, bary));
                 }
             }

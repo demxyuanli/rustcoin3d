@@ -23,7 +23,7 @@ fn pack_morph_weights(weights: &[f32]) -> [f32; MAX_MORPH_WEIGHTS] {
 /// produce different keys, avoiding stale bind group cache hits.
 fn material_key(dc: &DrawCall) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = twox_hash::XxHash64::with_seed(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
     dc.albedo_path.hash(&mut h);
     dc.normal_path.hash(&mut h);
     dc.metallic_roughness_path.hash(&mut h);
@@ -129,6 +129,9 @@ pub(super) fn draw_opaque_triangle_batches(
 
     let meshlet_set: std::collections::HashSet<usize> = ctx.meshlet_indices.iter().copied().collect();
 
+    // Pre-compute material keys for all visible draws to avoid repeated hashing.
+    let mat_keys: Vec<u64> = ctx.visible.iter().map(|dc| material_key(dc)).collect();
+
     let mut last_bound_mesh = None;
     // Track cumulative offset into instance_buffer so each subgroup writes to a
     // non-overlapping region and draws with the correct first_instance.
@@ -139,12 +142,12 @@ pub(super) fn draw_opaque_triangle_batches(
     while start < ctx.solid_order.len() {
         let head_idx = ctx.solid_order[start];
         let head_dc = ctx.visible[head_idx];
-        let light_key = crate::sort_keys::light_sort_key(head_dc);
+        let light_key = head_dc.light_key;
         let mut end = start + 1;
         while end < ctx.solid_order.len() {
             let idx = ctx.solid_order[end];
             let dc = ctx.visible[idx];
-            if crate::sort_keys::light_sort_key(dc) != light_key {
+            if dc.light_key != light_key {
                 break;
             }
             end += 1;
@@ -198,7 +201,7 @@ pub(super) fn draw_opaque_triangle_batches(
                 shadow_params: ctx.shadow_params,
             };
             if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
-                let key = material_key(dc);
+                let key = mat_keys[i];
                 if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
                     let bg = albedo_material_bind_group(
                         &mut renderer.gpu.texture_cache, &renderer.device,
@@ -220,31 +223,19 @@ pub(super) fn draw_opaque_triangle_batches(
         }
 
         if !standard_draws.is_empty() {
-            // Instanced drawing: group by (mesh_id, material_key) within light group.
-            // Sort first so identical keys are contiguous, then scan for subgroups.
-            standard_draws.sort_by_key(|&i| {
-                (ctx.mesh_handles[i], material_key(ctx.visible[i]))
-            });
+            // O(n) HashMap grouping by (mesh_id, material_key) — no sort needed.
+            let mut groups: std::collections::HashMap<
+                (Option<crate::gpu_resource::MeshId>, u64),
+                Vec<usize>,
+            > = std::collections::HashMap::new();
+            for &i in &standard_draws {
+                let key = (ctx.mesh_handles[i], mat_keys[i]);
+                groups.entry(key).or_default().push(i);
+            }
 
-            let mut sub_start = 0usize;
-            while sub_start < standard_draws.len() {
-                let first_i = standard_draws[sub_start];
-                let first_dc = ctx.visible[first_i];
-                let first_mesh = ctx.mesh_handles[first_i];
-                let first_mat_key = material_key(first_dc);
-                let mut sub_end = sub_start + 1;
-                while sub_end < standard_draws.len() {
-                    let idx = standard_draws[sub_end];
-                    let dc = ctx.visible[idx];
-                    if ctx.mesh_handles[idx] != first_mesh || material_key(dc) != first_mat_key {
-                        break;
-                    }
-                    sub_end += 1;
-                }
-
-                let subgroup = &standard_draws[sub_start..sub_end];
-
-                if let Some(mesh_id) = first_mesh {
+            for ((mesh_id, _mat_key), subgroup) in &groups {
+                if let Some(mesh_id) = mesh_id {
+                    let first_dc = ctx.visible[subgroup[0]];
                     let mut instances: Vec<InstanceData> = Vec::with_capacity(subgroup.len());
                     for &i in subgroup {
                         let dc = ctx.visible[i];
@@ -294,7 +285,6 @@ pub(super) fn draw_opaque_triangle_batches(
                         shadow_params: ctx.shadow_params,
                     };
                     let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {
-                        sub_start = sub_end;
                         continue;
                     };
 
@@ -306,6 +296,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     );
                     instance_cursor += n as u64 * instance_stride;
 
+                    let first_mat_key = mat_keys[subgroup[0]];
                     if renderer.last_material_bg_key != first_mat_key || renderer.last_material_bg.is_none() {
                         let mat_bg = albedo_material_bind_group(
                             &mut renderer.gpu.texture_cache, &renderer.device,
@@ -319,10 +310,8 @@ pub(super) fn draw_opaque_triangle_batches(
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
 
-                    renderer.draw_mesh_instanced(pass, mesh_id, first_instance, n, &mut last_bound_mesh);
+                    renderer.draw_mesh_instanced(pass, *mesh_id, first_instance, n, &mut last_bound_mesh);
                 }
-
-                sub_start = sub_end;
             }
         }
         start = end;

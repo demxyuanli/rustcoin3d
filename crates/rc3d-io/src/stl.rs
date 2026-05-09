@@ -165,7 +165,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
 
     for tri in triangles {
         for v in tri.vertices {
-            let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+            let key = rc3d_core::utils::hash::f32x3_to_bits(v);
             let idx = if let Some(&i) = remap.get(&key) {
                 i
             } else {

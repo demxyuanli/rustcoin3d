@@ -795,7 +795,7 @@ pub(crate) fn window_event(
                             Err(e) => log::warn!("Surface error during no-op frame: {:?}", e),
                         }
                     }
-                    if app.state.continuous_redraw && app.state.world.engines.is_some() {
+                    if app.state.continuous_redraw {
                         window.request_redraw();
                     }
                 }

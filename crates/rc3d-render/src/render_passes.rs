@@ -77,6 +77,7 @@ pub(super) fn execute_passes(
     mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
     presentation: FramePresentation<'_>,
 ) -> FrameStats {
+    let t_entry = std::time::Instant::now();
     RC3D_RENDER_GRAPH_OK.get_or_init(|| {
         let g = RenderGraph::rc3d_forward_default();
         if g.topological_sort().is_err() {
@@ -91,6 +92,7 @@ pub(super) fn execute_passes(
 
     let mut acquired_swapchain: Option<(wgpu::SurfaceTexture, wgpu::TextureView)> = None;
 
+    let t_surface_start = std::time::Instant::now();
     let (eff_width, eff_height, scene_tex_raw): (u32, u32, *const wgpu::Texture) = match &presentation {
         FramePresentation::Swapchain => match renderer.surface.get_current_texture() {
             Ok(output) => {
@@ -911,8 +913,8 @@ pub(super) fn execute_passes(
         gpu_sections: gpu_sections_data,
     };
 
-    // Periodic per-pass GPU timing report (every 60 frames)
-    if renderer.frame.frame_counter % 60 == 0 && !stats.gpu_sections.is_empty() {
+    // Periodic per-pass GPU timing report (every 10 frames)
+    if renderer.frame.frame_counter % 10 == 0 && !stats.gpu_sections.is_empty() {
         let parts: Vec<String> = stats.gpu_sections.iter()
             .map(|(label, us)| format!("{}={:.0}us", label, us))
             .collect();
@@ -926,6 +928,15 @@ pub(super) fn execute_passes(
             stats.frame_time_ms,
             stats.visible_draw_calls,
             stats.visible_triangles,
+        );
+    }
+
+    let t_total = t_entry.elapsed().as_secs_f64() * 1000.0;
+    let t_surface = t_surface_start.elapsed().as_secs_f64() * 1000.0;
+    if renderer.frame.frame_counter % 10 == 0 {
+        log::info!(
+            "execute_passes wall={:.1}ms (surface_acquire={:.1}ms) draws={}",
+            t_total, t_surface, draw_calls.len()
         );
     }
 

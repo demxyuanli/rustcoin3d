@@ -84,7 +84,7 @@ pub fn export_scene_report(graph: &SceneGraph, title: &str) -> Result<Vec<u8>, S
         node_count
     );
     let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
-    types.sort_by(|a, b| b.1.cmp(&a.1));
+    rc3d_core::utils::sort::sort_by_count_desc(&mut types);
     for (name, count) in &types {
         content.push_str(&format!("  {}: {}\n", name, count));
     }
@@ -142,7 +142,7 @@ pub fn export_u3d_pdf(graph: &SceneGraph, title: &str) -> Result<Vec<u8>, String
         count_scene_nodes(graph, &mut n, &mut type_counts);
     }
     let mut types: Vec<(&str, u32)> = type_counts.into_iter().collect();
-    types.sort_by(|a, b| b.1.cmp(&a.1));
+    rc3d_core::utils::sort::sort_by_count_desc(&mut types);
 
     let bounds_line = "Bounding box: (not computed — offline)";
 

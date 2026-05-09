@@ -90,6 +90,28 @@ fn clamp_edge_positions(arc: Arc<Vec<[f32; 3]>>) -> Arc<Vec<[f32; 3]>> {
     }
 }
 
+/// Pre-compute a u64 hash of all light parameters for fast draw-call grouping.
+fn hash_light_params(
+    light_dirs: &[[f32; 4]; MAX_LIGHTS],
+    light_colors: &[[f32; 4]; MAX_LIGHTS],
+    light_types: &[[f32; 4]; MAX_LIGHTS],
+    light_positions: &[[f32; 4]; MAX_LIGHTS],
+    spot_params: &[[f32; 4]; MAX_LIGHTS],
+    light_count: u32,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = twox_hash::XxHash64::with_seed(0);
+    for arr in [light_dirs, light_colors, light_types, light_positions, spot_params] {
+        for v in arr {
+            for f in v {
+                f.to_bits().hash(&mut h);
+            }
+        }
+    }
+    light_count.hash(&mut h);
+    h.finish()
+}
+
 /// GPU skinning inputs carried on a draw call (`SkinnedMeshNode` in the scene graph).
 #[derive(Clone, Debug)]
 pub struct SkinnedMeshDrawPayload {
@@ -116,6 +138,8 @@ pub struct DrawCall {
     pub light_positions: [[f32; 4]; MAX_LIGHTS],
     pub spot_params: [[f32; 4]; MAX_LIGHTS],
     pub light_count: u32,
+    /// Pre-computed hash of light params for fast draw-call grouping.
+    pub light_key: u64,
     pub diffuse_color: Vec3,
     pub ambient_color: Vec3,
     pub specular_color: Vec3,
@@ -177,6 +201,7 @@ impl Default for DrawCall {
             light_positions: [[0.0; 4]; MAX_LIGHTS],
             spot_params: [[0.0; 4]; MAX_LIGHTS],
             light_count: 0,
+            light_key: 0,
             diffuse_color: Vec3::ZERO,
             ambient_color: Vec3::ZERO,
             specular_color: Vec3::ZERO,
@@ -651,7 +676,7 @@ impl RenderCollector {
                 } else {
                     let c = (coord.points[1] - coord.points[0])
                         .cross(coord.points[2] - coord.points[0]);
-                    let n = if c.length_squared() > 1e-20 { c.normalize() } else { Vec3::Y };
+                    let n = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
                     vec![n, n, n]
                 };
                 let positions = vec![coord.points[0], coord.points[1], coord.points[2]];
@@ -818,91 +843,101 @@ impl RenderCollector {
                     normal_len,
                     normal_sig,
                 };
-                #[allow(clippy::map_entry)]
-                if !self.mesh_cache.contains_key(&key) {
-                    let mut mesh = {
-                        let use_tex = !tex_el.coords.is_empty() && tex_el.coords.len() == coord.points.len();
-                        if use_tex {
-                            rc3d_mesh::TriangleMesh::from_indexed_face_set_tex(
-                                &coord.points,
-                                &tex_el.coords,
-                                &ifs.coord_index,
-                            )
-                        } else {
-                            rc3d_mesh::TriangleMesh::from_indexed_face_set(&coord.points, &ifs.coord_index)
-                        }
-                    };
-                    if norm_el.vectors.len() == mesh.positions.len() && !norm_el.vectors.is_empty() {
-                        let computed_backup = mesh.normals.clone();
-                        mesh.normals.clone_from(&norm_el.vectors);
-                        for (i, n) in mesh.normals.iter_mut().enumerate() {
-                            let len = n.length();
-                            if len > 1e-20 {
-                                *n /= len;
+                let cached: Option<CachedShapeData> = match self.mesh_cache.entry(key) {
+                    Entry::Occupied(occupied) => Some(occupied.get().clone()),
+                    Entry::Vacant(vacant) => {
+                        let mut mesh = {
+                            let use_tex =
+                                !tex_el.coords.is_empty() && tex_el.coords.len() == coord.points.len();
+                            if use_tex {
+                                rc3d_mesh::TriangleMesh::from_indexed_face_set_tex(
+                                    &coord.points,
+                                    &tex_el.coords,
+                                    &ifs.coord_index,
+                                )
                             } else {
-                                let fb = computed_backup.get(i).copied().unwrap_or(Vec3::Y);
-                                let l = fb.length();
-                                *n = if l > 1e-20 { fb / l } else { Vec3::Y };
+                                rc3d_mesh::TriangleMesh::from_indexed_face_set(
+                                    &coord.points,
+                                    &ifs.coord_index,
+                                )
+                            }
+                        };
+                        if norm_el.vectors.len() == mesh.positions.len()
+                            && !norm_el.vectors.is_empty()
+                        {
+                            let computed_backup = mesh.normals.clone();
+                            mesh.normals.clone_from(&norm_el.vectors);
+                            for (i, n) in mesh.normals.iter_mut().enumerate() {
+                                let len = n.length();
+                                if len > 1e-20 {
+                                    *n /= len;
+                                } else {
+                                    let fb =
+                                        computed_backup.get(i).copied().unwrap_or(Vec3::Y);
+                                    let l = fb.length();
+                                    *n = if l > 1e-20 { fb / l } else { Vec3::Y };
+                                }
                             }
                         }
-                    }
-                    mesh.compute_tangents();
-                    if !mesh.positions.is_empty() {
-                        let (phong_verts, indices) = mesh.phong_buffers();
-                        let edge_feature = mesh.edge_line_positions_feature(
-                            rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
-                        );
-                        let edge_full = mesh.edge_line_positions();
-                        let local_aabb = mesh.bounding_box();
-                        let vertices: Vec<Vertex> = phong_verts
-                            .iter()
-                            .map(|v| Vertex {
-                                position: [v[0], v[1], v[2]],
-                                normal: [v[3], v[4], v[5]],
-                                texcoord: [v[6], v[7]],
-                                tangent: [v[8], v[9], v[10], v[11]],
-                            })
-                            .collect();
-                        let tri_count = indices.len() / 3;
-                        let meshlet_data = if tri_count > MESHLET_TRIANGLE_THRESHOLD
-                            && self.state.skinned_mesh().is_none()
-                        {
-                            let md = rc3d_mesh::build_meshlets_from_mesh(
-                                &mesh.positions,
-                                &mesh.normals,
-                                &mesh.texcoords,
-                                &mesh.tangents,
-                                &mesh.tri_indices,
-                            );
-                            log::info!(
-                                "Meshlet: {} tris -> {} meshlets ({} verts)",
-                                tri_count, md.total_meshlets, md.vertices.len(),
-                            );
-                            Some(Arc::new(md))
-                        } else {
+                        mesh.compute_tangents();
+                        if mesh.positions.is_empty() {
                             None
-                        };
-                        self.mesh_cache.insert(
-                            key,
-                            (
+                        } else {
+                            let (phong_verts, indices) = mesh.phong_buffers();
+                            let edge_feature = mesh.edge_line_positions_feature(
+                                rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                            );
+                            let edge_full = mesh.edge_line_positions();
+                            let local_aabb = mesh.bounding_box();
+                            let vertices: Vec<Vertex> = phong_verts
+                                .iter()
+                                .map(|v| Vertex {
+                                    position: [v[0], v[1], v[2]],
+                                    normal: [v[3], v[4], v[5]],
+                                    texcoord: [v[6], v[7]],
+                                    tangent: [v[8], v[9], v[10], v[11]],
+                                })
+                                .collect();
+                            let tri_count = indices.len() / 3;
+                            let meshlet_data = if tri_count > MESHLET_TRIANGLE_THRESHOLD
+                                && self.state.skinned_mesh().is_none()
+                            {
+                                let md = rc3d_mesh::build_meshlets_from_mesh(
+                                    &mesh.positions,
+                                    &mesh.normals,
+                                    &mesh.texcoords,
+                                    &mesh.tangents,
+                                    &mesh.tri_indices,
+                                );
+                                log::info!(
+                                    "Meshlet: {} tris -> {} meshlets ({} verts)",
+                                    tri_count,
+                                    md.total_meshlets,
+                                    md.vertices.len(),
+                                );
+                                Some(Arc::new(md))
+                            } else {
+                                None
+                            };
+                            Some(vacant.insert((
                                 Arc::new(vertices),
                                 Arc::new(indices),
                                 Arc::new(edge_feature),
                                 Arc::new(edge_full),
                                 local_aabb,
                                 meshlet_data,
-                            ),
-                        );
+                            )).clone())
+                        }
                     }
-                }
+                };
                 if let Some((vertices, indices, edge_feature, edge_full, local_aabb, meshlet_data)) =
-                    self.mesh_cache.get(&key)
+                    cached
                 {
-                    let edge_feature = clamp_edge_positions(Arc::clone(edge_feature));
-                    let edge_full = clamp_edge_positions(Arc::clone(edge_full));
+                    let edge_feature = clamp_edge_positions(edge_feature.clone());
+                    let edge_full = clamp_edge_positions(edge_full.clone());
                     self.emit_draw_call_with_cached_aabb(
-                        Arc::clone(vertices),
-                        Some(Arc::clone(indices)),
+                        vertices.clone(),
+                        Some(indices.clone()),
                         edge_feature,
                         edge_full,
                         local_aabb.clone(),
@@ -1024,6 +1059,7 @@ impl RenderCollector {
             light_positions,
             spot_params,
             light_count,
+            light_key: hash_light_params(&light_dirs, &light_colors, &light_types, &light_positions, &spot_params, light_count),
             diffuse_color: mat.diffuse,
             ambient_color: mat.ambient,
             specular_color: mat.specular,
@@ -1118,6 +1154,7 @@ impl RenderCollector {
             light_positions,
             spot_params,
             light_count,
+            light_key: hash_light_params(&light_dirs, &light_colors, &light_types, &light_positions, &spot_params, light_count),
             diffuse_color: mat.diffuse,
             ambient_color: mat.ambient,
             specular_color: mat.specular,

@@ -11,7 +11,7 @@
 //! blit to the swapchain). When `hdr_post_processing` is off, shaded passes target the swapchain
 //! directly (no HDR or post-LDR textures).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 /// Logical resource produced/consumed by passes (textures, depth, swapchain target).
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -188,35 +188,19 @@ pub fn topological_sort_passes(passes: &[RenderPassNode]) -> Result<Vec<usize>, 
             writers.entry(w).or_default().push(i);
         }
     }
-    let mut indeg = vec![0u32; n];
-    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut edges = Vec::new();
     for (j, p) in passes.iter().enumerate() {
         for &r in p.reads {
             if let Some(ws) = writers.get(&r) {
                 for &i in ws {
                     if i != j {
-                        adj[i].push(j);
-                        indeg[j] += 1;
+                        edges.push((i, j));
                     }
                 }
             }
         }
     }
-    let mut q: VecDeque<usize> = indeg.iter().enumerate().filter(|(_, d)| **d == 0).map(|(i, _)| i).collect();
-    let mut out = Vec::with_capacity(n);
-    while let Some(u) = q.pop_front() {
-        out.push(u);
-        for &v in &adj[u] {
-            indeg[v] -= 1;
-            if indeg[v] == 0 {
-                q.push_back(v);
-            }
-        }
-    }
-    if out.len() != n {
-        return Err("render graph cycle");
-    }
-    Ok(out)
+    rc3d_core::utils::graph::toposort_linear(&edges, n).map_err(|_| "render graph cycle")
 }
 
 /// True if executing `passes` in vector order (`0..len`) respects all producer→consumer edges.

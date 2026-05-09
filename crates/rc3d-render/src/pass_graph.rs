@@ -32,35 +32,16 @@ impl PassDag {
     /// Kahn's algorithm grouping independent nodes into parallel layers.
     fn toposort_parallel(nodes: &[PassNode]) -> Vec<Vec<usize>> {
         let n = nodes.len();
-        let mut in_degree = vec![0u32; n];
-        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
-
+        let edge_count: usize = nodes.iter().map(|nd| nd.depends_on.len()).sum();
+        let mut edges = Vec::with_capacity(edge_count);
         for (i, node) in nodes.iter().enumerate() {
             for &dep in &node.depends_on {
                 if dep < n {
-                    adjacency[dep].push(i);
-                    in_degree[i] += 1;
+                    edges.push((dep, i));
                 }
             }
         }
-
-        let mut groups = Vec::new();
-        let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
-
-        while !queue.is_empty() {
-            let group = std::mem::take(&mut queue);
-            groups.push(group.clone());
-
-            for &u in &group {
-                for &v in &adjacency[u] {
-                    in_degree[v] -= 1;
-                    if in_degree[v] == 0 {
-                        queue.push(v);
-                    }
-                }
-            }
-        }
-        groups
+        rc3d_core::utils::graph::toposort_layered(&edges, n)
     }
 
     /// Build the default render pass DAG for this engine.
