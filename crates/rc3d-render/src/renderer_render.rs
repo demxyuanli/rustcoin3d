@@ -59,6 +59,16 @@ impl super::Renderer {
             }
         }
 
+        // ── Parallel traversal (when enabled) before cache update ──
+        if self.frame.parallel_traversal_enabled {
+            crate::parallel_traversal::parallel_traverse_into_cache(
+                scene,
+                &mut self.draw_cache,
+                &self.texture_table,
+                &std::collections::HashSet::new(),
+            );
+        }
+
         // ── Populate FlatDrawCache as side effect (for future incremental traversal) ──
         self.cpu_span.measure("cache_update", || {
             crate::render_action::populate_cache_from_draw_calls(

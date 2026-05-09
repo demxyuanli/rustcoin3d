@@ -6,6 +6,33 @@ pub struct RenderSettings {
     pub post_effect: PostEffectSettings,
     pub lighting: LightingSettings,
     pub display: DisplaySettings,
+    pub performance: PerformanceSettings,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PerformanceSettings {
+    /// GPU compute culling (requires enable_gpu_culling call).
+    pub gpu_culling: bool,
+    /// Min object count to enable GPU culling.
+    pub gpu_culling_threshold: u32,
+    /// Parallel scene traversal using rayon.
+    pub parallel_traversal: bool,
+    /// Mesh pool capacity (0 = disabled).
+    pub mesh_pool_capacity: usize,
+    /// Max GPU bytes for mesh pool slots.
+    pub mesh_pool_max_mb: u64,
+}
+
+impl Default for PerformanceSettings {
+    fn default() -> Self {
+        Self {
+            gpu_culling: false,
+            gpu_culling_threshold: 4096,
+            parallel_traversal: false,
+            mesh_pool_capacity: 0,
+            mesh_pool_max_mb: 512,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +72,7 @@ impl Default for RenderSettings {
             post_effect: PostEffectSettings::default(),
             lighting: LightingSettings::default(),
             display: DisplaySettings::default(),
+            performance: PerformanceSettings::default(),
         }
     }
 }

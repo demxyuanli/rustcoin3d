@@ -471,6 +471,7 @@ impl Renderer {
                 has_text_nodes: true,    // optimistic; auto-disabled after 2 empty frames
                 has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
                 gpu_cull_ready: false,
+                parallel_traversal_enabled: false,
                 bvh_out: Vec::with_capacity(1024),
                 visible_indices: Vec::with_capacity(1024),
                 solid_order_buf: Vec::with_capacity(1024),
@@ -665,6 +666,12 @@ impl Renderer {
     /// Enable GPU compute culling with buffers sized for max_objects.
     /// Allocates transform_buffer (storage), indirect_args (storage+indirect),
     /// and instance_indices (storage). Call once during setup.
+    /// Enable parallel scene traversal using rayon thread pool.
+    /// Best for scenes with 10K+ objects and multiple dirty subtrees.
+    pub fn set_parallel_traversal(&mut self, enabled: bool) {
+        self.frame.parallel_traversal_enabled = enabled;
+    }
+
     pub fn enable_gpu_culling(&mut self, max_objects: u64) {
         let stride = std::mem::size_of::<crate::vertex::GpuObjectTransform>() as u64;
         self.gpu.transform_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -752,6 +759,14 @@ impl Renderer {
         if !self.enable_ldr_fxaa {
             self.gpu.ldr_shade_tex = None;
             self.gpu.ldr_shade_view = None;
+        }
+        // Performance settings
+        self.set_parallel_traversal(settings.performance.parallel_traversal);
+        if settings.performance.mesh_pool_capacity > 0 {
+            self.gpu.assets.enable_mesh_pool(settings.performance.mesh_pool_capacity);
+            if let Some(ref mut pool) = self.gpu.assets.mesh_pool {
+                pool.set_max_bytes(settings.performance.mesh_pool_max_mb * 1024 * 1024);
+            }
         }
         self.settings = settings;
     }

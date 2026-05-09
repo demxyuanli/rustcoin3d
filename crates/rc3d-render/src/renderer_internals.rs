@@ -53,6 +53,7 @@ pub(crate) struct FrameState {
     /// Fast-path: skip full-scene effect traversal when no Decal/Volume/PointCloud nodes.
     pub has_effect_nodes: bool,
     pub gpu_cull_ready: bool,
+    pub parallel_traversal_enabled: bool,
     /// Reusable allocations for frustum culling (cleared each frame, avoids re-allocation).
     pub bvh_out: Vec<u32>,
     pub visible_indices: Vec<usize>,
