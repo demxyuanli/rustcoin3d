@@ -183,6 +183,16 @@ fn ensure_camera_and_light(
             light_group: None,
             }),
         );
+        graph.insert_child(
+            target_root,
+            3,
+            NodeData::DirectionalLight(DirectionalLightNode {
+                direction: Vec3::new(0.3, 0.8, 1.0).normalize(),
+                color: Vec3::new(0.85, 0.88, 0.95),
+                intensity: 0.4,
+            light_group: None,
+            }),
+        );
     }
 
     let has_material = graph
@@ -191,7 +201,7 @@ fn ensure_camera_and_light(
         .any(|&root| has_material_recursive(&graph, root));
     if !has_material {
         let target_root = find_geometry_root(&graph);
-        let cam_count = if has_camera { 0 } else { 3 };
+        let cam_count = if has_camera { 0 } else { 4 };
         graph.insert_child(
             target_root,
             cam_count,
@@ -199,21 +209,42 @@ fn ensure_camera_and_light(
         );
     }
 
-    if high_contrast && !has_directional_light(&graph) {
-        let target_root = find_geometry_root(&graph);
-        graph.insert_child(
-            target_root,
-            0,
-            NodeData::DirectionalLight(DirectionalLightNode {
-                direction: Vec3::new(-1.0, -0.8, -0.6).normalize(),
-                color: Vec3::ONE,
-                intensity: 2.4,
-            light_group: None,
-            }),
-        );
+    if high_contrast {
+        apply_high_contrast_mode(&mut graph);
+        log::info!("High-contrast import mode enabled (async)");
     }
 
     graph
+}
+
+fn apply_high_contrast_mode(graph: &mut rc3d_scene::SceneGraph) {
+    for &root in graph.roots().to_vec().iter() {
+        boost_contrast_recursive(graph, root);
+    }
+}
+
+fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
+    let children = graph.children(node).unwrap_or(&[]).to_vec();
+    if let Some(entry) = graph.get_mut(node) {
+        match &mut entry.data {
+            NodeData::DirectionalLight(light) => {
+                light.intensity = light.intensity.max(2.2);
+                light.color = Vec3::ONE;
+            }
+            NodeData::Material(mat) => {
+                mat.diffuse_color = mat.diffuse_color.max(Vec3::splat(0.75));
+                mat.base_color = mat.base_color.max(Vec3::splat(0.75));
+                mat.ambient_color = mat.ambient_color.max(Vec3::splat(0.4));
+                mat.specular_color = mat.specular_color.max(Vec3::splat(0.6));
+                mat.shininess = mat.shininess.max(48.0);
+                mat.roughness = mat.roughness.min(0.65);
+            }
+            _ => {}
+        }
+    }
+    for child in children {
+        boost_contrast_recursive(graph, child);
+    }
 }
 
 fn has_directional_light(graph: &rc3d_scene::SceneGraph) -> bool {

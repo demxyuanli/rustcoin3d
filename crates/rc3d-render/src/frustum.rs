@@ -35,6 +35,15 @@ impl Frustum {
         }
     }
 
+    /// Return frustum planes as `[[f32; 4]; 6]` for GPU upload.
+    pub fn plane_array(&self) -> [[f32; 4]; 6] {
+        let mut out = [[0.0f32; 4]; 6];
+        for (i, (n, d)) in self.planes.iter().enumerate() {
+            out[i] = [n.x, n.y, n.z, *d];
+        }
+        out
+    }
+
     /// Returns true if the AABB is at least partially inside the frustum.
     pub fn intersects_aabb(&self, aabb: &Aabb) -> bool {
         for (n, d) in &self.planes {

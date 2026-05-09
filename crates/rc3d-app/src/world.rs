@@ -49,6 +49,7 @@ impl World {
     pub fn reset_collector(&mut self, display_mode: rc3d_core::DisplayMode) {
         self.collector.draw_calls.clear();
         self.collector.effect_commands = rc3d_render::EffectCommands::default();
+        self.collector.light_sets = rc3d_render::light_set::LightSetTable::new();
         self.collector.state = State::new();
         self.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
         self.collector.view_matrix = Mat4::IDENTITY;

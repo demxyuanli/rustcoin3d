@@ -350,6 +350,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lo += (diffuse + spec) * light_color * n_dot_l * sh;
     }
 
+    // Ambient contribution from scene ambient_color uniform (always applied).
+    // This guarantees surfaces facing away from all lights remain visible,
+    // especially for complex concave models (engines, interiors).
+    let scene_ambient = u.ambient_color.xyz * albedo * (1.0 - metallic);
+
 #ifdef HAS_IBL
     let r = reflect(-v, n);
     let f = fresnel_schlick_roughness(n_dot_v, f0, roughness);
@@ -361,9 +366,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let env_brdf = textureSample(t_brdf_lut, s_ibl, vec2<f32>(n_dot_v, roughness)).rg;
     let specular_ibl = prefiltered_color * (f * env_brdf.x + env_brdf.y);
 
-    var color = lo + diffuse_ibl + specular_ibl;
+    var color = lo + diffuse_ibl + specular_ibl + scene_ambient;
 #else
-    var color = lo;
+    var color = lo + scene_ambient;
 #endif
 
     // Emissive contribution

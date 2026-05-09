@@ -134,6 +134,10 @@ impl CpuSpanCollector {
         result
     }
 
+    pub fn record(&mut self, label: &'static str, duration_ms: f64) {
+        self.spans.push((label, duration_ms));
+    }
+
     pub fn spans(&self) -> &[(&'static str, f64)] {
         &self.spans
     }

@@ -604,6 +604,17 @@ fn ensure_camera_and_light(
             light_group: None,
             }),
         );
+        // Rim/back-fill light: illuminates rear and underside faces
+        graph.insert_child(
+            target_root,
+            3,
+            NodeData::DirectionalLight(DirectionalLightNode {
+                direction: Vec3::new(0.3, 0.8, 1.0).normalize(),
+                color: Vec3::new(0.85, 0.88, 0.95),
+                intensity: 0.4,
+            light_group: None,
+            }),
+        );
     }
 
     let has_material = graph
@@ -612,7 +623,7 @@ fn ensure_camera_and_light(
         .any(|&root| has_material_recursive(&graph, root));
     if !has_material {
         let target_root = find_geometry_root(&graph);
-        let cam_count = if has_camera { 0 } else { 3 };
+        let cam_count = if has_camera { 0 } else { 4 };
         graph.insert_child(
             target_root,
             cam_count,
@@ -691,9 +702,11 @@ fn boost_contrast_recursive(graph: &mut rc3d_scene::SceneGraph, node: NodeId) {
             }
             NodeData::Material(mat) => {
                 mat.diffuse_color = mat.diffuse_color.max(Vec3::splat(0.75));
-                mat.ambient_color = mat.ambient_color.max(Vec3::splat(0.25));
+                mat.base_color = mat.base_color.max(Vec3::splat(0.75));
+                mat.ambient_color = mat.ambient_color.max(Vec3::splat(0.4));
                 mat.specular_color = mat.specular_color.max(Vec3::splat(0.6));
                 mat.shininess = mat.shininess.max(48.0);
+                mat.roughness = mat.roughness.min(0.65);
             }
             _ => {}
         }

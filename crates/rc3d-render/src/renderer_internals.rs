@@ -52,6 +52,16 @@ pub(crate) struct FrameState {
     pub has_text_nodes: bool,
     /// Fast-path: skip full-scene effect traversal when no Decal/Volume/PointCloud nodes.
     pub has_effect_nodes: bool,
+    /// Reusable allocations for frustum culling (cleared each frame, avoids re-allocation).
+    pub bvh_out: Vec<u32>,
+    pub visible_indices: Vec<usize>,
+    /// Reusable draw-order Vecs (taken before sorting, restored after rendering).
+    pub solid_order_buf: Vec<usize>,
+    pub edge_order_buf: Vec<usize>,
+    pub selected_order_buf: Vec<usize>,
+    pub transparent_order_buf: Vec<usize>,
+    pub light_hashes_buf: Vec<u64>,
+    pub meshlet_indices_buf: Vec<usize>,
 }
 
 pub(crate) struct GpuInternals {
@@ -116,4 +126,15 @@ pub(crate) struct GpuInternals {
     pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
     pub ldr_shade_tex: Option<wgpu::Texture>,
     pub ldr_shade_view: Option<wgpu::TextureView>,
+    /// GPU compute culling: per-object transforms (STORAGE, updated each frame).
+    pub transform_buffer: Option<wgpu::Buffer>,
+    /// GPU compute culling: indirect draw args (STORAGE | INDIRECT).
+    pub indirect_args_buffer: Option<wgpu::Buffer>,
+    /// GPU compute culling: instance indices written by cull shader.
+    pub instance_indices_buffer: Option<wgpu::Buffer>,
+    pub gpu_cull_pass: Option<crate::gpu_culling::GpuCullPass>,
+    pub gpu_cull_bg: Option<wgpu::BindGroup>,
+    pub frustum_uniform: Option<wgpu::Buffer>,
+    pub gpu_cull_enabled: bool,
+    pub max_gpu_cull_objects: u64,
 }

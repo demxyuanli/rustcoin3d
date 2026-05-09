@@ -186,7 +186,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
         root,
         NodeData::Material(MaterialNode {
             diffuse_color: Vec3::new(0.9, 0.9, 0.9),
-            ambient_color: Vec3::new(0.25, 0.25, 0.25),
+            ambient_color: Vec3::new(0.35, 0.35, 0.35),
             specular_color: Vec3::new(0.0, 0.0, 0.0),
             shininess: 0.0,
             base_color: Vec3::new(0.94, 0.94, 0.94),
@@ -203,7 +203,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
         graph.add_child(root, NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index: chunk_indices }));
     }
     if let Some(root_entry) = graph.get_mut(root) {
-        root_entry.display_mode = Some(DisplayMode::Flat);
+        root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
     }
     graph
 }

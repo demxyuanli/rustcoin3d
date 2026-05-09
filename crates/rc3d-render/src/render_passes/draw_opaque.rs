@@ -153,6 +153,8 @@ pub(super) fn draw_opaque_triangle_batches(
             end += 1;
         }
 
+        let lights = ctx.light_sets.get(head_dc.light_set_id);
+
         let mut meshlet_draws: Vec<usize> = Vec::new();
         let mut standard_draws: Vec<usize> = Vec::new();
         for &i in &ctx.solid_order[start..end] {
@@ -182,10 +184,10 @@ pub(super) fn draw_opaque_triangle_batches(
                 mvp: dc.mvp.to_cols_array_2d(),
                 model: dc.model_matrix.to_cols_array_2d(),
                 camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
-                light_types: head_dc.light_types, light_positions: head_dc.light_positions,
-                spot_params: head_dc.spot_params,
-                light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
+                light_dirs: lights.0, light_colors: lights.1,
+                light_types: lights.2, light_positions: lights.3,
+                spot_params: lights.4,
+                light_count: [lights.5 as f32, 0.0, 0.0, 0.0],
                 diffuse_color,
                 ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
                 specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
@@ -266,10 +268,10 @@ pub(super) fn draw_opaque_triangle_batches(
                         mvp: first_dc.mvp.to_cols_array_2d(),
                         model: first_dc.model_matrix.to_cols_array_2d(),
                         camera_pos: [first_dc.camera_pos.x, first_dc.camera_pos.y, first_dc.camera_pos.z, 1.0],
-                        light_dirs: head_dc.light_dirs, light_colors: head_dc.light_colors,
-                        light_types: head_dc.light_types, light_positions: head_dc.light_positions,
-                        spot_params: head_dc.spot_params,
-                        light_count: [head_dc.light_count as f32, 0.0, 0.0, 0.0],
+                        light_dirs: lights.0, light_colors: lights.1,
+                        light_types: lights.2, light_positions: lights.3,
+                        spot_params: lights.4,
+                        light_count: [lights.5 as f32, 0.0, 0.0, 0.0],
                         diffuse_color: diffuse,
                         ambient_color: [first_dc.ambient_color.x, first_dc.ambient_color.y, first_dc.ambient_color.z, 1.0],
                         specular_color: [first_dc.specular_color.x, first_dc.specular_color.y, first_dc.specular_color.z, 1.0],

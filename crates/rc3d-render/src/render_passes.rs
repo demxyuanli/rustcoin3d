@@ -55,6 +55,7 @@ pub(crate) struct PassContext<'a> {
     /// Camera inverse projection matrix
     pub camera_inv_proj: Mat4,
     pub effect_commands: &'a pass_effects::EffectCommands,
+    pub light_sets: &'a crate::light_set::LightSetTable,
 }
 
 /// Final color target for the frame (swapchain or an application-owned render target).
@@ -173,6 +174,20 @@ pub(super) fn execute_passes(
         });
 
     renderer.encode_skinning_compute(&mut encoder, ctx.visible, ctx.mesh_handles);
+
+    // ── GPU compute culling dispatch ──
+    if renderer.gpu.gpu_cull_enabled {
+        if let (Some(ref cull_pass), Some(ref bg)) =
+            (&renderer.gpu.gpu_cull_pass, &renderer.gpu.gpu_cull_bg)
+        {
+            let obj_count = ctx.visible.len().min(renderer.gpu.max_gpu_cull_objects as usize);
+            if obj_count > 0 {
+                #[cfg(feature = "profiler")]
+                let _span_cull = tracy_client::span!("gpu_cull");
+                cull_pass.dispatch(&mut encoder, bg, obj_count as u32);
+            }
+        }
+    }
 
     let ti_shadow = renderer.gpu_timer.begin(&mut encoder, "CSM Shadow");
     if ctx.run_shadow_pass {
@@ -400,15 +415,20 @@ pub(super) fn execute_passes(
             let mut point_lights: Vec<GpuPointLight> = Vec::new();
             let mut spot_lights: Vec<GpuSpotLight> = Vec::new();
 
+            let mut seen_light_sets: std::collections::HashSet<u32> = std::collections::HashSet::new();
             for dc in ctx.visible.iter() {
-                for i in 0..(dc.light_count as usize).min(crate::vertex::MAX_LIGHTS) {
-                    let lt = dc.light_types[i][0];
-                    let pos = dc.light_positions[i];
-                    let col = dc.light_colors[i];
-                    let intensity = dc.light_colors[i][3];
+                if !seen_light_sets.insert(dc.light_set_id) {
+                    continue; // already processed this light set
+                }
+                let lights = ctx.light_sets.get(dc.light_set_id);
+                let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = *lights;
+                for i in 0..(light_count as usize).min(crate::vertex::MAX_LIGHTS) {
+                    let lt = light_types[i][0];
+                    let pos = light_positions[i];
+                    let col = light_colors[i];
+                    let intensity = light_colors[i][3];
 
                     if (lt - 1.0).abs() < 0.5 {
-                        // Point light
                         if point_lights.len() < 256 {
                             point_lights.push(GpuPointLight {
                                 position: [pos[0], pos[1], pos[2]],
@@ -418,9 +438,8 @@ pub(super) fn execute_passes(
                             });
                         }
                     } else if (lt - 3.0).abs() < 0.5 {
-                        // Spot light
-                        let dir = dc.light_dirs[i];
-                        let sp = dc.spot_params[i];
+                        let dir = light_dirs[i];
+                        let sp = spot_params[i];
                         if spot_lights.len() < 256 {
                             spot_lights.push(GpuSpotLight {
                                 position: [pos[0], pos[1], pos[2]],

@@ -900,6 +900,16 @@ impl App {
         }
     }
 
+    fn active_camera_controller(&self) -> Option<&CameraController> {
+        if let Some(vc) = self.state.viewport_cameras.active() {
+            Some(&vc.controller)
+        } else if let Some(ref ctrl) = self.state.camera_controller {
+            Some(ctrl)
+        } else {
+            None
+        }
+    }
+
     fn active_camera_controller_mut(&mut self) -> Option<&mut CameraController> {
         if let Some(vc) = self.state.viewport_cameras.active_mut() {
             Some(&mut vc.controller)

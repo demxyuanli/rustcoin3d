@@ -32,6 +32,11 @@ impl super::Renderer {
 
         self.cpu_span.begin_frame();
 
+        // ── Streaming mesh pool: reset per-frame upload counter ──
+        if let Some(ref mut pool) = self.gpu.assets.mesh_pool {
+            pool.begin_frame();
+        }
+
         // ── Populate FlatDrawCache as side effect (for future incremental traversal) ──
         self.cpu_span.measure("cache_update", || {
             crate::render_action::populate_cache_from_draw_calls(
@@ -49,6 +54,13 @@ impl super::Renderer {
         if self.frame.frame_counter % 300 == 0 {
             if let Some(ref mut pc) = self.gpu.pipeline_cache {
                 pc.save_to_disk();
+            }
+            if let Some(ref pool) = self.gpu.assets.mesh_pool {
+                log::info!(
+                    "MeshPool: {}/{} slots used, {} uploads/frame",
+                    pool.len(), crate::mesh_pool::DEFAULT_POOL_SIZE,
+                    pool.uploads_this_frame(),
+                );
             }
         }
 
@@ -95,60 +107,108 @@ impl super::Renderer {
         let frustum = Frustum::from_view_projection(vp);
 
         let visible: Vec<&DrawCall> = self.cpu_span.measure("bvh_frustum_cull", || {
-            let bvh_items: Vec<(rc3d_core::Aabb, u32)> = draw_calls
-                .iter()
-                .enumerate()
-                .filter_map(|(i, dc)| dc.aabb.as_ref().map(|a| (a.clone(), i as u32)))
-                .collect();
+            // Build BVH items: reuse cached Vec when count matches (skip allocation),
+            // otherwise allocate a fresh one.
+            let bvh_items = match self.frame.cached_bvh {
+                Some((_, ref mut cached_items)) if cached_items.len() == draw_calls.len() => {
+                for (i, dc) in draw_calls.iter().enumerate() {
+                    if let Some(ref aabb) = dc.aabb {
+                        cached_items[i] = (aabb.clone(), i as u32);
+                    }
+                }
+                std::mem::take(cached_items)
+                }
+                _ => {
+                draw_calls
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, dc)| dc.aabb.as_ref().map(|a| (a.clone(), i as u32)))
+                    .collect()
+                }
+            };
 
-            // Incremental BVH: reuse previous frame's BVH when item count matches.
-            let bvh = if let Some((ref mut cached, ref mut cached_items)) = self.frame.cached_bvh {
-                if cached_items.len() == bvh_items.len() {
+            let bvh = match self.frame.cached_bvh {
+                Some((ref mut cached, ref mut _items)) if _items.len() == bvh_items.len() => {
                     let updates: Vec<(usize, rc3d_core::Aabb)> = bvh_items.iter()
                         .enumerate()
                         .filter(|(i, (aabb, _))| {
-                            cached_items.get(*i).map_or(true, |(old, _)| {
+                            _items.get(*i).map_or(true, |(old, _)| {
                                 old.min != aabb.min || old.max != aabb.max
                             })
                         })
                         .map(|(i, (aabb, _))| (i, aabb.clone()))
                         .collect();
                     cached.incremental_update(&updates, &bvh_items);
-                    // Update cached items for next frame
-                    *cached_items = bvh_items;
-                } else {
-                    *cached = rc3d_core::Bvh::build(&bvh_items);
-                    *cached_items = bvh_items;
+                    *_items = bvh_items;
+                    &*cached
                 }
-                // Use the cached BVH for querying (reference valid for scope)
-                &*cached
-            } else {
-                self.frame.cached_bvh = Some((
-                    rc3d_core::Bvh::build(&bvh_items),
-                    bvh_items,
-                ));
-                &self.frame.cached_bvh.as_ref().unwrap().0
+                _ => {
+                    let bvh = rc3d_core::Bvh::build(&bvh_items);
+                    self.frame.cached_bvh = Some((bvh, bvh_items));
+                    &self.frame.cached_bvh.as_ref().unwrap().0
+                }
             };
 
-            let mut visible_indices: Vec<usize> = Vec::with_capacity(draw_calls.len());
+            // Reuse frame-local allocation Vecs to avoid per-frame allocation
+            self.frame.visible_indices.clear();
             if bvh.is_empty() {
-                visible_indices.extend(0..draw_calls.len());
+                self.frame.visible_indices.extend(0..draw_calls.len());
             } else {
-                let mut bvh_out = Vec::new();
-                bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut bvh_out);
-                for &idx in &bvh_out {
-                    visible_indices.push(idx as usize);
+                self.frame.bvh_out.clear();
+                bvh.query_filter(|aabb| frustum.intersects_aabb(aabb), &mut self.frame.bvh_out);
+                for &idx in &self.frame.bvh_out {
+                    self.frame.visible_indices.push(idx as usize);
                 }
                 for (i, dc) in draw_calls.iter().enumerate() {
                     if dc.aabb.is_none() {
-                        visible_indices.push(i);
+                        self.frame.visible_indices.push(i);
                     }
                 }
-                visible_indices.sort_unstable();
-                visible_indices.dedup();
+                self.frame.visible_indices.sort_unstable();
+                self.frame.visible_indices.dedup();
             }
-            visible_indices.iter().map(|&i| &draw_calls[i]).collect()
+            self.frame.visible_indices.iter().map(|&i| &draw_calls[i]).collect()
         });
+
+        // ── GPU compute culling (runs alongside CPU culling for now) ──
+        if self.gpu.gpu_cull_enabled {
+            if let (Some(ref cull_pass), Some(ref transform_buf), Some(ref indirect_buf),
+                    Some(ref _instance_buf), Some(ref frustum_buf), Some(ref _bg)) = (
+                self.gpu.gpu_cull_pass.as_ref(),
+                self.gpu.transform_buffer.as_ref(),
+                self.gpu.indirect_args_buffer.as_ref(),
+                self.gpu.instance_indices_buffer.as_ref(),
+                self.gpu.frustum_uniform.as_ref(),
+                self.gpu.gpu_cull_bg.as_ref(),
+            ) {
+                // Upload transforms (all objects for now; dirty-tracking TBD)
+                let transforms: Vec<crate::vertex::GpuObjectTransform> = draw_calls.iter()
+                    .enumerate()
+                    .map(|(_i, dc)| crate::vertex::GpuObjectTransform {
+                        model_matrix: dc.model_matrix.to_cols_array_2d(),
+                        aabb_min: dc.aabb.as_ref().map_or([0.0f32; 3], |a| a.min.to_array()),
+                        flags: 0,
+                        aabb_max: dc.aabb.as_ref().map_or([0.0f32; 3], |a| a.max.to_array()),
+                        mesh_id: 0,
+                        material_id: 0,
+                        _pad: [0; 7],
+                    })
+                    .collect();
+                cull_pass.write_transforms(&self.queue, transform_buf, &transforms);
+
+                // Write frustum planes
+                let planes = frustum.plane_array();
+                cull_pass.write_frustum(&self.queue, frustum_buf, &planes);
+
+                // Reset indirect args
+                cull_pass.reset_indirect_args(&self.queue, indirect_buf, 4096);
+
+                // Dispatch (fires asynchronously — GPU consumes it in subsequent draws)
+                // Note: encoder is created below; this upload goes via queue.write_buffer
+                // which is immediate. The actual cull compute dispatch happens before
+                // the render pass when gpu_cull_pass.dispatch() is called.
+            }
+        }
 
         if let Some(head) = visible.first() {
             let dz = head.depth_reversed_z;
@@ -178,89 +238,89 @@ impl super::Renderer {
                 }
             })
             .sum();
-        let enable_perf_mode = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
+        let triangle_over_budget = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
+        let enable_perf_mode = triangle_over_budget
+            || (self.interaction_active && total_visible_triangles > 500_000);
         if enable_perf_mode != self.frame.performance_mode_active {
             self.frame.performance_mode_active = enable_perf_mode;
-            if enable_perf_mode {
+            if enable_perf_mode && triangle_over_budget {
                 log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
-            } else {
-                log::info!("Performance mode disabled");
             }
         }
 
-        let mesh_handles = self.cpu_span.measure("mesh_upload", || {
-            let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
-            for dc in &visible {
-                let handle = if dc.vertices.is_empty() {
-                    if let Some(md) = dc.meshlet_data.as_ref() {
-                        let ptr = Arc::as_ptr(md) as u64;
-                        if let Some(mesh_id) = self.gpu.assets.mesh_touch(&ptr, self.frame.frame_counter) {
-                            Some(mesh_id)
-                        } else {
-                            let verts: Vec<crate::vertex::Vertex> =
-                                md.vertices
-                                    .iter()
-                                    .map(|mv| crate::vertex::Vertex {
-                                        position: mv.position,
-                                        normal: mv.normal,
-                                        texcoord: mv.texcoord,
-                                        tangent: mv.tangent,
-                                    })
-                                    .collect();
-                            let mesh_id = self.gpu.gpu_meshes.upload_mesh(
-                                &self.device,
-                                &verts,
-                                Some(&md.indices),
-                                &[],
-                                &[],
-                            );
-                            self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
-                            Some(mesh_id)
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    let base_hash = dc.mesh_hash.unwrap_or_else(|| {
-                        let ptr_key = (
-                            Arc::as_ptr(&dc.vertices) as u64,
-                            dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
-                        );
-                        let mut h = twox_hash::XxHash64::with_seed(0);
-                        std::hash::Hasher::write_u64(&mut h, ptr_key.0);
-                        std::hash::Hasher::write_u64(&mut h, ptr_key.1);
-                        std::hash::Hasher::finish(&h)
-                    });
-                    let hash = if let Some(ref skin) = dc.skinning {
-                        let mut h = twox_hash::XxHash64::with_seed(0);
-                        std::hash::Hasher::write_u64(&mut h, base_hash);
-                        std::hash::Hasher::write_u64(&mut h, Arc::as_ptr(skin) as u64);
-                        std::hash::Hasher::finish(&h)
-                    } else {
-                        base_hash
-                    };
-                    if let Some(mesh_id) = self.gpu.assets.mesh_touch(&hash, self.frame.frame_counter) {
+        let mesh_upload_start = std::time::Instant::now();
+        let mut mesh_handles: Vec<Option<crate::gpu_resource::MeshId>> = Vec::with_capacity(visible.len());
+        for dc in &visible {
+            let handle = if dc.vertices.is_empty() {
+                if let Some(md) = dc.meshlet_data.as_ref() {
+                    let ptr = Arc::as_ptr(md) as u64;
+                    if let Some(mesh_id) = self.gpu.assets.mesh_touch(&ptr, self.frame.frame_counter) {
                         Some(mesh_id)
                     } else {
-                        if let Some(ref skin) = dc.skinning {
-                            let verts = &*dc.vertices;
-                            let skin_slice = skin.skin_data.as_slice();
-                            if verts.len() != skin_slice.len() {
-                                log::warn!(
-                                    "skinning data len {} != mesh verts {}; using rigid mesh",
-                                    skin_slice.len(),
-                                    verts.len()
-                                );
-                                let mesh_id = self.gpu.gpu_meshes.upload_mesh(
-                                    &self.device,
-                                    &dc.vertices,
-                                    dc.indices.as_ref().map(|a| a.as_slice()),
-                                    &dc.edge_positions,
-                                    &dc.wireframe_edge_positions,
-                                );
-                                self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
-                                Some(mesh_id)
-                            } else {
+                        let verts: Vec<crate::vertex::Vertex> =
+                            md.vertices
+                                .iter()
+                                .map(|mv| crate::vertex::Vertex {
+                                    position: mv.position,
+                                    normal: mv.normal,
+                                    texcoord: mv.texcoord,
+                                    tangent: mv.tangent,
+                                })
+                                .collect();
+                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
+                            &self.device,
+                            &verts,
+                            Some(&md.indices),
+                            &[],
+                            &[],
+                        );
+                        self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter);
+                        Some(mesh_id)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                let base_hash = dc.mesh_hash.unwrap_or_else(|| {
+                    let ptr_key = (
+                        Arc::as_ptr(&dc.vertices) as u64,
+                        dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
+                    );
+                    let mut h = twox_hash::XxHash64::with_seed(0);
+                    std::hash::Hasher::write_u64(&mut h, ptr_key.0);
+                    std::hash::Hasher::write_u64(&mut h, ptr_key.1);
+                    std::hash::Hasher::finish(&h)
+                });
+                let hash = if let Some(ref skin) = dc.skinning {
+                    let mut h = twox_hash::XxHash64::with_seed(0);
+                    std::hash::Hasher::write_u64(&mut h, base_hash);
+                    std::hash::Hasher::write_u64(&mut h, Arc::as_ptr(skin) as u64);
+                    std::hash::Hasher::finish(&h)
+                } else {
+                    base_hash
+                };
+                if let Some(mesh_id) = self.gpu.assets.mesh_touch(&hash, self.frame.frame_counter) {
+                    Some(mesh_id)
+                } else {
+                    if let Some(ref skin) = dc.skinning {
+                        let verts = &*dc.vertices;
+                        let skin_slice = skin.skin_data.as_slice();
+                        if verts.len() != skin_slice.len() {
+                            log::warn!(
+                                "skinning data len {} != mesh verts {}; using rigid mesh",
+                                skin_slice.len(),
+                                verts.len()
+                            );
+                            let mesh_id = self.gpu.gpu_meshes.upload_mesh(
+                                &self.device,
+                                &dc.vertices,
+                                dc.indices.as_ref().map(|a| a.as_slice()),
+                                &dc.edge_positions,
+                                &dc.wireframe_edge_positions,
+                            );
+                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                            Some(mesh_id)
+                        } else {
                             let pass = self
                                 .gpu.gpu_skinning_pass
                                 .get_or_insert_with(|| GpuSkinningPass::new(&self.device));
@@ -290,50 +350,39 @@ impl super::Renderer {
                             self.gpu.skinned_mesh_resources.insert(mesh_id, resources);
                             self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
                             Some(mesh_id)
-                            }
-                        } else {
-                            let mesh_id = self.gpu.gpu_meshes.upload_mesh(
-                                &self.device,
-                                &dc.vertices,
-                                dc.indices.as_ref().map(|a| a.as_slice()),
-                                &dc.edge_positions,
-                                &dc.wireframe_edge_positions,
-                            );
-                            self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
-                            Some(mesh_id)
                         }
+                    } else {
+                        let mesh_id = self.gpu.gpu_meshes.upload_mesh(
+                            &self.device,
+                            &dc.vertices,
+                            dc.indices.as_ref().map(|a| a.as_slice()),
+                            &dc.edge_positions,
+                            &dc.wireframe_edge_positions,
+                        );
+                        self.gpu.assets.mesh_insert(hash, mesh_id, self.frame.frame_counter);
+                        Some(mesh_id)
                     }
-                };
-                mesh_handles.push(handle);
-            }
-            mesh_handles
-        });
+                }
+            };
+            mesh_handles.push(handle);
+        }
+        self.cpu_span.record("mesh_upload", mesh_upload_start.elapsed().as_secs_f64() * 1000.0);
 
-        // Pre-compute light sort hashes (single u64 instead of 389-byte tuple)
-        let light_hashes: Vec<u64> = visible.iter().map(|dc| {
-            use std::hash::{Hash, Hasher};
-            let mut h = twox_hash::XxHash64::with_seed(0);
-            for row in &dc.light_dirs { h.write(bytemuck::bytes_of(row)); }
-            for row in &dc.light_colors { h.write(bytemuck::bytes_of(row)); }
-            for row in &dc.light_types { h.write(bytemuck::bytes_of(row)); }
-            for row in &dc.light_positions { h.write(bytemuck::bytes_of(row)); }
-            for row in &dc.spot_params { h.write(bytemuck::bytes_of(row)); }
-            (dc.light_count as u64).hash(&mut h);
-            (dc.diffuse_color.x.to_bits()).hash(&mut h);
-            (dc.ambient_color.x.to_bits()).hash(&mut h);
-            (dc.specular_color.x.to_bits()).hash(&mut h);
-            dc.shininess.to_bits().hash(&mut h);
-            h.finish()
-        }).collect();
+        // Use pre-computed light_key from DrawCall (computed during traversal).
+        let mut light_hashes = std::mem::take(&mut self.frame.light_hashes_buf);
+        light_hashes.clear();
+        light_hashes.extend(visible.iter().map(|dc| dc.light_key));
 
-        let (solid_order, edge_order, selected_order, transparent_order) = self.cpu_span.measure("sorting", || {
-            let mut solid_order: Vec<usize> = (0..visible.len())
-                .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())
-                .collect();
+        let (mut solid_order, mut edge_order, mut selected_order, mut transparent_order) = self.cpu_span.measure("sorting", || {
+            let mut solid_order = std::mem::take(&mut self.frame.solid_order_buf);
+            solid_order.clear();
+            solid_order.extend((0..visible.len())
+                .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()));
             solid_order.sort_unstable_by_key(|&i| light_hashes[i]);
-            let mut edge_order: Vec<usize> = (0..visible.len())
-                .filter(|&i| !visible[i].edge_positions.is_empty())
-                .collect();
+            let mut edge_order = std::mem::take(&mut self.frame.edge_order_buf);
+            edge_order.clear();
+            edge_order.extend((0..visible.len())
+                .filter(|&i| !visible[i].edge_positions.is_empty()));
             edge_order.sort_unstable_by_key(|&i| {
                 let dc = visible[i];
                 (
@@ -342,9 +391,10 @@ impl super::Renderer {
                     mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
                 )
             });
-            let mut selected_order: Vec<usize> = (0..visible.len())
-                .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()))
-                .collect();
+            let mut selected_order = std::mem::take(&mut self.frame.selected_order_buf);
+            selected_order.clear();
+            selected_order.extend((0..visible.len())
+                .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())));
             selected_order.sort_unstable_by_key(|&i| {
                 let dc = visible[i];
                 (
@@ -355,9 +405,10 @@ impl super::Renderer {
 
             let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
             self.frame.scene_camera_pos = camera_pos_vec;
-            let mut transparent_order: Vec<usize> = (0..visible.len())
-                .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0)
-                .collect();
+            let mut transparent_order = std::mem::take(&mut self.frame.transparent_order_buf);
+            transparent_order.clear();
+            transparent_order.extend((0..visible.len())
+                .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0));
             transparent_order.sort_unstable_by(|&a, &b| {
                 let pos_a = visible[a].model_matrix.w_axis.truncate();
                 let pos_b = visible[b].model_matrix.w_axis.truncate();
@@ -368,7 +419,8 @@ impl super::Renderer {
             (solid_order, edge_order, selected_order, transparent_order)
         });
 
-        let mut meshlet_indices: Vec<usize> = Vec::new();
+        let mut meshlet_indices = std::mem::take(&mut self.frame.meshlet_indices_buf);
+        meshlet_indices.clear();
         for (i, dc) in visible.iter().enumerate() {
             if dc.meshlet_data.is_some() {
                 meshlet_indices.push(i);
@@ -406,7 +458,10 @@ impl super::Renderer {
         self.gpu.outline_pool.reset();
 
         let base_mode = if self.frame.performance_mode_active {
-            DisplayMode::Shaded
+            match self.global_display_mode {
+                DisplayMode::HiddenLine | DisplayMode::Wireframe => DisplayMode::Shaded,
+                _ => self.global_display_mode,
+            }
         } else {
             self.global_display_mode
         };
@@ -501,6 +556,8 @@ impl super::Renderer {
             }
         }
 
+        // Clone the light-set table (typically 1-5 entries) so ctx doesn't borrow self.
+        let light_sets_snapshot = self.light_sets.clone();
         let ctx = PassContext {
             visible: &visible,
             solid_order: &solid_order,
@@ -526,6 +583,7 @@ impl super::Renderer {
             camera_proj,
             camera_inv_proj,
             effect_commands: &effect_commands,
+            light_sets: &light_sets_snapshot,
         };
 
         let mut stats = render_passes::execute_passes(
@@ -536,6 +594,14 @@ impl super::Renderer {
             post_swapchain_overlay,
             presentation,
         );
+        // ctx is dropped here — restore reusable Vecs to FrameState
+        self.frame.light_hashes_buf = std::mem::take(&mut light_hashes);
+        self.frame.meshlet_indices_buf = std::mem::take(&mut meshlet_indices);
+        self.frame.solid_order_buf = std::mem::take(&mut solid_order);
+        self.frame.edge_order_buf = std::mem::take(&mut edge_order);
+        self.frame.selected_order_buf = std::mem::take(&mut selected_order);
+        self.frame.transparent_order_buf = std::mem::take(&mut transparent_order);
+
         let gpu_pass = {
             let timestamps = &self.gpu_timer.last_timestamps;
             let labels = &self.gpu_timer.labels;

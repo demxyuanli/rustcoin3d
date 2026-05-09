@@ -132,12 +132,8 @@ pub struct DrawCall {
     pub mvp: Mat4,
     pub model_matrix: Mat4,
     pub camera_pos: Vec3,
-    pub light_dirs: [[f32; 4]; MAX_LIGHTS],
-    pub light_colors: [[f32; 4]; MAX_LIGHTS],
-    pub light_types: [[f32; 4]; MAX_LIGHTS],
-    pub light_positions: [[f32; 4]; MAX_LIGHTS],
-    pub spot_params: [[f32; 4]; MAX_LIGHTS],
-    pub light_count: u32,
+    /// Index into `LightSetTable` for shared light parameters.
+    pub light_set_id: u32,
     /// Pre-computed hash of light params for fast draw-call grouping.
     pub light_key: u64,
     pub diffuse_color: Vec3,
@@ -195,12 +191,7 @@ impl Default for DrawCall {
             mvp: Mat4::IDENTITY,
             model_matrix: Mat4::IDENTITY,
             camera_pos: Vec3::ZERO,
-            light_dirs: [[0.0; 4]; MAX_LIGHTS],
-            light_colors: [[0.0; 4]; MAX_LIGHTS],
-            light_types: [[0.0; 4]; MAX_LIGHTS],
-            light_positions: [[0.0; 4]; MAX_LIGHTS],
-            spot_params: [[0.0; 4]; MAX_LIGHTS],
-            light_count: 0,
+            light_set_id: 0,
             light_key: 0,
             diffuse_color: Vec3::ZERO,
             ambient_color: Vec3::ZERO,
@@ -255,6 +246,23 @@ pub fn apply_world_camera(
     }
 }
 
+/// Opaque cache-target pointer. Not Send-safe by default, but our use is
+/// strictly single-threaded during traversal, so Send is manually implemented.
+struct CacheTarget(*mut crate::flat_draw_cache::FlatDrawCache);
+unsafe impl Send for CacheTarget {}
+
+impl CacheTarget {
+    fn null() -> Self { Self(std::ptr::null_mut()) }
+    fn is_null(&self) -> bool { self.0.is_null() }
+    fn set(&mut self, cache: &mut crate::flat_draw_cache::FlatDrawCache) {
+        self.0 = cache as *mut _;
+    }
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_mut(&self) -> &mut crate::flat_draw_cache::FlatDrawCache {
+        &mut *self.0
+    }
+}
+
 /// Traverses the scene graph, accumulates state, and collects draw calls.
 pub struct RenderCollector {
     pub state: State,
@@ -266,6 +274,10 @@ pub struct RenderCollector {
     pub global_display_mode: DisplayMode,
     pub material_library: Option<MaterialLibrary>,
     mesh_cache: HashMap<ShapeKey, CachedShapeData>,
+    pub light_sets: crate::light_set::LightSetTable,
+    /// Optional flat-cache to populate during traversal.
+    /// Wrapped for Send-safety; only valid during single-threaded traversal.
+    cache_ptr: CacheTarget,
     hidden_nodes: HashSet<NodeId>,
     /// Environment state (accumulated from EnvironmentNode)
     pub ambient_intensity: f32,
@@ -298,6 +310,8 @@ impl RenderCollector {
             global_display_mode: DisplayMode::ShadedWithEdges,
             material_library: None,
             mesh_cache: HashMap::new(),
+            light_sets: crate::light_set::LightSetTable::new(),
+            cache_ptr: CacheTarget::null(),
             hidden_nodes: HashSet::new(),
             ambient_intensity: 0.2,
             ambient_color: rc3d_core::math::Vec3::ONE,
@@ -312,8 +326,81 @@ impl RenderCollector {
         }
     }
 
+    /// Set the flat-cache target for direct emit during traversal.
+    /// When set, each draw call is pushed to the cache immediately (no post-conversion needed).
+    pub fn set_cache_target(&mut self, cache: &mut crate::flat_draw_cache::FlatDrawCache) {
+        self.cache_ptr.set(cache);
+    }
+
     pub fn traverse(&mut self, graph: &SceneGraph, root: NodeId) {
         self.traverse_node(graph, root);
+    }
+
+    /// Push a GpuDrawData entry to the cache from a freshly-built DrawCall.
+    /// Called inline during emit to skip the post-traversal conversion step.
+    fn emit_to_cache(&self, dc: &DrawCall) {
+        let cache = unsafe { self.cache_ptr.get_mut() };
+        use crate::flat_draw_cache::{CachedDrawMetadata, DrawFlags, GpuDrawData, MaterialUniform};
+
+        let mut flags = DrawFlags::empty();
+        if !dc.edge_positions.is_empty() {
+            flags |= DrawFlags::HAS_EDGES;
+        }
+        if dc.is_overlay {
+            flags |= DrawFlags::OVERLAY;
+        }
+        if dc.selected {
+            flags |= DrawFlags::SELECTED;
+        }
+        if dc.alpha_mode != rc3d_scene::AlphaMode::Opaque {
+            flags |= DrawFlags::TRANSPARENT;
+        }
+        if dc.depth_reversed_z {
+            flags |= DrawFlags::DEPTH_REVERSED;
+        }
+        if dc.projection_orthographic {
+            flags |= DrawFlags::ORTHOGRAPHIC;
+        }
+
+        cache.gpu_data.push(GpuDrawData {
+            model_matrix: dc.model_matrix.to_cols_array_2d(),
+            material_id: 0,
+            light_set_id: dc.light_set_id,
+            vertex_offset: 0,
+            vertex_count: 0,
+            index_offset: 0,
+            index_count: 0,
+            draw_flags: flags.bits(),
+            instance_count: 1,
+            _pad: 0,
+        });
+
+        cache.metadata.push(CachedDrawMetadata {
+            mesh_hash: dc.mesh_hash.unwrap_or(0),
+            bvh_node_id: None,
+            material_params: MaterialUniform {
+                base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, dc.opacity],
+                emissive_color: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, 1.0],
+                metallic_roughness_anisotropic: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
+            },
+            albedo_tex_id: u16::MAX,
+            normal_tex_id: u16::MAX,
+            mr_tex_id: u16::MAX,
+            emissive_tex_id: u16::MAX,
+            occlusion_tex_id: u16::MAX,
+            atlas_layer: 0,
+            alpha_mode: dc.alpha_mode as u32,
+            alpha_cutoff: dc.alpha_cutoff,
+            double_sided: if dc.double_sided { 1 } else { 0 },
+            _pad: [0; 2],
+        });
+
+        // Track node-to-draw mapping (caller updates after traversal)
+        cache.total_triangles += dc.indices.as_ref().map_or(
+            (dc.vertices.len() / 3) as u64,
+            |idx| (idx.len() / 3) as u64,
+        );
+        cache.groups_dirty = true;
     }
 
     pub fn invalidate_mesh_cache(&mut self) {
@@ -1041,8 +1128,11 @@ impl RenderCollector {
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
         let aabb = Some(local_aabb.transform(model));
-        let (light_dirs, light_colors, light_types, light_positions, spot_params, light_count) =
-            self.collect_lights();
+        let packed = self.collect_lights();
+        let light_key = {
+            let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = packed;
+            hash_light_params(light_dirs, light_colors, light_types, light_positions, spot_params, light_count)
+        };
 
         self.draw_calls.push(DrawCall {
             vertices,
@@ -1053,13 +1143,8 @@ impl RenderCollector {
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
-            light_dirs,
-            light_colors,
-            light_types,
-            light_positions,
-            spot_params,
-            light_count,
-            light_key: hash_light_params(&light_dirs, &light_colors, &light_types, &light_positions, &spot_params, light_count),
+            light_set_id: self.light_sets.intern(light_key, packed),
+            light_key,
             diffuse_color: mat.diffuse,
             ambient_color: mat.ambient,
             specular_color: mat.specular,
@@ -1109,6 +1194,9 @@ impl RenderCollector {
             morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
             skinning: self.skinning_payload_for_draw(),
         });
+        if !self.cache_ptr.is_null() {
+            self.emit_to_cache(self.draw_calls.last().unwrap());
+        }
     }
 
     fn emit_draw_call_with_edges(
@@ -1124,8 +1212,11 @@ impl RenderCollector {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
-        let (light_dirs, light_colors, light_types, light_positions, spot_params, light_count) =
-            self.collect_lights();
+        let packed = self.collect_lights();
+        let light_key = {
+            let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = packed;
+            hash_light_params(light_dirs, light_colors, light_types, light_positions, spot_params, light_count)
+        };
 
         let aabb = if vertices.is_empty() {
             None
@@ -1148,13 +1239,8 @@ impl RenderCollector {
             mvp,
             model_matrix: model,
             camera_pos: self.camera_pos,
-            light_dirs,
-            light_colors,
-            light_types,
-            light_positions,
-            spot_params,
-            light_count,
-            light_key: hash_light_params(&light_dirs, &light_colors, &light_types, &light_positions, &spot_params, light_count),
+            light_set_id: self.light_sets.intern(light_key, packed),
+            light_key,
             diffuse_color: mat.diffuse,
             ambient_color: mat.ambient,
             specular_color: mat.specular,
@@ -1204,6 +1290,9 @@ impl RenderCollector {
             morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
             skinning: self.skinning_payload_for_draw(),
         });
+        if !self.cache_ptr.is_null() {
+            self.emit_to_cache(self.draw_calls.last().unwrap());
+        }
     }
 
     fn skinning_payload_for_draw(&self) -> Option<Arc<SkinnedMeshDrawPayload>> {
@@ -1531,22 +1620,24 @@ pub fn traverse_into_cache(
     // Count total nodes to decide full vs incremental rebuild
     let total_nodes = count_all_nodes(graph);
     if dirty_roots.len() as f64 > total_nodes as f64 * 0.5 {
-        // Full rebuild
+        // Full rebuild — emit directly to cache during traversal
         cache.clear();
         for &root in graph.roots() {
             let mut collector = RenderCollector::new();
+            collector.set_cache_target(cache);
             collector.set_hidden_nodes(hidden_nodes);
             collector.traverse(graph, root);
-            convert_collector_to_cache(&collector, texture_table, cache);
+            convert_collector_to_cache_textures(&collector, texture_table);
         }
     } else {
         // Incremental: remove dirty entries, re-traverse dirty subtrees
         for &dirty_root in &dirty_roots {
             invalidate_cache_for_subtree(cache, dirty_root);
             let mut collector = RenderCollector::new();
+            collector.set_cache_target(cache);
             collector.set_hidden_nodes(hidden_nodes);
             collector.traverse(graph, dirty_root);
-            convert_collector_to_cache(&collector, texture_table, cache);
+            convert_collector_to_cache_textures(&collector, texture_table);
         }
     }
 
@@ -1568,6 +1659,21 @@ fn count_subtree(graph: &SceneGraph, node: rc3d_core::NodeId) -> usize {
         .iter()
         .map(|&c| count_subtree(graph, c))
         .sum::<usize>()
+}
+
+/// Intern texture paths from draw calls (used alongside direct cache emit to avoid
+/// duplicating the full conversion).
+fn convert_collector_to_cache_textures(
+    collector: &RenderCollector,
+    texture_table: &mut TexturePathTable,
+) {
+    for dc in &collector.draw_calls {
+        if let Some(ref p) = dc.albedo_path { texture_table.intern(p); }
+        if let Some(ref p) = dc.normal_path { texture_table.intern(p); }
+        if let Some(ref p) = dc.emissive_path { texture_table.intern(p); }
+        if let Some(ref p) = dc.metallic_roughness_path { texture_table.intern(p); }
+        if let Some(ref p) = dc.occlusion_path { texture_table.intern(p); }
+    }
 }
 
 /// Temporary adapter: convert existing RenderCollector output into FlatDrawCache.

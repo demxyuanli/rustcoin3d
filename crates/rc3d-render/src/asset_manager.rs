@@ -5,16 +5,19 @@ use lru::LruCache;
 use crate::cluster::ClusterSet;
 use crate::gpu_resource::{GpuResourceManager, MeshId};
 use crate::gpu_skinning::GpuSkinningResources;
+use crate::mesh_pool::GpuMeshPool;
 use std::collections::HashMap;
 
-pub const MESH_CACHE_MAX: usize = 256;
-pub const CLUSTER_CACHE_MAX: usize = 128;
-pub const MESH_CACHE_IDLE_FRAMES: u64 = 120;
+pub const MESH_CACHE_MAX: usize = 4096;
+pub const CLUSTER_CACHE_MAX: usize = 1024;
+pub const MESH_CACHE_IDLE_FRAMES: u64 = 300;
 
 /// GPU-side mesh and cluster resources with LRU eviction.
 pub struct GpuAssetManager {
     pub mesh_cache: LruCache<u64, (MeshId, u64)>,
     pub cluster_cache: LruCache<u64, ClusterSet>,
+    /// Streaming mesh pool (lazily initialized via `enable_mesh_pool`).
+    pub mesh_pool: Option<GpuMeshPool>,
 }
 
 impl GpuAssetManager {
@@ -22,12 +25,19 @@ impl GpuAssetManager {
         Self {
             mesh_cache: LruCache::new(NonZeroUsize::new(MESH_CACHE_MAX).unwrap()),
             cluster_cache: LruCache::new(NonZeroUsize::new(CLUSTER_CACHE_MAX).unwrap()),
+            mesh_pool: None,
         }
+    }
+
+    /// Enable the streaming mesh pool with the given capacity.
+    pub fn enable_mesh_pool(&mut self, capacity: usize) {
+        self.mesh_pool = Some(GpuMeshPool::new(capacity));
     }
 
     pub fn invalidate_all(&mut self) {
         self.mesh_cache.clear();
         self.cluster_cache.clear();
+        self.mesh_pool = None;
     }
 
     /// Insert or touch a mesh entry. If the cache is full, the least recently used entry
@@ -187,8 +197,8 @@ mod tests {
         let mut m = GpuAssetManager::new();
         let mut gpu = GpuResourceManager::new();
         m.mesh_insert(100, MeshId::default(), 10);
-        // At frame 200 (> 120 idle), the mesh should be pruned
-        m.prune_stale_meshes(200, &mut gpu, None);
+        // At frame 400 (> 300 idle), the mesh should be pruned
+        m.prune_stale_meshes(400, &mut gpu, None);
         assert_eq!(m.mesh_cache_len(), 0);
     }
 }

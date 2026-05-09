@@ -609,9 +609,45 @@ pub(crate) fn window_event(
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
                     let can_skip = dirty_roots.is_empty()
                         && !app.state.world.cached_draw_calls.is_empty();
+                    let camera_only = !can_skip
+                        && !app.state.world.cached_draw_calls.is_empty()
+                        && dirty_roots.iter().all(|&id| {
+                            app.state.world.graph.get(id).map_or(false, |e| {
+                                matches!(e.data,
+                                    rc3d_scene::NodeData::PerspectiveCamera(_)
+                                    | rc3d_scene::NodeData::OrthographicCamera(_))
+                                && e.dirty_flags & rc3d_scene::node_entry::dirty_flags::GEOMETRY == 0
+                            })
+                        });
 
                     if can_skip {
                         app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                    } else if camera_only {
+                        // Camera changed but geometry didn't — reuse cached draw calls
+                        // and only update VP matrices (skip full scene traversal).
+                        let cam_w = renderer.config.width.max(1) as f32;
+                        let cam_h = renderer.config.height.max(1) as f32;
+                        let cam_pos = app.state.camera_controller.as_ref()
+                            .map(|c| c.eye_position())
+                            .or_else(|| app.state.viewport_cameras.active().map(|vc| vc.controller.eye_position()))
+                            .unwrap_or(Vec3::new(0.0, 0.0, 5.0));
+                        let aspect = cam_w / cam_h.max(1.0);
+                        let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+                        let vp_view = app.state.camera_controller.as_ref()
+                            .map(|c| c.view_matrix())
+                            .or_else(|| app.state.viewport_cameras.active().map(|vc| vc.controller.view_matrix()))
+                            .unwrap_or(Mat4::IDENTITY);
+                        let vp_proj = proj;
+                        app.state.world.collector.view_matrix = vp_view;
+                        app.state.world.collector.projection_matrix = vp_proj;
+                        app.state.world.collector.camera_pos = cam_pos;
+                        app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                        rc3d_render::render_action::apply_world_camera(
+                            &mut app.state.world.collector.draw_calls,
+                            vp_view, vp_proj, cam_pos,
+                        );
+                        drop(dirty_roots);
+                        rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     } else {
                         let _t0 = std::time::Instant::now();
                         for &root in app.state.world.graph.roots() {
@@ -706,6 +742,13 @@ pub(crate) fn window_event(
                             std::mem::take(&mut app.state.world.collector.light_sets);
                         renderer.set_light_sets(light_sets);
                     }
+
+                    let cam_interacting = app.state.camera_controller
+                        .as_ref()
+                        .map_or(false, |c| c.middle_orbit_held || c.left_orbit_held || c.panning)
+                        || app.state.viewport_cameras.active()
+                            .map_or(false, |vc| vc.controller.middle_orbit_held || vc.controller.left_orbit_held || vc.controller.panning);
+                    renderer.interaction_active = cam_interacting;
 
                     if !app.state.world.collector.draw_calls.is_empty() {
                         let mut overlay = None;

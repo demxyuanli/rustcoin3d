@@ -45,7 +45,7 @@ use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 
-const PERFORMANCE_MODE_TRIANGLE_THRESHOLD: u64 = 2_000_000;
+const PERFORMANCE_MODE_TRIANGLE_THRESHOLD: u64 = 5_000_000;
 const CLUSTER_PIPELINE_GENERATION: u32 = 5;
 
 fn resolve_studio_hdr_path() -> PathBuf {
@@ -104,6 +104,10 @@ pub struct Renderer {
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
 
+    /// When true, the renderer skips expensive passes (shadows, edges, SSAO)
+    /// even below the triangle threshold. Set by the app during camera orbit/pan/zoom.
+    pub interaction_active: bool,
+
     // ── Frame state tier ──
     pub(crate) frame: FrameState,
 
@@ -120,6 +124,9 @@ pub struct Renderer {
     /// Cached PBR material bind group, keyed by hash of (albedo, normal, mr, emissive, occlusion) texture IDs.
     pub(crate) last_material_bg_key: u64,
     pub(crate) last_material_bg: Option<wgpu::BindGroup>,
+
+    // ── Light-set table (populated by traversal, consumed by passes) ──
+    pub(crate) light_sets: crate::light_set::LightSetTable,
 
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
@@ -331,11 +338,11 @@ impl Renderer {
         let pipelines = PipelineSet::create(&device, config.format, &mut shader_cache);
         let selection_outline_pipelines =
             crate::selection_outline::SelectionOutlinePipelines::new(&device, &pipelines.flat_bgl);
-        let phong_pool = GpuUniformPool::new_phong(&device, 16384);
-        let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 16384);
-        let flat_pool = GpuUniformPool::new_flat(&device, 8192);
-        let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 8192);
-        let outline_pool = GpuUniformPool::new_outline(&device, 8192);
+        let phong_pool = GpuUniformPool::new_phong(&device, 65536);
+        let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 32768);
+        let flat_pool = GpuUniformPool::new_flat(&device, 32768);
+        let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 16384);
+        let outline_pool = GpuUniformPool::new_outline(&device, 16384);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
         let csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
@@ -434,6 +441,7 @@ impl Renderer {
             xray_mode: false,
             screen_space_selection_outline: true,
             ibl_preset,
+            interaction_active: false,
             // Profiler
             gpu_timer,
             cpu_span: crate::profiler::CpuSpanCollector::default(),
@@ -441,6 +449,7 @@ impl Renderer {
             draw_cache: crate::flat_draw_cache::FlatDrawCache::new(),
             texture_table: crate::global_tables::TexturePathTable::new(),
             texture_streamer: crate::texture_streaming::TextureStreamer::new(),
+            light_sets: crate::light_set::LightSetTable::new(),
             last_material_bg_key: 0,
             last_material_bg: None,
             // Frame state
@@ -461,6 +470,14 @@ impl Renderer {
                 cached_bvh: None,
                 has_text_nodes: true,    // optimistic; auto-disabled after 2 empty frames
                 has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
+                bvh_out: Vec::with_capacity(1024),
+                visible_indices: Vec::with_capacity(1024),
+                solid_order_buf: Vec::with_capacity(1024),
+                edge_order_buf: Vec::with_capacity(256),
+                selected_order_buf: Vec::with_capacity(64),
+                transparent_order_buf: Vec::with_capacity(128),
+                light_hashes_buf: Vec::with_capacity(1024),
+                meshlet_indices_buf: Vec::with_capacity(256),
             },
             // GPU internals
             gpu: GpuInternals {
@@ -519,6 +536,14 @@ impl Renderer {
                 selection_outline_targets: None,
                 ldr_shade_tex: None,
                 ldr_shade_view: None,
+                transform_buffer: None,
+                indirect_args_buffer: None,
+                instance_indices_buffer: None,
+                gpu_cull_pass: None,
+                gpu_cull_bg: None,
+                frustum_uniform: None,
+                gpu_cull_enabled: false,
+                max_gpu_cull_objects: 65536,
             },
         };
         renderer.gpu.hud = Some(HudRenderer::new(
@@ -628,6 +653,54 @@ impl Renderer {
                 self.ensure_post_fx_targets();
             }
         }
+    }
+
+    /// Replace the light-set table (populated during scene traversal).
+    pub fn set_light_sets(&mut self, table: crate::light_set::LightSetTable) {
+        self.light_sets = table;
+    }
+
+    /// Enable GPU compute culling with buffers sized for max_objects.
+    /// Allocates transform_buffer (storage), indirect_args (storage+indirect),
+    /// and instance_indices (storage). Call once during setup.
+    pub fn enable_gpu_culling(&mut self, max_objects: u64) {
+        let stride = std::mem::size_of::<crate::vertex::GpuObjectTransform>() as u64;
+        self.gpu.transform_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Cull Transforms"),
+            size: stride * max_objects,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.gpu.indirect_args_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Cull Indirect"),
+            size: std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64 * 4096,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        }));
+        self.gpu.instance_indices_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Cull Indices"),
+            size: 4 * max_objects,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        }));
+        self.gpu.frustum_uniform = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Frustum Uniform"),
+            size: 6 * 16, // 6 planes × vec4<f32>
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        let cull_pass = crate::gpu_culling::GpuCullPass::new(&self.device);
+        let bg = cull_pass.create_bind_group(
+            &self.device,
+            self.gpu.transform_buffer.as_ref().unwrap(),
+            self.gpu.indirect_args_buffer.as_ref().unwrap(),
+            self.gpu.frustum_uniform.as_ref().unwrap(),
+            self.gpu.instance_indices_buffer.as_ref().unwrap(),
+        );
+        self.gpu.gpu_cull_pass = Some(cull_pass);
+        self.gpu.gpu_cull_bg = Some(bg);
+        self.gpu.gpu_cull_enabled = true;
+        self.gpu.max_gpu_cull_objects = max_objects;
     }
 
     pub fn set_screen_space_selection_outline(&mut self, enabled: bool) {

@@ -64,6 +64,21 @@ impl LineVertex {
 
 pub const MAX_LIGHTS: usize = 16;
 pub const CSM_CASCADE_COUNT: usize = 4;
+pub const GPU_OBJECT_TRANSFORM_SIZE: u64 = 128;
+
+/// Per-object transform for GPU compute culling.
+/// 128 bytes, two cache lines.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuObjectTransform {
+    pub model_matrix: [[f32; 4]; 4],   // 64B
+    pub aabb_min: [f32; 3],            // 12B
+    pub flags: u32,                    // 4B
+    pub aabb_max: [f32; 3],            // 12B
+    pub mesh_id: u32,                  // 4B
+    pub material_id: u32,              // 4B
+    pub _pad: [u32; 7],               // 28B — align to 128B
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
