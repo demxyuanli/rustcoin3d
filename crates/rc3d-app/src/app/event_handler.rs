@@ -646,10 +646,14 @@ pub(crate) fn window_event(
                             &mut app.state.world.collector.draw_calls,
                             vp_view, vp_proj, cam_pos,
                         );
+                        app.state.world.cached_draw_calls = app.state.world.collector.draw_calls.clone();
                         drop(dirty_roots);
                         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     } else {
                         let _t0 = std::time::Instant::now();
+                        // Pre-allocate using previous frame's draw call count as hint
+                        app.state.world.collector.reserve_draw_calls(
+                            app.state.world.cached_draw_calls.len());
                         for &root in app.state.world.graph.roots() {
                             app.state.world.collector.traverse(&app.state.world.graph, root);
                         }

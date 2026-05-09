@@ -332,6 +332,11 @@ impl RenderCollector {
         self.cache_ptr.set(cache);
     }
 
+    /// Pre-allocate draw_calls capacity (use previous frame's count as hint).
+    pub fn reserve_draw_calls(&mut self, capacity: usize) {
+        self.draw_calls.reserve(capacity);
+    }
+
     pub fn traverse(&mut self, graph: &SceneGraph, root: NodeId) {
         self.traverse_node(graph, root);
     }
