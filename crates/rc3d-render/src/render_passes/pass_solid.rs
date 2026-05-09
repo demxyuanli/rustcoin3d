@@ -35,7 +35,7 @@ pub(super) fn pass_depth_prepass(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
-    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &prepass_pipeline, false);
+    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &prepass_pipeline, &scene_pl.flat_solid, false);
 }
 
 pub(super) fn pass_solid_and_outline(
@@ -88,7 +88,7 @@ pub(super) fn pass_solid_and_outline(
 
     // Temporary stability fallback:
     // disable meshlet draw path to avoid camera-interaction corruption artifacts.
-    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, false);
+    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, false);
 
     if ctx.run_outline {
         let meshlet_set: std::collections::HashSet<usize> =

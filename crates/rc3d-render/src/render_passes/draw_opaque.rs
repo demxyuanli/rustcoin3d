@@ -77,13 +77,9 @@ fn draw_flat_triangle_batches(
     renderer: &mut crate::renderer::Renderer,
     pass: &mut wgpu::RenderPass<'_>,
     ctx: &super::PassContext<'_>,
+    flat_solid_pipeline: &wgpu::RenderPipeline,
 ) {
-    let pl = if ctx.depth_reversed_z {
-        &renderer.gpu.pipelines.reverse.flat_solid
-    } else {
-        &renderer.gpu.pipelines.forward.flat_solid
-    };
-    pass.set_pipeline(pl);
+    pass.set_pipeline(flat_solid_pipeline);
 
     let mut last_bound_mesh = None;
     for &i in ctx.solid_order {
@@ -106,10 +102,11 @@ pub(super) fn draw_opaque_triangle_batches(
     pass: &mut wgpu::RenderPass<'_>,
     ctx: &super::PassContext<'_>,
     solid_pipeline: &wgpu::RenderPipeline,
+    flat_solid_pipeline: &wgpu::RenderPipeline,
     draw_meshlets: bool,
 ) {
     if ctx.mode == DisplayMode::Flat {
-        draw_flat_triangle_batches(renderer, pass, ctx);
+        draw_flat_triangle_batches(renderer, pass, ctx, flat_solid_pipeline);
         return;
     }
     pass.set_pipeline(solid_pipeline);
