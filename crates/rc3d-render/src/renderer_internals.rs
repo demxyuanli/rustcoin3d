@@ -39,6 +39,8 @@ pub(crate) struct FrameState {
     pub animation_time_sec: f32,
     pub frame_counter: u64,
     pub performance_mode_active: bool,
+    /// Hysteresis: frames to stay in performance mode after disabling trigger.
+    pub perf_mode_cooldown: u8,
     pub last_diagnostics: Option<FrameDiagnostics>,
     pub last_hud_update_frame: u64,
     pub viewport_layout: ViewportLayout,

@@ -462,6 +462,7 @@ impl Renderer {
                 animation_time_sec: 0.0,
                 frame_counter: 0,
                 performance_mode_active: false,
+                perf_mode_cooldown: 0,
                 last_diagnostics: None,
                 last_hud_update_frame: 0,
                 viewport_layout: ViewportLayout::new(),

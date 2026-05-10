@@ -324,12 +324,25 @@ impl super::Renderer {
             })
             .sum();
         let triangle_over_budget = total_visible_triangles > PERFORMANCE_MODE_TRIANGLE_THRESHOLD;
-        let enable_perf_mode = triangle_over_budget
+        let want_perf_mode = triangle_over_budget
             || (self.interaction_active && total_visible_triangles > 500_000);
-        if enable_perf_mode != self.frame.performance_mode_active {
-            self.frame.performance_mode_active = enable_perf_mode;
-            if enable_perf_mode && triangle_over_budget {
-                log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
+
+        // Hysteresis: prevent rapid toggling. Enable immediately, disable only
+        // after cooldown frames (or immediately if triangle count drops below threshold).
+        if want_perf_mode {
+            self.frame.perf_mode_cooldown = 0;
+            if !self.frame.performance_mode_active {
+                self.frame.performance_mode_active = true;
+                if triangle_over_budget {
+                    log::warn!("Performance mode enabled: triangle_count={}", total_visible_triangles);
+                }
+            }
+        } else if self.frame.performance_mode_active {
+            const PERF_COOLDOWN_FRAMES: u8 = 30; // ~0.5s at 60fps
+            self.frame.perf_mode_cooldown += 1;
+            if self.frame.perf_mode_cooldown >= PERF_COOLDOWN_FRAMES {
+                self.frame.performance_mode_active = false;
+                log::info!("Performance mode disabled after cooldown");
             }
         }
 
