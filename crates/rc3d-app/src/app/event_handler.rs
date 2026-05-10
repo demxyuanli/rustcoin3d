@@ -636,7 +636,7 @@ pub(crate) fn window_event(
                         app.state.world.collector.view_matrix = vp_view;
                         app.state.world.collector.projection_matrix = vp_proj;
                         app.state.world.collector.camera_pos = cam_pos;
-                        // Apply camera in-place to collector (avoid clone in hot camera path)
+                        // Apply camera in-place to collector (skip clone when camera unchanged)
                         rc3d_render::render_action::apply_world_camera(
                             &mut app.state.world.collector.draw_calls,
                             vp_view, vp_proj, cam_pos,
@@ -675,7 +675,10 @@ pub(crate) fn window_event(
                     }
                     renderer.set_grid_enabled(app.editor.grid_enabled);
                     app.state.last_camera_eye = app.state.world.collector.camera_pos;
-                    gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
+                    // Gizmo sync only needed when selection or geometry changed
+                    if !can_skip && !camera_only {
+                        gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
+                    }
 
                     if !app.editor.measurements.is_empty() {
                         let vp = app.state.world.collector.projection_matrix
