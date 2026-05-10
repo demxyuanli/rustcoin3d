@@ -433,7 +433,7 @@ impl Renderer {
             enable_omni_shadows: true,
             enable_ldr_fxaa: true,
             hdr_post_processing: false,
-            global_display_mode: DisplayMode::ShadedWithEdges,
+            global_display_mode: DisplayMode::Shaded,
             grid_enabled: false,
             hud_enabled: true,
             outline_width: 0.022,

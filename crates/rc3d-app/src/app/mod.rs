@@ -86,7 +86,7 @@ impl App {
                 window: None,
                 camera_controller: None,
                 viewport_cameras: ViewportCameraSet::new(),
-                initial_display_mode: DisplayMode::ShadedWithEdges,
+                initial_display_mode: DisplayMode::Shaded,
                 initial_post_effect_params: None,
                 enable_hdr_post_processing: false,
                 adaptive_quality_mode: AdaptiveQualityMode::On,
