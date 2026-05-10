@@ -30,9 +30,12 @@ fn main() {
     );
 
     // Billboard node: children always face the camera
-    let billboard = graph.add_child(root, NodeData::Billboard(BillboardNode {
-        axis_aligned: false, // spherical billboard
-    }));
+    let billboard = graph.add_child(
+        root,
+        NodeData::Billboard(BillboardNode {
+            axis_aligned: false, // spherical billboard
+        }),
+    );
 
     // Text2 inside billboard stays screen-aligned
     graph.add_child(
@@ -46,9 +49,14 @@ fn main() {
     );
 
     // Reference cube at origin
-    graph.add_child(root, NodeData::Cube(CubeNode {
-        width: 0.5, height: 0.5, depth: 0.5,
-    }));
+    graph.add_child(
+        root,
+        NodeData::Cube(CubeNode {
+            width: 0.5,
+            height: 0.5,
+            depth: 0.5,
+        }),
+    );
 
     let orbit = CameraController::new(Vec3::ZERO, 10.0);
     let mut app = App::new(graph).with_camera_controller(orbit);

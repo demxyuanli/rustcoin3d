@@ -21,11 +21,12 @@ impl App {
         }
         if let (Some(r), _w) = (&mut self.state.renderer, &self.state.window) {
             if r.viewport_layout().viewports.len() > 1 {
-                if let Some(vp) = r
-                    .viewport_layout()
-                    .viewport_at(self.input.cursor_pos.0 as f32, self.input.cursor_pos.1 as f32)
-                {
-                    self.state.viewport_cameras
+                if let Some(vp) = r.viewport_layout().viewport_at(
+                    self.input.cursor_pos.0 as f32,
+                    self.input.cursor_pos.1 as f32,
+                ) {
+                    self.state
+                        .viewport_cameras
                         .set_active(vp.id, r.viewport_layout_mut());
                 }
             }
@@ -37,11 +38,17 @@ impl App {
         }
         if self.input.ctrl_pressed {
             self.editor.box_select_drag = true;
-            self.editor.box_select_anchor = (self.input.cursor_pos.0 as f32, self.input.cursor_pos.1 as f32);
+            self.editor.box_select_anchor = (
+                self.input.cursor_pos.0 as f32,
+                self.input.cursor_pos.1 as f32,
+            );
             return;
         }
         if let Some(ray) = self.build_pick_ray() {
-            gizmo_support::sync_gizmo_from_selection(&mut self.editor.gizmo, &self.state.world.graph);
+            gizmo_support::sync_gizmo_from_selection(
+                &mut self.editor.gizmo,
+                &self.state.world.graph,
+            );
             if self.editor.gizmo.visible {
                 if let Some((h, _)) = self.editor.gizmo.hit_test(&ray) {
                     if let Some(n) = self.editor.gizmo.target_node {
@@ -65,7 +72,10 @@ impl App {
         let can_pick = true;
         if can_pick {
             self.do_pick();
-            gizmo_support::sync_gizmo_from_selection(&mut self.editor.gizmo, &self.state.world.graph);
+            gizmo_support::sync_gizmo_from_selection(
+                &mut self.editor.gizmo,
+                &self.state.world.graph,
+            );
         }
     }
 
@@ -79,7 +89,10 @@ impl App {
                 let _ = self.editor.left_pick_arm_pos.take();
                 if !self.editor.left_drag_suppresses_pick {
                     self.do_pick();
-                    gizmo_support::sync_gizmo_from_selection(&mut self.editor.gizmo, &self.state.world.graph);
+                    gizmo_support::sync_gizmo_from_selection(
+                        &mut self.editor.gizmo,
+                        &self.state.world.graph,
+                    );
                 }
                 self.editor.left_drag_suppresses_pick = false;
             }
@@ -105,13 +118,17 @@ impl App {
                             .iter()
                             .find(|v| v.id == vc.viewport_id)
                         {
-                            let (v, p) = gizmo_support::pick_view_proj(&self.state.world.graph, vc, avp);
+                            let (v, p) =
+                                gizmo_support::pick_view_proj(&self.state.world.graph, vc, avp);
                             for &root in &roots {
                                 super::box_select::select_nodes_in_viewport_box(
                                     &mut self.state.world.graph,
                                     root,
                                     self.editor.box_select_anchor,
-                                    (self.input.cursor_pos.0 as f32, self.input.cursor_pos.1 as f32),
+                                    (
+                                        self.input.cursor_pos.0 as f32,
+                                        self.input.cursor_pos.1 as f32,
+                                    ),
                                     avp,
                                     v,
                                     p,
@@ -126,7 +143,10 @@ impl App {
                             &mut self.state.world.graph,
                             root,
                             self.editor.box_select_anchor,
-                            (self.input.cursor_pos.0 as f32, self.input.cursor_pos.1 as f32),
+                            (
+                                self.input.cursor_pos.0 as f32,
+                                self.input.cursor_pos.1 as f32,
+                            ),
                             s.width as f32,
                             s.height as f32,
                             v,
@@ -134,7 +154,10 @@ impl App {
                         );
                     }
                 }
-                gizmo_support::sync_gizmo_from_selection(&mut self.editor.gizmo, &self.state.world.graph);
+                gizmo_support::sync_gizmo_from_selection(
+                    &mut self.editor.gizmo,
+                    &self.state.world.graph,
+                );
             }
             return;
         }
@@ -244,7 +267,10 @@ impl App {
         }
         if self.state.renderer.is_some() {
             if let (Some(ray), Some(_r)) = (self.build_pick_ray(), self.state.renderer.as_ref()) {
-                gizmo_support::sync_gizmo_from_selection(&mut self.editor.gizmo, &self.state.world.graph);
+                gizmo_support::sync_gizmo_from_selection(
+                    &mut self.editor.gizmo,
+                    &self.state.world.graph,
+                );
                 self.editor.gizmo.hovered = self.editor.gizmo.hit_test(&ray).map(|(h, _)| h);
             }
         }

@@ -28,9 +28,7 @@ use rc3d_scene::SceneGraph;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::{
-    application::ApplicationHandler, event_loop::ActiveEventLoop,
-};
+use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop};
 
 use crate::adaptive_quality::AdaptiveQualityMode;
 use crate::camera_controller::CameraController;
@@ -47,6 +45,12 @@ type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
 const APPROX_VERTEX_BYTES: usize = 48;
 const MAX_SAFE_VERTEX_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SAFE_TRIANGLES: usize = 1_000_000;
+
+fn patch_exceeds_full_restore_limits(patch: &FullResPatch) -> bool {
+    let estimated_vertex_bytes = patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
+    estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES
+        || patch.total_full_tris > MAX_SAFE_TRIANGLES
+}
 
 pub struct App {
     pub state: AppState,
@@ -345,16 +349,13 @@ impl App {
             let t_s = start.elapsed().as_secs_f64();
 
             let budget = gaussian_triangle_budget(t_s, patch.total_full_tris);
-            let estimated_vertex_bytes =
-                patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
-            let skip_full_restore = estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES
-                || patch.total_full_tris > MAX_SAFE_TRIANGLES;
+            let skip_full_restore = patch_exceeds_full_restore_limits(&patch);
 
             if budget >= patch.total_full_tris || t_s >= 2.2 {
                 if skip_full_restore {
                     // Do not restore full-res mesh for very large models, but still
                     // advance to the highest available streamed stage before finishing.
-                    if let Some(last_stage) = patch.stream_stages.len().checked_sub(1) {
+                    if let Some(last_stage) = patch.final_stage_index() {
                         if last_stage > patch.current_stage {
                             patch.apply_stage_to_graph(&mut self.state.world.graph, last_stage);
                             let tris = patch.stage_tri_counts[last_stage];
@@ -366,10 +367,14 @@ impl App {
                             any_change = true;
                         }
                     }
+                    let estimated_vertex_bytes =
+                        patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
                     log::warn!(
-                        "Skip full-resolution restore (estimated_vertex_bytes={} > limit={}), keep max staged LOD",
+                        "Skip full-resolution restore (estimated_vertex_bytes={}, triangles={}, limits: {}MB / {}M tris), keep max staged LOD",
                         estimated_vertex_bytes,
-                        MAX_SAFE_VERTEX_BUFFER_BYTES,
+                        patch.total_full_tris,
+                        MAX_SAFE_VERTEX_BUFFER_BYTES / (1024 * 1024),
+                        MAX_SAFE_TRIANGLES / 1_000_000,
                     );
                     continue;
                 }
@@ -401,7 +406,13 @@ impl App {
             let total_tris = total_indices / 4;
             let estimated_vertex_bytes =
                 patch.full_points.len().saturating_mul(APPROX_VERTEX_BYTES);
-            if estimated_vertex_bytes > MAX_SAFE_VERTEX_BUFFER_BYTES || total_tris > MAX_SAFE_TRIANGLES {
+            if patch_exceeds_full_restore_limits(&patch) {
+                if let Some(last_stage) = patch.final_stage_index() {
+                    if last_stage > patch.current_stage {
+                        patch.apply_stage_to_graph(&mut self.state.world.graph, last_stage);
+                        any_change = true;
+                    }
+                }
                 log::warn!(
                     "Skip full-resolution restore (points={}, ~{}K tris, vertex_bytes={}, limits: {}MB / {}M tris)",
                     total_points,
@@ -514,18 +525,14 @@ impl App {
         }
     }
 
-    pub(super) fn build_pointer_handle_event_context(
-        &self,
-        event: Event,
-    ) -> Option<EventContext> {
+    pub(super) fn build_pointer_handle_event_context(&self, event: Event) -> Option<EventContext> {
         let w = self.state.window.as_ref()?;
         let s = w.inner_size();
         let cx = self.input.cursor_pos.0 as f32;
         let cy = self.input.cursor_pos.1 as f32;
         let (local_event, view, proj, pick_vp) = match &event {
             Event::MouseMove { dx, dy, .. } => {
-                let (lx, ly, vw, vh, v, p) =
-                    self.pointer_pick_frame(cx, cy, s.width, s.height)?;
+                let (lx, ly, vw, vh, v, p) = self.pointer_pick_frame(cx, cy, s.width, s.height)?;
                 (
                     Event::MouseMove {
                         x: lx,
@@ -539,8 +546,7 @@ impl App {
                 )
             }
             Event::ButtonPress { button, .. } => {
-                let (lx, ly, vw, vh, v, p) =
-                    self.pointer_pick_frame(cx, cy, s.width, s.height)?;
+                let (lx, ly, vw, vh, v, p) = self.pointer_pick_frame(cx, cy, s.width, s.height)?;
                 (
                     Event::ButtonPress {
                         button: *button,
@@ -553,8 +559,7 @@ impl App {
                 )
             }
             Event::ButtonRelease { button, .. } => {
-                let (lx, ly, vw, vh, v, p) =
-                    self.pointer_pick_frame(cx, cy, s.width, s.height)?;
+                let (lx, ly, vw, vh, v, p) = self.pointer_pick_frame(cx, cy, s.width, s.height)?;
                 (
                     Event::ButtonRelease {
                         button: *button,
@@ -579,7 +584,8 @@ impl App {
         };
         let mut action = HandleEventAction::new(ctx);
         let root = self
-            .state.world
+            .state
+            .world
             .graph
             .roots()
             .first()
@@ -598,15 +604,15 @@ impl App {
         let s = w.inner_size();
         let cx = self.input.cursor_pos.0 as f32;
         let cy = self.input.cursor_pos.1 as f32;
-        let Some((_, _, _, _, view, proj)) =
-            self.pointer_pick_frame(cx, cy, s.width, s.height)
+        let Some((_, _, _, _, view, proj)) = self.pointer_pick_frame(cx, cy, s.width, s.height)
         else {
             return;
         };
         let ctx = EventContext::new(Event::Scroll { dx, dy }, view, proj);
         let mut action = HandleEventAction::new(ctx);
         let root = self
-            .state.world
+            .state
+            .world
             .graph
             .roots()
             .first()
@@ -631,9 +637,13 @@ impl App {
         false
     }
 
-    fn viewport_camera_by_id_mut(&mut self, id: rc3d_render::viewport::ViewportId) -> Option<&mut ViewportCamera> {
+    fn viewport_camera_by_id_mut(
+        &mut self,
+        id: rc3d_render::viewport::ViewportId,
+    ) -> Option<&mut ViewportCamera> {
         let i = self
-            .state.viewport_cameras
+            .state
+            .viewport_cameras
             .cameras
             .iter()
             .position(|vc| vc.viewport_id == id)?;
@@ -943,7 +953,8 @@ impl App {
         let Some(renderer) = &self.state.renderer else {
             return;
         };
-        self.state.viewport_cameras
+        self.state
+            .viewport_cameras
             .remap_viewport_ids_from_layout(renderer.viewport_layout());
         self.editor.orbit_drag_viewport_id = None;
         self.editor.left_orbit_drag_viewport_id = None;

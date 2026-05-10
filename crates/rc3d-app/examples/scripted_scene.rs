@@ -1,4 +1,4 @@
-use rc3d_app::{App, camera_controller_from_scene_bounds};
+use rc3d_app::{camera_controller_from_scene_bounds, App};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 

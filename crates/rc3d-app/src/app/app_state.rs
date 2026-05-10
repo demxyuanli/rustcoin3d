@@ -3,10 +3,10 @@ use std::time::Instant;
 use rc3d_core::DisplayMode;
 use rc3d_render::{FrameStats, Renderer};
 
+use super::fps_tracker::FpsTracker;
 use crate::adaptive_quality::AdaptiveQualityMode;
 use crate::camera_controller::CameraController;
 use crate::editor_ui::{EditorCommand, EditorUi};
-use super::fps_tracker::FpsTracker;
 use crate::viewport_camera::ViewportCameraSet;
 use crate::world::World;
 

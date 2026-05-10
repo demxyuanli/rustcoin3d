@@ -1,7 +1,7 @@
 use rc3d_core::math::Vec3;
-use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_entry::dirty_flags::GEOMETRY;
 use rc3d_render::dirty_flags::mark_node_dirty;
+use rc3d_scene::node_entry::dirty_flags::GEOMETRY;
+use rc3d_scene::{NodeData, SceneGraph};
 
 type MeshLodStage = (Vec<Vec3>, Option<Vec<[f32; 2]>>, Vec<i32>);
 

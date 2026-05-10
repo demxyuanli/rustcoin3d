@@ -128,10 +128,7 @@ fn main() {
         graph.add_child(sep, NodeData::Cube(CubeNode::default()));
     }
 
-    graph.add_child(
-        root,
-        NodeData::EventCallback(EventCallbackNode::default()),
-    );
+    graph.add_child(root, NodeData::EventCallback(EventCallbackNode::default()));
 
     let mut app = App::new(graph).with_camera_controller(ctrl);
     winit::event_loop::EventLoop::new()
@@ -147,8 +144,12 @@ fn print_scene_graph_help() {
     println!(
         "  Middle mouse drag: orbit | Right drag: pan | Scroll wheel: zoom — Left drag also orbits here"
     );
-    println!("  W / S / E / H: display mode shortcuts | Escape: clear selection | Close window to quit");
+    println!(
+        "  W / S / E / H: display mode shortcuts | Escape: clear selection | Close window to quit"
+    );
     println!("Feature switches:");
-    println!("  Trace: RUST_LOG=rc3d_app=trace — wheel logs HandleEventAction EventCallback discovery.");
+    println!(
+        "  Trace: RUST_LOG=rc3d_app=trace — wheel logs HandleEventAction EventCallback discovery."
+    );
     println!("  Multiple node hierarchy with per-node material and transform");
 }

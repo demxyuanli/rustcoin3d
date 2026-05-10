@@ -46,7 +46,8 @@ fn generate_cube_fbx() -> Vec<u8> {
     // CreationTime
     {
         let mut aw = w.new_node("CreationTime").expect("node");
-        aw.append_string_direct("2026-01-01 00:00:00:000").expect("attr");
+        aw.append_string_direct("2026-01-01 00:00:00:000")
+            .expect("attr");
         drop(aw);
         w.close_node().expect("close");
     }
@@ -54,7 +55,8 @@ fn generate_cube_fbx() -> Vec<u8> {
     // Creator
     {
         let mut aw = w.new_node("Creator").expect("node");
-        aw.append_string_direct("rc3d FBX test generator").expect("attr");
+        aw.append_string_direct("rc3d FBX test generator")
+            .expect("attr");
         drop(aw);
         w.close_node().expect("close");
     }
@@ -94,18 +96,19 @@ fn generate_cube_fbx() -> Vec<u8> {
             // Cube vertices (8 vertices = 24 floats)
             {
                 let verts: &[f32] = &[
-                    -0.5, -0.5, 0.5,  // 0: front bottom left
-                     0.5, -0.5, 0.5,  // 1: front bottom right
-                     0.5,  0.5, 0.5,  // 2: front top right
-                    -0.5,  0.5, 0.5,  // 3: front top left
+                    -0.5, -0.5, 0.5, // 0: front bottom left
+                    0.5, -0.5, 0.5, // 1: front bottom right
+                    0.5, 0.5, 0.5, // 2: front top right
+                    -0.5, 0.5, 0.5, // 3: front top left
                     -0.5, -0.5, -0.5, // 4: back bottom left
-                     0.5, -0.5, -0.5, // 5: back bottom right
-                     0.5,  0.5, -0.5, // 6: back top right
-                    -0.5,  0.5, -0.5, // 7: back top left
+                    0.5, -0.5, -0.5, // 5: back bottom right
+                    0.5, 0.5, -0.5, // 6: back top right
+                    -0.5, 0.5, -0.5, // 7: back top left
                 ];
                 let mut aw2 = w.new_node("Vertices").expect("node");
                 aw2.append_i32(verts.len() as i32).expect("len");
-                aw2.append_arr_f32_from_iter(None, verts.iter().cloned()).expect("data");
+                aw2.append_arr_f32_from_iter(None, verts.iter().cloned())
+                    .expect("data");
                 drop(aw2);
                 w.close_node().expect("close");
             }
@@ -115,21 +118,17 @@ fn generate_cube_fbx() -> Vec<u8> {
                 // Using negative index to mark polygon end
                 let indices: &[i32] = &[
                     // Front face (CCW from outside)
-                    0, 1, 2, -4,
-                    // Back face
-                    5, 4, 7, -7,
-                    // Left face
-                    4, 0, 3, -8,
-                    // Right face
-                    1, 5, 6, -3,
-                    // Top face
-                    3, 2, 6, -8,
-                    // Bottom face
+                    0, 1, 2, -4, // Back face
+                    5, 4, 7, -7, // Left face
+                    4, 0, 3, -8, // Right face
+                    1, 5, 6, -3, // Top face
+                    3, 2, 6, -8, // Bottom face
                     4, 5, 1, -1,
                 ];
                 let mut aw2 = w.new_node("PolygonVertexIndex").expect("node");
                 aw2.append_i32(indices.len() as i32).expect("len");
-                aw2.append_arr_i32_from_iter(None, indices.iter().cloned()).expect("data");
+                aw2.append_arr_i32_from_iter(None, indices.iter().cloned())
+                    .expect("data");
                 drop(aw2);
                 w.close_node().expect("close");
             }
@@ -138,39 +137,22 @@ fn generate_cube_fbx() -> Vec<u8> {
             {
                 let normals: &[f32] = &[
                     // Front (4 vertices)
-                     0.0,  0.0,  1.0,
-                     0.0,  0.0,  1.0,
-                     0.0,  0.0,  1.0,
-                     0.0,  0.0,  1.0,
+                    0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
                     // Back (4 vertices)
-                     0.0,  0.0, -1.0,
-                     0.0,  0.0, -1.0,
-                     0.0,  0.0, -1.0,
-                     0.0,  0.0, -1.0,
+                    0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0,
                     // Left (4 vertices)
-                    -1.0,  0.0,  0.0,
-                    -1.0,  0.0,  0.0,
-                    -1.0,  0.0,  0.0,
-                    -1.0,  0.0,  0.0,
+                    -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0,
                     // Right (4 vertices)
-                     1.0,  0.0,  0.0,
-                     1.0,  0.0,  0.0,
-                     1.0,  0.0,  0.0,
-                     1.0,  0.0,  0.0,
+                    1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                     // Top (4 vertices)
-                     0.0,  1.0,  0.0,
-                     0.0,  1.0,  0.0,
-                     0.0,  1.0,  0.0,
-                     0.0,  1.0,  0.0,
+                    0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0,
                     // Bottom (4 vertices)
-                     0.0, -1.0,  0.0,
-                     0.0, -1.0,  0.0,
-                     0.0, -1.0,  0.0,
-                     0.0, -1.0,  0.0,
+                    0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
                 ];
                 let mut aw2 = w.new_node("Normals").expect("node");
                 aw2.append_i32(normals.len() as i32).expect("len");
-                aw2.append_arr_f32_from_iter(None, normals.iter().cloned()).expect("data");
+                aw2.append_arr_f32_from_iter(None, normals.iter().cloned())
+                    .expect("data");
                 drop(aw2);
                 w.close_node().expect("close");
             }

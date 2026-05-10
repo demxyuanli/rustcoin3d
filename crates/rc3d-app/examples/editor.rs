@@ -158,10 +158,7 @@ fn build_demo_scene() -> SceneGraph {
         }
     }
 
-    graph.add_child(
-        root,
-        NodeData::EventCallback(EventCallbackNode::default()),
-    );
+    graph.add_child(root, NodeData::EventCallback(EventCallbackNode::default()));
 
     graph
 }

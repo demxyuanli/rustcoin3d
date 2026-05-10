@@ -26,10 +26,8 @@ struct ProfileState {
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
 
     println!("Profile viewer");
     println!("Usage: cargo run -p rc3d-app --example profile_viewer");
@@ -52,8 +50,12 @@ fn main() {
             let s = state_clone.lock().unwrap();
             let mut lines = vec![
                 "=== Profile Viewer ===".to_string(),
-                format!("Objects: {}  |  Frame: {:.2}ms ({:.0}fps)",
-                    s.object_count, s.frame_time_ms, 1000.0 / s.frame_time_ms.max(0.01)),
+                format!(
+                    "Objects: {}  |  Frame: {:.2}ms ({:.0}fps)",
+                    s.object_count,
+                    s.frame_time_ms,
+                    1000.0 / s.frame_time_ms.max(0.01)
+                ),
                 "".to_string(),
                 "--- GPU Passes ---".to_string(),
             ];

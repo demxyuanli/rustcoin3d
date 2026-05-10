@@ -34,10 +34,8 @@ struct VariantState {
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
 
     println!("PBR Shader Variant Viewer");
     println!("Usage: cargo run -p rc3d-app --example pbr_variant_viewer");
@@ -61,8 +59,10 @@ fn main() {
             let s = state_clone.lock().unwrap();
             let lines = vec![
                 "=== PBR Shader Variant Viewer ===".to_string(),
-                format!("Frame: {:.2}ms  |  Active variants: {}",
-                    s.frame_time_ms, s.active_variants),
+                format!(
+                    "Frame: {:.2}ms  |  Active variants: {}",
+                    s.frame_time_ms, s.active_variants
+                ),
                 "".to_string(),
                 "Material types (left → right):".to_string(),
                 "  1. Pure color        — no textures".to_string(),

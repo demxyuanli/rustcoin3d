@@ -1,11 +1,11 @@
+use crate::editor_ui::{EditorCommand, EditorDisplayMode, NodeDataType};
 use rc3d_actions::{
-    AddChildCommand, CameraFitConfig, CreateNodeCommand, DeleteNodeCommand,
-    SetFieldCommand, SetRotationCommand, SetScaleCommand, SetTranslationCommand,
+    AddChildCommand, CameraFitConfig, CreateNodeCommand, DeleteNodeCommand, SetFieldCommand,
+    SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };
 use rc3d_core::math::{Mat4, Quat, Vec2, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::NodeData;
-use crate::editor_ui::{EditorCommand, EditorDisplayMode, NodeDataType};
 
 use super::gizmo_support;
 use super::App;
@@ -35,7 +35,7 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             EditorCommand::CycleViewportLayout => {
                 if let Some(renderer) = &mut app.state.renderer {
                     let (w, h) = renderer.surface_size();
-                    
+
                     renderer.viewport_layout_mut().cycle_layout(w, h);
                 }
                 app.sync_viewport_camera_ids();
@@ -43,7 +43,8 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             EditorCommand::CycleActiveViewport => {
                 if let Some(renderer) = &mut app.state.renderer {
                     renderer.viewport_layout_mut().cycle_active();
-                    app.state.viewport_cameras.active_viewport = renderer.viewport_layout().active_id;
+                    app.state.viewport_cameras.active_viewport =
+                        renderer.viewport_layout().active_id;
                 }
             }
             EditorCommand::SetDisplayMode(mode) => {
@@ -62,7 +63,10 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(id) = id {
                     app.state.world.graph.select(id);
                 }
-                gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
+                gizmo_support::sync_gizmo_from_selection(
+                    &mut app.editor.gizmo,
+                    &app.state.world.graph,
+                );
             }
             EditorCommand::SetNodeVisibility(id, visible) => {
                 if let Some(entry) = app.state.world.graph.get_mut(id) {
@@ -134,9 +138,8 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             EditorCommand::PreviewTransformRotationQuat(node, quat) => {
                 if let Some(entry) = app.state.world.graph.get_mut(node) {
                     if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
-                        tf.rotation = Mat4::from_quat(Quat::from_xyzw(
-                            quat[0], quat[1], quat[2], quat[3],
-                        ));
+                        tf.rotation =
+                            Mat4::from_quat(Quat::from_xyzw(quat[0], quat[1], quat[2], quat[3]));
                     }
                 }
             }
@@ -173,7 +176,10 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                         ctrl.target = center;
                         ctrl.distance = orbit_dist;
                     }
-                    gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
+                    gizmo_support::sync_gizmo_from_selection(
+                        &mut app.editor.gizmo,
+                        &app.state.world.graph,
+                    );
                     log::info!("Imported scene: {}", path.display());
                 }
                 Err(err) => {
@@ -207,7 +213,10 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             EditorCommand::SetGizmoMode(mode) => {
                 app.editor.gizmo.mode = mode;
             }
-            EditorCommand::SetRenderFeature { feature_name, enabled } => {
+            EditorCommand::SetRenderFeature {
+                feature_name,
+                enabled,
+            } => {
                 if let Some(r) = &mut app.state.renderer {
                     match feature_name {
                         "taa" => r.enable_taa = enabled,
@@ -281,52 +290,108 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetBaseColor(node, color) => {
                 let new_value = Vec3::new(color[0], color[1], color[2]);
-                let old_value = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::Material(m) = &e.data { Some(m.base_color) } else { None });
+                let old_value = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::Material(m) = &e.data {
+                        Some(m.base_color)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old_value {
                     if (new_value - old).length_squared() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_value, "SetBaseColor",
-                                |entry, v| if let NodeData::Material(m) = &mut entry.data { m.base_color = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_value,
+                                "SetBaseColor",
+                                |entry, v| {
+                                    if let NodeData::Material(m) = &mut entry.data {
+                                        m.base_color = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
                 }
             }
             EditorCommand::SetMetallic(node, v) => {
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::Material(m) = &e.data { Some(m.metallic) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::Material(m) = &e.data {
+                        Some(m.metallic)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if (v - old).abs() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, v, "SetMetallic",
-                                |entry, v| if let NodeData::Material(m) = &mut entry.data { m.metallic = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                v,
+                                "SetMetallic",
+                                |entry, v| {
+                                    if let NodeData::Material(m) = &mut entry.data {
+                                        m.metallic = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
                 }
             }
             EditorCommand::SetRoughness(node, v) => {
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::Material(m) = &e.data { Some(m.roughness) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::Material(m) = &e.data {
+                        Some(m.roughness)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if (v - old).abs() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, v, "SetRoughness",
-                                |entry, v| if let NodeData::Material(m) = &mut entry.data { m.roughness = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                v,
+                                "SetRoughness",
+                                |entry, v| {
+                                    if let NodeData::Material(m) = &mut entry.data {
+                                        m.roughness = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
                 }
             }
             EditorCommand::SetOpacity(node, v) => {
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::Material(m) = &e.data { Some(m.opacity) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::Material(m) = &e.data {
+                        Some(m.opacity)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if (v - old).abs() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, v, "SetOpacity",
-                                |entry, v| if let NodeData::Material(m) = &mut entry.data { m.opacity = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                v,
+                                "SetOpacity",
+                                |entry, v| {
+                                    if let NodeData::Material(m) = &mut entry.data {
+                                        m.opacity = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -343,13 +408,18 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old_value {
                     if (new_value - old).length_squared() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_value, "SetLightColor",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_value,
+                                "SetLightColor",
                                 |entry, v| match &mut entry.data {
                                     NodeData::DirectionalLight(l) => l.color = v,
                                     NodeData::PointLight(l) => l.color = v,
                                     NodeData::SpotLight(l) => l.color = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -365,13 +435,18 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old {
                     if (v - old).abs() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, v, "SetLightIntensity",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                v,
+                                "SetLightIntensity",
                                 |entry, v| match &mut entry.data {
                                     NodeData::DirectionalLight(l) => l.intensity = v,
                                     NodeData::PointLight(l) => l.intensity = v,
                                     NodeData::SpotLight(l) => l.intensity = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -387,12 +462,17 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old_value {
                     if (new_value - old).length_squared() > 1e-10 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_value, "SetLightDirection",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_value,
+                                "SetLightDirection",
                                 |entry, v| match &mut entry.data {
                                     NodeData::DirectionalLight(l) => l.direction = v,
                                     NodeData::SpotLight(l) => l.direction = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -400,13 +480,27 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetCameraFov(node, v) => {
                 let new_fov = v.clamp(0.01, std::f32::consts::PI - 0.01);
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::PerspectiveCamera(c) = &e.data { Some(c.fov) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::PerspectiveCamera(c) = &e.data {
+                        Some(c.fov)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if (new_fov - old).abs() > 1e-6 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_fov, "SetCameraFov",
-                                |entry, v| if let NodeData::PerspectiveCamera(c) = &mut entry.data { c.fov = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_fov,
+                                "SetCameraFov",
+                                |entry, v| {
+                                    if let NodeData::PerspectiveCamera(c) = &mut entry.data {
+                                        c.fov = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -422,12 +516,17 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old {
                     if (new_val - old).abs() > 1e-6 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_val, "SetCameraNear",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_val,
+                                "SetCameraNear",
                                 |entry, v| match &mut entry.data {
                                     NodeData::PerspectiveCamera(c) => c.near = v,
                                     NodeData::OrthographicCamera(c) => c.near = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -443,12 +542,17 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old {
                     if (new_val - old).abs() > 1e-6 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_val, "SetCameraFar",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_val,
+                                "SetCameraFar",
                                 |entry, v| match &mut entry.data {
                                     NodeData::PerspectiveCamera(c) => c.far = v,
                                     NodeData::OrthographicCamera(c) => c.far = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -463,12 +567,17 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                 if let Some(old) = old {
                     if enabled != old {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, enabled, "SetCameraReverseDepth",
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                enabled,
+                                "SetCameraReverseDepth",
                                 |entry, v| match &mut entry.data {
                                     NodeData::PerspectiveCamera(c) => c.reverse_depth = v,
                                     NodeData::OrthographicCamera(c) => c.reverse_depth = v,
                                     _ => {}
-                                })),
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -476,41 +585,85 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetOrthoHeight(node, v) => {
                 let new_height = v.max(0.001);
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::OrthographicCamera(c) = &e.data { Some(c.height) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::OrthographicCamera(c) = &e.data {
+                        Some(c.height)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if (new_height - old).abs() > 1e-6 {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, new_height, "SetOrthoHeight",
-                                |entry, v| if let NodeData::OrthographicCamera(c) = &mut entry.data { c.height = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                new_height,
+                                "SetOrthoHeight",
+                                |entry, v| {
+                                    if let NodeData::OrthographicCamera(c) = &mut entry.data {
+                                        c.height = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
                 }
             }
             EditorCommand::SetSectionPlaneEnabled(node, enabled) => {
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::SectionPlane(sp) = &e.data { Some(sp.enabled) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::SectionPlane(sp) = &e.data {
+                        Some(sp.enabled)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
                     if enabled != old {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, enabled, "SetSectionPlaneEnabled",
-                                |entry, v| if let NodeData::SectionPlane(sp) = &mut entry.data { sp.enabled = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                enabled,
+                                "SetSectionPlaneEnabled",
+                                |entry, v| {
+                                    if let NodeData::SectionPlane(sp) = &mut entry.data {
+                                        sp.enabled = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
                 }
             }
             EditorCommand::SetSectionPlaneEquation(node, eq) => {
-                let old = app.state.world.graph.get(node)
-                    .and_then(|e| if let NodeData::SectionPlane(sp) = &e.data { Some(sp.plane) } else { None });
+                let old = app.state.world.graph.get(node).and_then(|e| {
+                    if let NodeData::SectionPlane(sp) = &e.data {
+                        Some(sp.plane)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old) = old {
-                    if (eq[0] - old[0]).abs() > 1e-10 || (eq[1] - old[1]).abs() > 1e-10
-                        || (eq[2] - old[2]).abs() > 1e-10 || (eq[3] - old[3]).abs() > 1e-10
+                    if (eq[0] - old[0]).abs() > 1e-10
+                        || (eq[1] - old[1]).abs() > 1e-10
+                        || (eq[2] - old[2]).abs() > 1e-10
+                        || (eq[3] - old[3]).abs() > 1e-10
                     {
                         app.editor.command_history.execute(
-                            Box::new(SetFieldCommand::new(node, old, eq, "SetSectionPlaneEquation",
-                                |entry, v| if let NodeData::SectionPlane(sp) = &mut entry.data { sp.plane = v })),
+                            Box::new(SetFieldCommand::new(
+                                node,
+                                old,
+                                eq,
+                                "SetSectionPlaneEquation",
+                                |entry, v| {
+                                    if let NodeData::SectionPlane(sp) = &mut entry.data {
+                                        sp.plane = v
+                                    }
+                                },
+                            )),
                             &mut app.state.world.graph,
                         );
                     }
@@ -532,12 +685,18 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::DeleteNode(node) => {
                 let cmd = DeleteNodeCommand::new(node, &app.state.world.graph);
-                app.editor.command_history.execute(Box::new(cmd), &mut app.state.world.graph);
+                app.editor
+                    .command_history
+                    .execute(Box::new(cmd), &mut app.state.world.graph);
             }
             EditorCommand::DuplicateNode(node) => {
                 let data = app.state.world.graph.get(node).map(|e| e.data.clone());
                 if let Some(data) = data {
-                    let parent = app.state.world.graph.get(node)
+                    let parent = app
+                        .state
+                        .world
+                        .graph
+                        .get(node)
                         .and_then(|e| e.parent)
                         .or_else(|| app.state.world.graph.roots().first().copied());
                     let clone = match parent {
@@ -564,19 +723,34 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             }
             EditorCommand::SetMarkupTool(tool) => {
                 app.editor.markup_action.set_tool(tool);
-                let root = app.state.world.graph.roots().first().copied().unwrap_or_default();
-                app.editor.markup_action.ensure_target_node(&mut app.state.world.graph, root);
+                let root = app
+                    .state
+                    .world
+                    .graph
+                    .roots()
+                    .first()
+                    .copied()
+                    .unwrap_or_default();
+                app.editor
+                    .markup_action
+                    .ensure_target_node(&mut app.state.world.graph, root);
             }
             EditorCommand::MarkupMouseDown { screen_pos } => {
                 let pos = Vec2::new(screen_pos[0], screen_pos[1]);
-                app.editor.markup_action.on_mouse_down(pos, &mut app.state.world.graph);
+                app.editor
+                    .markup_action
+                    .on_mouse_down(pos, &mut app.state.world.graph);
             }
             EditorCommand::MarkupMouseMove { screen_pos } => {
-                app.editor.markup_action.on_mouse_move(Vec2::new(screen_pos[0], screen_pos[1]));
+                app.editor
+                    .markup_action
+                    .on_mouse_move(Vec2::new(screen_pos[0], screen_pos[1]));
             }
             EditorCommand::MarkupMouseUp { screen_pos } => {
-                if let Some(element) =
-                    app.editor.markup_action.on_mouse_up(Vec2::new(screen_pos[0], screen_pos[1]))
+                if let Some(element) = app
+                    .editor
+                    .markup_action
+                    .on_mouse_up(Vec2::new(screen_pos[0], screen_pos[1]))
                 {
                     if let Some(target) = app.editor.markup_action.target_node {
                         if let Some(entry) = app.state.world.graph.get_mut(target) {

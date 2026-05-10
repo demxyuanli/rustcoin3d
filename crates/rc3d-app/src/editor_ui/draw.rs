@@ -66,7 +66,9 @@ pub(super) fn build_ui(
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::Shaded));
                 }
                 if ui.button("Shaded + edges  (E)").clicked() {
-                    push(EditorCommand::SetDisplayMode(EditorDisplayMode::ShadedWithEdges));
+                    push(EditorCommand::SetDisplayMode(
+                        EditorDisplayMode::ShadedWithEdges,
+                    ));
                 }
                 if ui.button("Hidden line  (H)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::HiddenLine));
@@ -191,8 +193,14 @@ pub(super) fn build_ui(
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("FPS: {:.1}  {:.1} ms", ui_ctx.smoothed_fps, ui_ctx.frame_time_ms));
-                ui.label(format!("Mode: {}  IBL: {}", ui_ctx.display_mode_label, ui_ctx.ibl_label));
+                ui.label(format!(
+                    "FPS: {:.1}  {:.1} ms",
+                    ui_ctx.smoothed_fps, ui_ctx.frame_time_ms
+                ));
+                ui.label(format!(
+                    "Mode: {}  IBL: {}",
+                    ui_ctx.display_mode_label, ui_ctx.ibl_label
+                ));
             });
         });
     });
@@ -302,9 +310,10 @@ pub(super) fn build_ui(
             });
 
         // Close on click outside
-        if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)
-            || i.pointer.button_clicked(egui::PointerButton::Secondary))
-        {
+        if ctx.input(|i| {
+            i.pointer.button_clicked(egui::PointerButton::Primary)
+                || i.pointer.button_clicked(egui::PointerButton::Secondary)
+        }) {
             if context_menu_pos.is_some() {
                 *context_menu_pos = None;
             }
@@ -356,11 +365,26 @@ fn create_node_menu<F: FnMut(EditorCommand)>(
     add(ui, "Cylinder", NodeDataType::Cylinder, push);
     add(ui, "Cone", NodeDataType::Cone, push);
     add(ui, "Separator", NodeDataType::Separator, push);
-    add(ui, "Directional light", NodeDataType::DirectionalLight, push);
+    add(
+        ui,
+        "Directional light",
+        NodeDataType::DirectionalLight,
+        push,
+    );
     add(ui, "Point light", NodeDataType::PointLight, push);
     add(ui, "Spot light", NodeDataType::SpotLight, push);
-    add(ui, "Perspective camera", NodeDataType::PerspectiveCamera, push);
-    add(ui, "Orthographic camera", NodeDataType::OrthographicCamera, push);
+    add(
+        ui,
+        "Perspective camera",
+        NodeDataType::PerspectiveCamera,
+        push,
+    );
+    add(
+        ui,
+        "Orthographic camera",
+        NodeDataType::OrthographicCamera,
+        push,
+    );
     add(ui, "Text2", NodeDataType::Text2, push);
     add(ui, "Text3", NodeDataType::Text3, push);
 }
@@ -407,7 +431,18 @@ fn hierarchy_node(
 fn node_type_tag(data: &NodeData) -> &'static str {
     match data {
         NodeData::Separator(_) => "Separator",
-        NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) => "Group",
+        NodeData::Group(_)
+        | NodeData::Environment(_)
+        | NodeData::ShapeHints(_)
+        | NodeData::Annotation(_)
+        | NodeData::ResetTransform(_)
+        | NodeData::Texture2Transform(_)
+        | NodeData::MaterialBinding(_)
+        | NodeData::IndexedLineSet(_)
+        | NodeData::File(_)
+        | NodeData::Decal(_)
+        | NodeData::ExplodedView(_)
+        | NodeData::ReflectionPlane(_) => "Group",
         NodeData::Billboard(_) => "Billboard",
         NodeData::Transform(_) => "Transform",
         NodeData::Material(_) => "Material",
@@ -466,15 +501,24 @@ fn inspector(
                 push(EditorCommand::SetBaseColor(id, c));
             }
             let mut met = m.metallic;
-            if ui.add(egui::Slider::new(&mut met, 0.0..=1.0).text("metallic")).changed() {
+            if ui
+                .add(egui::Slider::new(&mut met, 0.0..=1.0).text("metallic"))
+                .changed()
+            {
                 push(EditorCommand::SetMetallic(id, met));
             }
             let mut rough = m.roughness;
-            if ui.add(egui::Slider::new(&mut rough, 0.0..=1.0).text("roughness")).changed() {
+            if ui
+                .add(egui::Slider::new(&mut rough, 0.0..=1.0).text("roughness"))
+                .changed()
+            {
                 push(EditorCommand::SetRoughness(id, rough));
             }
             let mut op = m.opacity;
-            if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).text("opacity")).changed() {
+            if ui
+                .add(egui::Slider::new(&mut op, 0.0..=1.0).text("opacity"))
+                .changed()
+            {
                 push(EditorCommand::SetOpacity(id, op));
             }
         }
@@ -484,16 +528,25 @@ fn inspector(
                 push(EditorCommand::SetLightColor(id, col));
             }
             let mut inten = l.intensity;
-            if ui.add(egui::DragValue::new(&mut inten).speed(0.05)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut inten).speed(0.05))
+                .changed()
+            {
                 push(EditorCommand::SetLightIntensity(id, inten));
             }
             let mut dir = l.direction.to_array();
             let mut dir_changed = false;
             ui.horizontal(|ui| {
                 ui.label("dir");
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[0]).speed(0.02)).changed();
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[1]).speed(0.02)).changed();
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[2]).speed(0.02)).changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[0]).speed(0.02))
+                    .changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[1]).speed(0.02))
+                    .changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[2]).speed(0.02))
+                    .changed();
             });
             if dir_changed {
                 push(EditorCommand::SetLightDirection(id, dir));
@@ -505,7 +558,10 @@ fn inspector(
                 push(EditorCommand::SetLightColor(id, col));
             }
             let mut inten = l.intensity;
-            if ui.add(egui::DragValue::new(&mut inten).speed(0.05)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut inten).speed(0.05))
+                .changed()
+            {
                 push(EditorCommand::SetLightIntensity(id, inten));
             }
         }
@@ -515,16 +571,25 @@ fn inspector(
                 push(EditorCommand::SetLightColor(id, col));
             }
             let mut inten = l.intensity;
-            if ui.add(egui::DragValue::new(&mut inten).speed(0.05)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut inten).speed(0.05))
+                .changed()
+            {
                 push(EditorCommand::SetLightIntensity(id, inten));
             }
             let mut dir = l.direction.to_array();
             let mut dir_changed = false;
             ui.horizontal(|ui| {
                 ui.label("dir");
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[0]).speed(0.02)).changed();
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[1]).speed(0.02)).changed();
-                dir_changed |= ui.add(egui::DragValue::new(&mut dir[2]).speed(0.02)).changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[0]).speed(0.02))
+                    .changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[1]).speed(0.02))
+                    .changed();
+                dir_changed |= ui
+                    .add(egui::DragValue::new(&mut dir[2]).speed(0.02))
+                    .changed();
             });
             if dir_changed {
                 push(EditorCommand::SetLightDirection(id, dir));
@@ -532,7 +597,10 @@ fn inspector(
         }
         NodeData::PerspectiveCamera(c) => {
             let mut fov = c.fov;
-            if ui.add(egui::Slider::new(&mut fov, 0.1..=3.0).text("fov")).changed() {
+            if ui
+                .add(egui::Slider::new(&mut fov, 0.1..=3.0).text("fov"))
+                .changed()
+            {
                 push(EditorCommand::SetCameraFov(id, fov));
             }
             let mut near = c.near;
@@ -631,9 +699,24 @@ fn inspector(
     }
 
     let mut vis = match data {
-        NodeData::Transform(_) | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) | NodeData::Separator(_) => {
-            !hidden.contains(&id)
-        }
+        NodeData::Transform(_)
+        | NodeData::Group(_)
+        | NodeData::Environment(_)
+        | NodeData::ShapeHints(_)
+        | NodeData::Annotation(_)
+        | NodeData::ResetTransform(_)
+        | NodeData::Texture2Transform(_)
+        | NodeData::MaterialBinding(_)
+        | NodeData::IndexedLineSet(_)
+        | NodeData::File(_)
+        | NodeData::Decal(_)
+        | NodeData::ExplodedView(_)
+        | NodeData::ReflectionPlane(_)
+        | NodeData::StereoCamera(_)
+        | NodeData::RayTracing(_)
+        | NodeData::Volume(_)
+        | NodeData::PointCloud(_)
+        | NodeData::Separator(_) => !hidden.contains(&id),
         NodeData::Switch(sw) => sw.which_child >= 0,
         _ => true,
     };
@@ -643,7 +726,11 @@ fn inspector(
 }
 
 /// Render feature checkboxes (used by both the View menu and the Render panel).
-fn view_render_features_menu(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnMut(EditorCommand)) {
+fn view_render_features_menu(
+    ui: &mut egui::Ui,
+    ui_ctx: &EditorUiContext,
+    push: &mut impl FnMut(EditorCommand),
+) {
     let mut feat = |label: &str, field: bool, name: &'static str| {
         let mut v = field;
         if ui.checkbox(&mut v, label).changed() {

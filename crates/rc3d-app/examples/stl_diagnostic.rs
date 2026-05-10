@@ -25,15 +25,15 @@ use rc3d_core::DisplayMode;
 use rc3d_scene::node_data::*;
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args: Vec<String> = env::args().collect();
     let Some(path_arg) = args.iter().skip(1).find(|a| !a.starts_with("--")) else {
         eprintln!("Usage: stl_diagnostic <file.stl> [--stage=1..5]");
         return;
     };
-    let initial_stage: u32 = args.iter()
+    let initial_stage: u32 = args
+        .iter()
         .find_map(|a| a.strip_prefix("--stage="))
         .and_then(|v| v.parse().ok())
         .unwrap_or(5)
@@ -45,7 +45,12 @@ fn main() {
         Ok(g) => {
             let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let node_count = count_nodes(&g);
-            println!("[DIAG] Loaded {} in {:.0}ms ({} scene nodes)", path.display(), load_ms, node_count);
+            println!(
+                "[DIAG] Loaded {} in {:.0}ms ({} scene nodes)",
+                path.display(),
+                load_ms,
+                node_count
+            );
             g
         }
         Err(e) => {
@@ -120,43 +125,75 @@ fn setup_scene(mut graph: rc3d_scene::SceneGraph) -> rc3d_scene::SceneGraph {
     let target_root = find_geometry_root(&graph);
 
     let has_camera = has_node_type_recursive(&graph, target_root, |d| {
-        matches!(d, rc3d_scene::NodeData::PerspectiveCamera(_) | rc3d_scene::NodeData::OrthographicCamera(_))
+        matches!(
+            d,
+            rc3d_scene::NodeData::PerspectiveCamera(_)
+                | rc3d_scene::NodeData::OrthographicCamera(_)
+        )
     });
     if !has_camera {
-        graph.insert_child(target_root, 0, NodeData::PerspectiveCamera(
-            PerspectiveCameraNode::look_at(
-                Vec3::new(5.0, 5.0, 8.0), Vec3::ZERO, Vec3::Y,
-                std::f32::consts::FRAC_PI_4, 800.0 / 600.0,
-            ),
-        ));
-        graph.insert_child(target_root, 1, NodeData::DirectionalLight(DirectionalLightNode {
-            direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
-            color: Vec3::ONE, intensity: 2.2, light_group: None,
-        }));
-        graph.insert_child(target_root, 2, NodeData::DirectionalLight(DirectionalLightNode {
-            direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
-            color: Vec3::new(0.9, 0.92, 1.0), intensity: 1.2, light_group: None,
-        }));
-        graph.insert_child(target_root, 3, NodeData::DirectionalLight(DirectionalLightNode {
-            direction: Vec3::new(0.3, 0.8, 1.0).normalize(),
-            color: Vec3::new(0.85, 0.88, 0.95), intensity: 0.8, light_group: None,
-        }));
+        graph.insert_child(
+            target_root,
+            0,
+            NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
+                Vec3::new(5.0, 5.0, 8.0),
+                Vec3::ZERO,
+                Vec3::Y,
+                std::f32::consts::FRAC_PI_4,
+                800.0 / 600.0,
+            )),
+        );
+        graph.insert_child(
+            target_root,
+            1,
+            NodeData::DirectionalLight(DirectionalLightNode {
+                direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
+                color: Vec3::ONE,
+                intensity: 2.2,
+                light_group: None,
+            }),
+        );
+        graph.insert_child(
+            target_root,
+            2,
+            NodeData::DirectionalLight(DirectionalLightNode {
+                direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
+                color: Vec3::new(0.9, 0.92, 1.0),
+                intensity: 1.2,
+                light_group: None,
+            }),
+        );
+        graph.insert_child(
+            target_root,
+            3,
+            NodeData::DirectionalLight(DirectionalLightNode {
+                direction: Vec3::new(0.3, 0.8, 1.0).normalize(),
+                color: Vec3::new(0.85, 0.88, 0.95),
+                intensity: 0.8,
+                light_group: None,
+            }),
+        );
     }
 
-    let has_material = has_node_type_recursive(&graph, target_root, |d| matches!(d, NodeData::Material(_)));
+    let has_material =
+        has_node_type_recursive(&graph, target_root, |d| matches!(d, NodeData::Material(_)));
     if !has_material {
         let insert_idx = if has_camera { 0 } else { 4 };
-        graph.insert_child(target_root, insert_idx, NodeData::Material(MaterialNode {
-            diffuse_color: Vec3::splat(0.9),
-            ambient_color: Vec3::splat(0.4),
-            specular_color: Vec3::splat(0.5),
-            shininess: 48.0,
-            base_color: Vec3::splat(0.92),
-            metallic: 0.0,
-            roughness: 0.4,
-            opacity: 1.0,
-            ..Default::default()
-        }));
+        graph.insert_child(
+            target_root,
+            insert_idx,
+            NodeData::Material(MaterialNode {
+                diffuse_color: Vec3::splat(0.9),
+                ambient_color: Vec3::splat(0.4),
+                specular_color: Vec3::splat(0.5),
+                shininess: 48.0,
+                base_color: Vec3::splat(0.92),
+                metallic: 0.0,
+                roughness: 0.4,
+                opacity: 1.0,
+                ..Default::default()
+            }),
+        );
     }
 
     for &root in graph.roots().to_vec().iter() {
@@ -199,10 +236,16 @@ fn has_node_type_recursive(
     node: rc3d_core::NodeId,
     pred: impl Fn(&rc3d_scene::NodeData) -> bool + Copy,
 ) -> bool {
-    let Some(entry) = graph.get(node) else { return false };
-    if pred(&entry.data) { return true; }
+    let Some(entry) = graph.get(node) else {
+        return false;
+    };
+    if pred(&entry.data) {
+        return true;
+    }
     for &child in &entry.children {
-        if has_node_type_recursive(graph, child, pred) { return true; }
+        if has_node_type_recursive(graph, child, pred) {
+            return true;
+        }
     }
     false
 }
@@ -216,7 +259,9 @@ fn count_nodes(graph: &rc3d_scene::SceneGraph) -> usize {
 }
 
 fn count_nodes_recursive(graph: &rc3d_scene::SceneGraph, node: rc3d_core::NodeId) -> usize {
-    let Some(entry) = graph.get(node) else { return 0 };
+    let Some(entry) = graph.get(node) else {
+        return 0;
+    };
     let mut n = 1;
     for &child in &entry.children {
         n += count_nodes_recursive(graph, child);

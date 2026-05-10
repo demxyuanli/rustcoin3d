@@ -12,9 +12,7 @@ use rc3d_scene::SceneGraph;
 use wgpu;
 
 pub use commands::EditorCommand;
-pub use types::{
-    EditorDisplayMode, EditorUiContext, NodeDataType, RenderFeatureFlags,
-};
+pub use types::{EditorDisplayMode, EditorUiContext, NodeDataType, RenderFeatureFlags};
 
 pub struct EditorUi {
     egui_ctx: egui::Context,
@@ -110,7 +108,15 @@ impl EditorUi {
         let show_console = &mut self.show_console;
         let console_ref = &mut self.console_entries;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            draw::build_ui(ctx, graph, ui_ctx, ctx_menu, show_console, console_ref, &mut self.command_queue);
+            draw::build_ui(
+                ctx,
+                graph,
+                ui_ctx,
+                ctx_menu,
+                show_console,
+                console_ref,
+                &mut self.command_queue,
+            );
         });
         self.winit_state
             .handle_platform_output(window, full_output.platform_output);

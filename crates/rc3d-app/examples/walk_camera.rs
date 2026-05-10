@@ -35,14 +35,18 @@ fn main() {
         for z in -2..=2i32 {
             let tf = graph.add_child(
                 root,
-                NodeData::Transform(TransformNode::from_translation(
-                    Vec3::new(x as f32 * 2.0, 0.0, z as f32 * 2.0),
-                )),
+                NodeData::Transform(TransformNode::from_translation(Vec3::new(
+                    x as f32 * 2.0,
+                    0.0,
+                    z as f32 * 2.0,
+                ))),
             );
             graph.add_child(
                 tf,
                 NodeData::Material(MaterialNode::from_diffuse(Vec3::new(
-                    0.2, 0.4 + x as f32 * 0.1, 0.3 + z as f32 * 0.1,
+                    0.2,
+                    0.4 + x as f32 * 0.1,
+                    0.3 + z as f32 * 0.1,
                 ))),
             );
             graph.add_child(tf, NodeData::Cube(CubeNode::default()));

@@ -47,7 +47,8 @@ fn main() {
         App::new(SceneGraph::new()).with_initial_display_mode(DisplayMode::ShadedWithEdges);
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
-        let (target, orbit_radius) = fit_camera_to_scene(&mut app.state.world.graph, CameraFitConfig::default());
+        let (target, orbit_radius) =
+            fit_camera_to_scene(&mut app.state.world.graph, CameraFitConfig::default());
         let _controller_root = find_first_camera_node(&app.state.world.graph)
             .or_else(|| app.state.world.graph.roots().first().copied())
             .expect("non-empty graph after load");
@@ -170,7 +171,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
                 color: Vec3::ONE,
                 intensity: 1.0,
-            light_group: None,
+                light_group: None,
             }),
         );
         graph.insert_child(
@@ -180,7 +181,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(1.0, -0.6, 0.8).normalize(),
                 color: Vec3::new(0.9, 0.92, 1.0),
                 intensity: 0.5,
-            light_group: None,
+                light_group: None,
             }),
         );
         graph.insert_child(
@@ -190,7 +191,7 @@ fn ensure_camera_and_light(
                 direction: Vec3::new(0.3, 0.8, 1.0).normalize(),
                 color: Vec3::new(0.85, 0.88, 0.95),
                 intensity: 0.4,
-            light_group: None,
+                light_group: None,
             }),
         );
     }

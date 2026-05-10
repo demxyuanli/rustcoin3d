@@ -27,10 +27,8 @@ struct StressState {
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
 
     println!("Adaptive quality stress test");
     println!("Usage: cargo run -p rc3d-app --example adaptive_stress_test");
@@ -57,10 +55,11 @@ fn main() {
             let fps = 1000.0 / s.frame_time_ms.max(0.01);
             let lines = vec![
                 "=== Adaptive Quality Stress ===".to_string(),
-                format!("Objects: {}  |  Frame: {:.2}ms ({:.0}fps)",
-                    s.object_count, s.frame_time_ms, fps),
-                format!("Quality: {}  |  Locked: {}",
-                    s.current_quality, s.locked),
+                format!(
+                    "Objects: {}  |  Frame: {:.2}ms ({:.0}fps)",
+                    s.object_count, s.frame_time_ms, fps
+                ),
+                format!("Quality: {}  |  Locked: {}", s.current_quality, s.locked),
                 "".to_string(),
                 "Quality levels:".to_string(),
                 "  Ultra   — ≥60fps, full effects, 4 cascades @ 2048×2048".to_string(),
@@ -69,7 +68,8 @@ fn main() {
                 "  Low     — 20-30fps, no SSAO/Bloom, 1 cascade @ 512×512".to_string(),
                 "  Minimal — <20fps, no post, flat shading, 1 cascade @ 256×256".to_string(),
                 "".to_string(),
-                "[+/-] Complexity  [L] Quality Lock  [Q] Quality  [Esc] Clear selection".to_string(),
+                "[+/-] Complexity  [L] Quality Lock  [Q] Quality  [Esc] Clear selection"
+                    .to_string(),
             ];
             lines.join("\n")
         })
@@ -81,19 +81,27 @@ fn main() {
                     match key {
                         KeyCode::Equal | KeyCode::NumpadAdd => {
                             s.object_count = (s.object_count + 200).min(5000);
-                            println!("Scene complexity: {} objects (restart to apply)", s.object_count);
+                            println!(
+                                "Scene complexity: {} objects (restart to apply)",
+                                s.object_count
+                            );
                         }
                         KeyCode::Minus | KeyCode::NumpadSubtract => {
                             s.object_count = s.object_count.saturating_sub(200).max(100);
-                            println!("Scene complexity: {} objects (restart to apply)", s.object_count);
+                            println!(
+                                "Scene complexity: {} objects (restart to apply)",
+                                s.object_count
+                            );
                         }
                         KeyCode::KeyL => {
                             s.locked = !s.locked;
                             println!("Quality lock: {}", if s.locked { "ON" } else { "OFF" });
                         }
                         KeyCode::KeyQ => {
-                            println!("Current quality: {} @ {:.2}ms",
-                                s.current_quality, s.frame_time_ms);
+                            println!(
+                                "Current quality: {} @ {:.2}ms",
+                                s.current_quality, s.frame_time_ms
+                            );
                         }
                         _ => {}
                     }
@@ -178,11 +186,7 @@ fn build_dense_scene(count: usize) -> SceneGraph {
             graph.add_child(
                 sep,
                 NodeData::Material(MaterialNode {
-                    base_color: Vec3::new(
-                        (x + 5.0) / 15.0,
-                        (z + 5.0) / 15.0,
-                        y_base / 5.0,
-                    ),
+                    base_color: Vec3::new((x + 5.0) / 15.0, (z + 5.0) / 15.0, y_base / 5.0),
                     diffuse_color: Vec3::new(0.5, 0.5, 0.5),
                     metallic: (i % 3) as f32 * 0.5,
                     roughness: 0.2 + (i % 7) as f32 * 0.1,

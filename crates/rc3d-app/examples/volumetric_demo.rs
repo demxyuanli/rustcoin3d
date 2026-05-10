@@ -104,7 +104,7 @@ fn build_fog_scene() -> SceneGraph {
                 location: Vec3::ZERO,
                 color,
                 intensity: 15.0,
-            light_group: None,
+                light_group: None,
             }),
         );
         // Small visible sphere at light position

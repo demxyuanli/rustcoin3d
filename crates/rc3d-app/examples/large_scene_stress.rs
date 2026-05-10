@@ -19,10 +19,8 @@ struct StressState {
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,rc3d=info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
+        .init();
 
     let target = 10000;
     let (scene, object_count) = build_large_scene(target);
@@ -126,10 +124,22 @@ fn build_large_scene(target_count: usize) -> (SceneGraph, usize) {
             );
 
             let shape = match shape_idx {
-                0 => NodeData::Cube(CubeNode { width: size, height: size, depth: size }),
-                1 => NodeData::Sphere(SphereNode { radius: size * 0.55 }),
-                2 => NodeData::Cone(ConeNode { bottom_radius: size * 0.55, height: size }),
-                _ => NodeData::Cylinder(CylinderNode { radius: size * 0.4, height: size }),
+                0 => NodeData::Cube(CubeNode {
+                    width: size,
+                    height: size,
+                    depth: size,
+                }),
+                1 => NodeData::Sphere(SphereNode {
+                    radius: size * 0.55,
+                }),
+                2 => NodeData::Cone(ConeNode {
+                    bottom_radius: size * 0.55,
+                    height: size,
+                }),
+                _ => NodeData::Cylinder(CylinderNode {
+                    radius: size * 0.4,
+                    height: size,
+                }),
             };
             graph.add_child(sep, shape);
             drawable_count += 1;

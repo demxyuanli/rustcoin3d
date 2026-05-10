@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
+use rc3d_actions::MarkupTool;
 use rc3d_core::NodeId;
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::ibl::IblPreset;
 use rc3d_render::viewport::LayoutMode;
-use rc3d_actions::MarkupTool;
 use rc3d_scene::node_data::MeasurementType;
 
 use crate::adaptive_quality::AdaptiveQualityMode;
@@ -87,8 +87,16 @@ pub enum EditorCommand {
     SaveBookmark(usize),
     RecallBookmark(usize),
     SetMarkupTool(MarkupTool),
-    MarkupMouseDown { screen_pos: [f32; 2] },
-    MarkupMouseMove { screen_pos: [f32; 2] },
-    MarkupMouseUp { screen_pos: [f32; 2] },
-    ClearAllMarkup { node: NodeId },
+    MarkupMouseDown {
+        screen_pos: [f32; 2],
+    },
+    MarkupMouseMove {
+        screen_pos: [f32; 2],
+    },
+    MarkupMouseUp {
+        screen_pos: [f32; 2],
+    },
+    ClearAllMarkup {
+        node: NodeId,
+    },
 }

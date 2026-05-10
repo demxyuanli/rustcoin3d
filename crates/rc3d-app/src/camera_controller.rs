@@ -1,8 +1,8 @@
-use std::cell::Cell;
 use rc3d_core::aabb::Aabb;
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
+use std::cell::Cell;
 
 /// Saved camera state for a bookmark slot.
 #[derive(Clone, Copy, Debug)]
@@ -235,7 +235,9 @@ impl CameraController {
         if slot >= 9 {
             return;
         }
-        let Some(bm) = self.bookmarks[slot] else { return };
+        let Some(bm) = self.bookmarks[slot] else {
+            return;
+        };
         self.fly_to = Some(FlyToState {
             start_target: self.target,
             start_distance: self.distance,
@@ -252,7 +254,9 @@ impl CameraController {
 
     /// Advance fly-to animation by `dt` seconds. Returns true while animation is active.
     pub fn tick_fly(&mut self, dt: f32) -> bool {
-        let Some(ref fly) = self.fly_to else { return false };
+        let Some(ref fly) = self.fly_to else {
+            return false;
+        };
         let t = (fly.elapsed / fly.duration).clamp(0.0, 1.0);
         // Smooth ease-in-out
         let t_eased = t * t * (3.0 - 2.0 * t);
