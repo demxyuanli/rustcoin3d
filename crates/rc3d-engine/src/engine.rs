@@ -54,6 +54,7 @@ impl Engine for ElapsedTimeEngine {
             if let rc3d_scene::node_data::NodeData::Transform(t) = &mut entry.data {
                 t.rotation = rotation * t.rotation; // compound
             }
+            entry.dirty_flags |= rc3d_scene::node_entry::dirty_flags::GEOMETRY;
         }
     }
 
@@ -102,6 +103,7 @@ impl Engine for SineOscillatorEngine {
                     SineField::TranslationY => t.translation.y = value,
                 }
             }
+            entry.dirty_flags |= rc3d_scene::node_entry::dirty_flags::TRANSFORM;
         }
     }
 
@@ -294,6 +296,7 @@ impl Engine for InterpolateVec3Engine {
             if let NodeData::Transform(t) = &mut e.data {
                 t.translation = p;
             }
+            e.dirty_flags |= rc3d_scene::node_entry::dirty_flags::TRANSFORM;
         }
     }
 
@@ -389,6 +392,7 @@ impl Engine for InterpolateRotationEngine {
             if let rc3d_scene::NodeData::Transform(tf) = &mut entry.data {
                 tf.rotation = rc3d_core::math::Mat4::from_quat(q);
             }
+            entry.dirty_flags |= rc3d_scene::node_entry::dirty_flags::TRANSFORM;
         }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }

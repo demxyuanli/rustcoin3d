@@ -140,6 +140,10 @@ impl FullResPatch {
             Some(lo - 1)
         }
     }
+
+    pub fn final_stage_index(&self) -> Option<usize> {
+        self.stream_stages.len().checked_sub(1)
+    }
 }
 
 pub(super) fn gaussian_triangle_budget(t_s: f64, total_tris: usize) -> usize {
