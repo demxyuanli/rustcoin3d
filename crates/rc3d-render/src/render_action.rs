@@ -574,27 +574,35 @@ impl RenderCollector {
             }
             NodeData::IndexedLineSet(ils) => {
                 let coord = self.state.coordinate();
+                let mvp = self.state.projection_matrix() * self.state.view_matrix() * self.state.model_matrix();
+                let mut edge_positions: Vec<[f32; 3]> = Vec::new();
+                let mut aabb = rc3d_core::Aabb::empty();
                 for i in (0..ils.coord_index.len()).step_by(2) {
                     if i + 1 < ils.coord_index.len() {
                         let a = ils.coord_index[i].max(0) as usize;
                         let b = ils.coord_index[i + 1].max(0) as usize;
                         if a < coord.points.len() && b < coord.points.len() {
                             let pa = coord.points[a]; let pb = coord.points[b];
-                            let _dir = (pb - pa).normalize();
-                            let tan = [1.0, 0.0, 0.0, 1.0f32];
-                            let mid = (pa + pb) * 0.5;
-                            self.draw_calls.push(DrawCall {
-                                vertices: Arc::new(vec![
-                                    Vertex { position: [pa.x, pa.y, pa.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
-                                    Vertex { position: [pb.x, pb.y, pb.z], normal: [0.0; 3], texcoord: [0.0; 2], tangent: tan },
-                                ]),
-                                is_overlay: self.inside_annotation,
-                                aabb: Some(rc3d_core::Aabb::from_point(mid)),
-                                node_type_label: Arc::from("IndexedLineSet"),
-                                ..Default::default()
-                            });
+                            edge_positions.push([pa.x, pa.y, pa.z]);
+                            edge_positions.push([pb.x, pb.y, pb.z]);
+                            aabb = aabb.union(&rc3d_core::Aabb::from_point(pa));
+                            aabb = aabb.union(&rc3d_core::Aabb::from_point(pb));
                         }
                     }
+                }
+                if !edge_positions.is_empty() {
+                    self.draw_calls.push(DrawCall {
+                        vertices: Arc::new(Vec::new()),
+                        edge_positions: Arc::new(edge_positions),
+                        mvp,
+                        model_matrix: self.state.model_matrix(),
+                        camera_pos: self.camera_pos,
+                        aabb: Some(aabb),
+                        overlay_color: Some([0.5, 0.5, 0.5, 1.0]),
+                        node_type_label: Arc::from("IndexedLineSet"),
+                        is_overlay: self.inside_annotation,
+                        ..Default::default()
+                    });
                 }
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
