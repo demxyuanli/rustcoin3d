@@ -183,9 +183,8 @@ impl DecalPass {
             label: Some("Decal BGL"),
             entries: &[
                 wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: true } }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: false } }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -202,8 +201,8 @@ impl DecalPass {
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Decal Sampler"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::ClampToBorder, address_mode_v: wgpu::AddressMode::ClampToBorder,
-            border_color: Some(wgpu::SamplerBorderColor::TransparentBlack), ..Default::default()
+            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
         });
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Decal Params"), size: 256, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
@@ -248,21 +247,52 @@ impl DecalPass {
         });
         pass.set_pipeline(&self.pipeline);
 
-        let placeholder_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("decal placeholder"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let placeholder_view = placeholder_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // Load decal texture from file (shared across all commands).
+        let mut decal_tex: Option<wgpu::Texture> = None;
+        let mut decal_view: Option<wgpu::TextureView> = None;
 
         for cmd in commands {
             if cmd.texture_path.is_empty() {
                 continue;
             }
+            // Lazy-load texture on first command
+            if decal_view.is_none() {
+                let path = std::path::Path::new(&cmd.texture_path);
+                let (w, h, pixels) = if path.is_file() {
+                    match image::open(path) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let dims = rgba.dimensions();
+                            (dims.0, dims.1, rgba.into_raw())
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to load decal {:?}: {e}, using fallback", path);
+                            fallback_decal_pixels()
+                        }
+                    }
+                } else {
+                    log::info!("Decal texture not found: {:?}, using fallback", path);
+                    fallback_decal_pixels()
+                };
+                let tex = device.create_texture_with_data(
+                    queue,
+                    &wgpu::TextureDescriptor {
+                        label: Some("Decal Texture"),
+                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        mip_level_count: 1, sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    &pixels,
+                );
+                decal_view = Some(tex.create_view(&wgpu::TextureViewDescriptor::default()));
+                decal_tex = Some(tex);
+            }
+
+            let tex_view = decal_view.as_ref().unwrap();
             // Pack uniform data: model(16) + position(4) + direction(4) + size(2) + color(4) + opacity(1) + pad(1)
             let mut uniform_data = Vec::<f32>::with_capacity(32);
             let m = cmd.model_matrix.to_cols_array_2d();
@@ -278,10 +308,9 @@ impl DecalPass {
                 label: Some("Decal BG"),
                 layout: &self.bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&placeholder_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(tex_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(
                         wgpu::BufferBinding { buffer: &self.params_buf, offset: 0, size: None }
                     ) },
                 ],
@@ -289,7 +318,30 @@ impl DecalPass {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..6, 0..1);
         }
+        drop(decal_tex);
     }
+}
+
+/// Generate a fallback 64×64 decal texture: orange circle on dark background.
+fn fallback_decal_pixels() -> (u32, u32, Vec<u8>) {
+    let w = 64u32;
+    let h = 64u32;
+    let c = 32;
+    let r = 24;
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let dx = x as i32 - c;
+            let dy = y as i32 - c;
+            let i = (y * w as usize + x) * 4;
+            if dx * dx + dy * dy < r * r {
+                px[i] = 255; px[i+1] = 128; px[i+2] = 0; px[i+3] = 255;
+            } else {
+                px[i] = 30; px[i+1] = 30; px[i+2] = 30; px[i+3] = 255;
+            }
+        }
+    }
+    (w, h, px)
 }
 
 /// Volume ray-march pipeline resources.

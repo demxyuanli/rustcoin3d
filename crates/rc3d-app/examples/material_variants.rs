@@ -44,14 +44,16 @@ fn main() {
         }),
     );
     // Three colored cubes with different materials
+    // Each cube group is wrapped in a Separator to isolate material + transform state
     for i in 0..3i32 {
         let c = [
             Vec3::new(0.9, 0.2, 0.2),
             Vec3::new(0.2, 0.9, 0.2),
             Vec3::new(0.2, 0.2, 0.9),
         ][i as usize];
+        let sep = g.add_child(root, NodeData::Separator(SeparatorNode));
         g.add_child(
-            root,
+            sep,
             NodeData::Material(MaterialNode {
                 base_color: c,
                 roughness: 0.3,
@@ -60,14 +62,14 @@ fn main() {
             }),
         );
         g.add_child(
-            root,
+            sep,
             NodeData::Transform(TransformNode::from_translation(Vec3::new(
                 i as f32 * 2.0 - 2.0,
                 0.0,
                 0.0,
             ))),
         );
-        g.add_child(root, NodeData::Cube(CubeNode::default()));
+        g.add_child(sep, NodeData::Cube(CubeNode::default()));
     }
     // Texture2Transform: rotate texture coordinates
     g.add_child(

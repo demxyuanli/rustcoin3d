@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+static LAST_SLOW_PICK_MS: AtomicI64 = AtomicI64::new(0);
 
 // #region agent log
 static DEBUG_FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -139,9 +141,19 @@ pub(crate) fn window_event(
             if !app.editor.measurement_mode {
                 app.editor_on_cursor_moved();
             }
+            let hover_pick_throttled = {
+                const HOVER_PICK_COOLDOWN_MS: i64 = 500;
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let last = LAST_SLOW_PICK_MS.load(AtomicOrdering::Relaxed);
+                last > 0 && (now_ms - last) < HOVER_PICK_COOLDOWN_MS
+            };
             if !ui_consumed
                 && !app.editor.measurement_mode
                 && !app.should_block_handle_event_pointer_dispatch(true)
+                && !hover_pick_throttled
             {
                 // #region agent log
                 let pick_t0 = Instant::now();
@@ -157,6 +169,13 @@ pub(crate) fn window_event(
                 // #region agent log
                 {
                     let pick_ms = pick_t0.elapsed().as_secs_f64() * 1000.0;
+                    if pick_ms > 100.0 {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+                        LAST_SLOW_PICK_MS.store(now_ms, AtomicOrdering::Relaxed);
+                    }
                     static PICK_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
                     let count = PICK_LOG_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
                     if count < 10 || (pick_ms > 5.0 && count % 10 == 0) {
@@ -164,7 +183,7 @@ pub(crate) fn window_event(
                         debug_log_620b84(
                             "event_handler.rs:cursor_moved",
                             "ray_pick_on_mouse_move",
-                            &format!(r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{}}}"#, pick_ms, orbiting, count),
+                            &format!(r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{},"throttled":false}}"#, pick_ms, orbiting, count),
                         );
                     }
                 }
@@ -736,6 +755,13 @@ pub(crate) fn window_event(
                             app.state.world.cached_draw_calls.clone();
                     }
                 } else if can_skip || camera_only {
+                    if app.state.world.collector.draw_calls.is_empty()
+                        || app.state.world.collector.draw_calls.len()
+                            < app.state.world.cached_draw_calls.len()
+                    {
+                        app.state.world.collector.draw_calls =
+                            app.state.world.cached_draw_calls.clone();
+                    }
                     let vp_proj = app.state.world.collector.projection_matrix;
                     let vp_view = if let Some(vc) = app.state.viewport_cameras.active() {
                         vc.controller.view_matrix()
@@ -808,6 +834,24 @@ pub(crate) fn window_event(
                             dirty_roots.len()
                         );
                     }
+                    // #region agent log
+                    {
+                        let new_tris: u64 = app.state.world.collector.draw_calls.iter().map(|dc| {
+                            dc.indices.as_ref().map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
+                        }).sum();
+                        let old_tris: u64 = app.state.world.cached_draw_calls.iter().map(|dc| {
+                            dc.indices.as_ref().map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
+                        }).sum();
+                        if new_tris != old_tris {
+                            debug_log_620b84(
+                                "event_handler.rs:cache_update",
+                                "cache_tris_changed",
+                                &format!(r#"{{"hypothesisId":"E","old_tris":{},"new_tris":{},"dc_old":{},"dc_new":{}}}"#,
+                                    old_tris, new_tris, app.state.world.cached_draw_calls.len(), app.state.world.collector.draw_calls.len()),
+                            );
+                        }
+                    }
+                    // #endregion
                     app.state.world.cached_draw_calls =
                         app.state.world.collector.draw_calls.clone();
                     drop(dirty_roots);

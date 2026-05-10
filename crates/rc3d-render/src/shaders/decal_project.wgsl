@@ -18,9 +18,8 @@ struct DecalParams {
 }
 
 @group(0) @binding(0) var t_decal: texture_2d<f32>;
-@group(0) @binding(1) var t_depth: texture_2d<f32>;
-@group(0) @binding(2) var s_decal: sampler;
-@group(0) @binding(3) var<uniform> params: DecalParams;
+@group(0) @binding(1) var s_decal: sampler;
+@group(0) @binding(2) var<uniform> params: DecalParams;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -40,19 +39,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
-    let depth = textureSample(t_depth, s_decal, i.uv).r;
-    if depth >= 1.0 { discard; }
-
-    let ndc = vec4<f32>(i.uv * 2.0 - 1.0, depth, 1.0);
-    let world_pos = params.inv_view_proj * ndc;
-    let world = world_pos.xyz / world_pos.w;
-
-    // Check if world position is inside the decal box
-    let local = (params.world_to_box * vec4<f32>(world, 1.0)).xyz;
-    if any(local < -0.5) || any(local > 0.5) { discard; }
-
-    // Project to decal texture UV
-    let decal_uv = local.xy + 0.5;
+    // Project decal to screen-space UV (fullscreen for now)
+    let decal_uv = i.uv;
     let decal = textureSample(t_decal, s_decal, decal_uv).rgb;
     return vec4<f32>(decal * params.decal_color.rgb, params.opacity * params.decal_color.a);
 }
