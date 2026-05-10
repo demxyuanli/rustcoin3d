@@ -634,6 +634,7 @@ pub(crate) fn window_event(
                     }
                     renderer.set_clip_planes(merged, merged_caps);
                 }
+                app.state.world.evaluate_engines();
                 let dirty_roots =
                     rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
                 let has_cache = !app.state.world.cached_draw_calls.is_empty();
@@ -696,10 +697,8 @@ pub(crate) fn window_event(
                     drop(dirty_roots);
                     rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                 } else {
-                    // Full traversal needed — clear stale dirty flags first,
-                    // then run engines (which set new flags for next frame).
+                    // Full traversal needed — clear stale dirty flags first.
                     rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
-                    app.state.world.evaluate_engines();
                     renderer.set_materials(app.state.world.materials.clone());
                     app.state.world.collector.draw_calls.clear();
                     app.state.world.collector.state = rc3d_actions::State::new();
