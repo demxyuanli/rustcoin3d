@@ -527,7 +527,7 @@ pub(super) fn execute_passes(
             if let Some(ref pass) = renderer.gpu.decal_pass {
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
-                    shade_view, &depth_read_view, &ctx.effect_commands.decals, ew, eh,
+                    shade_view, &depth_view, &ctx.effect_commands.decals, ew, eh,
                 );
             }
         }
@@ -536,7 +536,7 @@ pub(super) fn execute_passes(
             if let Some(ref pass) = renderer.gpu.volume_pass {
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
-                    shade_view, &depth_read_view, &ctx.effect_commands.volumes, ew, eh,
+                    shade_view, &depth_view, &ctx.effect_commands.volumes, ew, eh,
                 );
             }
         }
@@ -545,7 +545,7 @@ pub(super) fn execute_passes(
             if let Some(ref pass) = renderer.gpu.point_cloud_pass {
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
-                    shade_view, &depth_read_view, &ctx.effect_commands.point_clouds,
+                    shade_view, &depth_view, &ctx.effect_commands.point_clouds,
                     ctx.camera_proj, ctx.camera_inv_proj, ew, eh,
                 );
             }

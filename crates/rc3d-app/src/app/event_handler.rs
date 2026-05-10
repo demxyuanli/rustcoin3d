@@ -1,5 +1,34 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+// #region agent log
+static DEBUG_FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
+static DEBUG_LOG_INIT: std::sync::Once = std::sync::Once::new();
+fn debug_log_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap().parent().unwrap()
+        .join("debug-620b84.log")
+}
+fn debug_log_620b84(location: &str, message: &str, data: &str) {
+    use std::io::Write;
+    let p = debug_log_path();
+    DEBUG_LOG_INIT.call_once(|| {
+        eprintln!("[DEBUG-620b84] log -> {}", p.display());
+    });
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = format!(
+        r#"{{"sessionId":"620b84","location":"{}","message":"{}","data":{},"timestamp":{}}}"#,
+        location, message, data, ts
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+// #endregion
 
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -114,6 +143,9 @@ pub(crate) fn window_event(
                 && !app.editor.measurement_mode
                 && !app.should_block_handle_event_pointer_dispatch(true)
             {
+                // #region agent log
+                let pick_t0 = Instant::now();
+                // #endregion
                 let dx = (app.input.cursor_pos.0 - prev.0) as f32;
                 let dy = (app.input.cursor_pos.1 - prev.1) as f32;
                 app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
@@ -122,6 +154,21 @@ pub(crate) fn window_event(
                     dx,
                     dy,
                 });
+                // #region agent log
+                {
+                    let pick_ms = pick_t0.elapsed().as_secs_f64() * 1000.0;
+                    static PICK_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+                    let count = PICK_LOG_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+                    if count < 10 || (pick_ms > 5.0 && count % 10 == 0) {
+                        let orbiting = app.state.camera_controller.as_ref().map_or(false, |c| c.middle_orbit_held || c.left_orbit_held);
+                        debug_log_620b84(
+                            "event_handler.rs:cursor_moved",
+                            "ray_pick_on_mouse_move",
+                            &format!(r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{}}}"#, pick_ms, orbiting, count),
+                        );
+                    }
+                }
+                // #endregion
             }
         }
         WindowEvent::KeyboardInput {
@@ -651,18 +698,45 @@ pub(crate) fn window_event(
                         })
                     });
 
-                if can_skip {
-                    // Nothing changed — reuse cached draw calls as-is (no clone needed
-                    // if collector already holds the right data from last frame).
+                // #region agent log
+                {
+                    let seq = DEBUG_FRAME_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+                    if seq < 5 || seq % 60 == 0 {
+                        let dc_count = app.state.world.collector.draw_calls.len();
+                        let cache_count = app.state.world.cached_draw_calls.len();
+                        let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| c.middle_orbit_held || c.left_orbit_held || c.panning);
+                        debug_log_620b84(
+                            "event_handler.rs:frame_path",
+                            "render_path_decision",
+                            &format!(r#"{{"hypothesisId":"B","frame":{},"can_skip":{},"camera_only":{},"dirty_roots":{},"has_cache":{},"dc_count":{},"cache_count":{},"cam_orbiting":{}}}"#,
+                                seq, can_skip, camera_only, dirty_roots.len(), has_cache, dc_count, cache_count, cam_orbiting),
+                        );
+                    }
+                }
+                // #endregion
+                let controller_camera_moved = {
+                    let current_eye = app
+                        .state
+                        .camera_controller
+                        .as_ref()
+                        .map(|c| c.eye_position())
+                        .or_else(|| {
+                            app.state
+                                .viewport_cameras
+                                .active()
+                                .map(|vc| vc.controller.eye_position())
+                        });
+                    current_eye.map_or(false, |eye| {
+                        eye.distance(app.state.last_camera_eye) > 1e-5
+                    })
+                };
+                if can_skip && !controller_camera_moved {
                     if app.state.world.collector.draw_calls.is_empty() {
                         app.state.world.collector.draw_calls =
                             app.state.world.cached_draw_calls.clone();
                     }
-                } else if camera_only {
-                    let cam_w = renderer.config.width.max(1) as f32;
-                    let cam_h = renderer.config.height.max(1) as f32;
-                    let aspect = cam_w / cam_h.max(1.0);
-                    let vp_proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+                } else if can_skip || camera_only {
+                    let vp_proj = app.state.world.collector.projection_matrix;
                     let vp_view = if let Some(vc) = app.state.viewport_cameras.active() {
                         vc.controller.view_matrix()
                     } else if let Some(ctrl) = &app.state.camera_controller {

@@ -634,6 +634,16 @@ impl App {
         if for_cursor_move && (self.editor.gizmo_dragging || self.editor.box_select_drag) {
             return true;
         }
+        if for_cursor_move {
+            let cam_active = self.state.camera_controller.as_ref().map_or(false, |c| {
+                c.middle_orbit_held || c.left_orbit_held || c.panning
+            }) || self.state.viewport_cameras.cameras.iter().any(|vc| {
+                vc.controller.middle_orbit_held || vc.controller.left_orbit_held || vc.controller.panning
+            });
+            if cam_active {
+                return true;
+            }
+        }
         false
     }
 
