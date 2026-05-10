@@ -41,7 +41,7 @@ fn main() {
         .with_window_title("rustcoin3d Editor")
         .with_editor_ui(true)
         .with_camera_controller(ctrl)
-        .with_initial_display_mode(DisplayMode::ShadedWithEdges);
+        .with_initial_display_mode(DisplayMode::Shaded);
 
     winit::event_loop::EventLoop::new()
         .unwrap()

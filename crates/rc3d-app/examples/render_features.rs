@@ -212,7 +212,7 @@ fn main() {
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
         .with_engines(engines)
-        .with_initial_display_mode(DisplayMode::ShadedWithEdges)
+        .with_initial_display_mode(DisplayMode::Shaded)
         .with_hdr_post_processing(true)
         .with_adaptive_quality_mode(adaptive_mode)
         .with_continuous_redraw(!idle_mode);
