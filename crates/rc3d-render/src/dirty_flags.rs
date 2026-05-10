@@ -65,27 +65,8 @@ fn collect_dirty_subtree(graph: &SceneGraph, node: NodeId, dirty_roots: &mut Vec
 }
 
 /// Clear all dirty flags after a full frame has been processed.
-///
-/// Collects node IDs from roots first to avoid borrow issues with nested iteration.
+/// Delegates to `SceneGraph::clear_all_dirty_flags` which iterates the
+/// SlotMap directly — O(N) with zero heap allocation.
 pub fn clear_all_dirty_flags(graph: &mut SceneGraph) {
-    let all_roots: Vec<NodeId> = graph.roots().to_vec();
-    let node_ids: Vec<NodeId> = all_roots
-        .iter()
-        .flat_map(|&r| collect_subtree_ids(graph, r))
-        .collect();
-    for id in node_ids {
-        if let Some(entry) = graph.get_mut(id) {
-            entry.dirty_flags = 0;
-        }
-    }
-}
-
-fn collect_subtree_ids(graph: &SceneGraph, node: NodeId) -> Vec<NodeId> {
-    let mut ids = vec![node];
-    if let Some(entry) = graph.get(node) {
-        for &child in &entry.children {
-            ids.extend(collect_subtree_ids(graph, child));
-        }
-    }
-    ids
+    graph.clear_all_dirty_flags();
 }

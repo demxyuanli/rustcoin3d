@@ -470,6 +470,8 @@ impl Renderer {
                 cached_bvh: None,
                 has_text_nodes: true,    // optimistic; auto-disabled after 2 empty frames
                 has_effect_nodes: true,  // optimistic; auto-disabled after 2 empty frames
+                has_lod_nodes: true,     // optimistic; auto-disabled after 2 frames with no LODs
+                lod_scan_frames_since_seen: 0,
                 gpu_cull_ready: false,
                 parallel_traversal_enabled: false,
                 bvh_fully_static: false,
@@ -665,6 +667,23 @@ impl Renderer {
     /// Replace the light-set table (populated during scene traversal).
     pub fn set_light_sets(&mut self, table: crate::light_set::LightSetTable) {
         self.light_sets = table;
+    }
+
+    /// Call after LOD scan to update auto-detection state.
+    pub fn note_lod_scan(&mut self, lod_count: usize) {
+        if lod_count > 0 {
+            self.frame.has_lod_nodes = true;
+            self.frame.lod_scan_frames_since_seen = 0;
+        } else if self.frame.lod_scan_frames_since_seen >= 2 {
+            self.frame.has_lod_nodes = false;
+        } else {
+            self.frame.lod_scan_frames_since_seen += 1;
+        }
+    }
+
+    /// Whether the scene contains LOD nodes (fast-path skip when false).
+    pub fn has_lod_nodes(&self) -> bool {
+        self.frame.has_lod_nodes
     }
 
     /// Enable GPU compute culling with buffers sized for max_objects.

@@ -569,8 +569,12 @@ pub(crate) fn window_event(
 
                 if let (Some(renderer), Some(window)) = (&mut app.state.renderer, &app.state.window) {
                     let roots_lod: Vec<NodeId> = app.state.world.graph.roots().to_vec();
-                    for &r in &roots_lod {
-                        update_all_lod_nodes(&mut app.state.world.graph, r, app.state.last_camera_eye);
+                    if renderer.has_lod_nodes() {
+                        let mut total_lod = 0usize;
+                        for &r in &roots_lod {
+                            total_lod += update_all_lod_nodes(&mut app.state.world.graph, r, app.state.last_camera_eye);
+                        }
+                        renderer.note_lod_scan(total_lod);
                     }
                     {
                         let mut section = SectionPlaneAction::new();
@@ -593,24 +597,11 @@ pub(crate) fn window_event(
                         }
                         renderer.set_clip_planes(merged, merged_caps);
                     }
-                    app.state.world.evaluate_engines();
-
-                    renderer.set_materials(app.state.world.materials.clone());
-                    renderer.set_grid_enabled(app.editor.grid_enabled);
-                    app.state.world.collector.draw_calls.clear();
-                    app.state.world.collector.state = rc3d_actions::State::new();
-                    app.state.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
-                    app.state.world.collector.view_matrix = Mat4::IDENTITY;
-                    app.state.world.collector.projection_matrix = Mat4::IDENTITY;
-                    app.state.world.collector.projection_orthographic = false;
-                    app.state.world.collector.global_display_mode = renderer.display_mode();
-                    app.state.world.collector.material_library = Some(app.state.world.materials.clone());
-                    app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
                     let dirty_roots = rc3d_render::dirty_flags::collect_dirty_roots(&app.state.world.graph);
-                    let can_skip = dirty_roots.is_empty()
-                        && !app.state.world.cached_draw_calls.is_empty();
+                    let has_cache = !app.state.world.cached_draw_calls.is_empty();
+                    let can_skip = dirty_roots.is_empty() && has_cache;
                     let camera_only = !can_skip
-                        && !app.state.world.cached_draw_calls.is_empty()
+                        && has_cache
                         && dirty_roots.iter().all(|&id| {
                             app.state.world.graph.get(id).map_or(false, |e| {
                                 matches!(e.data,
@@ -621,27 +612,31 @@ pub(crate) fn window_event(
                         });
 
                     if can_skip {
-                        app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                        // Nothing changed — reuse cached draw calls as-is (no clone needed
+                        // if collector already holds the right data from last frame).
+                        if app.state.world.collector.draw_calls.is_empty() {
+                            app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                        }
                     } else if camera_only {
-                        // Camera changed but geometry didn't — reuse cached draw calls
-                        // and only update VP matrices (skip full scene traversal).
                         let cam_w = renderer.config.width.max(1) as f32;
                         let cam_h = renderer.config.height.max(1) as f32;
+                        let aspect = cam_w / cam_h.max(1.0);
+                        let vp_proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+                        let vp_view = if let Some(vc) = app.state.viewport_cameras.active() {
+                            vc.controller.view_matrix()
+                        } else if let Some(ctrl) = &app.state.camera_controller {
+                            ctrl.view_matrix()
+                        } else {
+                            Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y)
+                        };
                         let cam_pos = app.state.camera_controller.as_ref()
                             .map(|c| c.eye_position())
                             .or_else(|| app.state.viewport_cameras.active().map(|vc| vc.controller.eye_position()))
                             .unwrap_or(Vec3::new(0.0, 0.0, 5.0));
-                        let aspect = cam_w / cam_h.max(1.0);
-                        let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
-                        let vp_view = app.state.camera_controller.as_ref()
-                            .map(|c| c.view_matrix())
-                            .or_else(|| app.state.viewport_cameras.active().map(|vc| vc.controller.view_matrix()))
-                            .unwrap_or(Mat4::IDENTITY);
-                        let vp_proj = proj;
                         app.state.world.collector.view_matrix = vp_view;
                         app.state.world.collector.projection_matrix = vp_proj;
                         app.state.world.collector.camera_pos = cam_pos;
-                        app.state.world.collector.draw_calls = app.state.world.cached_draw_calls.clone();
+                        // Apply camera in-place to collector (avoid clone in hot camera path)
                         rc3d_render::render_action::apply_world_camera(
                             &mut app.state.world.collector.draw_calls,
                             vp_view, vp_proj, cam_pos,
@@ -650,8 +645,20 @@ pub(crate) fn window_event(
                         drop(dirty_roots);
                         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     } else {
+                        // Full traversal needed — reset collector and run engines/materials
+                        app.state.world.evaluate_engines();
+                        renderer.set_materials(app.state.world.materials.clone());
+                        app.state.world.collector.draw_calls.clear();
+                        app.state.world.collector.state = rc3d_actions::State::new();
+                        app.state.world.collector.camera_pos = Vec3::new(0.0, 0.0, 5.0);
+                        app.state.world.collector.view_matrix = Mat4::IDENTITY;
+                        app.state.world.collector.projection_matrix = Mat4::IDENTITY;
+                        app.state.world.collector.projection_orthographic = false;
+                        app.state.world.collector.global_display_mode = renderer.display_mode();
+                        app.state.world.collector.material_library = Some(app.state.world.materials.clone());
+                        app.state.world.collector.set_hidden_nodes(&app.state.hidden_nodes);
+
                         let _t0 = std::time::Instant::now();
-                        // Pre-allocate using previous frame's draw call count as hint
                         app.state.world.collector.reserve_draw_calls(
                             app.state.world.cached_draw_calls.len());
                         for &root in app.state.world.graph.roots() {
@@ -663,10 +670,10 @@ pub(crate) fn window_event(
                                 traversal_ms, app.state.world.graph.roots().len(), dirty_roots.len());
                         }
                         app.state.world.cached_draw_calls = app.state.world.collector.draw_calls.clone();
-                        // Drop dirty_roots borrow before mutable access
                         drop(dirty_roots);
                         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut app.state.world.graph);
                     }
+                    renderer.set_grid_enabled(app.editor.grid_enabled);
                     app.state.last_camera_eye = app.state.world.collector.camera_pos;
                     gizmo_support::sync_gizmo_from_selection(&mut app.editor.gizmo, &app.state.world.graph);
 
@@ -732,14 +739,10 @@ pub(crate) fn window_event(
                         }
                     }
 
-                    let markup_root = app.state.world.graph.roots().first().copied().unwrap_or_default();
-                    renderer.collect_markup_vertices(&app.state.world.graph, markup_root);
-
-                    // Transfer effect commands and light-set table from traversal
-                    // to renderer. Only take when a full traversal actually ran;
-                    // both the can_skip and camera_only paths skip traversal so
-                    // the collector's tables would be empty after a previous take.
+                    // Only re-collect markup and transfer tables on full traversal
                     if !can_skip && !camera_only {
+                        let markup_root = app.state.world.graph.roots().first().copied().unwrap_or_default();
+                        renderer.collect_markup_vertices(&app.state.world.graph, markup_root);
                         renderer.set_effect_commands(
                             std::mem::take(&mut app.state.world.collector.effect_commands),
                         );

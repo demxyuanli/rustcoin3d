@@ -52,6 +52,10 @@ pub(crate) struct FrameState {
     pub has_text_nodes: bool,
     /// Fast-path: skip full-scene effect traversal when no Decal/Volume/PointCloud nodes.
     pub has_effect_nodes: bool,
+    /// Fast-path: skip LOD distance updates when no Lod nodes in scene.
+    pub has_lod_nodes: bool,
+    /// How many frames since LOD nodes were last seen (auto-disable after 2 empty scans).
+    pub lod_scan_frames_since_seen: u8,
     pub gpu_cull_ready: bool,
     pub parallel_traversal_enabled: bool,
     /// Static frame: true when BVH had zero dirty AABBs this frame.

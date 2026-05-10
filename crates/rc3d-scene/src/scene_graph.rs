@@ -175,6 +175,23 @@ impl SceneGraph {
         &self.selected
     }
 
+    /// Clear dirty flags on all nodes by iterating the SlotMap directly (zero allocation).
+    pub fn clear_all_dirty_flags(&mut self) {
+        for (_id, entry) in self.nodes.iter_mut() {
+            entry.dirty_flags = 0;
+        }
+    }
+
+    /// Check if any node has dirty flags set (early-out on first hit).
+    pub fn has_any_dirty(&self) -> bool {
+        self.nodes.values().any(|e| e.dirty_flags != 0)
+    }
+
+    /// Number of nodes in the graph.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Named selection sets for group operations.
     pub fn selection_set(&self, name: &str) -> Option<&HashSet<NodeId>> {
         self.selection_sets.get(name)

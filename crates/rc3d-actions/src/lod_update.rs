@@ -7,7 +7,9 @@ use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
 
 /// Recompute all `Lod` nodes under `root` using `camera_eye`.
-pub fn update_all_lod_nodes(graph: &mut SceneGraph, root: NodeId, camera_eye: Vec3) {
+/// Returns the number of LOD nodes found (0 = no LOD nodes in scene).
+pub fn update_all_lod_nodes(graph: &mut SceneGraph, root: NodeId, camera_eye: Vec3) -> usize {
+    let mut lod_count = 0usize;
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if let Some(entry) = graph.get(n) {
@@ -17,6 +19,7 @@ pub fn update_all_lod_nodes(graph: &mut SceneGraph, root: NodeId, camera_eye: Ve
         }
         if let Some(entry) = graph.get(n) {
             if let NodeData::Lod(lod) = &entry.data {
+                lod_count += 1;
                 if lod.levels.is_empty() {
                     continue;
                 }
@@ -36,6 +39,7 @@ pub fn update_all_lod_nodes(graph: &mut SceneGraph, root: NodeId, camera_eye: Ve
             }
         }
     }
+    lod_count
 }
 
 fn camera_to_lod_distance(
