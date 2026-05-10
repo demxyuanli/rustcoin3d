@@ -2,6 +2,7 @@ use crate::render_action::DrawCall;
 use crate::vertex::{FlatUniforms, InstanceData, SceneUniforms, MAX_MORPH_WEIGHTS, CSM_CASCADE_COUNT};
 use rc3d_core::DisplayMode;
 use rc3d_scene::AlphaMode;
+use slotmap::Key;
 
 fn alpha_mode_to_f32(mode: AlphaMode) -> f32 {
     match mode {
@@ -225,18 +226,29 @@ pub(super) fn draw_opaque_triangle_batches(
         }
 
         if !standard_draws.is_empty() {
-            // O(n) HashMap grouping by (mesh_id, material_key) — no sort needed.
-            let mut groups: std::collections::HashMap<
-                (Option<crate::gpu_resource::MeshId>, u64),
-                Vec<usize>,
-            > = std::collections::HashMap::new();
-            for &i in &standard_draws {
-                let key = (ctx.mesh_handles[i], mat_keys[i]);
-                groups.entry(key).or_default().push(i);
-            }
+            // Sort deterministically by (mesh_id, material_key) to ensure
+            // stable instance buffer write order across frames.
+            standard_draws.sort_by_key(|&i| {
+                (ctx.mesh_handles[i].map(|m| m.data().as_ffi()), mat_keys[i])
+            });
 
-            for ((mesh_id, _mat_key), subgroup) in &groups {
-                if let Some(mesh_id) = mesh_id {
+            let mut sub_start = 0usize;
+            while sub_start < standard_draws.len() {
+                let first_mesh = ctx.mesh_handles[standard_draws[sub_start]];
+                let first_mat = mat_keys[standard_draws[sub_start]];
+                let mut sub_end = sub_start + 1;
+                while sub_end < standard_draws.len() {
+                    let idx = standard_draws[sub_end];
+                    if ctx.mesh_handles[idx] != first_mesh || mat_keys[idx] != first_mat {
+                        break;
+                    }
+                    sub_end += 1;
+                }
+                let subgroup = &standard_draws[sub_start..sub_end];
+                sub_start = sub_end;
+
+                if let Some(mesh_id) = first_mesh {
+                    if subgroup.is_empty() { continue; }
                     let first_dc = ctx.visible[subgroup[0]];
                     let mut instances: Vec<InstanceData> = Vec::with_capacity(subgroup.len());
                     for &i in subgroup {
@@ -258,7 +270,6 @@ pub(super) fn draw_opaque_triangle_batches(
                         });
                     }
 
-                    // Shared SceneUniforms: light data from head_dc, material from first_dc.
                     let diffuse = if ctx.mode == DisplayMode::HiddenLine {
                         [0.08, 0.08, 0.08, 1.0]
                     } else {
@@ -312,7 +323,7 @@ pub(super) fn draw_opaque_triangle_batches(
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
 
-                    renderer.draw_mesh_instanced(pass, *mesh_id, first_instance, n, &mut last_bound_mesh);
+                    renderer.draw_mesh_instanced(pass, mesh_id, first_instance, n, &mut last_bound_mesh);
                 }
             }
         }
