@@ -961,6 +961,17 @@ impl Renderer {
         self.gpu.adaptive_quality.is_low()
     }
 
+    pub fn force_adaptive_low(&mut self) {
+        let prev = self.gpu.adaptive_quality;
+        self.gpu.adaptive_quality = AdaptiveQuality::Low;
+        if prev != AdaptiveQuality::Low {
+            log::warn!(
+                "Adaptive quality forced: {:?} -> Low (large scene)",
+                prev
+            );
+        }
+    }
+
     pub fn report_frame_time_ms(&mut self, frame_time_ms: f32, control: AdaptiveControl) {
         if matches!(control, AdaptiveControl::Disabled) {
             self.gpu.adaptive_quality = AdaptiveQuality::High;

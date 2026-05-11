@@ -1,29 +1,8 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use glam::{Mat4, Vec3};
 use slotmap::Key;
 use rc3d_core::DisplayMode;
-
-// #region agent log
-fn debug_log_620b84_render(location: &str, message: &str, data: &str) {
-    use std::io::Write;
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap()
-        .join("debug-620b84.log");
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let line = format!(
-        r#"{{"sessionId":"620b84","location":"{}","message":"{}","data":{},"timestamp":{}}}"#,
-        location, message, data, ts
-    );
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-// #endregion
 use rc3d_scene::SceneGraph;
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::cluster::{ClusterRenderer, ClusterSet};
@@ -271,27 +250,6 @@ impl super::Renderer {
             self.frame.visible_indices.iter().map(|&i| &draw_calls[i]).collect()
         });
 
-        // #region agent log
-        {
-            static RENDER_SEQ: AtomicU64 = AtomicU64::new(0);
-            let seq = RENDER_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-            let total_dc = draw_calls.len();
-            let total_tris: u64 = visible.iter().map(|dc| {
-                if let Some(ref md) = dc.meshlet_data { md.total_triangles as u64 }
-                else if let Some(ref idx) = dc.indices { (idx.len() / 3) as u64 }
-                else { (dc.vertices.len() / 3) as u64 }
-            }).sum();
-            if (seq < 5 || self.interaction_active) && total_tris > 100 {
-                let vis = visible.len();
-                debug_log_620b84_render(
-                    "renderer_render.rs:frustum_cull",
-                    "cull_result",
-                    &format!(r#"{{"hypothesisId":"H","frame":{},"total_dc":{},"visible":{},"total_tris":{},"perf_mode":{},"interaction_active":{},"hdr":{}}}"#,
-                        seq, total_dc, vis, total_tris, self.frame.performance_mode_active, self.interaction_active, self.hdr_post_processing),
-                );
-            }
-        }
-        // #endregion
         // ── GPU cull replacement: if readback has fresh indices, replace CPU cull ──
         let visible = if let Some(ref gpu_indices) = gpu_visible {
             self.frame.visible_indices.clear();

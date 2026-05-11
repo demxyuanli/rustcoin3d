@@ -1,41 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-// #region agent log
-static DEBUG_FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
-static DEBUG_LOG_INIT: std::sync::Once = std::sync::Once::new();
-fn debug_log_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("debug-620b84.log")
-}
-fn debug_log_620b84(location: &str, message: &str, data: &str) {
-    use std::io::Write;
-    let p = debug_log_path();
-    DEBUG_LOG_INIT.call_once(|| {
-        eprintln!("[DEBUG-620b84] log -> {}", p.display());
-    });
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let line = format!(
-        r#"{{"sessionId":"620b84","location":"{}","message":"{}","data":{},"timestamp":{}}}"#,
-        location, message, data, ts
-    );
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-    {
-        let _ = writeln!(f, "{}", line);
-    }
-}
-// #endregion
 
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -150,39 +114,17 @@ pub(crate) fn window_event(
                 && !app.editor.measurement_mode
                 && !app.should_block_handle_event_pointer_dispatch(true)
             {
-                // #region agent log
-                let pick_t0 = Instant::now();
-                // #endregion
-                let dx = (app.input.cursor_pos.0 - prev.0) as f32;
-                let dy = (app.input.cursor_pos.1 - prev.1) as f32;
-                app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
-                    x: 0.0,
-                    y: 0.0,
-                    dx,
-                    dy,
-                });
-                // #region agent log
-                {
-                    let pick_ms = pick_t0.elapsed().as_secs_f64() * 1000.0;
-                    static PICK_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
-                    let count = PICK_LOG_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
-                    if count < 10 || (pick_ms > 5.0 && count % 10 == 0) {
-                        let orbiting = app
-                            .state
-                            .camera_controller
-                            .as_ref()
-                            .map_or(false, |c| c.middle_orbit_held || c.left_orbit_held);
-                        debug_log_620b84(
-                            "event_handler.rs:cursor_moved",
-                            "ray_pick_on_mouse_move",
-                            &format!(
-                                r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{}}}"#,
-                                pick_ms, orbiting, count
-                            ),
-                        );
-                    }
+                let large_scene = app.state.last_render_stats.visible_triangles > 100_000;
+                if !large_scene {
+                    let dx = (app.input.cursor_pos.0 - prev.0) as f32;
+                    let dy = (app.input.cursor_pos.1 - prev.1) as f32;
+                    app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
+                        x: 0.0,
+                        y: 0.0,
+                        dx,
+                        dy,
+                    });
                 }
-                // #endregion
             }
         }
         WindowEvent::KeyboardInput {
@@ -726,63 +668,6 @@ pub(crate) fn window_event(
                         });
                     current_eye.map_or(false, |eye| eye.distance(app.state.last_camera_eye) > 1e-5)
                 };
-                // #region agent log
-                {
-                    let seq = DEBUG_FRAME_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-                    let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| {
-                        c.middle_orbit_held || c.left_orbit_held || c.panning
-                    });
-                    let dc_tris: u64 = app
-                        .state
-                        .world
-                        .collector
-                        .draw_calls
-                        .iter()
-                        .map(|dc| {
-                            dc.indices
-                                .as_ref()
-                                .map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
-                        })
-                        .sum();
-                    let cache_tris: u64 = app
-                        .state
-                        .world
-                        .cached_draw_calls
-                        .iter()
-                        .map(|dc| {
-                            dc.indices
-                                .as_ref()
-                                .map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
-                        })
-                        .sum();
-                    let cam_dist = app
-                        .state
-                        .camera_controller
-                        .as_ref()
-                        .map(|c| c.distance)
-                        .unwrap_or(0.0);
-                    let should_log =
-                        (seq < 5 || cam_orbiting) && (dc_tris > 100 || cache_tris > 100);
-                    if should_log {
-                        debug_log_620b84(
-                            "event_handler.rs:frame_path",
-                            "render_path_decision",
-                            &format!(
-                                r#"{{"hypothesisId":"H","frame":{},"can_skip":{},"camera_only":{},"dirty_roots":{},"dc_tris":{},"cache_tris":{},"cam_orbiting":{},"ctrl_cam_moved":{},"cam_dist":{:.3}}}"#,
-                                seq,
-                                can_skip,
-                                camera_only,
-                                dirty_roots.len(),
-                                dc_tris,
-                                cache_tris,
-                                cam_orbiting,
-                                controller_camera_moved,
-                                cam_dist
-                            ),
-                        );
-                    }
-                }
-                // #endregion
                 if can_skip && !controller_camera_moved {
                     if app.state.world.collector.draw_calls.is_empty() {
                         app.state.world.collector.draw_calls =
@@ -879,50 +764,6 @@ pub(crate) fn window_event(
                             dirty_roots.len()
                         );
                     }
-                    // #region agent log
-                    {
-                        let new_tris: u64 = app
-                            .state
-                            .world
-                            .collector
-                            .draw_calls
-                            .iter()
-                            .map(|dc| {
-                                dc.indices
-                                    .as_ref()
-                                    .map_or(dc.vertices.len() as u64 / 3, |idx| {
-                                        idx.len() as u64 / 3
-                                    })
-                            })
-                            .sum();
-                        let old_tris: u64 = app
-                            .state
-                            .world
-                            .cached_draw_calls
-                            .iter()
-                            .map(|dc| {
-                                dc.indices
-                                    .as_ref()
-                                    .map_or(dc.vertices.len() as u64 / 3, |idx| {
-                                        idx.len() as u64 / 3
-                                    })
-                            })
-                            .sum();
-                        if new_tris != old_tris {
-                            debug_log_620b84(
-                                "event_handler.rs:cache_update",
-                                "cache_tris_changed",
-                                &format!(
-                                    r#"{{"hypothesisId":"E","old_tris":{},"new_tris":{},"dc_old":{},"dc_new":{}}}"#,
-                                    old_tris,
-                                    new_tris,
-                                    app.state.world.cached_draw_calls.len(),
-                                    app.state.world.collector.draw_calls.len()
-                                ),
-                            );
-                        }
-                    }
-                    // #endregion
                     app.state.world.cached_draw_calls =
                         app.state.world.collector.draw_calls.clone();
                     drop(dirty_roots);
@@ -1098,6 +939,9 @@ pub(crate) fn window_event(
                     let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
                     let lock_idle = idle_for_secs >= 2.0 && !has_dynamic_scene;
                     let large_scene = app.state.last_render_stats.visible_triangles > 500_000;
+                    if large_scene && !renderer.adaptive_is_low() {
+                        renderer.force_adaptive_low();
+                    }
                     let adaptive_control = if large_scene {
                         AdaptiveControl::Locked
                     } else {

@@ -32,6 +32,7 @@ fn main() {
         NodeData::Material(MaterialNode {
             base_color: Vec3::new(0.5, 0.5, 0.5),
             roughness: 0.4,
+            albedo_texture: Some("decal.png".into()),
             ..Default::default()
         }),
     );
