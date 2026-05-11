@@ -177,7 +177,7 @@ pub(super) fn execute_passes(
 
     // ── Background pass (gradient / image / solid) ──
     if let Some(ref bg) = renderer.gpu.bg_pass {
-        bg.encode(&renderer.device, &mut encoder, shade_view, &renderer.gpu.bg_settings);
+        bg.encode(&renderer.device, &renderer.queue, &mut encoder, shade_view, &renderer.gpu.bg_settings);
     }
 
     // ── GPU compute culling dispatch ──

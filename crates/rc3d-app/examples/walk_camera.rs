@@ -1,6 +1,7 @@
 use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
 use rc3d_core::math::Vec3;
+use rc3d_render::background::{BgMode, BgSettings};
 use rc3d_scene::node_data::*;
 
 fn main() {
@@ -57,7 +58,14 @@ fn main() {
     let mut ctrl = CameraController::new(Vec3::new(0.0, 1.0, 0.0), 5.0);
     ctrl.walk_mode = true;
 
-    let mut app = App::new(graph).with_camera_controller(ctrl);
+    let mut app = App::new(graph)
+        .with_camera_controller(ctrl)
+        .with_background(BgSettings {
+            mode: BgMode::Gradient,
+            top_color: [0.15, 0.25, 0.4, 1.0],
+            bot_color: [0.02, 0.02, 0.05, 1.0],
+            ..Default::default()
+        });
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut app)

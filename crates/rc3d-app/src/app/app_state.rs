@@ -34,4 +34,5 @@ pub struct AppState {
     pub hidden_nodes: std::collections::HashSet<rc3d_core::NodeId>,
     pub last_camera_eye: rc3d_core::math::Vec3,
     pub perf_mode_last: bool,
+    pub bg_settings: Option<rc3d_render::background::BgSettings>,
 }

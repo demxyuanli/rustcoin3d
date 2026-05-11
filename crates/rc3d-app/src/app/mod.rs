@@ -92,6 +92,7 @@ impl App {
                 hidden_nodes: std::collections::HashSet::new(),
                 last_camera_eye: Vec3::new(0.0, 0.0, 5.0),
                 perf_mode_last: false,
+                bg_settings: None,
             },
             editor: EditorSession {
                 gizmo: rc3d_gizmo::Gizmo::new(),
@@ -143,6 +144,11 @@ impl App {
 
     pub fn with_editor_ui(mut self, enabled: bool) -> Self {
         self.state.editor_ui_enabled = enabled;
+        self
+    }
+
+    pub fn with_background(mut self, settings: rc3d_render::background::BgSettings) -> Self {
+        self.state.bg_settings = Some(settings);
         self
     }
 

@@ -205,6 +205,7 @@ impl BgPass {
     pub fn encode(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         settings: &BgSettings,
@@ -221,6 +222,7 @@ impl BgPass {
             bot_color: settings.bot_color,
             _pad: [0.0; 2],
         };
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
         let img_view = self.image_view.as_ref().unwrap_or(&self.fallback_view);
 

@@ -1,6 +1,7 @@
 //! Decal demo — screen-space projected texture overlay on geometry.
 use rc3d_app::{App, CameraController};
 use rc3d_core::math::Vec3;
+use rc3d_render::background::{BgMode, BgSettings};
 use rc3d_scene::node_data::*;
 
 fn main() {
@@ -67,6 +68,12 @@ fn main() {
     let orbit = CameraController::new(Vec3::ZERO, 10.0);
     winit::event_loop::EventLoop::new()
         .unwrap()
-        .run_app(&mut App::new(g).with_camera_controller(orbit))
+        .run_app(&mut App::new(g)
+            .with_camera_controller(orbit)
+            .with_background(BgSettings {
+                mode: BgMode::Image,
+                image_path: Some("decal.png".into()),
+                ..Default::default()
+            }))
         .expect("event loop");
 }

@@ -50,6 +50,9 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
             if let Some((vig, chr, bloom, grain)) = app.state.initial_post_effect_params.take() {
                 renderer.set_post_effect_params(vig, chr, bloom, grain);
             }
+            if let Some(ref bg) = app.state.bg_settings {
+                renderer.set_background(bg.clone());
+            }
         }
         if let Some(window) = &app.state.window {
             window.set_visible(true);

@@ -11,6 +11,7 @@
 use rc3d_app::{App, CameraController};
 use rc3d_core::math::Vec3;
 use rc3d_engine::{ElapsedTimeEngine, EngineRegistry, InterpolateVec3Engine, SineField, SineOscillatorEngine};
+use rc3d_render::background::{BgMode, BgSettings};
 use rc3d_scene::node_data::*;
 
 fn main() {
@@ -167,6 +168,14 @@ fn main() {
 
     winit::event_loop::EventLoop::new()
         .unwrap()
-        .run_app(&mut App::new(graph).with_camera_controller(ctrl).with_engines(engines))
+        .run_app(&mut App::new(graph)
+            .with_camera_controller(ctrl)
+            .with_engines(engines)
+            .with_background(BgSettings {
+                mode: BgMode::Gradient,
+                top_color: [0.05, 0.1, 0.2, 1.0],
+                bot_color: [0.01, 0.02, 0.05, 1.0],
+                ..Default::default()
+            }))
         .expect("event loop");
 }
