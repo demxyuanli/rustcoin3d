@@ -37,9 +37,7 @@ use crate::viewport_camera::{ViewportCamera, ViewportCameraSet};
 use crate::world::World;
 use fps_tracker::FpsTracker;
 use rc3d_core::NodeId;
-use streaming_lod::{
-    apply_decimated_preview, gaussian_triangle_budget, stream_step_ms, FullResPatch,
-};
+use streaming_lod::{gaussian_triangle_budget, stream_step_ms, FullResPatch};
 
 type PickCallback = Box<dyn FnMut(&mut SceneGraph, rc3d_core::NodeId, Vec3)>;
 const APPROX_VERTEX_BYTES: usize = 48;
@@ -68,17 +66,8 @@ pub struct App {
 
 impl App {
     pub fn new(graph: SceneGraph) -> Self {
-        let mut graph = graph;
-        let full_res_patches = apply_decimated_preview(&mut graph);
-        let preview_mode_active = !full_res_patches.is_empty();
-        if preview_mode_active {
-            log::warn!(
-                "Streaming mesh load: {} patch(es), Gaussian CDF sigma={}, duration={}s",
-                full_res_patches.len(),
-                0.22,
-                2.2,
-            );
-        }
+        let full_res_patches = Vec::new();
+        let preview_mode_active = false;
         let app = Self {
             state: AppState {
                 world: World::new(graph),

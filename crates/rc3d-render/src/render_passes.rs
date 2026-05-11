@@ -175,6 +175,11 @@ pub(super) fn execute_passes(
 
     renderer.encode_skinning_compute(&mut encoder, ctx.visible, ctx.mesh_handles);
 
+    // ── Background pass (gradient / image / solid) ──
+    if let Some(ref bg) = renderer.gpu.bg_pass {
+        bg.encode(&renderer.device, &mut encoder, shade_view, &renderer.gpu.bg_settings);
+    }
+
     // ── GPU compute culling dispatch ──
     if renderer.gpu.gpu_cull_enabled {
         if let (Some(ref cull_pass), Some(ref bg)) =

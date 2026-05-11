@@ -3,6 +3,7 @@ pub mod asset_manager;
 pub mod dirty_flags;
 pub mod auto_exposure;
 pub mod async_loader;
+pub mod background;
 pub mod cluster;
 pub mod cluster_lighting;
 pub mod cluster_tree;

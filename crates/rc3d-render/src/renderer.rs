@@ -140,6 +140,24 @@ pub enum AdaptiveControl {
 }
 
 impl Renderer {
+    pub fn ensure_bg_pass(&mut self) {
+        if self.gpu.bg_pass.is_none() {
+            self.gpu.bg_pass = Some(crate::background::BgPass::new(
+                &self.device, &self.queue, self.config.format,
+            ));
+        }
+    }
+
+    pub fn set_background(&mut self, settings: crate::background::BgSettings) {
+        if let (Some(ref mut bg), Some(ref img_path)) =
+            (&mut self.gpu.bg_pass, &settings.image_path)
+        {
+            bg.set_image(&self.device, &self.queue, img_path);
+        }
+        self.gpu.bg_settings = settings;
+        self.ensure_bg_pass();
+    }
+
     pub fn ensure_decal_pass(&mut self) {
         if self.gpu.decal_pass.is_none() {
             self.gpu.decal_pass = Some(crate::render_passes::pass_effects::DecalPass::new(
@@ -538,6 +556,8 @@ impl Renderer {
                 cluster_lights: None,
                 cluster_light_culler: None,
                 omni_shadow: None,
+                bg_pass: None,
+                bg_settings: crate::background::BgSettings::default(),
                 decal_pass: None,
                 volume_pass: None,
                 point_cloud_pass: None,
