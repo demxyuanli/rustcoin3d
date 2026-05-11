@@ -197,6 +197,8 @@ impl CameraController {
                     cam.position = eye;
                     cam.orientation = Mat4::look_at_rh(eye, self.target, self.up);
                     cam.aspect = aspect;
+                    cam.near = (self.distance * 0.001).max(0.01);
+                    cam.far = (self.distance * 20.0).max(100.0);
                 }
                 NodeData::OrthographicCamera(cam) => {
                     cam.position = eye;

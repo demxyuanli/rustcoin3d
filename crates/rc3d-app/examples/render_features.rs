@@ -158,7 +158,9 @@ fn main() {
     let adaptive_mode = parse_adaptive_quality_mode(&args);
     let Some(path_arg) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) else {
         eprintln!("Error: no input file specified.");
-        eprintln!("Usage: render_features <file.stl|file.obj|file.gltf|file.iv> [--no-panel] [--idle]");
+        eprintln!(
+            "Usage: render_features <file.stl|file.obj|file.gltf|file.iv> [--no-panel] [--idle]"
+        );
         return;
     };
 

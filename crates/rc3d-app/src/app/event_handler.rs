@@ -1,15 +1,16 @@
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
-
-static LAST_SLOW_PICK_MS: AtomicI64 = AtomicI64::new(0);
 
 // #region agent log
 static DEBUG_FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
 static DEBUG_LOG_INIT: std::sync::Once = std::sync::Once::new();
 fn debug_log_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("debug-620b84.log")
 }
 fn debug_log_620b84(location: &str, message: &str, data: &str) {
@@ -26,7 +27,11 @@ fn debug_log_620b84(location: &str, message: &str, data: &str) {
         r#"{{"sessionId":"620b84","location":"{}","message":"{}","data":{},"timestamp":{}}}"#,
         location, message, data, ts
     );
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         let _ = writeln!(f, "{}", line);
     }
 }
@@ -141,19 +146,9 @@ pub(crate) fn window_event(
             if !app.editor.measurement_mode {
                 app.editor_on_cursor_moved();
             }
-            let hover_pick_throttled = {
-                const HOVER_PICK_COOLDOWN_MS: i64 = 500;
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let last = LAST_SLOW_PICK_MS.load(AtomicOrdering::Relaxed);
-                last > 0 && (now_ms - last) < HOVER_PICK_COOLDOWN_MS
-            };
             if !ui_consumed
                 && !app.editor.measurement_mode
                 && !app.should_block_handle_event_pointer_dispatch(true)
-                && !hover_pick_throttled
             {
                 // #region agent log
                 let pick_t0 = Instant::now();
@@ -169,21 +164,21 @@ pub(crate) fn window_event(
                 // #region agent log
                 {
                     let pick_ms = pick_t0.elapsed().as_secs_f64() * 1000.0;
-                    if pick_ms > 100.0 {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(0);
-                        LAST_SLOW_PICK_MS.store(now_ms, AtomicOrdering::Relaxed);
-                    }
                     static PICK_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
                     let count = PICK_LOG_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
                     if count < 10 || (pick_ms > 5.0 && count % 10 == 0) {
-                        let orbiting = app.state.camera_controller.as_ref().map_or(false, |c| c.middle_orbit_held || c.left_orbit_held);
+                        let orbiting = app
+                            .state
+                            .camera_controller
+                            .as_ref()
+                            .map_or(false, |c| c.middle_orbit_held || c.left_orbit_held);
                         debug_log_620b84(
                             "event_handler.rs:cursor_moved",
                             "ray_pick_on_mouse_move",
-                            &format!(r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{},"throttled":false}}"#, pick_ms, orbiting, count),
+                            &format!(
+                                r#"{{"hypothesisId":"A","pick_ms":{:.2},"orbiting":{},"count":{}}}"#,
+                                pick_ms, orbiting, count
+                            ),
                         );
                     }
                 }
@@ -717,22 +712,6 @@ pub(crate) fn window_event(
                         })
                     });
 
-                // #region agent log
-                {
-                    let seq = DEBUG_FRAME_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-                    if seq < 5 || seq % 60 == 0 {
-                        let dc_count = app.state.world.collector.draw_calls.len();
-                        let cache_count = app.state.world.cached_draw_calls.len();
-                        let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| c.middle_orbit_held || c.left_orbit_held || c.panning);
-                        debug_log_620b84(
-                            "event_handler.rs:frame_path",
-                            "render_path_decision",
-                            &format!(r#"{{"hypothesisId":"B","frame":{},"can_skip":{},"camera_only":{},"dirty_roots":{},"has_cache":{},"dc_count":{},"cache_count":{},"cam_orbiting":{}}}"#,
-                                seq, can_skip, camera_only, dirty_roots.len(), has_cache, dc_count, cache_count, cam_orbiting),
-                        );
-                    }
-                }
-                // #endregion
                 let controller_camera_moved = {
                     let current_eye = app
                         .state
@@ -745,10 +724,65 @@ pub(crate) fn window_event(
                                 .active()
                                 .map(|vc| vc.controller.eye_position())
                         });
-                    current_eye.map_or(false, |eye| {
-                        eye.distance(app.state.last_camera_eye) > 1e-5
-                    })
+                    current_eye.map_or(false, |eye| eye.distance(app.state.last_camera_eye) > 1e-5)
                 };
+                // #region agent log
+                {
+                    let seq = DEBUG_FRAME_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+                    let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| {
+                        c.middle_orbit_held || c.left_orbit_held || c.panning
+                    });
+                    let dc_tris: u64 = app
+                        .state
+                        .world
+                        .collector
+                        .draw_calls
+                        .iter()
+                        .map(|dc| {
+                            dc.indices
+                                .as_ref()
+                                .map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
+                        })
+                        .sum();
+                    let cache_tris: u64 = app
+                        .state
+                        .world
+                        .cached_draw_calls
+                        .iter()
+                        .map(|dc| {
+                            dc.indices
+                                .as_ref()
+                                .map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
+                        })
+                        .sum();
+                    let cam_dist = app
+                        .state
+                        .camera_controller
+                        .as_ref()
+                        .map(|c| c.distance)
+                        .unwrap_or(0.0);
+                    let should_log =
+                        (seq < 5 || cam_orbiting) && (dc_tris > 100 || cache_tris > 100);
+                    if should_log {
+                        debug_log_620b84(
+                            "event_handler.rs:frame_path",
+                            "render_path_decision",
+                            &format!(
+                                r#"{{"hypothesisId":"H","frame":{},"can_skip":{},"camera_only":{},"dirty_roots":{},"dc_tris":{},"cache_tris":{},"cam_orbiting":{},"ctrl_cam_moved":{},"cam_dist":{:.3}}}"#,
+                                seq,
+                                can_skip,
+                                camera_only,
+                                dirty_roots.len(),
+                                dc_tris,
+                                cache_tris,
+                                cam_orbiting,
+                                controller_camera_moved,
+                                cam_dist
+                            ),
+                        );
+                    }
+                }
+                // #endregion
                 if can_skip && !controller_camera_moved {
                     if app.state.world.collector.draw_calls.is_empty() {
                         app.state.world.collector.draw_calls =
@@ -762,7 +796,18 @@ pub(crate) fn window_event(
                         app.state.world.collector.draw_calls =
                             app.state.world.cached_draw_calls.clone();
                     }
-                    let vp_proj = app.state.world.collector.projection_matrix;
+                    let vp_proj = {
+                        let mut proj = app.state.world.collector.projection_matrix;
+                        for &root in app.state.world.graph.roots() {
+                            if let Some(p) =
+                                App::find_camera_projection(&app.state.world.graph, root)
+                            {
+                                proj = p;
+                                break;
+                            }
+                        }
+                        proj
+                    };
                     let vp_view = if let Some(vc) = app.state.viewport_cameras.active() {
                         vc.controller.view_matrix()
                     } else if let Some(ctrl) = &app.state.camera_controller {
@@ -836,18 +881,44 @@ pub(crate) fn window_event(
                     }
                     // #region agent log
                     {
-                        let new_tris: u64 = app.state.world.collector.draw_calls.iter().map(|dc| {
-                            dc.indices.as_ref().map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
-                        }).sum();
-                        let old_tris: u64 = app.state.world.cached_draw_calls.iter().map(|dc| {
-                            dc.indices.as_ref().map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
-                        }).sum();
+                        let new_tris: u64 = app
+                            .state
+                            .world
+                            .collector
+                            .draw_calls
+                            .iter()
+                            .map(|dc| {
+                                dc.indices
+                                    .as_ref()
+                                    .map_or(dc.vertices.len() as u64 / 3, |idx| {
+                                        idx.len() as u64 / 3
+                                    })
+                            })
+                            .sum();
+                        let old_tris: u64 = app
+                            .state
+                            .world
+                            .cached_draw_calls
+                            .iter()
+                            .map(|dc| {
+                                dc.indices
+                                    .as_ref()
+                                    .map_or(dc.vertices.len() as u64 / 3, |idx| {
+                                        idx.len() as u64 / 3
+                                    })
+                            })
+                            .sum();
                         if new_tris != old_tris {
                             debug_log_620b84(
                                 "event_handler.rs:cache_update",
                                 "cache_tris_changed",
-                                &format!(r#"{{"hypothesisId":"E","old_tris":{},"new_tris":{},"dc_old":{},"dc_new":{}}}"#,
-                                    old_tris, new_tris, app.state.world.cached_draw_calls.len(), app.state.world.collector.draw_calls.len()),
+                                &format!(
+                                    r#"{{"hypothesisId":"E","old_tris":{},"new_tris":{},"dc_old":{},"dc_new":{}}}"#,
+                                    old_tris,
+                                    new_tris,
+                                    app.state.world.cached_draw_calls.len(),
+                                    app.state.world.collector.draw_calls.len()
+                                ),
                             );
                         }
                     }
@@ -958,6 +1029,33 @@ pub(crate) fn window_event(
                     });
                 renderer.interaction_active = cam_interacting;
 
+                let interaction_tris: u64 = if cam_interacting {
+                    app.state
+                        .world
+                        .collector
+                        .draw_calls
+                        .iter()
+                        .map(|dc| {
+                            dc.indices
+                                .as_ref()
+                                .map_or(dc.vertices.len() as u64 / 3, |idx| idx.len() as u64 / 3)
+                        })
+                        .sum()
+                } else {
+                    0
+                };
+                let interaction_quality_override = cam_interacting && interaction_tris > 200_000;
+                let saved_hdr = renderer.hdr_post_processing;
+                let saved_display = renderer.display_mode();
+                if interaction_quality_override {
+                    renderer.hdr_post_processing = false;
+                    if interaction_tris > 500_000 {
+                        renderer.set_display_mode(DisplayMode::Flat);
+                    } else if saved_display == DisplayMode::ShadedWithEdges {
+                        renderer.set_display_mode(DisplayMode::Shaded);
+                    }
+                }
+
                 if !app.state.world.collector.draw_calls.is_empty() {
                     let mut overlay = None;
                     if let Some(ui) = &mut app.state.editor_ui {
@@ -999,14 +1097,19 @@ pub(crate) fn window_event(
                     let has_dynamic_scene = app.state.world.engines.is_some();
                     let allow_downgrade = idle_for_secs < 0.35 || has_dynamic_scene;
                     let lock_idle = idle_for_secs >= 2.0 && !has_dynamic_scene;
-                    let adaptive_control = match app.state.adaptive_quality_mode {
-                        AdaptiveQualityMode::Off => AdaptiveControl::Disabled,
-                        AdaptiveQualityMode::On => AdaptiveControl::Dynamic { allow_downgrade },
-                        AdaptiveQualityMode::AutoIdleLock => {
-                            if lock_idle {
-                                AdaptiveControl::Locked
-                            } else {
-                                AdaptiveControl::Dynamic { allow_downgrade }
+                    let large_scene = app.state.last_render_stats.visible_triangles > 500_000;
+                    let adaptive_control = if large_scene {
+                        AdaptiveControl::Locked
+                    } else {
+                        match app.state.adaptive_quality_mode {
+                            AdaptiveQualityMode::Off => AdaptiveControl::Disabled,
+                            AdaptiveQualityMode::On => AdaptiveControl::Dynamic { allow_downgrade },
+                            AdaptiveQualityMode::AutoIdleLock => {
+                                if lock_idle {
+                                    AdaptiveControl::Locked
+                                } else {
+                                    AdaptiveControl::Dynamic { allow_downgrade }
+                                }
                             }
                         }
                     };
@@ -1055,6 +1158,10 @@ pub(crate) fn window_event(
                         }
                         Err(e) => log::warn!("Surface error during no-op frame: {:?}", e),
                     }
+                }
+                if interaction_quality_override {
+                    renderer.hdr_post_processing = saved_hdr;
+                    renderer.set_display_mode(saved_display);
                 }
                 if app.state.continuous_redraw {
                     window.request_redraw();

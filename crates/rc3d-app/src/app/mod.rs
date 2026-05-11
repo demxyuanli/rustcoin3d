@@ -472,6 +472,25 @@ impl App {
         }
     }
 
+    fn find_camera_projection(graph: &SceneGraph, node: NodeId) -> Option<Mat4> {
+        let entry = graph.get(node)?;
+        match &entry.data {
+            rc3d_scene::NodeData::PerspectiveCamera(cam) => {
+                return Some(cam.projection_matrix());
+            }
+            rc3d_scene::NodeData::OrthographicCamera(cam) => {
+                return Some(cam.projection_matrix());
+            }
+            _ => {}
+        }
+        for &child in &entry.children {
+            if let Some(p) = Self::find_camera_projection(graph, child) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
     /// Viewport id under the cursor (winit physical pixels), using the same viewport resolution rules as scene picking.
     pub(super) fn viewport_id_under_cursor(&self) -> Option<rc3d_render::viewport::ViewportId> {
         let r = self.state.renderer.as_ref()?;
@@ -638,7 +657,9 @@ impl App {
             let cam_active = self.state.camera_controller.as_ref().map_or(false, |c| {
                 c.middle_orbit_held || c.left_orbit_held || c.panning
             }) || self.state.viewport_cameras.cameras.iter().any(|vc| {
-                vc.controller.middle_orbit_held || vc.controller.left_orbit_held || vc.controller.panning
+                vc.controller.middle_orbit_held
+                    || vc.controller.left_orbit_held
+                    || vc.controller.panning
             });
             if cam_active {
                 return true;

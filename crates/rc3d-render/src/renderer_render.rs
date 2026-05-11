@@ -136,25 +136,29 @@ impl super::Renderer {
             }
         }
 
+        // Compute VP + camera_pos early for text billboard projection
+        let text_vp = draw_calls.first().map(|dc| dc.mvp * dc.model_matrix.inverse());
+        let text_cam = draw_calls.first().map(|dc| dc.camera_pos);
+        let text_viewport = self.gpu.hud.as_ref().map(|h| (h.width, h.height));
+
         // Fast-path: auto-learn whether scene has text/effect nodes.
         // First 2 frames always traverse to detect; after that, skip if empty.
         if let Some(hud) = &mut self.gpu.hud {
-            hud.overlay_lines = if self.frame.has_text_nodes || self.frame.frame_counter < 2 {
-                let lines: Vec<String> = self.cpu_span.measure("text_collect", || {
-                    render_passes::pass_text::collect_text_nodes(scene)
-                })
-                .into_iter()
-                .map(|cmd| {
-                    let _ = (cmd.screen_pos, cmd.size, cmd.color, cmd.is_3d);
-                    cmd.string
-                })
-                .collect();
-                if lines.is_empty() && self.frame.frame_counter >= 2 {
+            if self.frame.has_text_nodes || self.frame.frame_counter < 2 {
+                let t = self.cpu_span.measure("text_collect", || {
+                    render_passes::pass_text::collect_text_nodes(scene, text_vp, text_viewport, text_cam)
+                });
+                hud.overlay_lines = t.overlay_lines;
+                hud.positioned_texts = t.positioned;
+                if hud.overlay_lines.is_empty()
+                    && hud.positioned_texts.is_empty()
+                    && self.frame.frame_counter >= 2
+                {
                     self.frame.has_text_nodes = false;
                 }
-                lines
             } else {
-                Vec::new()
+                hud.overlay_lines = Vec::new();
+                hud.positioned_texts = Vec::new();
             };
         }
         let effect_commands = if self.frame.has_effect_nodes || self.frame.frame_counter < 2 {
@@ -271,21 +275,19 @@ impl super::Renderer {
         {
             static RENDER_SEQ: AtomicU64 = AtomicU64::new(0);
             let seq = RENDER_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
-            if seq < 5 || seq % 60 == 0 {
-                let total_dc = draw_calls.len();
+            let total_dc = draw_calls.len();
+            let total_tris: u64 = visible.iter().map(|dc| {
+                if let Some(ref md) = dc.meshlet_data { md.total_triangles as u64 }
+                else if let Some(ref idx) = dc.indices { (idx.len() / 3) as u64 }
+                else { (dc.vertices.len() / 3) as u64 }
+            }).sum();
+            if (seq < 5 || self.interaction_active) && total_tris > 100 {
                 let vis = visible.len();
-                let total_tris: u64 = visible.iter().map(|dc| {
-                    if let Some(ref md) = dc.meshlet_data { md.total_triangles as u64 }
-                    else if let Some(ref idx) = dc.indices { (idx.len() / 3) as u64 }
-                    else { (dc.vertices.len() / 3) as u64 }
-                }).sum();
-                let bvh_static = self.frame.bvh_fully_static;
-                let static_fc = self.frame.static_frame_count;
                 debug_log_620b84_render(
                     "renderer_render.rs:frustum_cull",
                     "cull_result",
-                    &format!(r#"{{"hypothesisId":"D","frame":{},"total_dc":{},"visible":{},"total_tris":{},"bvh_static":{},"static_frame_count":{},"perf_mode":{},"interaction_active":{}}}"#,
-                        seq, total_dc, vis, total_tris, bvh_static, static_fc, self.frame.performance_mode_active, self.interaction_active),
+                    &format!(r#"{{"hypothesisId":"H","frame":{},"total_dc":{},"visible":{},"total_tris":{},"perf_mode":{},"interaction_active":{},"hdr":{}}}"#,
+                        seq, total_dc, vis, total_tris, self.frame.performance_mode_active, self.interaction_active, self.hdr_post_processing),
                 );
             }
         }

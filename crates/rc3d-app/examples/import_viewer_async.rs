@@ -43,8 +43,7 @@ fn main() {
 
     println!("Loading in background: {}", path);
 
-    let mut app =
-        App::new(SceneGraph::new()).with_initial_display_mode(DisplayMode::Shaded);
+    let mut app = App::new(SceneGraph::new()).with_initial_display_mode(DisplayMode::Shaded);
     app.set_pending_graph_receiver(rx);
     app.set_graph_load_hook(move |app| {
         let (target, orbit_radius) =

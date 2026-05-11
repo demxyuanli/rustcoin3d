@@ -3,6 +3,7 @@ use glyphon::{
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 
+use crate::render_passes::pass_text::TextDrawCommand;
 use crate::renderer::FrameStats;
 
 fn compose_hud_text(
@@ -37,10 +38,13 @@ pub struct HudRenderer {
     atlas: TextAtlas,
     text_renderer: TextRenderer,
     buffer: Buffer,
-    width: u32,
-    height: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     /// User-defined overlay text lines displayed above FPS stats.
     pub overlay_lines: Vec<String>,
+    /// Positioned text entries from Billboards / Text3 nodes.
+    pub(crate) positioned_texts: Vec<TextDrawCommand>,
+    positioned_buffers: Vec<Buffer>,
 }
 
 impl HudRenderer {
@@ -80,6 +84,8 @@ impl HudRenderer {
             width,
             height,
             overlay_lines: Vec::new(),
+            positioned_texts: Vec::new(),
+            positioned_buffers: Vec::new(),
         };
         hud.viewport.update(queue, Resolution { width, height });
         hud
@@ -111,7 +117,23 @@ impl HudRenderer {
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let areas = [TextArea {
+        // Ensure enough positioned buffers exist
+        self.positioned_buffers.clear();
+        for cmd in &self.positioned_texts {
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
+            buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
+            buf.set_text(
+                &mut self.font_system,
+                &cmd.string,
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            buf.shape_until_scroll(&mut self.font_system, false);
+            self.positioned_buffers.push(buf);
+        }
+
+        let mut areas: Vec<TextArea> = Vec::with_capacity(1 + self.positioned_texts.len());
+        areas.push(TextArea {
             buffer: &self.buffer,
             left: 12.0,
             top: 12.0,
@@ -124,7 +146,29 @@ impl HudRenderer {
             },
             default_color: Color::rgb(240, 240, 240),
             custom_glyphs: &[],
-        }];
+        });
+        for (i, cmd) in self.positioned_texts.iter().enumerate() {
+            let col = cmd.color;
+            areas.push(TextArea {
+                buffer: &self.positioned_buffers[i],
+                left: cmd.screen_pos[0],
+                top: cmd.screen_pos[1],
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: self.width as i32,
+                    bottom: self.height as i32,
+                },
+                default_color: Color::rgba(
+                    (col[0] * 255.0) as u8,
+                    (col[1] * 255.0) as u8,
+                    (col[2] * 255.0) as u8,
+                    (col[3] * 255.0) as u8,
+                ),
+                custom_glyphs: &[],
+            });
+        }
 
         if let Err(e) = self.text_renderer.prepare(
             device,
