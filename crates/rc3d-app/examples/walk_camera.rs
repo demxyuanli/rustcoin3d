@@ -62,8 +62,8 @@ fn main() {
         .with_camera_controller(ctrl)
         .with_background(BgSettings {
             mode: BgMode::Gradient,
-            top_color: [0.15, 0.25, 0.4, 1.0],
-            bot_color: [0.02, 0.02, 0.05, 1.0],
+            top_color: [0.2, 0.35, 0.55, 1.0],
+            bot_color: [0.03, 0.05, 0.12, 1.0],
             ..Default::default()
         });
     winit::event_loop::EventLoop::new()

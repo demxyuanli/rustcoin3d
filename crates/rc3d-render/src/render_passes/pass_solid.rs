@@ -11,13 +11,18 @@ pub(super) fn pass_depth_prepass(
 ) {
     let prepass_pipeline = scene_pl.solid_depth_prepass.clone();
     let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
+    let load_op = if renderer.gpu.bg_pass.is_some() {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(ctx.bg_color)
+    };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Depth prepass (HZB)"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(ctx.bg_color),
+                load: load_op,
                 store: wgpu::StoreOp::Store,
             },
         })],

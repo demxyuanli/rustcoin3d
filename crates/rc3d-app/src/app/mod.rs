@@ -62,6 +62,7 @@ pub struct App {
     pub panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
     pub panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
     pub panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
+    pub pre_render_hook: Option<Box<dyn FnMut(&mut rc3d_render::Renderer)>>,
 }
 
 impl App {
@@ -132,6 +133,7 @@ impl App {
             panel_overlay_text_hook: None,
             panel_overlay_key_hook: None,
             panel_overlay_mouse_hook: None,
+            pre_render_hook: None,
         };
         log_scene_stats(&app.state.world.graph);
         app
@@ -265,6 +267,14 @@ impl App {
         hook: impl FnMut(f32, f32, u32, u32) -> bool + 'static,
     ) -> Self {
         self.panel_overlay_mouse_hook = Some(Box::new(hook));
+        self
+    }
+
+    pub fn with_pre_render_hook(
+        mut self,
+        hook: impl FnMut(&mut rc3d_render::Renderer) + 'static,
+    ) -> Self {
+        self.pre_render_hook = Some(Box::new(hook));
         self
     }
 

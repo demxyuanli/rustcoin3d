@@ -260,31 +260,35 @@ impl TriangleMesh {
             let p0 = self.positions[v[0] as usize];
             let p1 = self.positions[v[1] as usize];
             let p2 = self.positions[v[2] as usize];
-            self.faces[fi].normal = (p1 - p0).cross(p2 - p0).normalize();
+            let cross = (p1 - p0).cross(p2 - p0);
+            let len = cross.length();
+            self.faces[fi].normal = if len > 1e-20 { cross / len } else { Vec3::Y };
         }
     }
 
     fn compute_vertex_normals(&mut self) {
-        // Area-weighted average of adjacent face normals
         for n in &mut self.normals {
             *n = Vec3::ZERO;
         }
         for fi in 0..self.faces.len() {
             let f = &self.faces[fi];
-            let area = {
-                let p0 = self.positions[f.vertices[0] as usize];
-                let p1 = self.positions[f.vertices[1] as usize];
-                let p2 = self.positions[f.vertices[2] as usize];
-                (p1 - p0).cross(p2 - p0).length()
-            };
-            for &v in &f.vertices {
-                self.normals[v as usize] += f.normal * area;
+            let p0 = self.positions[f.vertices[0] as usize];
+            let p1 = self.positions[f.vertices[1] as usize];
+            let p2 = self.positions[f.vertices[2] as usize];
+            let area = (p1 - p0).cross(p2 - p0).length();
+            if area > 1e-20 {
+                let weighted = f.normal * area;
+                for &v in &f.vertices {
+                    self.normals[v as usize] += weighted;
+                }
             }
         }
         for n in self.normals.iter_mut() {
             let len = n.length();
-            if len > 1e-10 {
+            if len > 1e-10 && len.is_finite() {
                 *n /= len;
+            } else {
+                *n = Vec3::Y;
             }
         }
     }

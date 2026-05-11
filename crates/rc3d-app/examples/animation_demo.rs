@@ -173,8 +173,8 @@ fn main() {
             .with_engines(engines)
             .with_background(BgSettings {
                 mode: BgMode::Gradient,
-                top_color: [0.05, 0.1, 0.2, 1.0],
-                bot_color: [0.01, 0.02, 0.05, 1.0],
+                top_color: [0.15, 0.3, 0.6, 1.0],
+                bot_color: [0.02, 0.04, 0.1, 1.0],
                 ..Default::default()
             }))
         .expect("event loop");
