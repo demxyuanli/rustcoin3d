@@ -27,14 +27,16 @@ pub(super) fn build_depth_mode_pipelines(
         write_mask: 0x00,
     };
 
-    let (depth_cmp, depth_cmp_overlay) = if depth_reversed_z {
+    let (depth_cmp_prepass, depth_cmp_main, depth_cmp_overlay) = if depth_reversed_z {
         (
             wgpu::CompareFunction::Greater,
+            wgpu::CompareFunction::GreaterEqual,
             wgpu::CompareFunction::GreaterEqual,
         )
     } else {
         (
             wgpu::CompareFunction::Less,
+            wgpu::CompareFunction::LessEqual,
             wgpu::CompareFunction::LessEqual,
         )
     };
@@ -42,7 +44,7 @@ pub(super) fn build_depth_mode_pipelines(
     let depth_stencil = wgpu::DepthStencilState {
         format: depth_format,
         depth_write_enabled: true,
-        depth_compare: depth_cmp,
+        depth_compare: depth_cmp_prepass,
         stencil: stencil_unchanged.clone(),
         bias: wgpu::DepthBiasState::default(),
     };
@@ -50,7 +52,7 @@ pub(super) fn build_depth_mode_pipelines(
     let depth_stencil_solid = wgpu::DepthStencilState {
         format: depth_format,
         depth_write_enabled: true,
-        depth_compare: depth_cmp,
+        depth_compare: depth_cmp_main,
         stencil: wgpu::StencilState {
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Always,
@@ -73,7 +75,7 @@ pub(super) fn build_depth_mode_pipelines(
     let depth_stencil_outline = wgpu::DepthStencilState {
         format: depth_format,
         depth_write_enabled: false,
-        depth_compare: depth_cmp,
+        depth_compare: depth_cmp_main,
         stencil: wgpu::StencilState {
             front: stencil_op_keep(wgpu::CompareFunction::Always),
             back: wgpu::StencilFaceState {
@@ -117,7 +119,7 @@ pub(super) fn build_depth_mode_pipelines(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: None,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -151,7 +153,7 @@ pub(super) fn build_depth_mode_pipelines(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: None,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -222,12 +224,15 @@ pub(super) fn build_depth_mode_pipelines(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: None,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
         },
-        depth_stencil: Some(depth_stencil.clone()),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            depth_compare: depth_cmp_main,
+            ..depth_stencil.clone()
+        }),
         multisample: ms,
         multiview: None,
         cache: None,
@@ -306,7 +311,7 @@ pub(super) fn build_depth_mode_pipelines(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: None,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -433,7 +438,7 @@ pub(super) fn build_depth_mode_pipelines(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            cull_mode: None,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -441,7 +446,7 @@ pub(super) fn build_depth_mode_pipelines(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
             depth_write_enabled: false,
-            depth_compare: depth_cmp,
+            depth_compare: depth_cmp_main,
             stencil: stencil_unchanged.clone(),
             bias: wgpu::DepthBiasState::default(),
         }),

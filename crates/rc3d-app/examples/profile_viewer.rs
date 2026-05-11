@@ -73,7 +73,7 @@ fn main() {
         })
         .with_panel_overlay_key_hook({
             let state = state.clone();
-            move |key| {
+            move |key| -> bool {
                 use winit::keyboard::KeyCode;
                 let new_count = match key {
                     KeyCode::Digit1 => Some(10),
@@ -83,12 +83,12 @@ fn main() {
                     _ => None,
                 };
                 if let Some(count) = new_count {
-                    // Signal scene rebuild with new object count
                     if let Ok(mut s) = state.lock() {
                         s.object_count = count;
                         println!("Switching to {} objects — restart example to apply", count);
                         println!("(Dynamic scene rebuild not yet wired)");
                     }
+                    return true;
                 }
                 if key == KeyCode::KeyP {
                     if let Ok(s) = state.lock() {
@@ -105,7 +105,9 @@ fn main() {
                         }
                         println!("╚════════════════════════════╝\n");
                     }
+                    return true;
                 }
+                false
             }
         });
 

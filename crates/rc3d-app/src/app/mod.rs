@@ -60,7 +60,7 @@ pub struct App {
     pub pending_graph_rx: Option<std::sync::mpsc::Receiver<rc3d_core::EngineResult<SceneGraph>>>,
     pub graph_load_hook: Option<Box<dyn FnOnce(&mut App) + 'static>>,
     pub panel_overlay_text_hook: Option<Box<dyn Fn() -> String>>,
-    pub panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode)>>,
+    pub panel_overlay_key_hook: Option<Box<dyn FnMut(winit::keyboard::KeyCode) -> bool>>,
     pub panel_overlay_mouse_hook: Option<Box<dyn FnMut(f32, f32, u32, u32) -> bool>>,
     pub pre_render_hook: Option<Box<dyn FnMut(&mut rc3d_render::Renderer)>>,
 }
@@ -256,7 +256,7 @@ impl App {
 
     pub fn with_panel_overlay_key_hook(
         mut self,
-        hook: impl FnMut(winit::keyboard::KeyCode) + 'static,
+        hook: impl FnMut(winit::keyboard::KeyCode) -> bool + 'static,
     ) -> Self {
         self.panel_overlay_key_hook = Some(Box::new(hook));
         self

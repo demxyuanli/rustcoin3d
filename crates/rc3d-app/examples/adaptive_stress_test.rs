@@ -75,7 +75,7 @@ fn main() {
         })
         .with_panel_overlay_key_hook({
             let state = state.clone();
-            move |key| {
+            move |key| -> bool {
                 use winit::keyboard::KeyCode;
                 if let Ok(mut s) = state.lock() {
                     match key {
@@ -85,6 +85,7 @@ fn main() {
                                 "Scene complexity: {} objects (restart to apply)",
                                 s.object_count
                             );
+                            return true;
                         }
                         KeyCode::Minus | KeyCode::NumpadSubtract => {
                             s.object_count = s.object_count.saturating_sub(200).max(100);
@@ -92,20 +93,24 @@ fn main() {
                                 "Scene complexity: {} objects (restart to apply)",
                                 s.object_count
                             );
+                            return true;
                         }
                         KeyCode::KeyL => {
                             s.locked = !s.locked;
                             println!("Quality lock: {}", if s.locked { "ON" } else { "OFF" });
+                            return true;
                         }
                         KeyCode::KeyQ => {
                             println!(
                                 "Current quality: {} @ {:.2}ms",
                                 s.current_quality, s.frame_time_ms
                             );
+                            return true;
                         }
                         _ => {}
                     }
                 }
+                false
             }
         });
 

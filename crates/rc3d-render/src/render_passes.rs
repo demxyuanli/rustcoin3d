@@ -177,7 +177,7 @@ pub(super) fn execute_passes(
 
     // ── Background pass (gradient / image / solid) ──
     if let Some(ref bg) = renderer.gpu.bg_pass {
-        bg.encode(&renderer.device, &renderer.queue, &mut encoder, shade_view, &renderer.gpu.bg_settings);
+        bg.encode(&renderer.device, &renderer.queue, &mut encoder, shade_view, &renderer.gpu.bg_settings, ew, eh);
     }
 
     // ── GPU compute culling dispatch ──
@@ -237,6 +237,7 @@ pub(super) fn execute_passes(
             .any(|&i| !ctx.visible[i].depth_reversed_z);
 
     let requested_meshlet_hzb_prepass = solid_mode
+        && mode != DisplayMode::Flat
         && !ctx.meshlet_indices.is_empty()
         && renderer.gpu.cluster_renderer.is_some()
         && renderer.gpu.hzb.is_some()
@@ -376,7 +377,7 @@ pub(super) fn execute_passes(
         }
     }
 
-    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() {
+    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat {
         if let (Some(cluster_renderer), Some(hzb)) =
             (renderer.gpu.cluster_renderer.as_ref(), renderer.gpu.hzb.as_ref())
         {
@@ -674,12 +675,6 @@ pub(super) fn execute_passes(
             let h = eh;
             let proj = ctx.camera_proj.to_cols_array_2d();
             let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
-
-            // ── Auto Exposure ──
-            let _exposure = renderer.gpu.auto_exposure.update(
-                &renderer.device, &renderer.queue, &mut encoder,
-                &fx.hdr_view, w, h, 0.016,
-            );
 
             // ── SSR (screen-space reflections) ──
             if renderer.enable_ssr {

@@ -330,6 +330,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (light_type == 0) {
             let cascade_sel = select_cascade_blended(view_depth);
             sh = shadow_factor_csm_blended(in.world_pos, in.world_normal, -light_dir, cascade_sel);
+            sh = max(sh, 0.3);
         }
 #else
         let sh = 1.0;

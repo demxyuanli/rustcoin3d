@@ -21,11 +21,13 @@ pub struct PostEffectParams {
     pub chromatic: f32,
     pub bloom_str: f32,
     pub grain: f32,
+    pub exposure: f32,
+    pub _pad: [f32; 3],
 }
 
 impl Default for PostEffectParams {
     fn default() -> Self {
-        Self { vignette: 0.3, chromatic: 0.0, bloom_str: 0.8, grain: 0.0 }
+        Self { vignette: 0.3, chromatic: 0.0, bloom_str: 0.8, grain: 0.0, exposure: 1.0, _pad: [0.0; 3] }
     }
 }
 

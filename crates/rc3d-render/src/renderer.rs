@@ -149,13 +149,18 @@ impl Renderer {
     }
 
     pub fn set_background(&mut self, settings: crate::background::BgSettings) {
-        if let (Some(ref mut bg), Some(ref img_path)) =
-            (&mut self.gpu.bg_pass, &settings.image_path)
-        {
-            bg.set_image(&self.device, &self.queue, img_path);
+        self.ensure_bg_pass();
+        if let Some(ref mut bg) = self.gpu.bg_pass {
+            if let Some(ref img_path) = settings.image_path {
+                bg.set_image(&self.device, &self.queue, img_path);
+            }
+            for (face, path) in settings.cube_faces.iter().enumerate() {
+                if let Some(ref p) = path {
+                    bg.set_cube_face(&self.device, &self.queue, face, p);
+                }
+            }
         }
         self.gpu.bg_settings = settings;
-        self.ensure_bg_pass();
     }
 
     pub fn ensure_decal_pass(&mut self) {
@@ -895,8 +900,9 @@ impl Renderer {
     }
 
     /// Update post-processing effect parameters at runtime.
+    /// Exposure is managed separately by auto_exposure and written per-frame.
     pub fn set_post_effect_params(&mut self, vignette: f32, chromatic: f32, bloom_str: f32, grain: f32) {
-        let params = crate::post_processor::PostEffectParams { vignette, chromatic, bloom_str, grain };
+        let params = crate::post_processor::PostEffectParams { vignette, chromatic, bloom_str, grain, exposure: 1.0, _pad: [0.0; 3] };
         self.queue.write_buffer(&self.gpu.post_fx_pipelines.post_params_buf, 0, bytemuck::bytes_of(&params));
     }
 

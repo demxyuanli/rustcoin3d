@@ -10,6 +10,10 @@ struct PostParams {
     chromatic: f32,
     bloom_str: f32,
     grain: f32,
+    exposure: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 @group(0) @binding(4) var<uniform> params: PostParams;
 
@@ -87,9 +91,9 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let bloom_sample = textureSampleLevel(t_bloom, s_point, i.uv, 0.0).rgb;
     filtered = filtered + bloom_sample * params.bloom_str;
 
-    // SSAO application
+    // SSAO application (clamped to avoid over-darkening enclosed geometry)
     let ao = textureSampleLevel(t_ssao, s_point, i.uv, 0.0).r;
-    filtered = filtered * mix(0.85, 1.0, ao);
+    filtered = filtered * mix(0.92, 1.0, ao);
 
     // ACES tonemapping
     let ldr = tonemap_aces(filtered);

@@ -231,8 +231,9 @@ fn main() {
                 let sel = *selected_for_text.lock().expect("panel selected lock");
                 build_render_features_panel_overlay_with_selection(&panel_for_text, sel)
             })
-            .with_panel_overlay_key_hook(move |key| {
-                apply_render_features_panel_key(&panel_for_key, &selected_for_key, key)
+            .with_panel_overlay_key_hook(move |key| -> bool {
+                apply_render_features_panel_key(&panel_for_key, &selected_for_key, key);
+                false
             })
             .with_panel_overlay_mouse_hook(move |x, y, w, h| {
                 apply_render_features_panel_mouse(&panel_for_mouse, &selected_for_mouse, x, y, w, h)

@@ -82,6 +82,9 @@ fn draw_flat_triangle_batches(
 ) {
     pass.set_pipeline(flat_solid_pipeline);
 
+    let mut drawn = 0u32;
+    let mut no_mesh = 0u32;
+    let mut no_uniform = 0u32;
     let mut last_bound_mesh = None;
     for &i in ctx.solid_order {
         let dc = ctx.visible[i];
@@ -93,7 +96,28 @@ fn draw_flat_triangle_batches(
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             if let Some(mesh_id) = ctx.mesh_handles[i] {
                 renderer.draw_mesh_instanced(pass, mesh_id, 0, 1, &mut last_bound_mesh);
+                drawn += 1;
+            } else {
+                no_mesh += 1;
             }
+        } else {
+            no_uniform += 1;
+        }
+    }
+    if renderer.frame.frame_counter % 120 == 0 {
+        log::info!(
+            "[FLAT DIAG] solid_order={} drawn={} no_mesh={} no_uniform={} depth_rev={}",
+            ctx.solid_order.len(), drawn, no_mesh, no_uniform, ctx.depth_reversed_z
+        );
+        if let Some(&first) = ctx.solid_order.first() {
+            let dc = ctx.visible[first];
+            log::info!(
+                "[FLAT DIAG] dc[0]: diffuse=({:.2},{:.2},{:.2}) mvp_det={:.4} verts_empty={} meshlet={}",
+                dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z,
+                glam::Mat4::from_cols_array_2d(&dc.mvp.to_cols_array_2d()).determinant(),
+                dc.vertices.is_empty(),
+                dc.meshlet_data.is_some()
+            );
         }
     }
 }

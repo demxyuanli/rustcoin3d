@@ -9,6 +9,7 @@ use rc3d_actions::{update_all_lod_nodes, Action, SectionPlaneAction};
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::{DisplayMode, NodeId};
 use rc3d_gizmo::GizmoMode;
+use rc3d_render::background::{BgMode, ImageFit};
 use rc3d_render::{AdaptiveControl, DrawCall, Renderer};
 
 use crate::editor_ui::{EditorCommand, EditorUi, EditorUiContext, RenderFeatureFlags};
@@ -141,13 +142,16 @@ pub(crate) fn window_event(
             }
             if key_event.state == winit::event::ElementState::Pressed && !key_event.repeat {
                 let key = key_event.physical_key;
+                let mut key_consumed = false;
                 if let winit::keyboard::PhysicalKey::Code(code) = key {
                     app.state.adaptive_last_interaction = Instant::now();
                     if let Some(hook) = &mut app.panel_overlay_key_hook {
-                        hook(code);
+                        key_consumed = hook(code);
                     }
                 }
-                match key {
+                if key_consumed {
+                    // Hook consumed this key; skip default key handling
+                } else { match key {
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyW) => {
                         if app
                             .state
@@ -254,6 +258,33 @@ pub(crate) fn window_event(
                             "Grid: {}",
                             if app.editor.grid_enabled { "on" } else { "off" }
                         );
+                    }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyB)
+                    | winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F6) => {
+                        let cur_mode = app.state.bg_settings.as_ref().map(|s| s.mode).unwrap_or(BgMode::Solid);
+                        let cur_fit = app.state.bg_settings.as_ref().map(|s| s.image_fit).unwrap_or_default();
+                        let (next_mode, next_fit, name): (BgMode, ImageFit, &str) = match (cur_mode, cur_fit) {
+                            (BgMode::VerticalGradient, _) => (BgMode::HorizontalGradient, ImageFit::Stretch, "Horizontal"),
+                            (BgMode::HorizontalGradient, _) => (BgMode::CenterGradient, ImageFit::Stretch, "Center (radial)"),
+                            (BgMode::CenterGradient, _) => (BgMode::DiagonalGradient, ImageFit::Stretch, "Diagonal"),
+                            (BgMode::DiagonalGradient, _) => (BgMode::Image, ImageFit::Stretch, "Image Stretch"),
+                            (BgMode::Image, ImageFit::Stretch) => (BgMode::Image, ImageFit::Tile, "Image Tile"),
+                            (BgMode::Image, ImageFit::Tile) => (BgMode::Image, ImageFit::Original, "Image Original"),
+                            (BgMode::Image, ImageFit::Original) => (BgMode::Image, ImageFit::CubeMap, "Image CubeMap"),
+                            (BgMode::Image, ImageFit::CubeMap) => (BgMode::Solid, ImageFit::Stretch, "Solid"),
+                            _ => (BgMode::VerticalGradient, ImageFit::Stretch, "Vertical"),
+                        };
+                        let mut settings = app.state.bg_settings.clone().unwrap_or_default();
+                        settings.mode = next_mode;
+                        settings.image_fit = next_fit;
+                        if next_mode == BgMode::Image && settings.image_path.is_none() {
+                            settings.image_path = Some("bg.png".to_string());
+                        }
+                        if let Some(renderer) = &mut app.state.renderer {
+                            renderer.set_background(settings.clone());
+                        }
+                        app.state.bg_settings = Some(settings);
+                        log::warn!("Background: {name}");
                     }
                     // Camera bookmarks: Ctrl+Digit = save, Digit = recall
                     k @ winit::keyboard::PhysicalKey::Code(
@@ -365,7 +396,7 @@ pub(crate) fn window_event(
                         }
                     }
                     _ => {}
-                }
+                } }
                 if let Some(window) = &app.state.window {
                     window.request_redraw();
                 }
@@ -861,6 +892,10 @@ pub(crate) fn window_event(
                     ));
                     let light_sets = std::mem::take(&mut app.state.world.collector.light_sets);
                     renderer.set_light_sets(light_sets);
+                }
+
+                if let Some(hook) = &mut app.pre_render_hook {
+                    hook(renderer);
                 }
 
                 let cam_interacting =

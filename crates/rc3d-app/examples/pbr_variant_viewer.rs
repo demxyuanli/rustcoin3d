@@ -80,7 +80,7 @@ fn main() {
         })
         .with_panel_overlay_key_hook({
             let state = state.clone();
-            move |key| {
+            move |key| -> bool {
                 use winit::keyboard::KeyCode;
                 if key == KeyCode::KeyV {
                     if let Ok(s) = state.lock() {
@@ -90,7 +90,9 @@ fn main() {
                         println!("║ Frame time:    {:>6.2}ms        ║", s.frame_time_ms);
                         println!("╚═════════════════════════════════╝\n");
                     }
+                    return true;
                 }
+                false
             }
         });
 

@@ -66,13 +66,18 @@ pub(super) fn pass_solid_and_outline(
         wgpu::LoadOp::Clear(0u32)
     };
     let pass_label = if ctx.run_outline { "Solid+Outline Pass" } else { "Solid Pass" };
+    let color_load = if reuse_prepass_depth || renderer.gpu.bg_pass.is_some() {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(ctx.bg_color)
+    };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(pass_label),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(ctx.bg_color),
+                load: color_load,
                 store: wgpu::StoreOp::Store,
             },
         })],

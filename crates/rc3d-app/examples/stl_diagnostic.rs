@@ -70,12 +70,19 @@ fn main() {
     let stage = Arc::new(AtomicU32::new(initial_stage));
     let stage_for_text = stage.clone();
     let stage_for_key = stage.clone();
+    let stage_for_render = stage.clone();
 
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
         .with_initial_display_mode(display_mode)
         .with_hdr_post_processing(hdr)
         .with_continuous_redraw(true)
+        .with_pre_render_hook(move |renderer| {
+            let s = stage_for_render.load(Ordering::Relaxed);
+            let (mode, hdr) = stage_config(s);
+            renderer.set_display_mode(mode);
+            renderer.set_hdr_post_processing(hdr);
+        })
         .with_panel_overlay_text_hook(move || {
             let s = stage_for_text.load(Ordering::Relaxed);
             let (mode, hdr) = stage_config(s);
@@ -86,7 +93,7 @@ fn main() {
                  +-----------------------------+"
             )
         })
-        .with_panel_overlay_key_hook(move |key| {
+        .with_panel_overlay_key_hook(move |key| -> bool {
             use winit::keyboard::KeyCode;
             let new = match key {
                 KeyCode::Digit1 => Some(1u32),
@@ -102,6 +109,9 @@ fn main() {
                     let (mode, hdr) = stage_config(s);
                     println!("[DIAG] Stage {s}: mode={mode:?} hdr={hdr}");
                 }
+                true
+            } else {
+                false
             }
         });
 
