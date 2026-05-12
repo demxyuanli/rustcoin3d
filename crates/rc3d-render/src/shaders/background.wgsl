@@ -1,10 +1,13 @@
-// Fullscreen background pass — gradient, image, or solid color.
+// Fullscreen background pass — gradients, 2D image (stretch/tile/original), solid.
 
 struct BgParams {
-    mode: u32,             // 0=gradient, 1=image, 2=solid
-    top_color: vec4<f32>,  // gradient top / solid color
-    bot_color: vec4<f32>,  // gradient bottom
-    _pad: vec2<f32>,
+    mode: u32,             // 0=vertical, 1=horizontal, 2=center, 3=diagonal, 4=image, 5=solid
+    image_fit: u32,        // 0=stretch, 1=tile, 2=original
+    _pad0: vec2<u32>,
+    top_color: vec4<f32>,
+    bot_color: vec4<f32>,
+    image_size: vec2<f32>,
+    screen_size: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> bg: BgParams;
@@ -27,16 +30,44 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return o;
 }
 
+fn sample_image(uv: vec2<f32>) -> vec4<f32> {
+    if bg.image_fit == 0u {
+        // Stretch: direct UV mapping
+        return textureSample(t_image, s_image, uv);
+    } else if bg.image_fit == 1u {
+        // Tile: repeat UV by image-to-screen ratio
+        let tile = bg.screen_size / bg.image_size;
+        return textureSample(t_image, s_image, fract(uv * tile));
+    }
+    // Original size, centered; bot_color fills borders
+    let scale = bg.image_size / bg.screen_size;
+    let img_uv = (uv - 0.5) / scale + 0.5;
+    if img_uv.x < 0.0 || img_uv.x > 1.0 || img_uv.y < 0.0 || img_uv.y > 1.0 {
+        return bg.bot_color;
+    }
+    return textureSample(t_image, s_image, img_uv);
+}
+
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     if bg.mode == 0u {
-        // Gradient: lerp top to bottom using uv.y
+        // Vertical gradient: top → bottom
         return mix(bg.bot_color, bg.top_color, vec4<f32>(i.uv.y));
     } else if bg.mode == 1u {
-        // Image: sample texture
-        let tex = textureSample(t_image, s_image, i.uv);
-        return tex;
+        // Horizontal gradient: left → right
+        return mix(bg.bot_color, bg.top_color, vec4<f32>(i.uv.x));
+    } else if bg.mode == 2u {
+        // Center (radial) gradient: center → edges
+        let dist = distance(i.uv, vec2<f32>(0.5, 0.5)) * 1.414;
+        return mix(bg.top_color, bg.bot_color, vec4<f32>(saturate(dist)));
+    } else if bg.mode == 3u {
+        // Diagonal gradient: bottom-left → top-right
+        let t = (i.uv.x + i.uv.y) * 0.5;
+        return mix(bg.bot_color, bg.top_color, vec4<f32>(t));
+    } else if bg.mode == 4u {
+        // Image with fit mode
+        return sample_image(i.uv);
     }
-    // Solid color (mode 2 or default): top_color
+    // Solid (mode 5 or default): top_color
     return bg.top_color;
 }

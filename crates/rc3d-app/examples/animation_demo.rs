@@ -172,9 +172,9 @@ fn main() {
             .with_camera_controller(ctrl)
             .with_engines(engines)
             .with_background(BgSettings {
-                mode: BgMode::Gradient,
-                top_color: [0.15, 0.3, 0.6, 1.0],
-                bot_color: [0.02, 0.04, 0.1, 1.0],
+                mode: BgMode::VerticalGradient,
+                top_color: [1.0, 0.5, 0.1, 1.0],
+                bot_color: [0.02, 0.05, 0.25, 1.0],
                 ..Default::default()
             }))
         .expect("event loop");

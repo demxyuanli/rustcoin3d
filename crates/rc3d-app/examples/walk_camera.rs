@@ -61,7 +61,7 @@ fn main() {
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
         .with_background(BgSettings {
-            mode: BgMode::Gradient,
+            mode: BgMode::VerticalGradient,
             top_color: [0.2, 0.35, 0.55, 1.0],
             bot_color: [0.03, 0.05, 0.12, 1.0],
             ..Default::default()

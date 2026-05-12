@@ -1,8 +1,20 @@
-# rustcoin3d — Industrial 3D Engine
+# rustcoin3d — Industrial 3D Visualization Engine
 
 Coin3D/HOOPS-aligned 3D visualization engine in Rust + wgpu. Designed for
 large-scale industrial visualization: CAD import, real-time rendering,
 and interactive scene editing.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | Crate dependency graph, core design principles, key data structures, NodeData reference |
+| [Rendering Pipeline](docs/rendering-pipeline.md) | Full frame pipeline, culling, lighting, PBR shading, post-processing, draw call batching |
+| [Scene Graph](docs/scene-graph.md) | SceneGraph API, all 47 node types, traversal model, dirty flags, animation, serialization |
+| [Engine System](docs/engine-system.md) | 12 simulation engines, time management, physics, sensors, field connections |
+| [Shaders](docs/shaders.md) | Complete catalog of 45 WGSL shaders with data structures and performance notes |
+| [Gap Analysis](docs/industrial-viz-gap-analysis.md) | Coin3D/HOOPS comparison, roadmap, TODO checklist |
+| [Optimization Guide](docs/optimization-guide.md) | GPU culling, mesh pool, static frame fast path, LightSetTable, shared utils |
 
 ## Quick Start
 
@@ -27,21 +39,22 @@ cargo run -p rc3d-cli-editor
 
 ```
 crates/
-├── rc3d-core/      — Math, AABB, BVH, ID types, shared utils
+├── rc3d-core/       — Math, AABB, BVH, ID types, shared utils (graph, hash, ring, sort)
 ├── rc3d-fields/     — Field/connection system (Coin3D-style)
-├── rc3d-scene/      — Scene graph (SlotMap<NodeId, NodeEntry>), 47 node types
-├── rc3d-actions/    — Traversal actions (ray pick, bounding box, undo, measurement)
-├── rc3d-engine/     — Simulation engines, time management
-├── rc3d-io/         — File import (STL, OBJ, glTF, FBX, Inventor)
+├── rc3d-scene/      — Scene graph (SlotMap<NodeId, NodeEntry>), 47 node types, animation
+├── rc3d-nodes/      — Re-exports (convenience crate)
 ├── rc3d-mesh/       — Triangle mesh, meshlet generation, LOD, tessellation
-├── rc3d-render/     — wgpu renderer (see below)
-├── rc3d-gizmo/      — 3D manipulator (translate, rotate, scale)
-├── rc3d-app/        — Application framework, examples
-├── rc3d-cli-editor/ — Terminal-based editor
 ├── rc3d-nurbs/      — NURBS curves and surfaces
-├── rc3d-pointcloud/ — Point cloud octree
+├── rc3d-actions/    — Traversal actions (ray pick, bounding box, undo, events, intersection)
+├── rc3d-engine/     — Simulation engines, time management, physics, scheduler
+├── rc3d-io/         — File import (STL, OBJ, glTF, FBX, Inventor)
+├── rc3d-render/     — wgpu renderer (PBR, shadows, culling, post-fx, 45 shaders)
+├── rc3d-gizmo/      — 3D manipulator (translate, rotate, scale)
+├── rc3d-script/     — Rhai scripting engine
+├── rc3d-pointcloud/ — Large-scale point cloud octree (OOC)
 ├── rc3d-pdf/        — 3D PDF export
-└── rc3d-script/     — Scripting engine
+├── rc3d-app/        — Application framework, 42 examples, editor UI, camera control
+└── rc3d-cli-editor/ — Terminal-based editor
 ```
 
 ## Renderer
@@ -50,76 +63,97 @@ wgpu-based cluster-deferred PBR renderer:
 
 | Feature | Description |
 |---------|-------------|
-| **PBR** | Metallic-roughness with IBL (HDR environment maps) |
-| **Shadows** | CSM (4 cascades, blend zones), omni-directional |
-| **Lighting** | Cluster-based forward lighting, up to 256 point/spot lights |
-| **Post FX** | TAA, SSR, SSAO, motion blur, DoF, bloom, color grading, volumetric fog |
-| **Meshlet** | GPU-driven cluster culling with HZB occlusion |
-| **Selection** | Screen-space outline, edge overlay, x-ray |
+| **PBR** | Metallic-roughness (GGX/Smith) with IBL (HDR environment maps, BRDF LUT) |
+| **Shadows** | CSM (4 cascades, 8% blend zones), omni-directional point light shadows |
+| **Lighting** | Cluster-based forward (16×8×24 grid), LightSetTable dedup (1280B→4B/draw) |
+| **Post FX** | TAA (YCoCg), SSR (HIZ-accelerated), SSAO, motion blur, DoF, bloom, color grading, volumetric fog, auto-exposure |
+| **GPU Culling** | Dual-path: CPU BVH + GPU compute (frustum + HZB occlusion), meshlet cluster tree |
+| **Selection** | Screen-space outline, edge overlay, bounding box, x-ray mode |
 | **Display** | Shaded, wireframe, hidden-line, flat, shaded-with-edges |
-| **Adaptive** | 5-level quality controller with EMA+hysteresis |
+| **Adaptive** | 5-level quality controller with EMA+hysteresis, interaction-aware reduction |
 
 ### Rendering Pipeline (per frame)
 
 ```
 Frame Start
-├── Static frame fast path? [enabled, scene+camera unchanged 2+ frames]
+├── Static frame fast path? [scene+camera unchanged ≥2 frames]
 │     Yes → reuse cached visible indices → skip culling
 │     No  → continue
-├── GPU culling? [enabled, objects > threshold]
+├── GPU culling? [objects > threshold]
 │     Yes → readback staging → GPU indices replace CPU culling
-│     No  → CPU BVH incremental culling (reused allocations)
-├── Mesh upload [LRU cache, active GPU cleanup on eviction]
+│     No  → CPU BVH incremental culling
+├── Mesh upload [LRU cache, 16 uploads/frame max, 512MB default budget]
 ├── Sort [by light key → material key → distance]
-├── Shadow depth pass [CSM 4 cascades]
+├── CSM shadow depth [4 cascades]
 ├── HZB build [depth downsampling]
 ├── Solid + outline pass [instanced draw batching]
 ├── Effect passes [decal, volume, point cloud]
 ├── Post FX [SSAO → SSR → DoF → bloom → TAA → tonemap]
-└── HUD overlay
+└── HUD overlay [text, grid, viewport dividers]
 ```
 
-## New Modules (2026-05)
-
-### GPU-Driven Rendering
-
-| Module | File | Purpose |
-|--------|------|---------|
-| GPU Culling | `gpu_culling.rs` | Compute shader frustum cull → staging readback |
-| Object Cull Shader | `shaders/object_cull.wgsl` | Per-object AABB vs 6-plane frustum |
-| Mesh Pool | `mesh_pool.rs` | Streaming GPU mesh pool, LRU + budget eviction |
-| Cluster Tree | `cluster_tree.rs` | Hierarchical LOD cluster culling pipeline |
-| Tree Cull Shader | `shaders/cluster_tree_cull.wgsl` | Multi-level cluster frustum + HZB cull |
-| Light Set | `light_set.rs` | Deduplicated light parameters (1280B → 4B/draw) |
-
-### Shared Utils (`rc3d-core/src/utils/`)
-
-| Module | Functions |
-|--------|-----------|
-| `graph.rs` | `toposort_layered`, `toposort_linear`, `bfs_visit` |
-| `math.rs` | `remap`, `lerp`, `safe_normalize`, `triangle_count` |
-| `hash.rs` | `f32x3_to_bits`, `f32x4_to_bits`, `f32_total_key` |
-| `sort.rs` | `sort_by_count_desc`, `sort_by_key_count_desc` |
-| `ring.rs` | `RingBuffer<T>` |
-
-### Configuration
+## Scene Graph (minimal example)
 
 ```rust
-use rc3d_render::settings::PerformanceSettings;
+use rc3d_app::{App, CameraController};
+use rc3d_core::math::Vec3;
+use rc3d_scene::node_data::*;
 
-let settings = RenderSettings {
-    performance: PerformanceSettings {
-        gpu_culling: true,
-        gpu_culling_threshold: 4096,
-        parallel_traversal: false,
-        mesh_pool_capacity: 4096,
-        mesh_pool_max_mb: 512,
-    },
-    ..Default::default()
-};
-renderer.apply_settings(settings);
-renderer.enable_gpu_culling(65536); // allocate GPU buffers
+fn main() {
+    let mut g = rc3d_scene::SceneGraph::new();
+    let root = g.add_root(NodeData::Separator(SeparatorNode));
+    g.add_child(root, NodeData::PerspectiveCamera(
+        PerspectiveCameraNode::look_at(
+            Vec3::new(3.0, 2.0, 5.0), Vec3::ZERO, Vec3::Y,
+            std::f32::consts::FRAC_PI_4, 800.0 / 600.0,
+        ),
+    ));
+    g.add_child(root, NodeData::DirectionalLight(DirectionalLightNode {
+        direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
+        color: Vec3::ONE, intensity: 1.0, light_group: None,
+    }));
+    g.add_child(root, NodeData::Material(MaterialNode {
+        base_color: Vec3::new(0.8, 0.2, 0.2),
+        roughness: 0.4, metallic: 0.0, ..Default::default()
+    }));
+    g.add_child(root, NodeData::Cube(CubeNode::default()));
+
+    let orbit = CameraController::new(Vec3::ZERO, 10.0);
+    winit::event_loop::EventLoop::new().unwrap()
+        .run_app(&mut App::new(g).with_camera_controller(orbit))
+        .expect("event loop");
+}
 ```
+
+## Examples (42 demos)
+
+| Category | Examples |
+|----------|----------|
+| Getting Started | `triangle`, `cube`, `rotating_cube` |
+| Scene | `scene_graph`, `annotation`, `billboard`, `environment_node`, `exploded_view` |
+| Rendering | `pbr_materials`, `pbr_variant_viewer`, `render_features`, `material_variants`, `instancing` |
+| Lighting | `area_light`, `light_linking`, `shadow_demo`, `reflection` |
+| Camera | `stereo_camera`, `walk_camera` |
+| Import | `import_viewer`, `import_viewer_async`, `iv_viewer` |
+| Animation | `animation_demo`, `animation_control_panel`, `blend_animation` |
+| Editor | `editor`, `selection_set`, `picking`, `markup_dimensions` |
+| Engines | `engines_demo`, `scripted_scene` |
+| Effects | `post_effects`, `volumetric_demo`, `decal_viewer` |
+| Specialized | `point_cloud_viewer`, `nurbs_viewer`, `profile_viewer`, `section_caps` |
+| Diagnostics | `adaptive_stress_test`, `large_scene_stress` |
+
+## Node Types (47 variants)
+
+| Category | Variants |
+|----------|----------|
+| **Grouping** | Separator, Group, Billboard, Transform, Coordinate3, TextureCoordinate2, Normal, ShapeHints, MaterialBinding, ResetTransform, Texture2Transform, File |
+| **Shapes** | Triangle, Cube, Sphere, Cone, Cylinder, IndexedFaceSet, IndexedLineSet, SkinnedMesh, MorphTarget |
+| **Cameras** | PerspectiveCamera, OrthographicCamera, StereoCamera |
+| **Lights** | DirectionalLight, PointLight, SpotLight, AreaLight |
+| **Traversal** | Lod, Switch, MultipleCopy, SectionPlane, PickStyle, EventCallback |
+| **Annotations** | Text2, Text3, Measurement, Markup, Annotation |
+| **Specialized** | ExplodedView, ReflectionPlane, Decal, RayTracing, Volume, PointCloud, Environment, Material |
+| **Extensibility** | HandlerNode(Arc\<dyn NodeHandler\>), Custom(u16, Box\<dyn CustomNodeData\>) |
 
 ## Performance Characteristics
 
@@ -130,23 +164,39 @@ renderer.enable_gpu_culling(65536); // allocate GPU buffers
 | Import viewer | 1-100K | varies | Streaming mesh | ~8-16ms |
 | Target (GPU) | 1M+ | indirect | GPU-driven | TBD |
 
-Key optimizations applied:
+Key optimizations:
 - **Light dedup**: 1280B → 4B per draw call (LightSetTable)
 - **Static fast path**: Zero culling work when scene is idle
 - **Frame allocation reuse**: 8 Vecs reused across frames (~60MB savings @ 1M objects)
 - **BVH incremental**: Only dirty AABBs trigger BVH updates
 - **Direct cache emit**: FlatDrawCache populated during traversal (no conversion pass)
-- **Pool expansion**: phong 64K, flat 32K, mesh cache 4K → no silent draw drops
+- **Pool expansion**: phong 64K, flat 32K, mesh cache 4K
 
 ## Development
 
 ```bash
-cargo check --workspace          # fast compile check (222 tests)
-cargo test                        # run all tests
+cargo check --workspace          # fast compile check
+cargo test                        # 222 tests
 cargo build -p rc3d-app --examples
 cargo clippy --workspace          # lint check
 ```
 
+## Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| wgpu 24 | GPU abstraction (Vulkan/Metal/DX12) |
+| winit 0.30 | Window creation and event loop |
+| glam 0.29 | Linear algebra (Vec3, Mat4, Quat) |
+| slotmap | Stable-ID arena storage for scene graph |
+| glyphon | GPU text rendering (HUD) |
+| rayon | Parallel traversal |
+| rhai | Embedded scripting |
+| meshopt | Mesh optimization (meshlets, LOD) |
+| serde/serde_json | Serialization |
+| image | Texture loading |
+| tracy-client | GPU/CPU profiling |
+
 ## License
 
-Proprietary — internal use. Contact the repository owner for details.
+BSD-3-Clause

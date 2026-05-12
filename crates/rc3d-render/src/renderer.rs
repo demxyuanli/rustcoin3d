@@ -154,10 +154,8 @@ impl Renderer {
             if let Some(ref img_path) = settings.image_path {
                 bg.set_image(&self.device, &self.queue, img_path);
             }
-            for (face, path) in settings.cube_faces.iter().enumerate() {
-                if let Some(ref p) = path {
-                    bg.set_cube_face(&self.device, &self.queue, face, p);
-                }
+            if settings.cube_faces.iter().any(|f| f.is_some()) {
+                bg.set_cube_faces(&self.device, &self.queue, &settings.cube_faces);
             }
         }
         self.gpu.bg_settings = settings;
