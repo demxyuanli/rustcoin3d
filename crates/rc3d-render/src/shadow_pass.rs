@@ -16,6 +16,7 @@ pub(super) fn create_csm_shadow_resources(
     device: &wgpu::Device,
     pipelines: &PipelineSet,
     compare_sampler: &wgpu::Sampler,
+    global_frame_buffer: &wgpu::Buffer,
     resolution: u32,
     cascade_count: u32,
 ) -> CsmShadowResources {
@@ -68,6 +69,10 @@ pub(super) fn create_csm_shadow_resources(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(compare_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: global_frame_buffer.as_entire_binding(),
             },
         ],
     });

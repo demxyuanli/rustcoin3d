@@ -240,7 +240,7 @@ impl PipelineSet {
         });
 
         let shadow_resource_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Shadow map BGL (D2Array for CSM)"),
+            label: Some("Shadow + Global Frame BGL"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -256,6 +256,16 @@ impl PipelineSet {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],

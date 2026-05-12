@@ -40,7 +40,7 @@ use crate::taa::{TaaJitter, TaaPass};
 use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::ibl::IblPreset;
-use self::renderer_internals::{FrameState, GpuInternals};
+use self::renderer_internals::{DrawBatchBufs, FrameState, GpuInternals};
 use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
@@ -200,6 +200,7 @@ impl Renderer {
             &self.device,
             &self.gpu.pipelines,
             &self.gpu.shadow_compare_sampler,
+            self.gpu.global_frame_buffer.as_ref().unwrap(),
             resolution,
             cascade_count,
         ));
@@ -357,6 +358,15 @@ impl Renderer {
 
         let mut shader_cache = ShaderVariantCache::new();
         let pipelines = PipelineSet::create(&device, config.format, &mut shader_cache);
+
+        // Global frame uniform buffer — uploaded once per frame, bound in group 2.
+        let global_frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Global Frame Uniforms"),
+            size: std::mem::size_of::<crate::vertex::GlobalFrameUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let selection_outline_pipelines =
             crate::selection_outline::SelectionOutlinePipelines::new(&device, &pipelines.flat_bgl);
         let phong_pool = GpuUniformPool::new_phong(&device, 65536);
@@ -370,6 +380,7 @@ impl Renderer {
             &device,
             &pipelines,
             &shadow_compare_sampler,
+            &global_frame_buffer,
             1,
             1,
         ));
@@ -577,6 +588,14 @@ impl Renderer {
                 gpu_cull_staging: None,
                 gpu_cull_enabled: false,
                 max_gpu_cull_objects: 65536,
+                global_frame_buffer: Some(global_frame_buffer),
+                draw_bufs: DrawBatchBufs {
+                    meshlet_bitmask: Vec::with_capacity(4096),
+                    meshlet_draws: Vec::with_capacity(4096),
+                    standard_draws: Vec::with_capacity(4096),
+                    instances: Vec::with_capacity(4096),
+                    mat_keys: Vec::with_capacity(4096),
+                },
             },
         };
         renderer.gpu.hud = Some(HudRenderer::new(

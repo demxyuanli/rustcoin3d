@@ -23,21 +23,21 @@ fn pack_morph_weights(weights: &[f32]) -> [f32; MAX_MORPH_WEIGHTS] {
 /// Pure-color materials with different base_color/metallic/roughness
 /// produce different keys, avoiding stale bind group cache hits.
 fn material_key(dc: &DrawCall) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    dc.albedo_path.hash(&mut h);
-    dc.normal_path.hash(&mut h);
-    dc.metallic_roughness_path.hash(&mut h);
-    dc.emissive_path.hash(&mut h);
-    dc.occlusion_path.hash(&mut h);
-    dc.base_color.x.to_bits().hash(&mut h);
-    dc.base_color.y.to_bits().hash(&mut h);
-    dc.base_color.z.to_bits().hash(&mut h);
-    dc.metallic.to_bits().hash(&mut h);
-    dc.roughness.to_bits().hash(&mut h);
-    dc.opacity.to_bits().hash(&mut h);
-    dc.alpha_cutoff.to_bits().hash(&mut h);
-    alpha_mode_to_f32(dc.alpha_mode).to_bits().hash(&mut h);
+    use std::hash::Hasher;
+    let mut h = twox_hash::XxHash64::with_seed(0);
+    h.write(dc.albedo_path.as_deref().unwrap_or("").as_bytes());
+    h.write(dc.normal_path.as_deref().unwrap_or("").as_bytes());
+    h.write(dc.metallic_roughness_path.as_deref().unwrap_or("").as_bytes());
+    h.write(dc.emissive_path.as_deref().unwrap_or("").as_bytes());
+    h.write(dc.occlusion_path.as_deref().unwrap_or("").as_bytes());
+    h.write_u64(dc.base_color.x.to_bits() as u64);
+    h.write_u64(dc.base_color.y.to_bits() as u64);
+    h.write_u64(dc.base_color.z.to_bits() as u64);
+    h.write_u64(dc.metallic.to_bits() as u64);
+    h.write_u64(dc.roughness.to_bits() as u64);
+    h.write_u64(dc.opacity.to_bits() as u64);
+    h.write_u64(dc.alpha_cutoff.to_bits() as u64);
+    h.write_u64(alpha_mode_to_f32(dc.alpha_mode).to_bits() as u64);
     h.finish()
 }
 
@@ -134,6 +134,16 @@ pub(super) fn draw_opaque_triangle_batches(
         draw_flat_triangle_batches(renderer, pass, ctx, flat_solid_pipeline);
         return;
     }
+
+    // Pre-load textures for all visible draws (avoids synchronous I/O in draw loop).
+    for dc in ctx.visible {
+        if let Some(ref p) = dc.albedo_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+        if let Some(ref p) = dc.normal_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+        if let Some(ref p) = dc.metallic_roughness_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+        if let Some(ref p) = dc.emissive_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+        if let Some(ref p) = dc.occlusion_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+    }
+
     pass.set_pipeline(solid_pipeline);
     pass.set_stencil_reference(1);
 
@@ -152,19 +162,148 @@ pub(super) fn draw_opaque_triangle_batches(
     }
     let clip_count = [renderer.frame.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
 
-    let meshlet_set: std::collections::HashSet<usize> = ctx.meshlet_indices.iter().copied().collect();
-
-    // Pre-compute material keys for all visible draws to avoid repeated hashing.
-    let mat_keys: Vec<u64> = ctx.visible.iter().map(|dc| material_key(dc)).collect();
+    {
+        let mb = &mut renderer.gpu.draw_bufs.meshlet_bitmask;
+        mb.resize(ctx.visible.len(), false);
+        mb.fill(false);
+        for &i in ctx.meshlet_indices { mb[i] = true; }
+    }
+    {
+        let mk = &mut renderer.gpu.draw_bufs.mat_keys;
+        mk.clear();
+        mk.extend(ctx.visible.iter().map(|dc| material_key(dc)));
+    }
 
     let mut last_bound_mesh = None;
-    // Track cumulative offset into instance_buffer so each subgroup writes to a
-    // non-overlapping region and draws with the correct first_instance.
     let instance_stride = std::mem::size_of::<InstanceData>() as u64;
-    let mut instance_cursor: u64 = 0;
 
-    let mut start = 0usize;
-    while start < ctx.solid_order.len() {
+    // Phase 1: collect instance data for all subgroups into a single buffer.
+    // Phase 2: issue draw calls (avoiding many small write_buffer calls).
+    let mut draw_batches: Vec<(u32, u32, Option<crate::gpu_resource::MeshId>, u64, usize)> = Vec::new();
+    {
+        let all_instances = &mut renderer.gpu.draw_bufs.instances;
+        all_instances.clear();
+        let mut instance_cursor: u64 = 0;
+        let mut start = 0usize;
+        while start < ctx.solid_order.len() {
+            let head_idx = ctx.solid_order[start];
+            let head_dc = ctx.visible[head_idx];
+            let light_key = head_dc.light_key;
+            let mut end = start + 1;
+            while end < ctx.solid_order.len() {
+                let idx = ctx.solid_order[end];
+                if ctx.visible[idx].light_key != light_key { break; }
+                end += 1;
+            }
+
+            {
+                let md = &mut renderer.gpu.draw_bufs.meshlet_draws;
+                let sd = &mut renderer.gpu.draw_bufs.standard_draws;
+                md.clear(); sd.clear();
+                for &i in &ctx.solid_order[start..end] {
+                    if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
+                        if draw_meshlets { md.push(i); } else { sd.push(i); }
+                    } else { sd.push(i); }
+                }
+            }
+
+            // Meshlet path: per-draw (no instance batching needed)
+            for &i in renderer.gpu.draw_bufs.meshlet_draws.iter() {
+                if !draw_meshlets { continue; }
+                let dc = ctx.visible[i];
+                let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
+                let ptr = std::sync::Arc::as_ptr(md) as u64;
+                if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) { continue; }
+                let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
+                    [0.08, 0.08, 0.08, 1.0]
+                } else {
+                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+                };
+                let uniforms = SceneUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
+                    diffuse_color,
+                    ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
+                    specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
+                    shininess: [dc.shininess, 0.0, 0.0, 0.0],
+                    clip_planes: clip_arr, clip_count,
+                    pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                    pbr_metallic_roughness: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
+                    pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                    pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    light_set_index: [head_dc.light_set_id as f32, 0.0, 0.0, 0.0],
+                };
+                if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
+                    let key = renderer.gpu.draw_bufs.mat_keys[i];
+                    if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
+                        let bg = albedo_material_bind_group(
+                            &mut renderer.gpu.texture_cache, &renderer.device,
+                            &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                        );
+                        renderer.last_material_bg_key = key;
+                        renderer.last_material_bg = Some(bg.clone());
+                    }
+                    pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
+                    if let Some(ref mat_bg) = renderer.last_material_bg {
+                        pass.set_bind_group(1, mat_bg, &[]);
+                    }
+                    if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
+                        if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
+                            cluster_renderer.draw_clustered(pass, cluster_set);
+                        }
+                    }
+                }
+            }
+
+            // Standard path: accumulate instance data for batched write
+            if !renderer.gpu.draw_bufs.standard_draws.is_empty() {
+                let sd = &mut renderer.gpu.draw_bufs.standard_draws;
+                sd.sort_by_key(|&i| (ctx.mesh_handles[i].map(|m| m.data().as_ffi()), renderer.gpu.draw_bufs.mat_keys[i]));
+                let mut sub_start = 0usize;
+                while sub_start < sd.len() {
+                    let first_mesh = ctx.mesh_handles[sd[sub_start]];
+                    let first_mat = renderer.gpu.draw_bufs.mat_keys[sd[sub_start]];
+                    let mut sub_end = sub_start + 1;
+                    while sub_end < sd.len() {
+                        let idx = sd[sub_end];
+                        if ctx.mesh_handles[idx] != first_mesh || renderer.gpu.draw_bufs.mat_keys[idx] != first_mat { break; }
+                        sub_end += 1;
+                    }
+                    let subgroup = &sd[sub_start..sub_end];
+                    sub_start = sub_end;
+
+                    if let Some(mesh_id) = first_mesh {
+                        if !subgroup.is_empty() {
+                            let first_instance = (instance_cursor / instance_stride) as u32;
+                            for &i in subgroup {
+                                let dc = ctx.visible[i];
+                                let diffuse = if ctx.mode == DisplayMode::HiddenLine {
+                                    [0.08, 0.08, 0.08, 1.0]
+                                } else {
+                                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+                                };
+                                all_instances.push(InstanceData {
+                                    model: dc.model_matrix.to_cols_array_2d(),
+                                    mvp: dc.mvp.to_cols_array_2d(),
+                                    diffuse_color: diffuse,
+                                    base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                                    metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
+                                    emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                                    morph_weights: pack_morph_weights(&dc.morph_weights),
+                                    morph_count: [dc.morph_weights.len().min(crate::vertex::MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
+                                });
+                                instance_cursor += instance_stride;
+                            }
+                            let n = subgroup.len() as u32;
+                            let rep_dc_idx = subgroup[0];
+                            draw_batches.push((first_instance, n, first_mesh, renderer.gpu.draw_bufs.mat_keys[rep_dc_idx], rep_dc_idx));
+                        }
+                    }
+                }
+            }
+            start = end;
+        }
         let head_idx = ctx.solid_order[start];
         let head_dc = ctx.visible[head_idx];
         let light_key = head_dc.light_key;
@@ -178,184 +317,50 @@ pub(super) fn draw_opaque_triangle_batches(
             end += 1;
         }
 
-        let lights = ctx.light_sets.get(head_dc.light_set_id);
+        let _lights = ctx.light_sets.get(head_dc.light_set_id);
 
-        let mut meshlet_draws: Vec<usize> = Vec::new();
-        let mut standard_draws: Vec<usize> = Vec::new();
-        for &i in &ctx.solid_order[start..end] {
-            if meshlet_set.contains(&i) {
-                if draw_meshlets {
-                    meshlet_draws.push(i);
+        {
+            let md = &mut renderer.gpu.draw_bufs.meshlet_draws;
+            let sd = &mut renderer.gpu.draw_bufs.standard_draws;
+            md.clear();
+            sd.clear();
+            for &i in &ctx.solid_order[start..end] {
+                if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
+                    if draw_meshlets { md.push(i); } else { sd.push(i); }
                 } else {
-                    standard_draws.push(i);
-                }
-            } else {
-                standard_draws.push(i);
-            }
-        }
-
-        for &i in &meshlet_draws {
-            if !draw_meshlets { continue; }
-            let dc = ctx.visible[i];
-            let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
-            let ptr = std::sync::Arc::as_ptr(md) as u64;
-            if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) { continue; }
-            let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
-                [0.08, 0.08, 0.08, 1.0]
-            } else {
-                [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
-            };
-            let uniforms = SceneUniforms {
-                mvp: dc.mvp.to_cols_array_2d(),
-                model: dc.model_matrix.to_cols_array_2d(),
-                camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-                light_dirs: lights.0, light_colors: lights.1,
-                light_types: lights.2, light_positions: lights.3,
-                spot_params: lights.4,
-                light_count: [lights.5 as f32, 0.0, 0.0, 0.0],
-                diffuse_color,
-                ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
-                shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                clip_planes: clip_arr, clip_count,
-                pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                pbr_metallic_roughness: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
-                pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-                pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                ibl_diffuse: renderer.gpu.ibl_diffuse, ibl_specular: renderer.gpu.ibl_specular,
-                csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
-                csm_split_depths: ctx.csm_split_depths,
-                shadow_params: ctx.shadow_params,
-            };
-            if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
-                let key = mat_keys[i];
-                if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
-                    let bg = albedo_material_bind_group(
-                        &mut renderer.gpu.texture_cache, &renderer.device,
-                        &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
-                    );
-                    renderer.last_material_bg_key = key;
-                    renderer.last_material_bg = Some(bg.clone());
-                }
-                pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
-                if let Some(ref mat_bg) = renderer.last_material_bg {
-                    pass.set_bind_group(1, mat_bg, &[]);
-                }
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-                    if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                        cluster_renderer.draw_clustered(pass, cluster_set);
-                    }
+                    sd.push(i);
                 }
             }
         }
 
-        if !standard_draws.is_empty() {
-            // Sort deterministically by (mesh_id, material_key) to ensure
-            // stable instance buffer write order across frames.
-            standard_draws.sort_by_key(|&i| {
-                (ctx.mesh_handles[i].map(|m| m.data().as_ffi()), mat_keys[i])
-            });
-
-            let mut sub_start = 0usize;
-            while sub_start < standard_draws.len() {
-                let first_mesh = ctx.mesh_handles[standard_draws[sub_start]];
-                let first_mat = mat_keys[standard_draws[sub_start]];
-                let mut sub_end = sub_start + 1;
-                while sub_end < standard_draws.len() {
-                    let idx = standard_draws[sub_end];
-                    if ctx.mesh_handles[idx] != first_mesh || mat_keys[idx] != first_mat {
-                        break;
-                    }
-                    sub_end += 1;
-                }
-                let subgroup = &standard_draws[sub_start..sub_end];
-                sub_start = sub_end;
-
-                if let Some(mesh_id) = first_mesh {
-                    if subgroup.is_empty() { continue; }
-                    let first_dc = ctx.visible[subgroup[0]];
-                    let mut instances: Vec<InstanceData> = Vec::with_capacity(subgroup.len());
-                    for &i in subgroup {
-                        let dc = ctx.visible[i];
-                        let diffuse = if ctx.mode == DisplayMode::HiddenLine {
-                            [0.08, 0.08, 0.08, 1.0]
-                        } else {
-                            [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
-                        };
-                        instances.push(InstanceData {
-                            model: dc.model_matrix.to_cols_array_2d(),
-                            mvp: dc.mvp.to_cols_array_2d(),
-                            diffuse_color: diffuse,
-                            base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                            metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                            emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-                            morph_weights: pack_morph_weights(&dc.morph_weights),
-                            morph_count: [dc.morph_weights.len().min(crate::vertex::MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
-                        });
-                    }
-
-                    let diffuse = if ctx.mode == DisplayMode::HiddenLine {
-                        [0.08, 0.08, 0.08, 1.0]
-                    } else {
-                        [first_dc.diffuse_color.x, first_dc.diffuse_color.y, first_dc.diffuse_color.z, 1.0]
-                    };
-                    let uniforms = SceneUniforms {
-                        mvp: first_dc.mvp.to_cols_array_2d(),
-                        model: first_dc.model_matrix.to_cols_array_2d(),
-                        camera_pos: [first_dc.camera_pos.x, first_dc.camera_pos.y, first_dc.camera_pos.z, 1.0],
-                        light_dirs: lights.0, light_colors: lights.1,
-                        light_types: lights.2, light_positions: lights.3,
-                        spot_params: lights.4,
-                        light_count: [lights.5 as f32, 0.0, 0.0, 0.0],
-                        diffuse_color: diffuse,
-                        ambient_color: [first_dc.ambient_color.x, first_dc.ambient_color.y, first_dc.ambient_color.z, 1.0],
-                        specular_color: [first_dc.specular_color.x, first_dc.specular_color.y, first_dc.specular_color.z, 1.0],
-                        shininess: [first_dc.shininess, 0.0, 0.0, 0.0],
-                        clip_planes: clip_arr, clip_count,
-                        pbr_base_color: [first_dc.base_color.x, first_dc.base_color.y, first_dc.base_color.z, 1.0],
-                        pbr_metallic_roughness: [first_dc.metallic, first_dc.roughness, first_dc.anisotropic, 0.0],
-                        pbr_emissive_alpha: [first_dc.emissive_color.x, first_dc.emissive_color.y, first_dc.emissive_color.z, first_dc.alpha_cutoff],
-                        pbr_alpha_flags: [alpha_mode_to_f32(first_dc.alpha_mode), first_dc.opacity, if first_dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                        ibl_diffuse: renderer.gpu.ibl_diffuse, ibl_specular: renderer.gpu.ibl_specular,
-                        csm_view_proj: csm_to_uniform(&ctx.csm_view_proj),
-                        csm_split_depths: ctx.csm_split_depths,
-                        shadow_params: ctx.shadow_params,
-                    };
-                    let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {
-                        continue;
-                    };
-
-                    let first_instance = (instance_cursor / instance_stride) as u32;
-                    let n = subgroup.len() as u32;
-                    renderer.queue.write_buffer(
-                        &renderer.gpu.instance_buffer, instance_cursor,
-                        bytemuck::cast_slice(&instances),
-                    );
-                    instance_cursor += n as u64 * instance_stride;
-
-                    let first_mat_key = mat_keys[subgroup[0]];
-                    if renderer.last_material_bg_key != first_mat_key || renderer.last_material_bg.is_none() {
-                        let mat_bg = albedo_material_bind_group(
-                            &mut renderer.gpu.texture_cache, &renderer.device,
-                            &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, first_dc,
-                        );
-                        renderer.last_material_bg_key = first_mat_key;
-                        renderer.last_material_bg = Some(mat_bg.clone());
-                    }
-                    pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[offset]);
-                    if let Some(ref mat_bg) = renderer.last_material_bg {
-                        pass.set_bind_group(1, mat_bg, &[]);
-                    }
-
-                    renderer.draw_mesh_instanced(pass, mesh_id, first_instance, n, &mut last_bound_mesh);
-                }
-            }
+        // Phase 2: single write_buffer for all instance data, then issue draws.
+        if !renderer.gpu.draw_bufs.instances.is_empty() {
+            renderer.queue.write_buffer(
+                &renderer.gpu.instance_buffer, 0,
+                bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
+            );
         }
-        start = end;
+        for &(first_instance, n, mesh_id, first_mat_key, rep_dc_idx) in &draw_batches {
+            let Some(mesh_id) = mesh_id else { continue; };
+            if n == 0 { continue; }
+            if renderer.last_material_bg_key != first_mat_key || renderer.last_material_bg.is_none() {
+                let rep_dc = ctx.visible[rep_dc_idx];
+                let mat_bg = albedo_material_bind_group(
+                    &mut renderer.gpu.texture_cache, &renderer.device,
+                    &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, rep_dc,
+                );
+                renderer.last_material_bg_key = first_mat_key;
+                renderer.last_material_bg = Some(mat_bg.clone());
+            }
+            if let Some(ref mat_bg) = renderer.last_material_bg {
+                pass.set_bind_group(1, mat_bg, &[]);
+            }
+            renderer.draw_mesh_instanced(pass, mesh_id, first_instance, n, &mut last_bound_mesh);
+        }
     }
 }
 
-pub(super) fn csm_to_uniform(vps: &[glam::Mat4; CSM_CASCADE_COUNT]) -> [[f32; 4]; 16] {
+pub(crate) fn csm_to_uniform(vps: &[glam::Mat4; CSM_CASCADE_COUNT]) -> [[f32; 4]; 16] {
     let mut arr = [[0.0f32; 4]; 16];
     for (i, vp) in vps.iter().enumerate() {
         let cols = vp.to_cols_array_2d();

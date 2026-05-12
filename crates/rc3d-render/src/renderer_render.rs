@@ -7,6 +7,7 @@ use rc3d_scene::SceneGraph;
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::cluster::{ClusterRenderer, ClusterSet};
 use crate::frustum::Frustum;
+use crate::vertex::GlobalFrameUniforms;
 use crate::gpu_skinning::GpuSkinningPass;
 use crate::render_action::DrawCall;
 use crate::render_passes;
@@ -37,7 +38,7 @@ impl super::Renderer {
             pool.begin_frame();
         }
 
-        // ── GPU cull: read back previous frame's instance count + indices ──
+        // ── GPU cull: read back previous frame's instance count (non-blocking) ──
         let mut gpu_visible: Option<Vec<usize>> = None;
         if self.gpu.gpu_cull_enabled
             && self.frame.frame_counter > 2
@@ -45,33 +46,41 @@ impl super::Renderer {
         {
             if let Some(ref staging) = self.gpu.gpu_cull_staging {
                 let buf_slice = staging.slice(..);
-                buf_slice.map_async(wgpu::MapMode::Read, |_| {});
-                self.device.poll(wgpu::Maintain::Wait);
-                let mapped = buf_slice.get_mapped_range();
-                let byte_count = mapped.len();
-                if byte_count >= 4 {
-                    let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
-                    let count = (count as usize).min(draw_calls.len());
-                    let mut indices = Vec::with_capacity(count);
-                    for i in 0..count {
-                        let off = 4 + i * 4;
-                        if off + 4 <= byte_count {
-                            let idx = u32::from_le_bytes([
-                                mapped[off], mapped[off+1], mapped[off+2], mapped[off+3]
-                            ]) as usize;
-                            if idx < draw_calls.len() {
-                                indices.push(idx);
+                let mapping_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let ready_clone = std::sync::Arc::clone(&mapping_ready);
+                buf_slice.map_async(wgpu::MapMode::Read, move |result| {
+                    if result.is_ok() {
+                        ready_clone.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                });
+                self.device.poll(wgpu::Maintain::Poll);
+                if mapping_ready.load(std::sync::atomic::Ordering::Acquire) {
+                    let mapped = buf_slice.get_mapped_range();
+                    let byte_count = mapped.len();
+                    if byte_count >= 4 {
+                        let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);
+                        let count = (count as usize).min(draw_calls.len());
+                        let mut indices = Vec::with_capacity(count);
+                        for i in 0..count {
+                            let off = 4 + i * 4;
+                            if off + 4 <= byte_count {
+                                let idx = u32::from_le_bytes([
+                                    mapped[off], mapped[off+1], mapped[off+2], mapped[off+3]
+                                ]) as usize;
+                                if idx < draw_calls.len() {
+                                    indices.push(idx);
+                                }
                             }
                         }
+                        if !indices.is_empty() {
+                            log::info!("GPU cull: {} visible (CPU: {})",
+                                indices.len(), self.frame.visible_indices.len());
+                            gpu_visible = Some(indices);
+                        }
                     }
-                    if !indices.is_empty() {
-                        log::info!("GPU cull: {} visible (CPU: {})",
-                            indices.len(), self.frame.visible_indices.len());
-                        gpu_visible = Some(indices);
-                    }
+                    drop(mapped);
+                    staging.unmap();
                 }
-                drop(mapped);
-                staging.unmap();
                 self.frame.gpu_cull_ready = false;
             }
         }
@@ -384,20 +393,12 @@ impl super::Renderer {
                 }
             } else {
                 let base_hash = dc.mesh_hash.unwrap_or_else(|| {
-                    let ptr_key = (
-                        Arc::as_ptr(&dc.vertices) as u64,
-                        dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64),
-                    );
-                    let mut h = twox_hash::XxHash64::with_seed(0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.0);
-                    std::hash::Hasher::write_u64(&mut h, ptr_key.1);
-                    std::hash::Hasher::finish(&h)
+                    let p = Arc::as_ptr(&dc.vertices) as u64;
+                    let i = dc.indices.as_ref().map_or(0u64, |a| Arc::as_ptr(a) as u64);
+                    p ^ i
                 });
                 let hash = if let Some(ref skin) = dc.skinning {
-                    let mut h = twox_hash::XxHash64::with_seed(0);
-                    std::hash::Hasher::write_u64(&mut h, base_hash);
-                    std::hash::Hasher::write_u64(&mut h, Arc::as_ptr(skin) as u64);
-                    std::hash::Hasher::finish(&h)
+                    base_hash ^ (Arc::as_ptr(skin) as u64)
                 } else {
                     base_hash
                 };
@@ -475,51 +476,46 @@ impl super::Renderer {
         light_hashes.clear();
         light_hashes.extend(visible.iter().map(|dc| dc.light_key));
 
-        let (mut solid_order, mut edge_order, mut selected_order, mut transparent_order) = self.cpu_span.measure("sorting", || {
-            let mut solid_order = std::mem::take(&mut self.frame.solid_order_buf);
-            solid_order.clear();
-            solid_order.extend((0..visible.len())
-                .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()));
-            solid_order.sort_unstable_by_key(|&i| light_hashes[i]);
-            let mut edge_order = std::mem::take(&mut self.frame.edge_order_buf);
-            edge_order.clear();
-            edge_order.extend((0..visible.len())
-                .filter(|&i| !visible[i].edge_positions.is_empty()));
-            edge_order.sort_unstable_by_key(|&i| {
-                let dc = visible[i];
-                (
-                    sort_keys::display_mode_sort_key(dc.display_mode),
-                    sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
-                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-                )
-            });
-            let mut selected_order = std::mem::take(&mut self.frame.selected_order_buf);
-            selected_order.clear();
-            selected_order.extend((0..visible.len())
-                .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())));
-            selected_order.sort_unstable_by_key(|&i| {
-                let dc = visible[i];
-                (
-                    sort_keys::display_mode_sort_key(dc.display_mode),
-                    mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
-                )
-            });
-
-            let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-            self.frame.scene_camera_pos = camera_pos_vec;
-            let mut transparent_order = std::mem::take(&mut self.frame.transparent_order_buf);
-            transparent_order.clear();
-            transparent_order.extend((0..visible.len())
-                .filter(|&i| visible[i].opacity < 1.0 && visible[i].opacity > 0.0));
-            transparent_order.sort_unstable_by(|&a, &b| {
-                let pos_a = visible[a].model_matrix.w_axis.truncate();
-                let pos_b = visible[b].model_matrix.w_axis.truncate();
-                let da = pos_a.distance(camera_pos_vec);
-                let db = pos_b.distance(camera_pos_vec);
-                db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            (solid_order, edge_order, selected_order, transparent_order)
-        });
+        let (mut solid_order, mut edge_order, mut selected_order) = if self.frame.bvh_fully_static && self.frame.static_frame_count >= 2 {
+            (std::mem::take(&mut self.frame.solid_order_buf),
+             std::mem::take(&mut self.frame.edge_order_buf),
+             std::mem::take(&mut self.frame.selected_order_buf))
+        } else {
+            self.cpu_span.measure("sorting", || {
+                let mut solid_order = std::mem::take(&mut self.frame.solid_order_buf);
+                solid_order.clear();
+                solid_order.extend((0..visible.len())
+                    .filter(|&i| !visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some()));
+                solid_order.sort_unstable_by_key(|&i| light_hashes[i]);
+                let mut edge_order = std::mem::take(&mut self.frame.edge_order_buf);
+                edge_order.clear();
+                edge_order.extend((0..visible.len())
+                    .filter(|&i| !visible[i].edge_positions.is_empty()));
+                edge_order.sort_unstable_by_key(|&i| {
+                    let dc = visible[i];
+                    (
+                        sort_keys::display_mode_sort_key(dc.display_mode),
+                        sort_keys::color_sort_key(dc.overlay_color.unwrap_or([0.0, 0.0, 0.0, 0.5])),
+                        mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
+                    )
+                });
+                let mut selected_order = std::mem::take(&mut self.frame.selected_order_buf);
+                selected_order.clear();
+                selected_order.extend((0..visible.len())
+                    .filter(|&i| visible[i].selected && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())));
+                selected_order.sort_unstable_by_key(|&i| {
+                    let dc = visible[i];
+                    (
+                        sort_keys::display_mode_sort_key(dc.display_mode),
+                        mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
+                    )
+                });
+                let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
+                self.frame.scene_camera_pos = camera_pos_vec;
+                (solid_order, edge_order, selected_order)
+            })
+        };
+        let mut transparent_order: Vec<usize> = Vec::new();
 
         let mut meshlet_indices = std::mem::take(&mut self.frame.meshlet_indices_buf);
         meshlet_indices.clear();
@@ -656,6 +652,25 @@ impl super::Renderer {
                     run_shadow_pass = true;
                 }
             }
+        }
+
+        // Upload global frame uniforms (lights, CSM, IBL) once per frame.
+        if let Some(ref buf) = self.gpu.global_frame_buffer {
+            let primary = *self.light_sets.get(0);
+            let global = crate::vertex::GlobalFrameUniforms {
+                light_dirs: primary.0,
+                light_colors: primary.1,
+                light_types: primary.2,
+                light_positions: primary.3,
+                spot_params: primary.4,
+                light_count: [primary.5 as f32, 0.0, 0.0, 0.0],
+                ibl_diffuse: self.gpu.ibl_diffuse,
+                ibl_specular: self.gpu.ibl_specular,
+                csm_view_proj: crate::render_passes::draw_opaque::csm_to_uniform(&csm_view_proj),
+                csm_split_depths,
+                shadow_params,
+            };
+            self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&global));
         }
 
         // Clone the light-set table (typically 1-5 entries) so ctx doesn't borrow self.

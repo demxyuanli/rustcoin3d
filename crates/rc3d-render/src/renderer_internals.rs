@@ -157,4 +157,15 @@ pub(crate) struct GpuInternals {
     pub gpu_cull_staging: Option<wgpu::Buffer>,
     pub gpu_cull_enabled: bool,
     pub max_gpu_cull_objects: u64,
+    /// Global frame uniform buffer (lights, CSM, IBL, shadows) — uploaded once per frame, bound in group 2.
+    pub global_frame_buffer: Option<wgpu::Buffer>,
+    pub draw_bufs: DrawBatchBufs,
+}
+
+pub(crate) struct DrawBatchBufs {
+    pub meshlet_bitmask: Vec<bool>,
+    pub meshlet_draws: Vec<usize>,
+    pub standard_draws: Vec<usize>,
+    pub instances: Vec<crate::vertex::InstanceData>,
+    pub mat_keys: Vec<u64>,
 }

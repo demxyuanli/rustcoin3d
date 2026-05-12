@@ -27,7 +27,7 @@ pub(super) fn pass_shadow_depth(
         let cascade_frustum = &cascade_frustums[cascade_idx as usize];
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(&format!("CSM Shadow cascade {}", cascade_idx)),
+            label: None,
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &csm.cascade_views[cascade_idx as usize],

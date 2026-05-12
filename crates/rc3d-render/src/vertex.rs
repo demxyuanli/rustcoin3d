@@ -86,12 +86,6 @@ pub struct SceneUniforms {
     pub mvp: [[f32; 4]; 4],
     pub model: [[f32; 4]; 4],
     pub camera_pos: [f32; 4],
-    pub light_dirs: [[f32; 4]; MAX_LIGHTS],
-    pub light_colors: [[f32; 4]; MAX_LIGHTS],
-    pub light_types: [[f32; 4]; MAX_LIGHTS],
-    pub light_positions: [[f32; 4]; MAX_LIGHTS],
-    pub spot_params: [[f32; 4]; MAX_LIGHTS],
-    pub light_count: [f32; 4],
     pub diffuse_color: [f32; 4],
     pub ambient_color: [f32; 4],
     pub specular_color: [f32; 4],
@@ -100,17 +94,24 @@ pub struct SceneUniforms {
     pub clip_count: [f32; 4],
     pub pbr_base_color: [f32; 4],
     pub pbr_metallic_roughness: [f32; 4],
-    /// xyz = emissive color, w = alpha cutoff
     pub pbr_emissive_alpha: [f32; 4],
-    /// x = alpha_mode (0=opaque, 1=mask, 2=blend), y = opacity, z = double_sided, w = unused
     pub pbr_alpha_flags: [f32; 4],
+    pub light_set_index: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GlobalFrameUniforms {
+    pub light_dirs: [[f32; 4]; MAX_LIGHTS],
+    pub light_colors: [[f32; 4]; MAX_LIGHTS],
+    pub light_types: [[f32; 4]; MAX_LIGHTS],
+    pub light_positions: [[f32; 4]; MAX_LIGHTS],
+    pub spot_params: [[f32; 4]; MAX_LIGHTS],
+    pub light_count: [f32; 4],
     pub ibl_diffuse: [f32; 4],
     pub ibl_specular: [f32; 4],
-    /// 4 CSM cascade view-projection matrices (16 vec4s = 4×4×4 f32s)
     pub csm_view_proj: [[f32; 4]; 16],
-    /// x..w = 4 split depths in view space (near..far for each cascade)
     pub csm_split_depths: [f32; 4],
-    /// x=inv shadow map size, y=depth bias, z=PCF half-width (0/1/2), w=enabled (1/0).
     pub shadow_params: [f32; 4],
 }
 

@@ -21,7 +21,7 @@ pub(crate) mod pass_text;
 mod pass_viewport;
 mod pass_wireframe;
 
-mod draw_opaque;
+pub(crate) mod draw_opaque;
 use draw_opaque::draw_opaque_triangle_batches;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
@@ -619,20 +619,8 @@ pub(super) fn execute_passes(
         }
     }
 
-    // Transparent pass: iterate sorted draw calls with alpha blend pipeline
-    // Pending: wire draw_call_mesh() for alpha-blended transparent rendering
-    if !ctx.transparent_order.is_empty() {
-        for &idx in ctx.transparent_order {
-            let dc = &draw_calls[idx];
-            if dc.vertices.is_empty() && dc.meshlet_data.is_none() {
-                continue;
-            }
-            // Transparent rendering infrastructure ready; full draw-call dispatch
-            // will be integrated when draw_call_mesh() wiring is complete.
-            // For now this validates compilation of the pipeline/sort/pass chain.
-            let _ = (dc, &scene_pl.solid_alpha);
-        }
-    }
+    // Transparent pass: sorted draw calls with alpha blend pipeline.
+    // Deferred until draw_call_mesh() wiring is complete.
 
     if use_ldr_fxaa {
         pass_post::pass_fxaa_ldr_to_swapchain(
@@ -866,7 +854,7 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
-    pass_markup::pass_markup(renderer, &mut encoder, &view);
+    pass_markup::pass_markup(renderer, &mut encoder, &view, ew, eh);
 
     if renderer.hud_enabled {
         if let Some(hud) = renderer.gpu.hud.as_ref() {

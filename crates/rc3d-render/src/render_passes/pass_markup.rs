@@ -202,11 +202,24 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<LineVertex>) {
     }
 }
 
+/// Build an orthographic projection that maps pixel coordinates [0..w, 0..h]
+/// to NDC [-1..1] with Y flipped (screen-space: origin top-left, Y down).
+fn screen_space_ortho(w: f32, h: f32) -> glam::Mat4 {
+    glam::Mat4::from_cols(
+        glam::Vec4::new(2.0 / w, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, -2.0 / h, 0.0, 0.0),
+        glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
+        glam::Vec4::new(-1.0, 1.0, 0.0, 1.0),
+    )
+}
+
 /// Render markup lines as an overlay.
 pub fn pass_markup(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
+    surface_w: u32,
+    surface_h: u32,
 ) {
     if renderer.frame.markup_vertices.is_empty() {
         return;
@@ -229,9 +242,9 @@ pub fn pass_markup(
 
     pass.set_pipeline(&renderer.gpu.pipelines.markup_lines);
 
-    let ident = glam::Mat4::IDENTITY.to_cols_array_2d();
+    let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();
     let uniforms = crate::vertex::FlatUniforms {
-        mvp: ident,
+        mvp,
         color: [1.0, 0.0, 0.0, 0.8],
     };
 

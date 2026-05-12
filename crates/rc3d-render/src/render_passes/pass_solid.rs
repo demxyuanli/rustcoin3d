@@ -101,13 +101,17 @@ pub(super) fn pass_solid_and_outline(
     super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, false);
 
     if ctx.run_outline {
-        let meshlet_set: std::collections::HashSet<usize> =
-            ctx.meshlet_indices.iter().copied().collect();
+        {
+            let mb = &mut renderer.gpu.draw_bufs.meshlet_bitmask;
+            mb.resize(ctx.visible.len(), false);
+            mb.fill(false);
+            for &i in ctx.meshlet_indices { mb[i] = true; }
+        }
         pass.set_pipeline(&outline_pipeline);
         pass.set_stencil_reference(0);
         let mut last_bound_mesh = None;
         for &i in ctx.solid_order {
-            if meshlet_set.contains(&i) {
+            if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
                 continue;
             }
             let dc = ctx.visible[i];
