@@ -96,7 +96,7 @@ pub(super) fn pass_solid_and_outline(
         occlusion_query_set: None,
     });
 
-    // Meshlet draw path re-enabled after compute→render synchronization fix (separate encoder + submit).
+    // MESHLET DIAG: re-enabled with logging
     super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, true);
 
     if ctx.run_outline {

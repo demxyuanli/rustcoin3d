@@ -208,12 +208,20 @@ pub(super) fn draw_opaque_triangle_batches(
             }
 
             // Meshlet path: per-draw (no instance batching needed)
+            let mut meshlet_draw_count = 0u32;
+            let mut meshlet_skip_no_cluster = 0u32;
+            let mut meshlet_skip_zero_tris = 0u32;
+            let mut meshlet_drawn = 0u32;
             for &i in renderer.gpu.draw_bufs.meshlet_draws.iter() {
                 if !draw_meshlets { continue; }
+                meshlet_draw_count += 1;
                 let dc = ctx.visible[i];
                 let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) { continue; }
+                if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) {
+                    meshlet_skip_no_cluster += 1;
+                    continue;
+                }
                 let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                     [0.08, 0.08, 0.08, 1.0]
                 } else {
@@ -253,10 +261,19 @@ pub(super) fn draw_opaque_triangle_batches(
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
                                 cluster_renderer.draw_clustered(pass, cluster_set);
+                                meshlet_drawn += 1;
                             }
+                        } else {
+                            meshlet_skip_zero_tris += 1;
                         }
                     }
                 }
+            }
+            if renderer.frame.frame_counter % 120 == 0 && meshlet_draw_count > 0 {
+                log::info!(
+                    "[MESHLET DIAG] draws={} drawn={} skip_no_cluster={} skip_zero_tris={}",
+                    meshlet_draw_count, meshlet_drawn, meshlet_skip_no_cluster, meshlet_skip_zero_tris
+                );
             }
 
             // Standard path: accumulate instance data for batched write
