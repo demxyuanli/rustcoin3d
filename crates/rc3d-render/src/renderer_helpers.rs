@@ -59,6 +59,34 @@ impl Renderer {
         }
     }
 
+    /// Multi-draw indirect for solid pass batching. Issues N draws in a single
+    /// GPU command, sharing vertex/index buffer bindings.
+    /// All draws in the batch must use the same mesh.
+    pub(crate) fn draw_mesh_multi_indirect(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        mesh_id: crate::gpu_resource::MeshId,
+        indirect_buffer: &wgpu::Buffer,
+        indirect_offset: u64,
+        draw_count: u32,
+        last_bound: &mut Option<crate::gpu_resource::MeshId>,
+    ) {
+        let Some(mesh) = self.get_mesh(mesh_id) else { return };
+        if last_bound.map_or(true, |id| id != mesh_id) {
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            if let Some(index_buffer) = &mesh.index_buffer {
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            *last_bound = Some(mesh_id);
+        }
+        if mesh.index_buffer.is_some() {
+            pass.multi_draw_indexed_indirect(indirect_buffer, indirect_offset, draw_count);
+        } else {
+            // Fall back to per-draw for non-indexed meshes (rare for triangle geometry).
+            pass.draw(0..mesh.vertex_count, 0..draw_count);
+        }
+    }
+
     pub(crate) fn draw_edges_batched(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

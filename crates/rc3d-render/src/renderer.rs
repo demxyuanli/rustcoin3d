@@ -318,11 +318,13 @@ impl Renderer {
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-            | wgpu::Features::PIPELINE_CACHE;
+            | wgpu::Features::PIPELINE_CACHE
+            | wgpu::Features::MULTI_DRAW_INDIRECT;
         let features = adapter.features() & requested_features;
         let wireframe_supported = features.contains(wgpu::Features::POLYGON_MODE_LINE);
         let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let multi_draw_indirect_supported = features.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
 
         let (device, queue) = adapter
             .request_device(
@@ -391,6 +393,13 @@ impl Renderer {
             label: Some("Instance data SSBO"),
             size: instance_stride * MAX_INSTANCES as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let standard_indirect_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Standard Indirect Args"),
+            size: 16384u64 * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -588,6 +597,7 @@ impl Renderer {
                 gpu_cull_staging: None,
                 gpu_cull_enabled: false,
                 max_gpu_cull_objects: 65536,
+                multi_draw_indirect_supported,
                 global_frame_buffer: Some(global_frame_buffer),
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),
@@ -595,6 +605,8 @@ impl Renderer {
                     standard_draws: Vec::with_capacity(4096),
                     instances: Vec::with_capacity(4096),
                     mat_keys: Vec::with_capacity(4096),
+                    standard_indirect_args: Vec::with_capacity(4096),
+                    standard_indirect_buf: Some(standard_indirect_buf),
                 },
             },
         };
@@ -1070,6 +1082,10 @@ impl Renderer {
             self.config.width,
             self.config.height,
         );
+    }
+
+    pub fn has_overlay_elements(&self) -> bool {
+        !self.frame.markup_vertices.is_empty() || self.hud_enabled
     }
 
     pub fn set_vsync(&mut self, enabled: bool) {

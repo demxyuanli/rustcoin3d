@@ -23,14 +23,14 @@ use crate::shader_reload::ShaderHotReload;
 use crate::ssr_pass::SsrPass;
 use crate::taa::{TaaJitter, TaaPass};
 use crate::texture_cache::TextureCache;
-use crate::vertex::LineVertex;
+use crate::vertex::MarkupVertex;
 use crate::viewport::ViewportLayout;
 use crate::volumetric_fog::VolumetricFogPass;
 
 use super::renderer_types::{FrameDiagnostics, FrameStats};
 
 pub(crate) struct FrameState {
-    pub markup_vertices: Vec<LineVertex>,
+    pub markup_vertices: Vec<MarkupVertex>,
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,
@@ -157,6 +157,8 @@ pub(crate) struct GpuInternals {
     pub gpu_cull_staging: Option<wgpu::Buffer>,
     pub gpu_cull_enabled: bool,
     pub max_gpu_cull_objects: u64,
+    /// Whether multi-draw indirect is supported by the GPU adapter.
+    pub multi_draw_indirect_supported: bool,
     /// Global frame uniform buffer (lights, CSM, IBL, shadows) — uploaded once per frame, bound in group 2.
     pub global_frame_buffer: Option<wgpu::Buffer>,
     pub draw_bufs: DrawBatchBufs,
@@ -168,4 +170,8 @@ pub(crate) struct DrawBatchBufs {
     pub standard_draws: Vec<usize>,
     pub instances: Vec<crate::vertex::InstanceData>,
     pub mat_keys: Vec<u64>,
+    /// Pre-built indirect draw args, reset per frame.
+    pub standard_indirect_args: Vec<wgpu::util::DrawIndexedIndirectArgs>,
+    /// GPU buffer for indirect draw args (created once, written per frame).
+    pub standard_indirect_buf: Option<wgpu::Buffer>,
 }
