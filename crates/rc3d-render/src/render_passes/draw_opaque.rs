@@ -212,18 +212,12 @@ pub(super) fn draw_opaque_triangle_batches(
             }
 
             // Meshlet path: per-draw (no instance batching needed)
-            let mut meshlet_draw_count = 0u32;
-            let mut meshlet_skip_no_cluster = 0u32;
-            let mut meshlet_skip_zero_tris = 0u32;
-            let mut meshlet_drawn = 0u32;
             for &i in renderer.gpu.draw_bufs.meshlet_draws.iter() {
                 if !draw_meshlets { continue; }
-                meshlet_draw_count += 1;
                 let dc = ctx.visible[i];
                 let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
                 if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) {
-                    meshlet_skip_no_cluster += 1;
                     continue;
                 }
                 let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
@@ -260,31 +254,34 @@ pub(super) fn draw_opaque_triangle_batches(
                     if let Some(ref mat_bg) = renderer.last_material_bg {
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
-                    // DIAGNOSTIC: test meshlet vertices with FLAT pipeline
-                    pass.set_pipeline(flat_solid_pipeline);
-                    if let Some(flat_offset) = renderer.gpu.flat_pool.push_flat(&FlatUniforms {
+                    // Push instance data for meshlet draw (PBR shader reads model/mvp from SSBO)
+                    let meshlet_first_instance = all_instances.len() as u32;
+                    let inst_data = InstanceData {
+                        model: dc.model_matrix.to_cols_array_2d(),
                         mvp: dc.mvp.to_cols_array_2d(),
-                        color: [1.0, 0.0, 0.0, 1.0], // bright red
-                    }) {
-                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[flat_offset]);
-                        if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
+                        diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
+                        base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                        metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
+                        emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                        morph_weights: pack_morph_weights(&dc.morph_weights),
+                        morph_count: [dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
+                    };
+                    all_instances.push(inst_data);
+                    // Write this single instance immediately so the GPU sees it
+                    renderer.queue.write_buffer(
+                        &renderer.gpu.instance_buffer,
+                        meshlet_first_instance as u64 * instance_stride,
+                        bytemuck::bytes_of(&inst_data),
+                    );
+
+                    if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
+                        if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                                cluster_renderer.draw_clustered_full_diag(pass, cluster_set);
-                                meshlet_drawn += 1;
-                            }
-                            if cluster_set.total_triangles == 0 {
-                                meshlet_skip_zero_tris += 1;
+                                cluster_renderer.draw_clustered(pass, cluster_set, meshlet_first_instance);
                             }
                         }
                     }
-                    pass.set_pipeline(solid_pipeline); // restore
                 }
-            }
-            if renderer.frame.frame_counter % 120 == 0 && meshlet_draw_count > 0 {
-                log::info!(
-                    "[MESHLET DIAG] draws={} drawn={} skip_no_cluster={} skip_zero_tris={}",
-                    meshlet_draw_count, meshlet_drawn, meshlet_skip_no_cluster, meshlet_skip_zero_tris
-                );
             }
 
             // Standard path: accumulate instance data for batched write
