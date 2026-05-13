@@ -54,6 +54,8 @@ pub(crate) struct PassContext<'a> {
     pub camera_proj: Mat4,
     /// Camera inverse projection matrix
     pub camera_inv_proj: Mat4,
+    /// Combined view-projection matrix (proj * view).
+    pub scene_vp: Mat4,
     pub effect_commands: &'a pass_effects::EffectCommands,
     pub light_sets: &'a crate::light_set::LightSetTable,
 }
@@ -68,6 +70,72 @@ pub(crate) enum FramePresentation<'a> {
         width_px: u32,
         height_px: u32,
     },
+}
+
+fn submit_meshlet_cull(
+    renderer: &mut crate::renderer::Renderer,
+    ctx: &PassContext<'_>,
+    hzb_enabled: bool,
+    hzb_dims: (u32, u32),
+    mip_max: u32,
+    hzb_need_max: bool,
+    hzb_need_min: bool,
+) {
+    let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() else {
+        return;
+    };
+    let Some(hzb) = renderer.gpu.hzb.as_ref() else {
+        return;
+    };
+
+    let mut cull_encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Meshlet Cull"),
+        });
+
+    let max_bind: &wgpu::TextureView = if hzb_need_max {
+        &hzb.max_pyramid.full_view
+    } else {
+        &hzb.min_pyramid.full_view
+    };
+    let min_bind: &wgpu::TextureView = if hzb_need_min {
+        &hzb.min_pyramid.full_view
+    } else {
+        &hzb.max_pyramid.full_view
+    };
+
+    for &vis_idx in ctx.meshlet_indices {
+        let dc = ctx.visible[vis_idx];
+        let Some(md) = dc.meshlet_data.as_ref() else {
+            continue;
+        };
+        let ptr = std::sync::Arc::as_ptr(md) as u64;
+        if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
+            let model_inv = dc.model_matrix.inverse();
+            let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
+            cluster_renderer.cull_and_compact(
+                &renderer.device,
+                &renderer.queue,
+                &mut cull_encoder,
+                cluster_set,
+                dc.mvp.to_cols_array_2d(),
+                [cam_model.x, cam_model.y, cam_model.z],
+                1,
+                0,
+                false,
+                max_bind,
+                min_bind,
+                hzb_dims,
+                mip_max,
+                hzb_enabled,
+                dc.depth_reversed_z,
+                dc.projection_orthographic,
+            );
+        }
+    }
+
+    renderer.queue.submit(std::iter::once(cull_encoder.finish()));
 }
 
 pub(super) fn execute_passes(
@@ -222,7 +290,7 @@ pub(super) fn execute_passes(
 
     let solid_mode = matches!(
         mode,
-        DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine | DisplayMode::Flat
+        DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine | DisplayMode::Flat | DisplayMode::FlatWithEdge
     );
 
     let hzb_need_max = !ctx.meshlet_indices.is_empty()
@@ -238,6 +306,7 @@ pub(super) fn execute_passes(
 
     let requested_meshlet_hzb_prepass = solid_mode
         && mode != DisplayMode::Flat
+        && mode != DisplayMode::FlatWithEdge
         && !ctx.meshlet_indices.is_empty()
         && renderer.gpu.cluster_renderer.is_some()
         && renderer.gpu.hzb.is_some()
@@ -260,61 +329,19 @@ pub(super) fn execute_passes(
 
     'hzb_prepass: {
         if run_meshlet_hzb_prepass {
-        let Some(hzb) = renderer.gpu.hzb.as_ref() else { break 'hzb_prepass; };
-        let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() else { break 'hzb_prepass; };
-
-        let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
-        let hzb_dims_xy = (hzb.max_pyramid.width, hzb.max_pyramid.height);
-        let max_bind_owned: wgpu::TextureView = if hzb_need_max {
-            hzb.max_pyramid.full_view.clone()
-        } else {
-            hzb.min_pyramid.full_view.clone()
+        let (mip_max, hzb_dims_xy) = match (
+            renderer.gpu.hzb.as_ref(),
+            renderer.gpu.cluster_renderer.as_ref(),
+        ) {
+            (Some(hzb), Some(_)) => (
+                hzb.max_pyramid.mip_count.saturating_sub(1),
+                (hzb.max_pyramid.width, hzb.max_pyramid.height),
+            ),
+            _ => break 'hzb_prepass,
         };
-        let min_bind_owned: wgpu::TextureView = if hzb_need_min {
-            hzb.min_pyramid.full_view.clone()
-        } else {
-            hzb.max_pyramid.full_view.clone()
-        };
-
-        let lod_stride = 1u32;
-        let meshlet_phase = 0u32;
-        let meshlet_stride_spatial = false;
 
         // First cull pass (no HZB - uses full mip0 as coarse cull)
-        {
-            let max_bind: &wgpu::TextureView = &max_bind_owned;
-            let min_bind: &wgpu::TextureView = &min_bind_owned;
-            for &vis_idx in ctx.meshlet_indices {
-                let dc = ctx.visible[vis_idx];
-                let Some(md) = dc.meshlet_data.as_ref() else {
-                    log::warn!("meshlet index {} has no meshlet_data; skipping", vis_idx);
-                    continue;
-                };
-                let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-                    let model_inv = dc.model_matrix.inverse();
-                    let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
-                    cluster_renderer.cull_and_compact(
-                        &renderer.device,
-                        &renderer.queue,
-                        &mut encoder,
-                        cluster_set,
-                        dc.mvp.to_cols_array_2d(),
-                        [cam_model.x, cam_model.y, cam_model.z],
-                        lod_stride,
-                        meshlet_phase,
-                        meshlet_stride_spatial,
-                        max_bind,
-                        min_bind,
-                        hzb_dims_xy,
-                        mip_max,
-                        false,
-                        dc.depth_reversed_z,
-                        dc.projection_orthographic,
-                    );
-                }
-            }
-        }
+        submit_meshlet_cull(renderer, ctx, false, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
 
         // Depth prepass
         pass_solid::pass_depth_prepass(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
@@ -336,96 +363,19 @@ pub(super) fn execute_passes(
         }
 
         // Second cull pass (with HZB)
-        if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-            let max_bind: &wgpu::TextureView = &max_bind_owned;
-            let min_bind: &wgpu::TextureView = &min_bind_owned;
-            for &vis_idx in ctx.meshlet_indices {
-                let dc = ctx.visible[vis_idx];
-                let Some(md) = dc.meshlet_data.as_ref() else {
-                    continue;
-                };
-                let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-                    let model_inv = dc.model_matrix.inverse();
-                    let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
-                    cluster_renderer.cull_and_compact(
-                        &renderer.device,
-                        &renderer.queue,
-                        &mut encoder,
-                        cluster_set,
-                        dc.mvp.to_cols_array_2d(),
-                        [cam_model.x, cam_model.y, cam_model.z],
-                        lod_stride,
-                        meshlet_phase,
-                        meshlet_stride_spatial,
-                        max_bind,
-                        min_bind,
-                        hzb_dims_xy,
-                        mip_max,
-                        true,
-                        dc.depth_reversed_z,
-                        dc.projection_orthographic,
-                    );
-                }
-            }
-        } else {
-            meshlet_hzb_prepass_done = false;
-            break 'hzb_prepass;
-        }
+        submit_meshlet_cull(renderer, ctx, true, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
 
         meshlet_hzb_prepass_done = true;
         }
     }
 
-    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat {
-        if let (Some(cluster_renderer), Some(hzb)) =
-            (renderer.gpu.cluster_renderer.as_ref(), renderer.gpu.hzb.as_ref())
-        {
-            let mip_max = hzb.max_pyramid.mip_count.saturating_sub(1);
-            let max_bind: &wgpu::TextureView = if hzb_need_max {
-                &hzb.max_pyramid.full_view
-            } else {
-                &hzb.min_pyramid.full_view
-            };
-            let min_bind: &wgpu::TextureView = if hzb_need_min {
-                &hzb.min_pyramid.full_view
-            } else {
-                &hzb.max_pyramid.full_view
-            };
-            let lod_stride = 1u32;
-            let meshlet_phase = 0u32;
-            let meshlet_stride_spatial = false;
-            for &vis_idx in ctx.meshlet_indices {
-                let dc = ctx.visible[vis_idx];
-                let Some(md) = dc.meshlet_data.as_ref() else {
-                    log::warn!("meshlet index {} has no meshlet_data; skipping", vis_idx);
-                    continue;
-                };
-                let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-                    let model_inv = dc.model_matrix.inverse();
-                    let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
-                    cluster_renderer.cull_and_compact(
-                        &renderer.device,
-                        &renderer.queue,
-                        &mut encoder,
-                        cluster_set,
-                        dc.mvp.to_cols_array_2d(),
-                        [cam_model.x, cam_model.y, cam_model.z],
-                        lod_stride,
-                        meshlet_phase,
-                        meshlet_stride_spatial,
-                        max_bind,
-                        min_bind,
-                        (hzb.max_pyramid.width, hzb.max_pyramid.height),
-                        mip_max,
-                        false,
-                        dc.depth_reversed_z,
-                        dc.projection_orthographic,
-                    );
-                }
-            }
-        }
+    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
+        let (fallback_dims, fallback_mip) = if let Some(hzb) = renderer.gpu.hzb.as_ref() {
+            ((hzb.max_pyramid.width, hzb.max_pyramid.height), hzb.max_pyramid.mip_count.saturating_sub(1))
+        } else {
+            ((1, 1), 0)
+        };
+        submit_meshlet_cull(renderer, ctx, false, fallback_dims, fallback_mip, hzb_need_max, hzb_need_min);
     }
 
     if solid_mode && renderer.enable_cluster_lights {
@@ -576,7 +526,7 @@ pub(super) fn execute_passes(
 
     let edge_worthy = !ctx.performance_mode_active
         && ctx.adaptive_quality != AdaptiveQuality::Low
-        && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine)
+        && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine || mode == DisplayMode::FlatWithEdge)
         && mode != DisplayMode::Flat;
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
     let defer_line_overlays = use_ldr_fxaa;
@@ -586,7 +536,7 @@ pub(super) fn execute_passes(
         pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
-    if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat {
+    if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
         pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
         if ss_outline {
             let shade_fmt = if renderer.hdr_post_processing {
@@ -637,7 +587,7 @@ pub(super) fn execute_passes(
         if edge_worthy || has_overlay {
             pass_edge::pass_edge_overlay(renderer, &mut encoder, &view, &depth_view, ctx, edge_worthy, &scene_pl);
         }
-        if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat {
+        if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
             if run_geom_sel_edge {
                 pass_selection::pass_selection_edge(renderer, &mut encoder, &view, &depth_view, ctx, &scene_pl);
             }
@@ -854,7 +804,13 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
-    pass_markup::pass_markup(renderer, &mut encoder, &view, ew, eh);
+    let view_matrix = ctx.camera_inv_proj * ctx.scene_vp;
+    pass_markup::pass_markup(
+        renderer, &mut encoder, &view, ew, eh,
+        view_matrix, ctx.camera_proj,
+        ctx.depth_reversed_z, ctx.effect_commands,
+    );
+    renderer.gpu.flat_pool.flush(&renderer.queue);
 
     if renderer.hud_enabled {
         if let Some(hud) = renderer.gpu.hud.as_ref() {
@@ -964,4 +920,131 @@ pub(super) fn execute_passes(
     }
 
     stats
+}
+
+/// Render a frame with only overlay elements (markup, HUD) — no 3D geometry.
+/// Used when draw_calls is empty but markup vertices exist.
+pub(super) fn render_overlay_only_frame(
+    renderer: &mut crate::renderer::Renderer,
+    presentation: FramePresentation<'_>,
+    post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    _frame_counter: u64,
+    effect_commands: &pass_effects::EffectCommands,
+) -> FrameStats {
+    let t_entry = std::time::Instant::now();
+    let mut acquired_swapchain: Option<(wgpu::SurfaceTexture, wgpu::TextureView)> = None;
+
+    let (eff_width, eff_height) = match &presentation {
+        FramePresentation::Swapchain => match renderer.surface.get_current_texture() {
+            Ok(output) => {
+                let v = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                acquired_swapchain = Some((output, v));
+                (renderer.config.width, renderer.config.height)
+            }
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                renderer.surface.configure(&renderer.device, &renderer.config);
+                return FrameStats::default();
+            }
+            Err(_) => return FrameStats::default(),
+        },
+        FramePresentation::OffscreenSurface {
+            width_px,
+            height_px,
+            ..
+        } => (*width_px, *height_px),
+    };
+
+    let view: &wgpu::TextureView = match acquired_swapchain.as_ref() {
+        Some((_s, vw)) => vw,
+        None => match &presentation {
+            FramePresentation::OffscreenSurface { output_view, .. } => output_view,
+            FramePresentation::Swapchain => unreachable!(),
+        },
+    };
+
+    let ew = eff_width.max(1);
+    let eh = eff_height.max(1);
+
+    let bg_color = wgpu::Color {
+        r: 0.02,
+        g: 0.02,
+        b: 0.02,
+        a: 1.0,
+    };
+
+    let mut encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Overlay-only Encoder"),
+        });
+
+    // Clear color to bg_color (no depth needed for overlays)
+    {
+        let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Overlay Clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(bg_color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+
+    // Markup overlay — push_flat inside, then flush before submit
+    pass_markup::pass_markup(
+        renderer, &mut encoder, view, ew, eh,
+        Mat4::IDENTITY, Mat4::IDENTITY, false,
+        effect_commands,
+    );
+    renderer.gpu.flat_pool.flush(&renderer.queue);
+
+    // HUD overlay
+    if renderer.hud_enabled {
+        if let Some(hud) = renderer.gpu.hud.as_ref() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("HUD Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            hud.render(&mut pass);
+        }
+    }
+
+    if let Some(cb) = post_swapchain_overlay {
+        cb(&mut encoder, view);
+    }
+
+    renderer
+        .queue
+        .submit(std::iter::once(encoder.finish()));
+
+    if let Some((surface_tex, vw)) = acquired_swapchain.take() {
+        drop(vw);
+        surface_tex.present();
+    }
+
+    let t_total = t_entry.elapsed().as_secs_f64() * 1000.0;
+    FrameStats {
+        frame_time_ms: t_total,
+        cpu_sections: Vec::new(),
+        gpu_sections: Vec::new(),
+        ..FrameStats::default()
+    }
 }
