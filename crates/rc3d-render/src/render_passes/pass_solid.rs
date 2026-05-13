@@ -96,9 +96,8 @@ pub(super) fn pass_solid_and_outline(
         occlusion_query_set: None,
     });
 
-    // Temporary stability fallback:
-    // disable meshlet draw path to avoid camera-interaction corruption artifacts.
-    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, false);
+    // Meshlet draw path re-enabled after compute→render synchronization fix (separate encoder + submit).
+    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, true);
 
     if ctx.run_outline {
         {
