@@ -260,17 +260,24 @@ pub(super) fn draw_opaque_triangle_batches(
                     if let Some(ref mat_bg) = renderer.last_material_bg {
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
-                    if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-                        // Skip draw when all meshlets were culled (indirect index_count == 0)
-                        // DIAGNOSTIC: draw ALL meshlet indices without cull, test vertex/index format
-                        if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                            cluster_renderer.draw_clustered_full_diag(pass, cluster_set);
-                            meshlet_drawn += 1;
-                        }
-                        if cluster_set.total_triangles == 0 {
-                            meshlet_skip_zero_tris += 1;
+                    // DIAGNOSTIC: test meshlet vertices with FLAT pipeline
+                    pass.set_pipeline(flat_solid_pipeline);
+                    if let Some(flat_offset) = renderer.gpu.flat_pool.push_flat(&FlatUniforms {
+                        mvp: dc.mvp.to_cols_array_2d(),
+                        color: [1.0, 0.0, 0.0, 1.0], // bright red
+                    }) {
+                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[flat_offset]);
+                        if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
+                            if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
+                                cluster_renderer.draw_clustered_full_diag(pass, cluster_set);
+                                meshlet_drawn += 1;
+                            }
+                            if cluster_set.total_triangles == 0 {
+                                meshlet_skip_zero_tris += 1;
+                            }
                         }
                     }
+                    pass.set_pipeline(solid_pipeline); // restore
                 }
             }
             if renderer.frame.frame_counter % 120 == 0 && meshlet_draw_count > 0 {
