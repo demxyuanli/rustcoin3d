@@ -200,9 +200,13 @@ pub(super) fn draw_opaque_triangle_batches(
                 let md = &mut renderer.gpu.draw_bufs.meshlet_draws;
                 let sd = &mut renderer.gpu.draw_bufs.standard_draws;
                 md.clear(); sd.clear();
+                // Meshlet draw path requires HZB (even for frustum-only cull, the
+                // bind group layout binds HZB texture views). Without HZB, fall
+                // back to standard instanced draws for meshlet-indexed geometry.
+                let can_meshlet_draw = draw_meshlets && renderer.gpu.hzb.is_some();
                 for &i in &ctx.solid_order[start..end] {
                     if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
-                        if draw_meshlets { md.push(i); } else { sd.push(i); }
+                        if can_meshlet_draw { md.push(i); } else { sd.push(i); }
                     } else { sd.push(i); }
                 }
             }
