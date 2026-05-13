@@ -73,8 +73,12 @@ pub(crate) enum FramePresentation<'a> {
     },
 }
 
+/// Run meshlet cull compute passes in the given encoder.
+/// Uses the same encoder as subsequent render passes so wgpu inserts
+/// implicit barriers between compute (STORAGE write) and render (INDIRECT/INDEX read).
 fn submit_meshlet_cull(
     renderer: &mut crate::renderer::Renderer,
+    encoder: &mut wgpu::CommandEncoder,
     ctx: &PassContext<'_>,
     hzb_enabled: bool,
     hzb_dims: (u32, u32),
@@ -88,12 +92,6 @@ fn submit_meshlet_cull(
     let Some(hzb) = renderer.gpu.hzb.as_ref() else {
         return;
     };
-
-    let mut cull_encoder = renderer
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Meshlet Cull"),
-        });
 
     let max_bind: &wgpu::TextureView = if hzb_need_max {
         &hzb.max_pyramid.full_view
@@ -118,7 +116,7 @@ fn submit_meshlet_cull(
             cluster_renderer.cull_and_compact(
                 &renderer.device,
                 &renderer.queue,
-                &mut cull_encoder,
+                encoder,
                 cluster_set,
                 dc.mvp.to_cols_array_2d(),
                 [cam_model.x, cam_model.y, cam_model.z],
@@ -135,8 +133,6 @@ fn submit_meshlet_cull(
             );
         }
     }
-
-    renderer.queue.submit(std::iter::once(cull_encoder.finish()));
 }
 
 pub(super) fn execute_passes(
@@ -344,7 +340,7 @@ pub(super) fn execute_passes(
         };
 
         // First cull pass (no HZB - uses full mip0 as coarse cull)
-        submit_meshlet_cull(renderer, ctx, false, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
+        submit_meshlet_cull(renderer, &mut encoder, ctx, false, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
 
         // Depth prepass
         pass_solid::pass_depth_prepass(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
@@ -366,7 +362,7 @@ pub(super) fn execute_passes(
         }
 
         // Second cull pass (with HZB)
-        submit_meshlet_cull(renderer, ctx, true, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
+        submit_meshlet_cull(renderer, &mut encoder, ctx, true, hzb_dims_xy, mip_max, hzb_need_max, hzb_need_min);
 
         meshlet_hzb_prepass_done = true;
         }
@@ -378,7 +374,7 @@ pub(super) fn execute_passes(
         } else {
             ((1, 1), 0)
         };
-        submit_meshlet_cull(renderer, ctx, false, fallback_dims, fallback_mip, hzb_need_max, hzb_need_min);
+        submit_meshlet_cull(renderer, &mut encoder, ctx, false, fallback_dims, fallback_mip, hzb_need_max, hzb_need_min);
     }
 
     if solid_mode && renderer.enable_cluster_lights {
