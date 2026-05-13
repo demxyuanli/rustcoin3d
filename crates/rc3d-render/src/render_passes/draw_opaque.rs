@@ -254,27 +254,8 @@ pub(super) fn draw_opaque_triangle_batches(
                     if let Some(ref mat_bg) = renderer.last_material_bg {
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
-                    // Push instance data for meshlet draw (PBR shader reads model/mvp from SSBO)
-                    // Write meshlet InstanceData to slot 0 of the instance SSBO.
-                    // The indirect buffer has first_instance=0 (from clear_buffer),
-                    // so the PBR shader reads instances[0]. We place the meshlet's
-                    // instance at slot 0, letting the Phase 2 batch write restore
-                    // standard instance data at slot 0 afterwards.
-                    let inst_data = InstanceData {
-                        model: dc.model_matrix.to_cols_array_2d(),
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
-                        base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                        metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                        emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-                        morph_weights: pack_morph_weights(&dc.morph_weights),
-                        morph_count: [dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
-                    };
-                    renderer.queue.write_buffer(
-                        &renderer.gpu.instance_buffer, 0,
-                        bytemuck::bytes_of(&inst_data),
-                    );
-
+                    // Meshlet InstanceData already written to instance_buffer slot 0
+                    // by submit_meshlet_cull via encoder.copy_buffer_to_buffer.
                     if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
@@ -341,6 +322,10 @@ pub(super) fn draw_opaque_triangle_batches(
                 bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
             );
         }
+        // Note: meshlet InstanceData at slot 0 is written by submit_meshlet_cull
+        // via encoder.copy_buffer_to_buffer (after cull, before render pass).
+        // Phase 2 overwrites slot 0 via queue.write_buffer, but the encoder copy
+        // happens after on the GPU timeline, so the meshlet draw sees correct data.
 
         if renderer.gpu.multi_draw_indirect_supported {
             // Multi-draw indirect path: build DrawIndexedIndirectArgs args, write to GPU buffer,

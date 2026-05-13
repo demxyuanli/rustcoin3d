@@ -413,6 +413,16 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Meshlet instance staging: written via queue, then copied via encoder
+        // copy_buffer_to_buffer to instance_buffer slot 0. This ensures the
+        // meshlet InstanceData is on the encoder timeline, properly ordered
+        // between cull compute passes and the render pass.
+        let meshlet_instance_staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Meshlet instance staging"),
+            size: instance_stride,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let standard_indirect_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Standard Indirect Args"),
@@ -581,6 +591,7 @@ impl Renderer {
                 ssao_noise_tex,
                 ssao_noise_view,
                 instance_buffer,
+                meshlet_instance_staging: Some(meshlet_instance_staging),
                 ibl_instance_bind_group,
                 timing_supported,
                 pipeline_cache: None,

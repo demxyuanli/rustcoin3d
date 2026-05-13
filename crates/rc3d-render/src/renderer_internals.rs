@@ -134,6 +134,10 @@ pub(crate) struct GpuInternals {
     pub ssao_noise_tex: wgpu::Texture,
     pub ssao_noise_view: wgpu::TextureView,
     pub instance_buffer: wgpu::Buffer,
+    /// Staging buffer for meshlet InstanceData (256 bytes). Written via queue,
+    /// copied to instance_buffer slot 0 via encoder.copy_buffer_to_buffer
+    /// after cull passes to guarantee encoder-timeline ordering.
+    pub meshlet_instance_staging: Option<wgpu::Buffer>,
     pub ibl_instance_bind_group: wgpu::BindGroup,
     pub timing_supported: bool,
     pub pipeline_cache: Option<PipelineCacheManager>,
