@@ -306,6 +306,7 @@ pub(super) fn execute_passes(
             .any(|&i| !ctx.visible[i].depth_reversed_z);
 
     let tier_allows_hzb = renderer.gpu.gpu_capability.tier != GpuTier::Basic;
+    #[allow(unused_variables)]
     let requested_meshlet_hzb_prepass = solid_mode
         && mode != DisplayMode::Flat
         && mode != DisplayMode::FlatWithEdge
@@ -314,19 +315,8 @@ pub(super) fn execute_passes(
         && renderer.gpu.hzb.is_some()
         && renderer.gpu.hzb_baker.is_some()
         && tier_allows_hzb;
-    let run_meshlet_hzb_prepass = if requested_meshlet_hzb_prepass {
-        true
-    } else {
-        if solid_mode
-            && !ctx.meshlet_indices.is_empty()
-            && (renderer.gpu.cluster_renderer.is_none()
-                || renderer.gpu.hzb.is_none()
-                || renderer.gpu.hzb_baker.is_none())
-        {
-            log::warn!("meshlet HZB prepass requested but resources are incomplete; using fallback meshlet cull path");
-        }
-        false
-    };
+    #[allow(unused_variables)]
+    let run_meshlet_hzb_prepass = false; // DIAGNOSTIC: force skip HZB, test fallback only
 
     let mut meshlet_hzb_prepass_done = false;
 
