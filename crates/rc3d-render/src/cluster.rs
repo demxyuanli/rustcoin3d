@@ -523,4 +523,17 @@ impl ClusterRenderer {
         pass.set_index_buffer(cluster_set.compact_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed_indirect(&cluster_set.indirect_buffer, 4);
     }
+
+    /// DIAGNOSTIC: draw ALL meshlet indices without culling, using uncompacted index buffer.
+    /// If this renders visible geometry but draw_clustered doesn't, the cull/compact/finalize
+    /// pipeline is the problem.
+    pub fn draw_clustered_full_diag(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        cluster_set: &ClusterSet,
+    ) {
+        pass.set_vertex_buffer(0, cluster_set.vertex_buffer.slice(..));
+        pass.set_index_buffer(cluster_set.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..cluster_set.total_indices, 0, 0..1);
+    }
 }

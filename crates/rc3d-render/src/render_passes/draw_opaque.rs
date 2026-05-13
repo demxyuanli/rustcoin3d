@@ -262,12 +262,12 @@ pub(super) fn draw_opaque_triangle_batches(
                     }
                     if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                         // Skip draw when all meshlets were culled (indirect index_count == 0)
-                        if cluster_set.total_triangles > 0 {
-                            if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                                cluster_renderer.draw_clustered(pass, cluster_set);
-                                meshlet_drawn += 1;
-                            }
-                        } else {
+                        // DIAGNOSTIC: draw ALL meshlet indices without cull, test vertex/index format
+                        if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
+                            cluster_renderer.draw_clustered_full_diag(pass, cluster_set);
+                            meshlet_drawn += 1;
+                        }
+                        if cluster_set.total_triangles == 0 {
                             meshlet_skip_zero_tris += 1;
                         }
                     }
