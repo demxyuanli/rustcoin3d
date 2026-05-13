@@ -29,6 +29,24 @@ use crate::volumetric_fog::VolumetricFogPass;
 
 use super::renderer_types::{FrameDiagnostics, FrameStats};
 
+/// GPU capability tier for runtime feature adaptation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuTier {
+    /// Integrated GPU: meshlet path, no HZB occlusion, single LOD level.
+    Basic,
+    /// Mid-range discrete GPU: HZB occlusion, 2 LOD levels.
+    Standard,
+    /// High-end discrete GPU: HZB full precision, distance-based LOD.
+    Enhanced,
+}
+
+#[derive(Clone, Debug)]
+pub struct GpuCapability {
+    pub tier: GpuTier,
+    pub is_integrated: bool,
+    pub max_draw_indirect_count: u32,
+}
+
 pub(crate) struct FrameState {
     pub markup_vertices: Vec<MarkupVertex>,
     pub clip_planes: Vec<[f32; 4]>,
@@ -159,6 +177,8 @@ pub(crate) struct GpuInternals {
     pub max_gpu_cull_objects: u64,
     /// Whether multi-draw indirect is supported by the GPU adapter.
     pub multi_draw_indirect_supported: bool,
+    /// Detected GPU capability tier for runtime feature adaptation.
+    pub gpu_capability: GpuCapability,
     /// Global frame uniform buffer (lights, CSM, IBL, shadows) — uploaded once per frame, bound in group 2.
     pub global_frame_buffer: Option<wgpu::Buffer>,
     pub draw_bufs: DrawBatchBufs,

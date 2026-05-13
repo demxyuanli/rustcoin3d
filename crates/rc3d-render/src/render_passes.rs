@@ -1,6 +1,7 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
+use crate::renderer::GpuTier;
 use crate::viewport::LayoutMode;
 use crate::vertex::{FlatUniforms, CSM_CASCADE_COUNT};
 use crate::FrameStats;
@@ -304,13 +305,15 @@ pub(super) fn execute_passes(
             .iter()
             .any(|&i| !ctx.visible[i].depth_reversed_z);
 
+    let tier_allows_hzb = renderer.gpu.gpu_capability.tier != GpuTier::Basic;
     let requested_meshlet_hzb_prepass = solid_mode
         && mode != DisplayMode::Flat
         && mode != DisplayMode::FlatWithEdge
         && !ctx.meshlet_indices.is_empty()
         && renderer.gpu.cluster_renderer.is_some()
         && renderer.gpu.hzb.is_some()
-        && renderer.gpu.hzb_baker.is_some();
+        && renderer.gpu.hzb_baker.is_some()
+        && tier_allows_hzb;
     let run_meshlet_hzb_prepass = if requested_meshlet_hzb_prepass {
         true
     } else {

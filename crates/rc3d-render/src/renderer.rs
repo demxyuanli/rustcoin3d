@@ -14,6 +14,7 @@ mod renderer_skinning;
 mod renderer_internals;
 
 pub use renderer_types::*;
+pub(crate) use renderer_internals::{GpuCapability, GpuTier};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
@@ -326,6 +327,23 @@ impl Renderer {
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let multi_draw_indirect_supported = features.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
 
+        let adapter_info = adapter.get_info();
+        let is_integrated = matches!(
+            adapter_info.device_type,
+            wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::Cpu
+        );
+        let tier = if is_integrated {
+            renderer_internals::GpuTier::Basic
+        } else {
+            renderer_internals::GpuTier::Standard
+        };
+        let gpu_capability = renderer_internals::GpuCapability {
+            tier,
+            is_integrated,
+            max_draw_indirect_count: 0, // feature gated — use multi_draw_indirect_supported
+        };
+        log::info!("GPU tier: {:?} (integrated={})", tier, is_integrated);
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -598,6 +616,7 @@ impl Renderer {
                 gpu_cull_enabled: false,
                 max_gpu_cull_objects: 65536,
                 multi_draw_indirect_supported,
+                gpu_capability,
                 global_frame_buffer: Some(global_frame_buffer),
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),
