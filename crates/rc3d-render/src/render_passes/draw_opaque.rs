@@ -255,7 +255,11 @@ pub(super) fn draw_opaque_triangle_batches(
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
                     // Push instance data for meshlet draw (PBR shader reads model/mvp from SSBO)
-                    let meshlet_first_instance = all_instances.len() as u32;
+                    // Write meshlet InstanceData to slot 0 of the instance SSBO.
+                    // The indirect buffer has first_instance=0 (from clear_buffer),
+                    // so the PBR shader reads instances[0]. We place the meshlet's
+                    // instance at slot 0, letting the Phase 2 batch write restore
+                    // standard instance data at slot 0 afterwards.
                     let inst_data = InstanceData {
                         model: dc.model_matrix.to_cols_array_2d(),
                         mvp: dc.mvp.to_cols_array_2d(),
@@ -266,18 +270,15 @@ pub(super) fn draw_opaque_triangle_batches(
                         morph_weights: pack_morph_weights(&dc.morph_weights),
                         morph_count: [dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
                     };
-                    all_instances.push(inst_data);
-                    // Write this single instance immediately so the GPU sees it
                     renderer.queue.write_buffer(
-                        &renderer.gpu.instance_buffer,
-                        meshlet_first_instance as u64 * instance_stride,
+                        &renderer.gpu.instance_buffer, 0,
                         bytemuck::bytes_of(&inst_data),
                     );
 
                     if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                                cluster_renderer.draw_clustered(pass, cluster_set, meshlet_first_instance);
+                                cluster_renderer.draw_clustered(pass, cluster_set, 0);
                             }
                         }
                     }

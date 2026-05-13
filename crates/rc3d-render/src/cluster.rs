@@ -450,12 +450,11 @@ impl ClusterRenderer {
             }),
         );
 
-        // Reset visible list atomic count
-        queue.write_buffer(&cluster_set.visible_buffer, 0, bytemuck::bytes_of(&0u32));
-
-        // Reset indirect args
-        let clear_indirect: [u32; 6] = [0, 0, 1, 0, 0, 0];
-        queue.write_buffer(&cluster_set.indirect_buffer, 0, bytemuck::cast_slice(&clear_indirect));
+        // Reset visible list atomic count and indirect args using encoder.clear_buffer
+        // (not queue.write_buffer) so the clears are ordered on the encoder timeline
+        // with subsequent compute dispatches, avoiding GPU-level race conditions.
+        encoder.clear_buffer(&cluster_set.visible_buffer, 0, Some(4));
+        encoder.clear_buffer(&cluster_set.indirect_buffer, 0, Some(24));
 
         // Create per-frame dynamic bind group (uniform + HZB views)
         let cull_dynamic_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
