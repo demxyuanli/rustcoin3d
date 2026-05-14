@@ -82,9 +82,6 @@ fn draw_flat_triangle_batches(
 ) {
     pass.set_pipeline(flat_solid_pipeline);
 
-    let mut drawn = 0u32;
-    let mut no_mesh = 0u32;
-    let mut no_uniform = 0u32;
     let mut last_bound_mesh = None;
     for &i in ctx.solid_order {
         let dc = ctx.visible[i];
@@ -96,28 +93,7 @@ fn draw_flat_triangle_batches(
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             if let Some(mesh_id) = ctx.mesh_handles[i] {
                 renderer.draw_mesh_instanced(pass, mesh_id, 0, 1, &mut last_bound_mesh);
-                drawn += 1;
-            } else {
-                no_mesh += 1;
             }
-        } else {
-            no_uniform += 1;
-        }
-    }
-    if renderer.frame.frame_counter % 120 == 0 {
-        log::info!(
-            "[FLAT DIAG] solid_order={} drawn={} no_mesh={} no_uniform={} depth_rev={}",
-            ctx.solid_order.len(), drawn, no_mesh, no_uniform, ctx.depth_reversed_z
-        );
-        if let Some(&first) = ctx.solid_order.first() {
-            let dc = ctx.visible[first];
-            log::info!(
-                "[FLAT DIAG] dc[0]: diffuse=({:.2},{:.2},{:.2}) mvp_det={:.4} verts_empty={} meshlet={}",
-                dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z,
-                glam::Mat4::from_cols_array_2d(&dc.mvp.to_cols_array_2d()).determinant(),
-                dc.vertices.is_empty(),
-                dc.meshlet_data.is_some()
-            );
         }
     }
 }
@@ -274,11 +250,16 @@ pub(super) fn draw_opaque_triangle_batches(
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
                     // InstanceData at slot 0 written by pre-insert at Phase 1 start.
+                    // Meshlet draw reads instances[0] via indirect buffer first_instance=0.
                     if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                                cluster_renderer.draw_clustered(pass, cluster_set);
-                                last_bound_mesh = None; // force standard path to re-bind mesh buffers
+                                if renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled {
+                                    cluster_renderer.draw_clustered(pass, cluster_set);
+                                } else {
+                                    cluster_renderer.draw_clustered_basic(pass, cluster_set);
+                                }
+                                last_bound_mesh = None;
                             }
                         }
                     }

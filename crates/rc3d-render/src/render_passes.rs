@@ -368,7 +368,7 @@ pub(super) fn execute_passes(
         }
     }
 
-    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
+    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge && renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled {
         let (fallback_dims, fallback_mip) = if let Some(hzb) = renderer.gpu.hzb.as_ref() {
             ((hzb.max_pyramid.width, hzb.max_pyramid.height), hzb.max_pyramid.mip_count.saturating_sub(1))
         } else {
@@ -709,6 +709,7 @@ pub(super) fn execute_passes(
     renderer.gpu.phong_pool.flush(&renderer.queue);
     renderer.gpu.shadow_pool.flush(&renderer.queue);
     renderer.gpu.flat_pool.flush(&renderer.queue);
+    renderer.gpu.line_pool.flush(&renderer.queue);
     renderer.gpu.section_cap_pool.flush(&renderer.queue);
 
     let ti_hud = renderer.gpu_timer.begin(&mut encoder, "HUD+Overlay");
@@ -810,6 +811,7 @@ pub(super) fn execute_passes(
         ctx.depth_reversed_z, ctx.effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
+    renderer.gpu.line_pool.flush(&renderer.queue);
 
     if renderer.hud_enabled {
         if let Some(hud) = renderer.gpu.hud.as_ref() {
@@ -1004,6 +1006,7 @@ pub(super) fn render_overlay_only_frame(
         effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
+    renderer.gpu.line_pool.flush(&renderer.queue);
 
     // HUD overlay
     if renderer.hud_enabled {

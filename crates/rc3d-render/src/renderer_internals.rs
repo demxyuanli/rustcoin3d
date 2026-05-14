@@ -45,6 +45,9 @@ pub struct GpuCapability {
     pub tier: GpuTier,
     pub is_integrated: bool,
     pub max_draw_indirect_count: u32,
+    /// Whether meshlet GPU cull (frustum+HZB)→compact→draw_indexed_indirect is enabled.
+    /// False on Basic tier (integrated GPU) where cull sync issues cause artifacts.
+    pub meshlet_gpu_cull_enabled: bool,
 }
 
 pub(crate) struct FrameState {
@@ -105,6 +108,7 @@ pub(crate) struct GpuInternals {
     pub phong_pool: GpuUniformPool,
     pub shadow_pool: GpuUniformPool,
     pub flat_pool: GpuUniformPool,
+    pub line_pool: GpuUniformPool,
     pub section_cap_pool: GpuUniformPool,
     pub outline_pool: GpuUniformPool,
     pub gpu_meshes: GpuResourceManager,

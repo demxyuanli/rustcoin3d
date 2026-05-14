@@ -340,10 +340,12 @@ impl Renderer {
         } else {
             renderer_internals::GpuTier::Standard
         };
+        let meshlet_gpu_cull_enabled = tier != renderer_internals::GpuTier::Basic;
         let gpu_capability = renderer_internals::GpuCapability {
             tier,
             is_integrated,
             max_draw_indirect_count: 0, // feature gated — use multi_draw_indirect_supported
+            meshlet_gpu_cull_enabled,
         };
         log::info!("GPU tier: {:?} (integrated={})", tier, is_integrated);
 
@@ -397,6 +399,7 @@ impl Renderer {
         let flat_pool = GpuUniformPool::new_flat(&device, 32768);
         let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 16384);
         let outline_pool = GpuUniformPool::new_outline(&device, 16384);
+        let line_pool = GpuUniformPool::new_line(&device, &pipelines.flat_bgl, 65536);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
         let csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
@@ -559,6 +562,7 @@ impl Renderer {
                 flat_pool,
                 section_cap_pool,
                 outline_pool,
+                line_pool,
                 gpu_meshes: GpuResourceManager::new(),
                 gpu_skinning_pass: None,
                 skinned_mesh_resources: std::collections::HashMap::new(),

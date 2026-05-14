@@ -524,14 +524,16 @@ impl ClusterRenderer {
     }
 
     /// Draw ALL meshlet indices without culling, using uncompacted index buffer.
-    pub fn draw_clustered_full_diag(
+    /// Basic meshlet draw: render all triangles using the full (uncompacted) index
+    /// buffer via direct `draw_indexed`. No GPU culling — used when
+    /// `meshlet_gpu_cull_enabled` is false (Basic GPU tier).
+    pub fn draw_clustered_basic(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         cluster_set: &ClusterSet,
-        first_instance: u32,
     ) {
         pass.set_vertex_buffer(0, cluster_set.vertex_buffer.slice(..));
         pass.set_index_buffer(cluster_set.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..cluster_set.total_indices, 0, first_instance..first_instance + 1);
+        pass.draw_indexed(0..cluster_set.total_indices, 0, 0..1);
     }
 }

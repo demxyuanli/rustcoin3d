@@ -96,7 +96,8 @@ pub(super) fn pass_solid_and_outline(
         occlusion_query_set: None,
     });
 
-    // MESHLET DIAG: re-enabled with logging
+    // Meshlet draw path: uses basic (full-buffer direct draw) or GPU cull
+    // (compact+indirect) depending on meshlet_gpu_cull_enabled.
     super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, true);
 
     if ctx.run_outline {
