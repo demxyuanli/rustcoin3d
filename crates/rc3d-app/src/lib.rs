@@ -4,6 +4,7 @@ pub mod camera_controller;
 pub mod control_panel;
 pub mod demo_camera;
 pub mod editor_ui;
+pub mod scene_bridge;
 pub mod viewport_camera;
 pub mod world;
 
@@ -20,3 +21,4 @@ pub use editor_ui::{EditorCommand, EditorDisplayMode, EditorUi, EditorUiContext}
 pub use rc3d_gizmo::GizmoMode;
 pub use viewport_camera::{ViewportCamera, ViewportCameraSet};
 pub use world::World;
+pub use scene_bridge::DynamicSurface;

@@ -83,13 +83,21 @@ impl NurbsCurve {
     }
 
     /// Adaptive tessellation: sample at curvature-dependent intervals.
+    /// Uses chord-height deviation + tangent angle deflection to decide subdivision.
     pub fn tessellate(&self, tolerance: f32) -> Vec<Vec3> {
+        // Default angle tolerance: ~2 degrees in radians
+        self.tessellate_adaptive(tolerance, 0.035)
+    }
+
+    /// Adaptive tessellation with explicit angle tolerance (radians).
+    /// Smaller angle_tol = more samples in high-curvature regions.
+    pub fn tessellate_adaptive(&self, tolerance: f32, angle_tol: f32) -> Vec<Vec3> {
         let mut points = vec![self.evaluate(0.0)];
-        self.tessellate_recursive(0.0, 1.0, tolerance, &mut points);
+        self.tessellate_recursive(0.0, 1.0, tolerance, angle_tol, &mut points);
         points
     }
 
-    fn tessellate_recursive(&self, t0: f32, t1: f32, tol: f32, out: &mut Vec<Vec3>) {
+    fn tessellate_recursive(&self, t0: f32, t1: f32, tol: f32, angle_tol: f32, out: &mut Vec<Vec3>) {
         let tm = (t0 + t1) * 0.5;
         let p0 = self.evaluate(t0);
         let p1 = self.evaluate(t1);
@@ -101,13 +109,23 @@ impl NurbsCurve {
             out.push(p1);
             return;
         }
+
+        // Chord-height deviation check
         let t_proj = (pm - p0).dot(chord) / chord_len_sq;
         let proj = p0 + chord * t_proj.clamp(0.0, 1.0);
         let dist = (pm - proj).length();
 
-        if dist > tol && (t1 - t0) > 1e-5 {
-            self.tessellate_recursive(t0, tm, tol, out);
-            self.tessellate_recursive(tm, t1, tol, out);
+        // Tangent angle deflection check
+        let tan0 = self.tangent(t0);
+        let tan1 = self.tangent(t1);
+        let dot = (tan0.dot(tan1)).clamp(-1.0, 1.0);
+        let angle = dot.acos();
+
+        let needs_subdiv = (dist > tol || angle > angle_tol) && (t1 - t0) > 1e-5;
+
+        if needs_subdiv {
+            self.tessellate_recursive(t0, tm, tol, angle_tol, out);
+            self.tessellate_recursive(tm, t1, tol, angle_tol, out);
         } else {
             out.push(p1);
         }

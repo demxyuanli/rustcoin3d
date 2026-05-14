@@ -1,4 +1,4 @@
-use crate::vertex::{LineVertex, Vertex};
+use crate::vertex::{LineVertex, LineVertexExpanded, Vertex};
 
 pub(super) fn build_depth_mode_pipelines(
     device: &wgpu::Device,
@@ -12,6 +12,7 @@ pub(super) fn build_depth_mode_pipelines(
     flat_shader: &wgpu::ShaderModule,
     section_cap_shader: &wgpu::ShaderModule,
     outline_shader: &wgpu::ShaderModule,
+    line_aa_shader: &wgpu::ShaderModule,
 ) -> super::DepthModePipelines {
     let stencil_op_keep = |cmp: wgpu::CompareFunction| wgpu::StencilFaceState {
         compare: cmp,
@@ -281,6 +282,49 @@ pub(super) fn build_depth_mode_pipelines(
         cache: None,
     });
 
+    let edge_overlay_aa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Edge Overlay AA"),
+        layout: Some(flat_pll),
+        vertex: wgpu::VertexState {
+            module: line_aa_shader,
+            entry_point: Some("vs_line_expanded"),
+            buffers: &[LineVertexExpanded::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: line_aa_shader,
+            entry_point: Some("fs_line_aa"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            depth_write_enabled: false,
+            depth_compare: depth_cmp_overlay,
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 1.0,
+                clamp: 0.0,
+            },
+            ..depth_stencil.clone()
+        }),
+        multisample: ms,
+        multiview: None,
+        cache: None,
+    });
+
     let selection_fill = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(flat_pll),
@@ -496,6 +540,7 @@ pub(super) fn build_depth_mode_pipelines(
         flat_solid,
         wireframe,
         edge_overlay,
+        edge_overlay_aa,
         selection_fill,
         selection_edge,
         section_cap_fill,

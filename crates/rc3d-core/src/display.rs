@@ -8,4 +8,5 @@ pub enum DisplayMode {
     Wireframe,
     HiddenLine,
     Flat,
+    FlatWithEdge,
 }

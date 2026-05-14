@@ -94,6 +94,8 @@ impl App {
                 last_camera_eye: Vec3::new(0.0, 0.0, 5.0),
                 perf_mode_last: false,
                 bg_settings: None,
+                pending_effect_graph: None,
+                dynamic_surfaces: Vec::new(),
             },
             editor: EditorSession {
                 gizmo: rc3d_gizmo::Gizmo::new(),

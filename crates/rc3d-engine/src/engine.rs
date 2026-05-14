@@ -76,7 +76,9 @@ pub enum SineField {
     ScaleX,
     ScaleY,
     ScaleZ,
+    TranslationX,
     TranslationY,
+    TranslationZ,
 }
 
 impl SineOscillatorEngine {
@@ -100,7 +102,9 @@ impl Engine for SineOscillatorEngine {
                     SineField::ScaleX => t.scale.x = value.abs().max(0.1),
                     SineField::ScaleY => t.scale.y = value.abs().max(0.1),
                     SineField::ScaleZ => t.scale.z = value.abs().max(0.1),
+                    SineField::TranslationX => t.translation.x = value,
                     SineField::TranslationY => t.translation.y = value,
+                    SineField::TranslationZ => t.translation.z = value,
                 }
             }
             entry.dirty_flags |= rc3d_scene::node_entry::dirty_flags::TRANSFORM;

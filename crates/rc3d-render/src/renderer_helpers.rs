@@ -114,6 +114,26 @@ impl Renderer {
         true
     }
 
+    /// Draw expanded edge geometry for anti-aliased line rendering.
+    pub(crate) fn draw_expanded_edges_batched(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        mesh_id: crate::gpu_resource::MeshId,
+        last_bound: &mut Option<crate::gpu_resource::MeshId>,
+    ) -> bool {
+        let Some(mesh) = self.get_mesh(mesh_id) else { return false };
+        let Some(ref buf) = mesh.edge_expanded_buffer else { return false };
+        if mesh.edge_expanded_count == 0 {
+            return false;
+        }
+        if last_bound.map_or(true, |id| id != mesh_id) {
+            pass.set_vertex_buffer(0, buf.slice(..));
+            *last_bound = Some(mesh_id);
+        }
+        pass.draw(0..mesh.edge_expanded_count, 0..1);
+        true
+    }
+
     pub(crate) fn bind_and_draw_edges(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

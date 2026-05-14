@@ -1,5 +1,5 @@
 use crate::shader_permutation::{ShaderFeatures, ShaderVariantCache};
-use crate::vertex::{LineVertex, Vertex};
+use crate::vertex::{LineVertex, MarkupVertex, Vertex};
 use bitflags::bitflags;
 
 #[path = "pipelines_build_depth.rs"]
@@ -31,6 +31,7 @@ pub struct DepthModePipelines {
     pub flat_solid: wgpu::RenderPipeline,
     pub wireframe: wgpu::RenderPipeline,
     pub edge_overlay: wgpu::RenderPipeline,
+    pub edge_overlay_aa: wgpu::RenderPipeline,
     pub selection_fill: wgpu::RenderPipeline,
     pub selection_edge: wgpu::RenderPipeline,
     /// Procedural fill for mesh / section-plane intersection (triangle mesh + plane-distance discard).
@@ -119,6 +120,10 @@ impl PipelineSet {
         let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Outline Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/outline.wgsl").into()),
+        });
+        let line_aa_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Line AA Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/line_aa.wgsl").into()),
         });
 
         let phong_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -411,6 +416,7 @@ impl PipelineSet {
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
+            &line_aa_shader,
         );
         let reverse = build_depth_mode_pipelines(
             device,
@@ -424,6 +430,7 @@ impl PipelineSet {
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
+            &line_aa_shader,
         );
 
         let hdr_color = wgpu::TextureFormat::Rgba16Float;
@@ -439,6 +446,7 @@ impl PipelineSet {
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
+            &line_aa_shader,
         );
         let reverse_hdr = build_depth_mode_pipelines(
             device,
@@ -452,6 +460,7 @@ impl PipelineSet {
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
+            &line_aa_shader,
         );
 
         let viewport_border_ms = wgpu::MultisampleState {
@@ -498,13 +507,13 @@ impl PipelineSet {
             layout: Some(&flat_pll),
             vertex: wgpu::VertexState {
                 module: &flat_shader,
-                entry_point: Some("vs_line"),
-                buffers: &[LineVertex::desc()],
+                entry_point: Some("vs_markup"),
+                buffers: &[MarkupVertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &flat_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_markup"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),

@@ -1,12 +1,14 @@
 use std::time::Instant;
 
 use rc3d_core::DisplayMode;
+use rc3d_effects::EffectGraph;
 use rc3d_render::{FrameStats, Renderer};
 
 use super::fps_tracker::FpsTracker;
 use crate::adaptive_quality::AdaptiveQualityMode;
 use crate::camera_controller::CameraController;
 use crate::editor_ui::{EditorCommand, EditorUi};
+use crate::scene_bridge::DynamicSurface;
 use crate::viewport_camera::ViewportCameraSet;
 use crate::world::World;
 
@@ -35,4 +37,7 @@ pub struct AppState {
     pub last_camera_eye: rc3d_core::math::Vec3,
     pub perf_mode_last: bool,
     pub bg_settings: Option<rc3d_render::background::BgSettings>,
+    pub pending_effect_graph: Option<EffectGraph>,
+    /// Dynamic NURBS surfaces that re-tessellate on camera movement.
+    pub dynamic_surfaces: Vec<DynamicSurface>,
 }

@@ -989,6 +989,48 @@ pub struct MarkupNode {
     pub visible: bool,
 }
 
+// ── 3D Annotation Elements (world-space, projected to screen each frame) ──
+
+/// A 3D annotation element positioned in world space.
+/// Projected to screen coordinates each frame using the camera VP matrix.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum AnnotationElement {
+    /// Dimension line between two 3D points, with extension lines and arrowheads.
+    Dimension {
+        start: [f32; 3],
+        end: [f32; 3],
+        /// Offset direction in world space for extension lines.
+        offset_dir: [f32; 3],
+        extension_len: f32,
+        arrow_size: f32,
+        label: String,
+        color: [f32; 4],
+    },
+    /// Leader line from a 3D anchor point.
+    Leader {
+        anchor: [f32; 3],
+        /// Screen-space offset for the label position (in pixels, from projected anchor).
+        label_offset: [f32; 2],
+        text: String,
+        color: [f32; 4],
+    },
+    /// Small datum tag (cross/dot) at a 3D point.
+    Datum {
+        position: [f32; 3],
+        size: f32,
+        color: [f32; 4],
+    },
+}
+
+/// Annotation set: a leaf node containing 3D annotation elements.
+/// Place inside an `Annotation` grouping node for overlay rendering.
+/// Elements are projected from world space to screen space each frame.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct AnnotationSetNode {
+    pub elements: Vec<AnnotationElement>,
+    pub visible: bool,
+}
+
 impl Default for MarkupNode {
     fn default() -> Self {
         Self {
@@ -1050,6 +1092,7 @@ pub enum NodeData {
     Text3(Text3Node),
     Measurement(MeasurementNode),
     Markup(MarkupNode),
+    AnnotationSet(AnnotationSetNode),
     /// External file reference (SoFile/SoWWWInline equivalent).
     File(FileNode),
     Environment(EnvironmentNode),
@@ -1107,6 +1150,7 @@ impl Clone for NodeData {
             NodeData::Text3(v) => NodeData::Text3(v.clone()),
             NodeData::Measurement(v) => NodeData::Measurement(v.clone()),
             NodeData::Markup(v) => NodeData::Markup(v.clone()),
+            NodeData::AnnotationSet(v) => NodeData::AnnotationSet(v.clone()),
             NodeData::Custom(id, d) => NodeData::Custom(*id, d.clone_box()),
             NodeData::Environment(v) => NodeData::Environment(v.clone()),
             NodeData::ShapeHints(v) => NodeData::ShapeHints(v.clone()),
@@ -1239,6 +1283,7 @@ impl NodeData {
             | NodeData::Environment(_)
             | NodeData::ShapeHints(_)
             | NodeData::Annotation(_)
+            | NodeData::AnnotationSet(_)
             | NodeData::ResetTransform(_)
             | NodeData::Texture2Transform(_)
             | NodeData::MaterialBinding(_)
@@ -1302,6 +1347,7 @@ impl NodeData {
             NodeData::Environment(_) => "Environment",
             NodeData::ShapeHints(_) => "ShapeHints",
             NodeData::Annotation(_) => "Annotation",
+            NodeData::AnnotationSet(_) => "AnnotationSet",
             NodeData::ResetTransform(_) => "ResetTransform",
             NodeData::Texture2Transform(_) => "Texture2Transform",
             NodeData::MaterialBinding(_) => "MaterialBinding",
@@ -1357,6 +1403,7 @@ impl Serialize for NodeData {
             NodeData::Text3(v) => s.serialize_newtype_variant("NodeData", 27, "Text3", v),
             NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
+            NodeData::AnnotationSet(v) => s.serialize_newtype_variant("NodeData", 49, "AnnotationSet", v),
             NodeData::HandlerNode(h) => s.serialize_newtype_variant("NodeData", 30, "HandlerNode", &h.handler_name()),
             NodeData::Environment(v) => s.serialize_newtype_variant("NodeData", 36, "Environment", v),
             NodeData::ShapeHints(v) => s.serialize_newtype_variant("NodeData", 37, "ShapeHints", v),
@@ -1431,6 +1478,7 @@ impl<'de> Deserialize<'de> for NodeData {
             Text3(Text3Node),
             Measurement(MeasurementNode),
             Markup(MarkupNode),
+            AnnotationSet(AnnotationSetNode),
         }
         match NodeDataHelper::deserialize(d)? {
             NodeDataHelper::Separator(v) => Ok(NodeData::Separator(v)),
@@ -1489,6 +1537,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Text3(v) => Ok(NodeData::Text3(v)),
             NodeDataHelper::Measurement(v) => Ok(NodeData::Measurement(v)),
             NodeDataHelper::Markup(v) => Ok(NodeData::Markup(v)),
+            NodeDataHelper::AnnotationSet(v) => Ok(NodeData::AnnotationSet(v)),
         }
     }
 }

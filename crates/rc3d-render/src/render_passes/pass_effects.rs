@@ -5,18 +5,28 @@ use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use wgpu::util::DeviceExt;
 use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::node_data::AnnotationElement;
 
 #[derive(Clone, Debug, Default)]
 pub struct EffectCommands {
     pub decals: Vec<DecalDrawCommand>,
     pub volumes: Vec<VolumeDrawCommand>,
     pub point_clouds: Vec<PointCloudDrawCommand>,
+    pub annotation_elements: Vec<ProjectedAnnotation>,
 }
 
 impl EffectCommands {
     pub fn is_empty(&self) -> bool {
-        self.decals.is_empty() && self.volumes.is_empty() && self.point_clouds.is_empty()
+        self.decals.is_empty() && self.volumes.is_empty() && self.point_clouds.is_empty() && self.annotation_elements.is_empty()
     }
+}
+
+/// A 3D annotation element collected during scene traversal, with its world-space transform.
+/// Projection to screen coordinates happens in the render pass.
+#[derive(Clone, Debug)]
+pub struct ProjectedAnnotation {
+    pub element: AnnotationElement,
+    pub model_matrix: Mat4,
 }
 
 #[derive(Clone, Debug)]
@@ -120,9 +130,31 @@ fn collect_effect_recursive(
                 collect_effect_recursive(graph, child, Mat4::IDENTITY, inside_annotation, commands);
             }
         }
+        NodeData::Separator(_) => {
+            let mut local_model = model_matrix;
+            for &child in &entry.children {
+                collect_effect_recursive(graph, child, local_model, inside_annotation, commands);
+                // If child was a Transform, accumulate for subsequent siblings
+                if let Some(ce) = graph.get(child) {
+                    if let NodeData::Transform(t) = &ce.data {
+                        local_model = local_model * t.to_matrix();
+                    }
+                }
+            }
+        }
         NodeData::Annotation(_) => {
             for &child in &entry.children {
                 collect_effect_recursive(graph, child, model_matrix, true, commands);
+            }
+        }
+        NodeData::AnnotationSet(ann) => {
+            if ann.visible {
+                for el in &ann.elements {
+                    commands.annotation_elements.push(ProjectedAnnotation {
+                        element: el.clone(),
+                        model_matrix,
+                    });
+                }
             }
         }
         NodeData::Switch(sw) => match sw.which_child {

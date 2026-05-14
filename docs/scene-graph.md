@@ -141,7 +141,38 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 | `Text3` | `Text3Node` | World-space 3D text (position, size, color, string) |
 | `Measurement` | `MeasurementNode` | Distance/angle/radius/diameter measurement |
 | `Markup` | `MarkupNode` | Rich markup (lines, rects, circles, dimensions, leaders, callouts) |
-| `Annotation` | `AnnotationNode` | Overlay rendering (no depth test) |
+| `Annotation` | `AnnotationNode` | Overlay rendering group — children rendered without depth test (Coin3D SoAnnotation) |
+| `AnnotationSet` | `AnnotationSetNode` | 3D annotation elements placed under an `Annotation` node. Contains `Vec<AnnotationElement>` |
+
+**AnnotationElement variants** (3D world-space, projected to screen each frame):
+| Variant | Key Fields | Purpose |
+|---------|-----------|---------|
+| `Dimension` | `start, end, offset_dir, extension_len, arrow_size, color` | Linear dimension line with arrows |
+| `Leader` | `anchor, label_offset, text, color` | Leader line from object to label |
+| `Datum` | `position, size, color` | Reference datum cross marker |
+
+**Design rules** (FreeCAD-aligned):
+1. **Single-plane**: Each annotation lies on one coordinate-axis-parallel plane (∥XY/XZ/YZ). No annotation straddles two faces.
+2. **All 3D**: Line geometry computed entirely in 3D world units, projected once via `proj_pt()`. No screen-space mixing.
+3. **Fixed world axes**: Leader/Datum use fixed world-space axes (not camera-relative) to prevent camera drift.
+4. **Dimension offset**: `offset_dir` (3D vector, magnitude = offset distance) defines placement relative to measurement points. `off_n = normalize(offset_dir)` is perpendicular for arrow opening.
+
+**Scene graph example**:
+```rust
+let ann = graph.add_child(root, NodeData::Annotation(AnnotationNode));
+let obj_ann = graph.add_child(ann, NodeData::Separator(SeparatorNode));
+graph.add_child(obj_ann, NodeData::Transform(/* object-local translation */));
+graph.add_child(obj_ann, NodeData::AnnotationSet(AnnotationSetNode {
+    elements: vec![
+        AnnotationElement::Dimension { start, end, offset_dir, ... },
+        AnnotationElement::Leader { anchor, label_offset, ... },
+        AnnotationElement::Datum { position, size, ... },
+    ],
+    visible: true,
+}));
+```
+
+`AnnotationSet` captures `model_matrix` from its position in the scene graph (including accumulated Transforms within the same `Separator`). The renderer projects all 3D annotation points to screen-space `MarkupVertex` in `pass_markup::project_annotation_elements`.
 
 ### 3.8 Specialized Nodes
 

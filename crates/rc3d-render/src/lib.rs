@@ -79,7 +79,7 @@ pub use renderer::{
 };
 pub use settings::{DisplaySettings, LightingSettings, PostEffectSettings, RenderSettings};
 pub use texture_cache::{ibl_from_image_path, TextureCache, TextureHandle};
-pub use vertex::{FlatUniforms, GlobalFrameUniforms, InstanceData, LineVertex, SceneUniforms, ShadowDrawUniforms, Vertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT};
+pub use vertex::{FlatUniforms, GlobalFrameUniforms, InstanceData, LineVertex, MarkupVertex, SceneUniforms, ShadowDrawUniforms, Vertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT};
 pub use viewport::{
     LayoutMode, ProjectionType, Viewport, ViewportId, ViewportLayout, ViewportRect, ViewportSplitAxis,
     VIEWPORT_SPLITTER_HIT_PX,

@@ -217,7 +217,7 @@ impl RayPickAction {
                 }
                 self.state.pop_all();
             }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) => {
+            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::AnnotationSet(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) => {
                 for &child in &entry.children { self.traverse_node(graph, child); }
             }
             NodeData::Billboard(b) => {

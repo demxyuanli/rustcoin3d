@@ -563,6 +563,19 @@ impl RenderCollector {
                 for &child in &entry.children { self.traverse_node(graph, child); }
                 self.inside_annotation = was_inside_annotation;
             }
+            NodeData::AnnotationSet(ann) => {
+                if ann.visible {
+                    for el in &ann.elements {
+                        // Collect 3D annotation elements for projection in the render pass
+                        self.effect_commands.annotation_elements.push(
+                            crate::render_passes::pass_effects::ProjectedAnnotation {
+                                element: el.clone(),
+                                model_matrix: self.state.model_matrix(),
+                            },
+                        );
+                    }
+                }
+            }
             NodeData::Environment(env) => {
                 self.ambient_intensity = env.ambient_intensity;
                 self.ambient_color = env.ambient_color;

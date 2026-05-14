@@ -73,6 +73,9 @@ pub(super) fn build_ui(
                 if ui.button("Hidden line  (H)").clicked() {
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::HiddenLine));
                 }
+                if ui.button("Flat + edges  (L)").clicked() {
+                    push(EditorCommand::SetDisplayMode(EditorDisplayMode::FlatWithEdge));
+                }
                 ui.separator();
                 ui.label("Display toggles");
                 let mut grid = ui_ctx.grid_enabled;
@@ -435,6 +438,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         | NodeData::Environment(_)
         | NodeData::ShapeHints(_)
         | NodeData::Annotation(_)
+        | NodeData::AnnotationSet(_)
         | NodeData::ResetTransform(_)
         | NodeData::Texture2Transform(_)
         | NodeData::MaterialBinding(_)

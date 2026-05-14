@@ -62,6 +62,26 @@ impl LineVertex {
     }
 }
 
+/// Per-vertex colored line for markup overlays — carries its own color.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct MarkupVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 4],
+}
+
+impl MarkupVertex {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<MarkupVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ATTRIBUTES,
+        }
+    }
+}
+
 pub const MAX_LIGHTS: usize = 16;
 pub const CSM_CASCADE_COUNT: usize = 4;
 pub const GPU_OBJECT_TRANSFORM_SIZE: u64 = 128;
@@ -126,6 +146,41 @@ pub struct ShadowDrawUniforms {
 pub struct FlatUniforms {
     pub mvp: [[f32; 4]; 4],
     pub color: [f32; 4],
+}
+
+/// Per-vertex data for expanded (AA-capable) line segments.
+/// Each line segment produces 6 vertices (2 triangles forming a camera-facing quad).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct LineVertexExpanded {
+    /// One endpoint of the line segment (world space).
+    pub position: [f32; 3],
+    /// The other endpoint of the line segment (world space).
+    pub partner: [f32; 3],
+    /// Which side of the line: -1.0 (left of direction) or +1.0 (right).
+    pub side: f32,
+}
+
+impl LineVertexExpanded {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32];
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineVertexExpanded>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ATTRIBUTES,
+        }
+    }
+}
+
+/// Uniforms for anti-aliased line rendering (expanded quads).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct LineUniforms {
+    pub mvp: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    /// (half_width_px, aa_px, viewport_w, viewport_h)
+    pub line_params: [f32; 4],
 }
 
 /// Uniforms for procedural section-cap fill (plane-distance discard in fragment shader).

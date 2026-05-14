@@ -16,6 +16,8 @@ members = [
     "crates/rc3d-script",
     "crates/rc3d-pointcloud",
     "crates/rc3d-pdf",
+    "crates/rc3d-scene-api",
+    "crates/rc3d-effects",
 ]
 resolver = "2"
 
@@ -62,3 +64,5 @@ rc3d-pointcloud = { path = "crates/rc3d-pointcloud" }
 rc3d-pdf = { path = "crates/rc3d-pdf" }
 rc3d-script = { path = "crates/rc3d-script" }
 rc3d-cli-editor = { path = "crates/rc3d-cli-editor" }
+rc3d-scene-api = { path = "crates/rc3d-scene-api" }
+rc3d-effects = { path = "crates/rc3d-effects" }

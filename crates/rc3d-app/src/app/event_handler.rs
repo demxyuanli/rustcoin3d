@@ -55,6 +55,8 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 renderer.set_background(bg.clone());
             }
         }
+        // Apply pending EffectGraph from rc3d-effects (new API)
+        app.apply_effect_graph();
         if let Some(window) = &app.state.window {
             window.set_visible(true);
         }
@@ -195,6 +197,11 @@ pub(crate) fn window_event(
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyK) => {
                         if let Some(renderer) = &mut app.state.renderer {
                             renderer.set_display_mode(DisplayMode::Flat);
+                        }
+                    }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyL) => {
+                        if let Some(renderer) = &mut app.state.renderer {
+                            renderer.set_display_mode(DisplayMode::FlatWithEdge);
                         }
                     }
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => {
@@ -637,6 +644,36 @@ pub(crate) fn window_event(
                 app.apply_editor_commands();
             }
 
+            // Dynamic NURBS surface re-tessellation — snapshot camera before renderer borrow
+            let ds_update: Option<(Vec3, Mat4, f32, f32, bool)> = {
+                if app.state.dynamic_surfaces.is_empty() {
+                    None
+                } else {
+                    let rend = app.state.renderer.as_ref();
+                    let cam_info = app.state.camera_controller.as_ref().map(|c| {
+                        (c.eye_position(), c.view_matrix())
+                    }).or_else(|| {
+                        app.state.viewport_cameras.active().map(|vc| {
+                            (vc.controller.eye_position(), vc.controller.view_matrix())
+                        })
+                    });
+                    match (cam_info, rend) {
+                        (Some((eye, view)), Some(r)) => {
+                            let vw = r.config.width.max(1) as f32;
+                            let vh = r.config.height.max(1) as f32;
+                            let aspect = vw / vh;
+                            let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+                            let cam_moved = eye.distance(app.state.last_camera_eye) > 1e-5;
+                            Some((eye, proj * view, vw, vh, cam_moved))
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            if let Some((eye, mvp, vw, vh, cam_moved)) = ds_update {
+                app.update_dynamic_surfaces(eye, &mvp, (vw, vh), cam_moved);
+            }
+
             if let (Some(renderer), Some(window)) = (&mut app.state.renderer, &app.state.window) {
                 let roots_lod: Vec<NodeId> = app.state.world.graph.roots().to_vec();
                 if renderer.has_lod_nodes() {
@@ -702,6 +739,7 @@ pub(crate) fn window_event(
                         });
                     current_eye.map_or(false, |eye| eye.distance(app.state.last_camera_eye) > 1e-5)
                 };
+
                 if can_skip && !controller_camera_moved {
                     if app.state.world.collector.draw_calls.is_empty() {
                         app.state.world.collector.draw_calls =
@@ -716,16 +754,25 @@ pub(crate) fn window_event(
                             app.state.world.cached_draw_calls.clone();
                     }
                     let vp_proj = {
-                        let mut proj = app.state.world.collector.projection_matrix;
+                        let mut proj = None;
                         for &root in app.state.world.graph.roots() {
                             if let Some(p) =
                                 App::find_camera_projection(&app.state.world.graph, root)
                             {
-                                proj = p;
+                                proj = Some(p);
                                 break;
                             }
                         }
-                        proj
+                        proj.unwrap_or_else(|| {
+                            let aspect = renderer.config.width as f32
+                                / renderer.config.height.max(1) as f32;
+                            Mat4::perspective_rh(
+                                std::f32::consts::FRAC_PI_4,
+                                aspect,
+                                0.1,
+                                1000.0,
+                            )
+                        })
                     };
                     let vp_view = if let Some(vc) = app.state.viewport_cameras.active() {
                         vc.controller.view_matrix()
@@ -797,6 +844,17 @@ pub(crate) fn window_event(
                             app.state.world.graph.roots().len(),
                             dirty_roots.len()
                         );
+                    }
+                    // Fallback: if traversal found no camera, apply a default projection
+                    // to prevent render-blocking identity matrix (nothing visible).
+                    if app.state.world.collector.projection_matrix == Mat4::IDENTITY {
+                        let aspect = renderer.config.width as f32
+                            / renderer.config.height.max(1) as f32;
+                        app.state.world.collector.projection_matrix =
+                            Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 1000.0);
+                        app.state.world.collector.view_matrix =
+                            Mat4::look_at_rh(Vec3::new(0.0, 2.0, 8.0), Vec3::ZERO, Vec3::Y);
+                        app.state.world.collector.camera_pos = Vec3::new(0.0, 2.0, 8.0);
                     }
                     app.state.world.cached_draw_calls =
                         app.state.world.collector.draw_calls.clone();
@@ -932,10 +990,12 @@ pub(crate) fn window_event(
                         renderer.set_display_mode(DisplayMode::Flat);
                     } else if saved_display == DisplayMode::ShadedWithEdges {
                         renderer.set_display_mode(DisplayMode::Shaded);
+                    } else if saved_display == DisplayMode::FlatWithEdge {
+                        renderer.set_display_mode(DisplayMode::Flat);
                     }
                 }
 
-                if !app.state.world.collector.draw_calls.is_empty() {
+                if !app.state.world.collector.draw_calls.is_empty() || renderer.has_overlay_elements() {
                     let mut overlay = None;
                     if let Some(ui) = &mut app.state.editor_ui {
                         overlay = Some(ui as *mut EditorUi);

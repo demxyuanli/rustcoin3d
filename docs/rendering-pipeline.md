@@ -64,7 +64,13 @@ Scene Graph → RenderAction → DrawCall[] ──┐
 ### Stage 6: Overlays
 26. **Viewport grid** — Ground plane reference grid
 27. **Viewport borders** — Multi-viewport split dividers
-28. **Markup overlay** — Measurement/markup wireframe
+28. **Markup overlay** — Measurement/markup lines + 3D annotation projection:
+    - 2D `MarkupNode` elements (screen-space lines, rects, circles) collected via `collect_markup_lines`
+    - 3D `AnnotationElement` (Dimension/Leader/Datum) collected via `collect_effect_nodes` → `ProjectedAnnotation`
+    - Dimension: 12 3D points computed on annotation plane, projected to screen. Filled arrowheads (4-line V-shape).
+    - Leader: 2 3D points (anchor + world-axis offset label position), fixed world axes prevent camera drift.
+    - Datum: 5 3D points (center + 4 diagonal cross arms), fixed world XZ-plane diagonals.
+    - All projected via `screen_space_ortho` for correct pixel-to-NDC mapping.
 29. **HUD text** — glyphon text rendering (FPS stats + scene text)
 30. **App callbacks** — Custom post-swapchain overlays
 

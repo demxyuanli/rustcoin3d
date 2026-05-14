@@ -282,6 +282,10 @@ impl Renderer {
 
     fn apply_tier_config(&mut self) {
         let cfg = TierConfig::for_tier(self.gpu.effective_tier);
+        log::info!(
+            "Tier config applied: {:?} | HDR={} SSAO={} TAA={} SSR={} DOF={} Fog={}",
+            self.gpu.effective_tier, cfg.hdr_post, cfg.ssao, cfg.taa, cfg.ssr, cfg.dof, cfg.volumetric_fog
+        );
         let display_mode = if cfg.flat_shading {
             DisplayMode::Flat
         } else {

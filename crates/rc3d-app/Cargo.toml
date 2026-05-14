@@ -13,6 +13,10 @@ rc3d-engine = { workspace = true }
 rc3d-io = { workspace = true }
 rc3d-gizmo = { workspace = true }
 rc3d-script = { workspace = true }
+rc3d-scene-api = { workspace = true }
+rc3d-effects = { workspace = true }
+rc3d-mesh = { workspace = true }
+rc3d-nurbs = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }

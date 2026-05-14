@@ -14,6 +14,7 @@ pub enum EditorDisplayMode {
     Shaded,
     ShadedWithEdges,
     HiddenLine,
+    FlatWithEdge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

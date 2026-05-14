@@ -2,7 +2,8 @@ use slotmap::new_key_type;
 use wgpu::util::DeviceExt;
 
 use crate::vertex::{
-    FlatUniforms, LineVertex, OutlineUniforms, SceneUniforms, SectionCapUniforms, ShadowDrawUniforms, Vertex,
+    FlatUniforms, LineUniforms, LineVertex, LineVertexExpanded, OutlineUniforms, SceneUniforms,
+    SectionCapUniforms, ShadowDrawUniforms, Vertex,
 };
 
 new_key_type! {
@@ -27,6 +28,9 @@ pub struct GpuMesh {
     pub edge_vertex_count: u32,
     pub wireframe_edge_vertex_buffer: Option<wgpu::Buffer>,
     pub wireframe_edge_vertex_count: u32,
+    /// Expanded edge vertices for anti-aliased line rendering (6 vertices per segment).
+    pub edge_expanded_buffer: Option<wgpu::Buffer>,
+    pub edge_expanded_count: u32,
     pub generation: u32,
 }
 
@@ -67,6 +71,38 @@ impl GpuResourceManager {
         (Some(buf), line_verts.len() as u32)
     }
 
+    /// Build expanded edge buffer for anti-aliased line rendering.
+    /// Each segment (A, B) produces 6 `LineVertexExpanded` vertices (2 triangles),
+    /// encoding the partner endpoint and which side (-1/+1) of the quad each vertex belongs to.
+    fn expanded_edge_buffer_from_positions(
+        device: &wgpu::Device,
+        edge_positions: &[[f32; 3]],
+    ) -> (Option<wgpu::Buffer>, u32) {
+        if edge_positions.len() < 2 {
+            return (None, 0);
+        }
+        let segments = edge_positions.len() / 2;
+        let mut verts: Vec<LineVertexExpanded> = Vec::with_capacity(segments * 6);
+        for seg in edge_positions.chunks_exact(2) {
+            let a = seg[0];
+            let b = seg[1];
+            // Triangle 1: (A,side=-1), (B,side=-1), (A,side=+1)
+            verts.push(LineVertexExpanded { position: a, partner: b, side: -1.0 });
+            verts.push(LineVertexExpanded { position: b, partner: a, side: -1.0 });
+            verts.push(LineVertexExpanded { position: a, partner: b, side:  1.0 });
+            // Triangle 2: (B,side=-1), (B,side=+1), (A,side=+1)
+            verts.push(LineVertexExpanded { position: b, partner: a, side: -1.0 });
+            verts.push(LineVertexExpanded { position: b, partner: a, side:  1.0 });
+            verts.push(LineVertexExpanded { position: a, partner: b, side:  1.0 });
+        }
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Edge Expanded Vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        (Some(buf), verts.len() as u32)
+    }
+
     pub fn upload_mesh(
         &mut self,
         device: &wgpu::Device,
@@ -99,6 +135,8 @@ impl GpuResourceManager {
             "Edge Vertices (wireframe full)",
             wireframe_edge_positions,
         );
+        let (edge_expanded_buffer, edge_expanded_count) =
+            Self::expanded_edge_buffer_from_positions(device, feature_edge_positions);
 
         self.meshes.insert(GpuMesh {
             vertex_buffer,
@@ -109,6 +147,8 @@ impl GpuResourceManager {
             edge_vertex_count,
             wireframe_edge_vertex_buffer,
             wireframe_edge_vertex_count,
+            edge_expanded_buffer,
+            edge_expanded_count,
             generation: 0,
         })
     }
@@ -151,6 +191,8 @@ impl GpuResourceManager {
             edge_vertex_count,
             wireframe_edge_vertex_buffer,
             wireframe_edge_vertex_count,
+            edge_expanded_buffer: None,
+            edge_expanded_count: 0,
             generation: 0,
         })
     }
@@ -317,6 +359,43 @@ impl GpuUniformPool {
         self.capacity
     }
 
+    /// Pool for anti-aliased line uniforms; reuses the same bind group layout as flat.
+    pub fn new_line(device: &wgpu::Device, flat_layout: &wgpu::BindGroupLayout, capacity: usize) -> Self {
+        let raw_stride = std::mem::size_of::<LineUniforms>() as u64;
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let stride = raw_stride.div_ceil(alignment) * alignment;
+        let size = stride * capacity as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Line Uniform Pool"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group_layout = flat_layout.clone();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
+                }),
+            }],
+            label: Some("Line Uniform Pool BG"),
+        });
+        Self {
+            buffer,
+            bind_group_layout,
+            bind_group,
+            stride,
+            capacity,
+            cursor: 0,
+            staging: vec![0; size as usize],
+            written_end: 0,
+        }
+    }
+
     /// Pool for per-draw shadow MVP; `layout` must match [PipelineSet::shadow_draw_bgl].
     /// The shader expects `array<ShadowDrawUniforms, 4>` so the binding must span 4 strides.
     pub fn new_shadow_pool(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, capacity: usize) -> Self {
@@ -430,6 +509,10 @@ impl GpuUniformPool {
     }
 
     pub fn push_flat(&mut self, uniforms: &FlatUniforms) -> Option<u32> {
+        self.push_bytes(bytemuck::bytes_of(uniforms))
+    }
+
+    pub fn push_line(&mut self, uniforms: &LineUniforms) -> Option<u32> {
         self.push_bytes(bytemuck::bytes_of(uniforms))
     }
 

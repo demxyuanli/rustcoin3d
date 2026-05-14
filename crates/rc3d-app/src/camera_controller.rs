@@ -191,9 +191,11 @@ impl CameraController {
     /// Update a camera node in the scene graph from current state.
     pub fn update_camera_node(&self, graph: &mut SceneGraph, camera_node: NodeId, aspect: f32) {
         let eye = self.eye_position();
+        let mut changed = false;
         if let Some(entry) = graph.get_mut(camera_node) {
             match &mut entry.data {
                 NodeData::PerspectiveCamera(cam) => {
+                    changed = cam.aspect != aspect;
                     cam.position = eye;
                     cam.orientation = Mat4::look_at_rh(eye, self.target, self.up);
                     cam.aspect = aspect;
@@ -201,6 +203,7 @@ impl CameraController {
                     cam.far = (self.distance * 20.0).max(100.0);
                 }
                 NodeData::OrthographicCamera(cam) => {
+                    changed = cam.aspect != aspect;
                     cam.position = eye;
                     let height = self.distance * 1.2;
                     cam.height = height;
@@ -208,14 +211,14 @@ impl CameraController {
                 }
                 _ => {}
             }
-            if self.position_changed.get() {
-                rc3d_render::dirty_flags::mark_node_dirty(
-                    graph,
-                    camera_node,
-                    rc3d_scene::node_entry::dirty_flags::TRANSFORM,
-                );
-                self.position_changed.set(false);
-            }
+        }
+        if self.position_changed.get() || changed {
+            rc3d_render::dirty_flags::mark_node_dirty(
+                graph,
+                camera_node,
+                rc3d_scene::node_entry::dirty_flags::TRANSFORM,
+            );
+            self.position_changed.set(false);
         }
     }
 

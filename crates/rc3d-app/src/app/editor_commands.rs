@@ -54,6 +54,7 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
                         EditorDisplayMode::Shaded => DisplayMode::Shaded,
                         EditorDisplayMode::ShadedWithEdges => DisplayMode::ShadedWithEdges,
                         EditorDisplayMode::HiddenLine => DisplayMode::HiddenLine,
+                        EditorDisplayMode::FlatWithEdge => DisplayMode::FlatWithEdge,
                     };
                     renderer.set_display_mode(mode);
                 }
