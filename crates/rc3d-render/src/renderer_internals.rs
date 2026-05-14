@@ -79,7 +79,7 @@ impl TierConfig {
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
             },
             CadDisplayTier::Visualization => Self {
-                flat_shading: false, shadows: true,  edges: true,  motion_blur: true,
+                flat_shading: false, shadows: true,  edges: true,  motion_blur: false,
                 ssao: false, taa: false, fxaa: false, color_grading: false,
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
             },

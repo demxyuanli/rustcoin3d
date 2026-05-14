@@ -289,14 +289,17 @@ impl Renderer {
         };
         // Derive feature toggles from tier config
         self.enable_taa = cfg.taa;
-        self.enable_motion_blur = cfg.motion_blur;
+        self.enable_motion_blur = cfg.motion_blur && self.gpu.motion_blur.is_some();
         self.enable_ssr = cfg.ssr;
         self.enable_color_grading = cfg.color_grading;
         self.enable_dof = cfg.dof;
         self.enable_volumetric_fog = cfg.volumetric_fog;
         self.hdr_post_processing = cfg.hdr_post;
         self.global_display_mode = display_mode;
-        // Motion blur needs TAA reference; enable TAA when motion blur is on
+        // Motion blur needs TAA reference + HDR; guard against missing resources
+        if self.enable_motion_blur && !self.hdr_post_processing {
+            self.enable_motion_blur = false;
+        }
         if self.enable_motion_blur {
             self.enable_taa = true;
         }
