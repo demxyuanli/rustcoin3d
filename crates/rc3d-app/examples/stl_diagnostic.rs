@@ -2,13 +2,16 @@
 //!
 //! Usage: stl_diagnostic <file.stl> [--stage=1..6]
 //!
-//! Stages (toggle with keys 1-6 via panel overlay):
-//!   1: Flat color only (no PBR, no HDR) — validates geometry
-//!   2: PBR Shaded (no HDR) — validates direct+ambient lighting
-//!   3: PBR Shaded + HDR — validates tonemap
-//!   4: ShadedWithEdges + HDR — validates edge rendering
-//!   5: Full quality (ShadedWithEdges + HDR) — production path
+//! Stages (toggle with keys 1-6) + Tiers (keys 7 8 9 0):
+//!   1: Flat (Tier 0 DesignCreation) — no PBR/HDR
+//!   2: Shaded (Tier 1 Visualization) — PBR, no HDR
+//!   3: Shaded+HDR (Tier 2 IndustrialDisplay) — PBR+HDR
+//!   4: ShadedWithEdges+HDR (Tier 2 IndustrialDisplay) — +edges
+//!   5: FlatWithEdge+HDR (Tier 2 IndustrialDisplay) — +edges+flat
+//!   6: Full (Tier 3 ProductRendering) — all passes
+//!   7-0: Direct tier override (7=Tier0, 8=Tier1, 9=Tier2, 0=Tier3)
 //!
+//! Observe degradation: orbit camera during Tier 2/3 — HUD shows tier drop.
 //! Press Space to dump diagnostics to console
 
 use std::env;
@@ -22,6 +25,7 @@ use rc3d_app::camera_controller::CameraController;
 use rc3d_app::App;
 use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
+use rc3d_render::renderer::CadDisplayTier;
 use rc3d_scene::node_data::*;
 
 fn main() {
@@ -29,7 +33,7 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     let Some(path_arg) = args.iter().skip(1).find(|a| !a.starts_with("--")) else {
-        eprintln!("Usage: stl_diagnostic <file.stl> [--stage=1..5]");
+        eprintln!("Usage: stl_diagnostic <file.stl> [--stage=1..6]");
         return;
     };
     let initial_stage: u32 = args
@@ -37,7 +41,7 @@ fn main() {
         .find_map(|a| a.strip_prefix("--stage="))
         .and_then(|v| v.parse().ok())
         .unwrap_or(5)
-        .clamp(1, 5);
+        .clamp(1, 6);
 
     let path = Path::new(path_arg);
     let t0 = Instant::now();
@@ -68,9 +72,13 @@ fn main() {
 
     let (display_mode, hdr) = stage_config(initial_stage);
     let stage = Arc::new(AtomicU32::new(initial_stage));
+    let tier_override = Arc::new(AtomicU32::new(u32::MAX)); // MAX = no override
     let stage_for_text = stage.clone();
     let stage_for_key = stage.clone();
     let stage_for_render = stage.clone();
+    let tier_for_text = tier_override.clone();
+    let tier_for_render = tier_override.clone();
+    let tier_for_key = tier_override.clone();
 
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
@@ -79,39 +87,58 @@ fn main() {
         .with_continuous_redraw(true)
         .with_pre_render_hook(move |renderer| {
             let s = stage_for_render.load(Ordering::Relaxed);
+            let to = tier_for_render.load(Ordering::Relaxed);
+            let tier = if to != u32::MAX {
+                CadDisplayTier::from_u32(to)
+            } else {
+                tier_for_stage(s)
+            };
             let (mode, hdr) = stage_config(s);
             renderer.set_display_mode(mode);
             renderer.set_hdr_post_processing(hdr);
+            renderer.set_display_tier(tier);
         })
         .with_panel_overlay_text_hook(move || {
             let s = stage_for_text.load(Ordering::Relaxed);
+            let to = tier_for_text.load(Ordering::Relaxed);
+            let tier = if to != u32::MAX {
+                CadDisplayTier::from_u32(to)
+            } else {
+                tier_for_stage(s)
+            };
             let (mode, hdr) = stage_config(s);
             format!(
-                "+-- STL Diagnostic Stage {s} --+\n\
-                 Mode: {mode:?}  HDR: {hdr}\n\
-                 Keys 1-5: change stage\n\
-                 +-----------------------------+"
+                "+- STL Diagnostic {mode:?} HDR:{hdr} -+\n\
+                 | Tier: {:<16}              |\n\
+                 | Keys 1-6: stage 7-0: tier       |\n\
+                 | Orbit camera → observe degrade  |\n\
+                 +--------------------------------+",
+                tier_name(tier)
             )
         })
         .with_panel_overlay_key_hook(move |key| -> bool {
             use winit::keyboard::KeyCode;
-            let new = match key {
-                KeyCode::Digit1 => Some(1u32),
-                KeyCode::Digit2 => Some(2),
-                KeyCode::Digit3 => Some(3),
-                KeyCode::Digit4 => Some(4),
-                KeyCode::Digit5 => Some(5),
-                _ => None,
-            };
-            if let Some(s) = new {
-                let prev = stage_for_key.swap(s, Ordering::Relaxed);
-                if prev != s {
-                    let (mode, hdr) = stage_config(s);
-                    println!("[DIAG] Stage {s}: mode={mode:?} hdr={hdr}");
+            match key {
+                KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3
+                | KeyCode::Digit4 | KeyCode::Digit5 | KeyCode::Digit6 => {
+                    let s = key as u32 - KeyCode::Digit0 as u32;
+                    let prev = stage_for_key.swap(s, Ordering::Relaxed);
+                    if prev != s {
+                        tier_for_key.store(u32::MAX, Ordering::Relaxed);
+                        let (mode, hdr) = stage_config(s);
+                        let tier = tier_for_stage(s);
+                        println!("[DIAG] Stage {s}: {mode:?} HDR={hdr} Tier={tier:?}");
+                    }
+                    true
                 }
-                true
-            } else {
-                false
+                KeyCode::Digit7 | KeyCode::Digit8 | KeyCode::Digit9 | KeyCode::Digit0 => {
+                    let ti = if key == KeyCode::Digit0 { 3u32 } else { key as u32 - KeyCode::Digit7 as u32 };
+                    let tier = CadDisplayTier::from_u32(ti);
+                    tier_for_key.store(ti, Ordering::Relaxed);
+                    println!("[DIAG] Tier override: {tier:?}");
+                    true
+                }
+                _ => false,
             }
         });
 
@@ -127,7 +154,26 @@ fn stage_config(stage: u32) -> (DisplayMode, bool) {
         2 => (DisplayMode::Shaded, false),
         3 => (DisplayMode::Shaded, true),
         4 => (DisplayMode::ShadedWithEdges, true),
-        _ => (DisplayMode::ShadedWithEdges, true),
+        5 => (DisplayMode::FlatWithEdge, true),
+        _ => (DisplayMode::FlatWithEdge, true),
+    }
+}
+
+fn tier_for_stage(stage: u32) -> CadDisplayTier {
+    match stage {
+        1 => CadDisplayTier::DesignCreation,
+        2 => CadDisplayTier::Visualization,
+        3|4|5 => CadDisplayTier::IndustrialDisplay,
+        _ => CadDisplayTier::ProductRendering,
+    }
+}
+
+fn tier_name(t: CadDisplayTier) -> &'static str {
+    match t {
+        CadDisplayTier::DesignCreation => "DesignCreation",
+        CadDisplayTier::Visualization => "Visualization",
+        CadDisplayTier::IndustrialDisplay => "IndustrialDisplay",
+        CadDisplayTier::ProductRendering => "ProductRendering",
     }
 }
 
@@ -280,10 +326,11 @@ fn count_nodes_recursive(graph: &rc3d_scene::SceneGraph, node: rc3d_core::NodeId
 }
 
 fn print_stage_help() {
-    println!("Keys 1-5: switch rendering stage");
+    println!("Keys 1-6: switch rendering stage");
     println!("  1: Flat color (geometry test)");
     println!("  2: PBR Shaded (no HDR)");
     println!("  3: PBR Shaded + HDR");
     println!("  4: ShadedWithEdges + HDR");
     println!("  5: Full quality");
+    println!("  6: FlatWithEdge + HDR");
 }

@@ -14,7 +14,8 @@ mod renderer_skinning;
 mod renderer_internals;
 
 pub use renderer_types::*;
-pub(crate) use renderer_internals::{CadDisplayTier, GpuCapability, GpuTier, TierConfig};
+pub use renderer_internals::CadDisplayTier;
+pub(crate) use renderer_internals::{GpuCapability, GpuTier, TierConfig};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
