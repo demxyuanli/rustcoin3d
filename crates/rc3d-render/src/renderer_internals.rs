@@ -84,12 +84,12 @@ impl TierConfig {
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
             },
             CadDisplayTier::IndustrialDisplay => Self {
-                flat_shading: false, shadows: true,  edges: true,  motion_blur: true,
+                flat_shading: false, shadows: true,  edges: true,  motion_blur: false,
                 ssao: true,  taa: true,  fxaa: false, color_grading: true,
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
             },
             CadDisplayTier::ProductRendering => Self {
-                flat_shading: false, shadows: true,  edges: false, motion_blur: true,
+                flat_shading: false, shadows: true,  edges: false, motion_blur: false,
                 ssao: true,  taa: true,  fxaa: false, color_grading: true,
                 ssr: true,  volumetric_fog: true,  dof: true,  hdr_post: true,
             },
