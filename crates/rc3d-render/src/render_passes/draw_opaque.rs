@@ -260,6 +260,7 @@ pub(super) fn draw_opaque_triangle_batches(
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
                                 cluster_renderer.draw_clustered(pass, cluster_set, 0);
+                                last_bound_mesh = None; // force standard path to re-bind mesh buffers
                             }
                         }
                     }
