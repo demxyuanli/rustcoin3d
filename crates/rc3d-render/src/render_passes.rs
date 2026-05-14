@@ -73,10 +73,9 @@ pub(crate) enum FramePresentation<'a> {
     },
 }
 
-/// Run meshlet cull compute passes in the given encoder, then copy meshlet
-/// InstanceData from staging to instance_buffer slot 0 via encoder copy.
-/// The copy is on the encoder timeline, guaranteeing proper ordering with
-/// the subsequent render pass (meshlet draw reads instances[0]).
+/// Run meshlet cull compute passes in the given encoder.
+/// Uses the same encoder as subsequent render passes so wgpu inserts
+/// implicit barriers between compute (STORAGE write) and render (INDIRECT/INDEX read).
 fn submit_meshlet_cull(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
@@ -105,11 +104,6 @@ fn submit_meshlet_cull(
         &hzb.max_pyramid.full_view
     };
 
-    // Collect meshlet InstanceData and write to staging buffer.
-    // The staging buffer is later copied to instance_buffer slot 0 via
-    // encoder.copy_buffer_to_buffer, putting the write on the encoder timeline
-    // (after cull, before render pass).
-    let mut wrote_staging = false;
     for &vis_idx in ctx.meshlet_indices {
         let dc = ctx.visible[vis_idx];
         let Some(md) = dc.meshlet_data.as_ref() else {
@@ -117,24 +111,6 @@ fn submit_meshlet_cull(
         };
         let ptr = std::sync::Arc::as_ptr(md) as u64;
         if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-            // Write meshlet InstanceData to staging before cull
-            if !wrote_staging {
-                if let Some(ref staging) = renderer.gpu.meshlet_instance_staging {
-                    let inst = crate::vertex::InstanceData {
-                        model: dc.model_matrix.to_cols_array_2d(),
-                        mvp: dc.mvp.to_cols_array_2d(),
-                        diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
-                        base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
-                        metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                        emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-                        morph_weights: [0.0f32; 8],
-                        morph_count: [0.0f32; 4],
-                    };
-                    renderer.queue.write_buffer(staging, 0, bytemuck::bytes_of(&inst));
-                    wrote_staging = true;
-                }
-            }
-
             let model_inv = dc.model_matrix.inverse();
             let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
             cluster_renderer.cull_and_compact(
@@ -155,15 +131,6 @@ fn submit_meshlet_cull(
                 dc.depth_reversed_z,
                 dc.projection_orthographic,
             );
-        }
-    }
-
-    // Copy meshlet InstanceData from staging to instance_buffer slot 0.
-    // This is on the encoder timeline — after cull passes, before render pass.
-    if wrote_staging {
-        if let Some(ref staging) = renderer.gpu.meshlet_instance_staging {
-            let stride = std::mem::size_of::<crate::vertex::InstanceData>() as u64;
-            encoder.copy_buffer_to_buffer(staging, 0, &renderer.gpu.instance_buffer, 0, stride);
         }
     }
 }

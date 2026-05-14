@@ -183,7 +183,26 @@ pub(super) fn draw_opaque_triangle_batches(
     {
         let all_instances = &mut renderer.gpu.draw_bufs.instances;
         all_instances.clear();
+
+        // Pre-insert meshlet InstanceData at slot 0 so the Phase 2 batch write
+        // puts it there. The meshlet draw reads instances[0] via the indirect
+        // buffer's first_instance=0. Phase 2 write goes to queue before encoder
+        // submit, so the meshlet data is at slot 0 when the render pass starts.
         let mut instance_cursor: u64 = 0;
+        if draw_meshlets && !ctx.meshlet_indices.is_empty() {
+            let dc = ctx.visible[ctx.meshlet_indices[0]];
+            all_instances.push(InstanceData {
+                model: dc.model_matrix.to_cols_array_2d(),
+                mvp: dc.mvp.to_cols_array_2d(),
+                diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
+                base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
+                emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                morph_weights: pack_morph_weights(&dc.morph_weights),
+                morph_count: [dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
+            });
+            instance_cursor = instance_stride; // standard draws start at slot 1
+        }
         let mut start = 0usize;
         while start < ctx.solid_order.len() {
             let head_idx = ctx.solid_order[start];
@@ -254,12 +273,11 @@ pub(super) fn draw_opaque_triangle_batches(
                     if let Some(ref mat_bg) = renderer.last_material_bg {
                         pass.set_bind_group(1, mat_bg, &[]);
                     }
-                    // Meshlet InstanceData already written to instance_buffer slot 0
-                    // by submit_meshlet_cull via encoder.copy_buffer_to_buffer.
+                    // InstanceData at slot 0 written by pre-insert at Phase 1 start.
                     if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
                         if cluster_set.total_triangles > 0 {
                             if let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() {
-                                cluster_renderer.draw_clustered(pass, cluster_set, 0);
+                                cluster_renderer.draw_clustered(pass, cluster_set);
                                 last_bound_mesh = None; // force standard path to re-bind mesh buffers
                             }
                         }
@@ -316,17 +334,15 @@ pub(super) fn draw_opaque_triangle_batches(
             start = end;
         }
 
-        // Phase 2: single write_buffer for all instance data, then issue draws.
+        // Phase 2: write all instance data (meshlet at slot 0 + standard at slots 1+).
+        // queue.write_buffer goes to queue before encoder submit, so slot 0
+        // has meshlet data when the render pass starts.
         if !renderer.gpu.draw_bufs.instances.is_empty() {
             renderer.queue.write_buffer(
                 &renderer.gpu.instance_buffer, 0,
                 bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
             );
         }
-        // Note: meshlet InstanceData at slot 0 is written by submit_meshlet_cull
-        // via encoder.copy_buffer_to_buffer (after cull, before render pass).
-        // Phase 2 overwrites slot 0 via queue.write_buffer, but the encoder copy
-        // happens after on the GPU timeline, so the meshlet draw sees correct data.
 
         if renderer.gpu.multi_draw_indirect_supported {
             // Multi-draw indirect path: build DrawIndexedIndirectArgs args, write to GPU buffer,

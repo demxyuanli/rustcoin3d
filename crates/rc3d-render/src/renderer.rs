@@ -189,7 +189,10 @@ impl Renderer {
         self.frame.effect_commands = cmds;
     }
 
-    fn ensure_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
+    /// Reconfigure cascaded shadow map resolution and cascade count.
+    ///
+    /// Recreates shadow resources if the requested parameters differ from current.
+    pub fn set_csm_shadow(&mut self, resolution: u32, cascade_count: u32) {
         let resolution = resolution.max(1);
         let cascade_count = cascade_count.max(1);
         if let Some(ref csm) = self.gpu.csm_shadow {
@@ -413,16 +416,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Meshlet instance staging: written via queue, then copied via encoder
-        // copy_buffer_to_buffer to instance_buffer slot 0. This ensures the
-        // meshlet InstanceData is on the encoder timeline, properly ordered
-        // between cull compute passes and the render pass.
-        let meshlet_instance_staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Meshlet instance staging"),
-            size: instance_stride,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
 
         let standard_indirect_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Standard Indirect Args"),
@@ -591,7 +584,6 @@ impl Renderer {
                 ssao_noise_tex,
                 ssao_noise_view,
                 instance_buffer,
-                meshlet_instance_staging: Some(meshlet_instance_staging),
                 ibl_instance_bind_group,
                 timing_supported,
                 pipeline_cache: None,
