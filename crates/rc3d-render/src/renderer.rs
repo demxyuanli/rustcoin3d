@@ -294,6 +294,9 @@ impl Renderer {
         self.enable_color_grading = cfg.color_grading;
         self.enable_dof = cfg.dof;
         self.enable_volumetric_fog = cfg.volumetric_fog;
+        if cfg.hdr_post && self.gpu.post_fx.is_none() {
+            self.ensure_post_fx_targets();
+        }
         self.hdr_post_processing = cfg.hdr_post;
         self.global_display_mode = display_mode;
         // Motion blur needs TAA reference + HDR; guard against missing resources
