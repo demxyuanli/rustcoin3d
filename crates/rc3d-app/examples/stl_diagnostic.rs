@@ -121,7 +121,11 @@ fn main() {
             match key {
                 KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3
                 | KeyCode::Digit4 | KeyCode::Digit5 | KeyCode::Digit6 => {
-                    let s = key as u32 - KeyCode::Digit0 as u32;
+                    let s = match key {
+                        KeyCode::Digit1 => 1, KeyCode::Digit2 => 2, KeyCode::Digit3 => 3,
+                        KeyCode::Digit4 => 4, KeyCode::Digit5 => 5, KeyCode::Digit6 => 6,
+                        _ => unreachable!(),
+                    };
                     let prev = stage_for_key.swap(s, Ordering::Relaxed);
                     if prev != s {
                         tier_for_key.store(u32::MAX, Ordering::Relaxed);
@@ -132,7 +136,11 @@ fn main() {
                     true
                 }
                 KeyCode::Digit7 | KeyCode::Digit8 | KeyCode::Digit9 | KeyCode::Digit0 => {
-                    let ti = if key == KeyCode::Digit0 { 3u32 } else { key as u32 - KeyCode::Digit7 as u32 };
+                    let ti: u32 = match key {
+                        KeyCode::Digit7 => 0, KeyCode::Digit8 => 1,
+                        KeyCode::Digit9 => 2, KeyCode::Digit0 => 3,
+                        _ => unreachable!(),
+                    };
                     let tier = CadDisplayTier::from_u32(ti);
                     tier_for_key.store(ti, Ordering::Relaxed);
                     println!("[DIAG] Tier override: {tier:?}");
