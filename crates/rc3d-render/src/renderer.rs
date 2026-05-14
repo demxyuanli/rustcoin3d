@@ -213,32 +213,33 @@ impl Renderer {
 
     /// Set the CAD display quality tier. Clamped by GPU capability on Basic tier.
     pub fn set_display_tier(&mut self, tier: CadDisplayTier) {
-        let max_tier = if self.gpu.gpu_capability.tier == GpuTier::Basic {
-            CadDisplayTier::Visualization
-        } else {
-            CadDisplayTier::ProductRendering
+        let max_tier = match self.gpu.gpu_capability.tier {
+            GpuTier::Basic => CadDisplayTier::Visualization,
+            GpuTier::Standard => CadDisplayTier::IndustrialDisplay,
+            GpuTier::Enhanced => CadDisplayTier::ProductRendering,
         };
-        if tier > max_tier {
+        let requested = if tier > max_tier { max_tier } else { tier };
+        if tier != requested {
             log::warn!(
-                "Requested tier {:?} exceeds GPU capability (max {:?}); clamping",
-                tier, max_tier
+                "Requested tier {:?} exceeds GPU capability (max {:?}); clamping to {:?}",
+                tier, max_tier, requested
             );
-            self.gpu.requested_tier = max_tier;
-        } else {
-            self.gpu.requested_tier = tier;
         }
-        self.gpu.effective_tier = self.gpu.requested_tier;
-        self.apply_tier_config();
+        if self.gpu.requested_tier != requested {
+            self.gpu.requested_tier = requested;
+            self.gpu.effective_tier = requested;
+            self.apply_tier_config();
+        }
     }
 
     /// Called once per frame. Updates effective tier with degradation and recovery.
     /// Reads `self.interaction_active` (set by app during camera orbit/pan/zoom).
     pub fn update_tier(&mut self) {
         let requested = self.gpu.requested_tier;
-        let max_tier = if self.gpu.gpu_capability.tier == GpuTier::Basic {
-            CadDisplayTier::Visualization
-        } else {
-            CadDisplayTier::ProductRendering
+        let max_tier = match self.gpu.gpu_capability.tier {
+            GpuTier::Basic => CadDisplayTier::Visualization,
+            GpuTier::Standard => CadDisplayTier::IndustrialDisplay,
+            GpuTier::Enhanced => CadDisplayTier::ProductRendering,
         };
         let clamped = if requested > max_tier { max_tier } else { requested };
 
@@ -426,12 +427,15 @@ impl Renderer {
             adapter_info.device_type,
             wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::Cpu
         );
-        let tier = if is_integrated {
+        // Basic tier only for CPU/software rasterizers. All real GPUs get
+        // at least Standard. Integrated GPUs (e.g. Intel Arc) are capable
+        // enough to run SSAO, TAA, HDR, etc.
+        let tier = if matches!(adapter_info.device_type, wgpu::DeviceType::Cpu) {
             renderer_internals::GpuTier::Basic
         } else {
             renderer_internals::GpuTier::Standard
         };
-        let meshlet_gpu_cull_enabled = tier != renderer_internals::GpuTier::Basic;
+        let meshlet_gpu_cull_enabled = !is_integrated;
         let gpu_capability = renderer_internals::GpuCapability {
             tier,
             is_integrated,
