@@ -14,7 +14,7 @@ mod renderer_skinning;
 mod renderer_internals;
 
 pub use renderer_types::*;
-pub(crate) use renderer_internals::{GpuCapability, GpuTier};
+pub(crate) use renderer_internals::{CadDisplayTier, GpuCapability, GpuTier, TierConfig};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
@@ -208,6 +208,96 @@ impl Renderer {
             resolution,
             cascade_count,
         ));
+    }
+
+    /// Set the CAD display quality tier. Clamped by GPU capability on Basic tier.
+    pub fn set_display_tier(&mut self, tier: CadDisplayTier) {
+        let max_tier = if self.gpu.gpu_capability.tier == GpuTier::Basic {
+            CadDisplayTier::Visualization
+        } else {
+            CadDisplayTier::ProductRendering
+        };
+        if tier > max_tier {
+            log::warn!(
+                "Requested tier {:?} exceeds GPU capability (max {:?}); clamping",
+                tier, max_tier
+            );
+            self.gpu.requested_tier = max_tier;
+        } else {
+            self.gpu.requested_tier = tier;
+        }
+        self.gpu.effective_tier = self.gpu.requested_tier;
+        self.apply_tier_config();
+    }
+
+    /// Called once per frame. Updates effective tier with degradation and recovery.
+    /// Reads `self.interaction_active` (set by app during camera orbit/pan/zoom).
+    pub fn update_tier(&mut self) {
+        let requested = self.gpu.requested_tier;
+        let max_tier = if self.gpu.gpu_capability.tier == GpuTier::Basic {
+            CadDisplayTier::Visualization
+        } else {
+            CadDisplayTier::ProductRendering
+        };
+        let clamped = if requested > max_tier { max_tier } else { requested };
+
+        // Detect interaction stop: start cooldown for recovery
+        if self.gpu.interaction_active && !self.interaction_active {
+            self.gpu.tier_cooldown_frames = 30; // ~500ms at 60fps
+        }
+        self.gpu.interaction_active = self.interaction_active;
+
+        // Degrade during interaction (tiers 2+ only)
+        if self.interaction_active {
+            let degraded = match clamped {
+                CadDisplayTier::ProductRendering => CadDisplayTier::Visualization,
+                CadDisplayTier::IndustrialDisplay => CadDisplayTier::Visualization,
+                other => other,
+            };
+            if self.gpu.effective_tier != degraded {
+                self.gpu.effective_tier = degraded;
+                self.gpu.tier_cooldown_frames = 0;
+                self.apply_tier_config();
+            }
+            return;
+        }
+
+        // Recovery: step up one tier per cooldown period
+        if self.gpu.effective_tier < clamped {
+            if self.gpu.tier_cooldown_frames > 0 {
+                self.gpu.tier_cooldown_frames -= 1;
+            } else {
+                let next = self.gpu.effective_tier as u32 + 1;
+                let next_tier = CadDisplayTier::from_u32(next);
+                if next_tier <= clamped {
+                    self.gpu.effective_tier = next_tier;
+                    self.gpu.tier_cooldown_frames = 30;
+                    self.apply_tier_config();
+                }
+            }
+        }
+    }
+
+    fn apply_tier_config(&mut self) {
+        let cfg = TierConfig::for_tier(self.gpu.effective_tier);
+        let display_mode = if cfg.flat_shading {
+            DisplayMode::Flat
+        } else {
+            self.global_display_mode
+        };
+        // Derive feature toggles from tier config
+        self.enable_taa = cfg.taa;
+        self.enable_motion_blur = cfg.motion_blur;
+        self.enable_ssr = cfg.ssr;
+        self.enable_color_grading = cfg.color_grading;
+        self.enable_dof = cfg.dof;
+        self.enable_volumetric_fog = cfg.volumetric_fog;
+        self.hdr_post_processing = cfg.hdr_post;
+        self.global_display_mode = display_mode;
+        // Motion blur needs TAA reference; enable TAA when motion blur is on
+        if self.enable_motion_blur {
+            self.enable_taa = true;
+        }
     }
 
     pub fn set_hdr_post_processing(&mut self, enabled: bool) {
@@ -624,6 +714,10 @@ impl Renderer {
                 max_gpu_cull_objects: 65536,
                 multi_draw_indirect_supported,
                 gpu_capability,
+                requested_tier: renderer_internals::CadDisplayTier::Visualization,
+                effective_tier: renderer_internals::CadDisplayTier::Visualization,
+                interaction_active: false,
+                tier_cooldown_frames: 0,
                 global_frame_buffer: Some(global_frame_buffer),
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),

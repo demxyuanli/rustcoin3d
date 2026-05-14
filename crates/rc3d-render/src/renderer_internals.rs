@@ -29,6 +29,74 @@ use crate::volumetric_fog::VolumetricFogPass;
 
 use super::renderer_types::{FrameDiagnostics, FrameStats};
 
+/// CAD workflow display tier — controls which rendering passes are active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CadDisplayTier {
+    /// Model editing/creation: Flat shading, edges only. 60+ fps.
+    DesignCreation = 0,
+    /// Visualization/review: PBR + IBL + CSM shadows + edges + motion blur.
+    Visualization = 1,
+    /// Industrial/engineering display: + SSAO, TAA/FXAA, color grading.
+    IndustrialDisplay = 2,
+    /// Product/marketing rendering: + SSR, volumetric fog, DOF.
+    ProductRendering = 3,
+}
+
+impl CadDisplayTier {
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            0 => Self::DesignCreation,
+            1 => Self::Visualization,
+            2 => Self::IndustrialDisplay,
+            _ => Self::ProductRendering,
+        }
+    }
+}
+
+/// Per-tier rendering pass configuration.
+#[derive(Clone, Debug)]
+pub struct TierConfig {
+    pub flat_shading: bool,
+    pub shadows: bool,
+    pub edges: bool,
+    pub motion_blur: bool,
+    pub ssao: bool,
+    pub taa: bool,
+    pub fxaa: bool,
+    pub color_grading: bool,
+    pub ssr: bool,
+    pub volumetric_fog: bool,
+    pub dof: bool,
+    pub hdr_post: bool,
+}
+
+impl TierConfig {
+    pub fn for_tier(tier: CadDisplayTier) -> Self {
+        match tier {
+            CadDisplayTier::DesignCreation => Self {
+                flat_shading: true,  shadows: false, edges: true,  motion_blur: false,
+                ssao: false, taa: false, fxaa: false, color_grading: false,
+                ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
+            },
+            CadDisplayTier::Visualization => Self {
+                flat_shading: false, shadows: true,  edges: true,  motion_blur: true,
+                ssao: false, taa: false, fxaa: false, color_grading: false,
+                ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
+            },
+            CadDisplayTier::IndustrialDisplay => Self {
+                flat_shading: false, shadows: true,  edges: true,  motion_blur: true,
+                ssao: true,  taa: true,  fxaa: false, color_grading: true,
+                ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
+            },
+            CadDisplayTier::ProductRendering => Self {
+                flat_shading: false, shadows: true,  edges: false, motion_blur: true,
+                ssao: true,  taa: true,  fxaa: false, color_grading: true,
+                ssr: true,  volumetric_fog: true,  dof: true,  hdr_post: true,
+            },
+        }
+    }
+}
+
 /// GPU capability tier for runtime feature adaptation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuTier {
@@ -183,6 +251,14 @@ pub(crate) struct GpuInternals {
     pub multi_draw_indirect_supported: bool,
     /// Detected GPU capability tier for runtime feature adaptation.
     pub gpu_capability: GpuCapability,
+    /// CAD display quality tier requested by user (may be clamped by GPU capability).
+    pub requested_tier: CadDisplayTier,
+    /// Effective tier after interaction degradation and recovery cooldown.
+    pub effective_tier: CadDisplayTier,
+    /// Whether user is currently interacting (orbit/pan/zoom).
+    pub interaction_active: bool,
+    /// Frames remaining in cooldown before tier recovery steps up.
+    pub tier_cooldown_frames: u8,
     /// Global frame uniform buffer (lights, CSM, IBL, shadows) — uploaded once per frame, bound in group 2.
     pub global_frame_buffer: Option<wgpu::Buffer>,
     pub draw_bufs: DrawBatchBufs,

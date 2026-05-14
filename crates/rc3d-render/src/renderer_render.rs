@@ -33,6 +33,14 @@ impl super::Renderer {
 
         self.cpu_span.begin_frame();
 
+        // ── Reset uniform pools at frame start (before any code path) ──
+        self.gpu.phong_pool.reset();
+        self.gpu.shadow_pool.reset();
+        self.gpu.flat_pool.reset();
+        self.gpu.line_pool.reset();
+        self.gpu.section_cap_pool.reset();
+        self.gpu.outline_pool.reset();
+
         // ── Streaming mesh pool: reset per-frame upload counter ──
         if let Some(ref mut pool) = self.gpu.assets.mesh_pool {
             pool.begin_frame();
@@ -162,7 +170,13 @@ impl super::Renderer {
         };
 
         if draw_calls.is_empty() {
-            return FrameStats::default();
+            return render_passes::render_overlay_only_frame(
+                self,
+                presentation,
+                post_swapchain_overlay,
+                self.frame.frame_counter,
+                &effect_commands,
+            );
         }
 
         let first = &draw_calls[0];
@@ -549,15 +563,9 @@ impl super::Renderer {
             }
         }
 
-        self.gpu.phong_pool.reset();
-        self.gpu.shadow_pool.reset();
-        self.gpu.flat_pool.reset();
-        self.gpu.section_cap_pool.reset();
-        self.gpu.outline_pool.reset();
-
         let base_mode = if self.frame.performance_mode_active {
             match self.global_display_mode {
-                DisplayMode::HiddenLine | DisplayMode::Wireframe => DisplayMode::Shaded,
+                DisplayMode::HiddenLine | DisplayMode::Wireframe | DisplayMode::FlatWithEdge => DisplayMode::Shaded,
                 _ => self.global_display_mode,
             }
         } else {
@@ -577,7 +585,8 @@ impl super::Renderer {
                 mode,
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
             )
-            && mode != DisplayMode::Flat;
+            && mode != DisplayMode::Flat
+            && mode != DisplayMode::FlatWithEdge;
 
         let (camera_proj, camera_inv_proj) = if let Some((p, ip)) = ssao_projection {
             (p, ip)
@@ -618,7 +627,7 @@ impl super::Renderer {
                         AdaptiveQuality::Medium => 3,
                         AdaptiveQuality::Low => 1,
                     };
-                    self.ensure_csm_shadow(sm_size, cascade_count);
+                    self.set_csm_shadow(sm_size, cascade_count);
 
                     let vp = first.mvp * first.model_matrix.inverse();
                     let camera_near = 0.1f32;
@@ -699,10 +708,12 @@ impl super::Renderer {
             run_shadow_pass,
             camera_proj,
             camera_inv_proj,
+            scene_vp: self.frame.scene_vp,
             effect_commands: &effect_commands,
             light_sets: &light_sets_snapshot,
         };
 
+        self.update_tier();
         let mut stats = render_passes::execute_passes(
             self,
             &ctx,
