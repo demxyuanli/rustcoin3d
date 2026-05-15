@@ -40,6 +40,7 @@ pub mod shadow_map;
 pub mod shadow_omni;
 pub mod shadow_pass;
 pub mod sort_keys;
+pub mod ss_edges;
 pub mod ssr_pass;
 pub mod taa;
 pub mod texture_cache;
