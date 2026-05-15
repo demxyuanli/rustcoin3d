@@ -29,7 +29,7 @@ impl Frustum {
                 make_plane(r3 - r0), // right
                 make_plane(r3 + r1), // bottom
                 make_plane(r3 - r1), // top
-                make_plane(r3 + r2), // near
+                make_plane(r2),       // near (wgpu: z_clip ∈ [0, w], near at z_clip=0)
                 make_plane(r3 - r2), // far
             ],
         }

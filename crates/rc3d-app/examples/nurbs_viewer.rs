@@ -18,12 +18,15 @@ fn main() {
     let mut g = rc3d_scene::SceneGraph::new();
     let root = g.add_root(NodeData::Separator(SeparatorNode));
 
+    // Surface center (x=1.5, y=1.0 from grid bounds [-1,4]×[-1,3])
+    let surf_center = Vec3::new(1.5, 1.0, 0.0);
+
     // ── Camera ──────────────────────────────────────────────────────────
     g.add_child(
         root,
         NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-            Vec3::new(4.0, 3.0, 10.0),
-            Vec3::new(2.0, 1.5, 0.0),
+            Vec3::new(3.5, 2.5, 10.0),
+            surf_center,
             Vec3::Y,
             std::f32::consts::FRAC_PI_4,
             800.0 / 600.0,
@@ -135,7 +138,7 @@ fn main() {
         let surface = rc3d_nurbs::NurbsSurface::from_points_grid(&grid, 3, 3);
 
         // Initial camera parameters
-        let orbit_center = Vec3::new(2.0, 1.5, 0.0);
+        let orbit_center = surf_center;
         let orbit_dist = 12.0;
         let pitch = 0.4f32;
         let yaw = 0.0f32;
@@ -165,7 +168,7 @@ fn main() {
     };
 
     // ── Run ─────────────────────────────────────────────────────────────
-    let orbit = CameraController::new(Vec3::new(2.0, 1.5, 0.0), 12.0);
+    let orbit = CameraController::new(surf_center, 12.0);
     winit::event_loop::EventLoop::new()
         .unwrap()
         .run_app(&mut App::new(g).with_camera_controller(orbit).with_dynamic_surface(ds))

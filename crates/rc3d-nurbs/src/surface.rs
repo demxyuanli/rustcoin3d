@@ -202,7 +202,7 @@ impl NurbsSurface {
         angle_tol: f32,
         max_depth: usize,
     ) -> TessellatedSurface {
-        const VERTEX_BUDGET: usize = 50_000;
+        const VERTEX_BUDGET: usize = 80_000;
         let initial = 6usize;
         let mut positions = Vec::new();
         let mut normals = Vec::new();
@@ -219,10 +219,38 @@ impl NurbsSurface {
             }
         }
 
-        // Recursively subdivide each quad (budget-limited)
+        // ── Progressive budget: weight each quad by its screen-space diagonal ──
+        let proj_len = |p: glam::Vec3| -> f32 {
+            let clip = *mvp * p.extend(1.0);
+            if clip.w <= 1e-6 { return f32::MAX; } // near camera → large weight
+            let ndc = clip / clip.w;
+            ((ndc.x * viewport.0).powi(2) + ((1.0 - ndc.y) * viewport.1).powi(2)).sqrt()
+        };
         let stride = n;
+        let total_quads = initial * initial;
+        let mut quad_weights: Vec<f32> = Vec::with_capacity(total_quads);
+        let mut total_weight: f32 = 0.0;
         for ci in 0..initial {
             for cj in 0..initial {
+                let i00 = ci * stride + cj;
+                let i11 = (ci + 1) * stride + cj + 1;
+                let ss_diag = proj_len(positions[i00]).max(proj_len(positions[i11]));
+                let w = ss_diag.clamp(1.0, 1e6);
+                quad_weights.push(w);
+                total_weight += w;
+            }
+        }
+        // Allocate per-quad budget proportionally; each quad gets at least 500 vertices
+        let min_per_quad: usize = 500;
+        let pool = VERTEX_BUDGET.saturating_sub(total_quads * min_per_quad);
+        let scale = if total_weight > 0.0 { pool as f32 / total_weight } else { 0.0 };
+
+        // Recursively subdivide each quad with its own budget
+        let mut idx = 0;
+        for ci in 0..initial {
+            for cj in 0..initial {
+                let quad_budget = min_per_quad + (quad_weights[idx] * scale) as usize;
+                idx += 1;
                 let u0 = ci as f32 / initial as f32;
                 let u1 = (ci + 1) as f32 / initial as f32;
                 let v0 = cj as f32 / initial as f32;
@@ -231,6 +259,7 @@ impl NurbsSurface {
                 let i10 = (ci + 1) * stride + cj;
                 let i01 = ci * stride + cj + 1;
                 let i11 = (ci + 1) * stride + cj + 1;
+                let mut used = 0usize;
 
                 subdivide_quad_screen(
                     self,
@@ -241,7 +270,8 @@ impl NurbsSurface {
                     i00, i10, i01, i11,
                     mvp, viewport, camera_pos, light_dir,
                     max_px, silhouette_px, terminator_px, angle_tol,
-                    0, max_depth, VERTEX_BUDGET,
+                    0, max_depth, quad_budget,
+                    &mut used,
                 );
             }
         }
@@ -282,30 +312,46 @@ fn subdivide_quad_screen(
     depth: usize,
     max_depth: usize,
     vertex_budget: usize,
+    vertices_used: &mut usize,
 ) {
-    if depth >= max_depth || positions.len() >= vertex_budget {
-        emit_quad(indices, idx00, idx10, idx01, idx11);
-        return;
-    }
-
     let p00 = positions[idx00]; let p10 = positions[idx10];
     let p01 = positions[idx01]; let p11 = positions[idx11];
     let n00 = normals[idx00]; let n10 = normals[idx10];
     let n01 = normals[idx01]; let n11 = normals[idx11];
 
-    // ════ Phase 1: Screen-space size (cheapest check — no evaluate calls) ════
-    let proj = |p: glam::Vec3| -> (f32, f32) {
-        let clip = *mvp * p.extend(1.0);
-        if clip.w.abs() < 1e-12 { return (0.0, 0.0); }
-        let ndc = clip / clip.w;
+    // ════ Phase 1: Screen-space size + camera-boundary detection ════
+    let proj = |p: glam::Vec4| -> (f32, f32) {
+        if p.w <= 1e-6 {
+            return (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        }
+        let ndc = p / p.w;
         ((ndc.x * 0.5 + 0.5) * viewport.0, ((1.0 - ndc.y) * 0.5) * viewport.1)
     };
-    let (s00x, s00y) = proj(p00);
-    let (s10x, s10y) = proj(p10);
-    let (s01x, s01y) = proj(p01);
-    let (s11x, s11y) = proj(p11);
+    let clip00 = *mvp * p00.extend(1.0);
+    let clip10 = *mvp * p10.extend(1.0);
+    let clip01 = *mvp * p01.extend(1.0);
+    let clip11 = *mvp * p11.extend(1.0);
+
+    // Quad straddles the camera plane: some corners behind, some in front.
+    // Force subdivision — screen-space edge heuristic is unreliable here.
+    let crosses_camera = clip00.w <= 1e-6 || clip10.w <= 1e-6
+        || clip01.w <= 1e-6 || clip11.w <= 1e-6;
+
+    // Camera-crossing quads get double the per-quad budget since they need
+    // finer tessellation near the camera boundary to avoid visible clipping.
+    let effective_budget = if crosses_camera { vertex_budget * 2 } else { vertex_budget };
+    if depth >= max_depth || *vertices_used >= effective_budget {
+        emit_quad(indices, idx00, idx10, idx01, idx11);
+        return;
+    }
+
+    let (s00x, s00y) = proj(clip00);
+    let (s10x, s10y) = proj(clip10);
+    let (s01x, s01y) = proj(clip01);
+    let (s11x, s11y) = proj(clip11);
 
     let edge_len = |x1: f32, y1: f32, x2: f32, y2: f32| -> f32 {
+        if x1.is_infinite() || x2.is_infinite() { return f32::MAX; }
         ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt()
     };
     let max_edge = edge_len(s00x, s00y, s10x, s10y)
@@ -314,8 +360,9 @@ fn subdivide_quad_screen(
         .max(edge_len(s01x, s01y, s00x, s00y));
 
     // Sub-pixel quads: never subdivide — invisible improvement.
+    // Skip for camera-straddling quads (their screen-space sizes are unreliable).
     const MIN_SUBDIV_PX: f32 = 2.0;
-    if max_edge < MIN_SUBDIV_PX {
+    if !crosses_camera && max_edge < MIN_SUBDIV_PX {
         emit_quad(indices, idx00, idx10, idx01, idx11);
         return;
     }
@@ -357,11 +404,14 @@ fn subdivide_quad_screen(
     // that a fold could hide in the interior (edges > 4px and corner deviation low).
     let um = (u0 + u1) * 0.5;
     let vm = (v0 + v1) * 0.5;
-    let needs_subdiv = if fast_subdiv {
+    // Cache center evaluation for reuse in Phase 5 if subdivision is needed.
+    let mut cached_p_center = None;
+    let mut cached_n_center = None;
+    let needs_subdiv = if fast_subdiv || crosses_camera {
         true
     } else if max_edge > MIN_SUBDIV_PX * 2.0 {
-        // Only probe the center for quads that are at least moderately large on screen
         let p_center = surface.evaluate(um, vm);
+        cached_p_center = Some(p_center);
         let bilinear_center = (p00 + p10 + p01 + p11) * 0.25;
         let displacement = (p_center - bilinear_center).length();
         let quad_diag = (p11 - p00).length().max(1e-10);
@@ -369,6 +419,7 @@ fn subdivide_quad_screen(
             true
         } else {
             let n_center = surface.normal(um, vm);
+            cached_n_center = Some(n_center);
             let avg_with_center = (n00 + n10 + n01 + n11 + n_center).normalize();
             n_center.dot(avg_with_center).clamp(-1.0, 1.0).acos() > angle_tol
         }
@@ -381,9 +432,9 @@ fn subdivide_quad_screen(
         return;
     }
 
-    // ════ Phase 5: Subdivide — evaluate midpoints ════
-    let p_center = surface.evaluate(um, vm);
-    let n_center = surface.normal(um, vm);
+    // ════ Phase 5: Subdivide — evaluate midpoints (reuse cached center) ════
+    let p_center = cached_p_center.unwrap_or_else(|| surface.evaluate(um, vm));
+    let n_center = cached_n_center.unwrap_or_else(|| surface.normal(um, vm));
     let p_um0 = surface.evaluate(um, v0);
     let p_um1 = surface.evaluate(um, v1);
     let p_0vm = surface.evaluate(u0, vm);
@@ -399,12 +450,13 @@ fn subdivide_quad_screen(
     let idx_0vm = positions.len(); positions.push(p_0vm); normals.push(n_0vm);
     let idx_1vm = positions.len(); positions.push(p_1vm); normals.push(n_1vm);
     let idx_center = positions.len(); positions.push(p_center); normals.push(n_center);
+    *vertices_used += 5;
 
     let d = depth + 1;
-    subdivide_quad_screen(surface, positions, normals, indices, u0, um, v0, vm, idx00, idx_um0, idx_0vm, idx_center, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget);
-    subdivide_quad_screen(surface, positions, normals, indices, um, u1, v0, vm, idx_um0, idx10, idx_center, idx_1vm, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget);
-    subdivide_quad_screen(surface, positions, normals, indices, u0, um, vm, v1, idx_0vm, idx_center, idx01, idx_um1, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget);
-    subdivide_quad_screen(surface, positions, normals, indices, um, u1, vm, v1, idx_center, idx_1vm, idx_um1, idx11, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget);
+    subdivide_quad_screen(surface, positions, normals, indices, u0, um, v0, vm, idx00, idx_um0, idx_0vm, idx_center, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, um, u1, v0, vm, idx_um0, idx10, idx_center, idx_1vm, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, u0, um, vm, v1, idx_0vm, idx_center, idx01, idx_um1, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, um, u1, vm, v1, idx_center, idx_1vm, idx_um1, idx11, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
 }
 
 fn emit_quad(indices: &mut Vec<u32>, a: usize, b: usize, c: usize, d: usize) {

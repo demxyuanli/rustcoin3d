@@ -104,6 +104,9 @@ pub(crate) fn window_event(
             app.state.adaptive_last_interaction = Instant::now();
             let prev = app.input.cursor_pos;
             app.input.cursor_pos = (position.x, position.y);
+            let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| {
+                c.middle_orbit_held || c.left_orbit_held || c.panning
+            });
             if app.camera_left_orbit_enabled() {
                 if let Some((ax, ay)) = app.editor.left_pick_arm_pos {
                     let dx = app.input.cursor_pos.0 - ax;
@@ -130,6 +133,12 @@ pub(crate) fn window_event(
                         dx,
                         dy,
                     });
+                }
+            }
+            // Request redraw during camera interaction so frames stay in sync with input
+            if cam_orbiting {
+                if let Some(window) = &app.state.window {
+                    window.request_redraw();
                 }
             }
         }
@@ -417,7 +426,11 @@ pub(crate) fn window_event(
                         (&app.state.renderer, app.state.viewport_cameras.active())
                     {
                         let view = active.controller.view_matrix();
-                        let proj = Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 1000.0);
+                        let proj = app.state.world.graph.roots().iter()
+                            .find_map(|&root| App::find_camera_projection(
+                                &app.state.world.graph, root))
+                            .unwrap_or_else(|| Mat4::perspective_rh(
+                                std::f32::consts::FRAC_PI_4, 1.0, 0.1, 1000.0));
                         let ctx = rc3d_actions::EventContext::new(evt, view, proj);
                         let mut action = rc3d_actions::HandleEventAction::new(ctx);
                         action.apply_non_pointer_only(
@@ -633,6 +646,7 @@ pub(crate) fn window_event(
                         xray_mode: renderer.xray_mode,
                         adaptive_quality_mode: app.state.adaptive_quality_mode,
                         adaptive_quality_name: renderer.adaptive_quality_name().to_string(),
+                        cad_display_tier: renderer.requested_display_tier(),
                         bookmarks,
                         selected_count,
                     };
@@ -662,7 +676,8 @@ pub(crate) fn window_event(
                             let vw = r.config.width.max(1) as f32;
                             let vh = r.config.height.max(1) as f32;
                             let aspect = vw / vh;
-                            let proj = Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0);
+                            let proj = Mat4::perspective_rh(
+                                std::f32::consts::FRAC_PI_4, aspect, 0.1, 1000.0);
                             let cam_moved = eye.distance(app.state.last_camera_eye) > 1e-5;
                             Some((eye, proj * view, vw, vh, cam_moved))
                         }
@@ -1104,6 +1119,9 @@ pub(crate) fn window_event(
                 if interaction_quality_override {
                     renderer.hdr_post_processing = saved_hdr;
                     renderer.set_display_mode(saved_display);
+                }
+                if renderer.cad_tier_authoritative() {
+                    renderer.reapply_cad_tier_constraints();
                 }
                 if app.state.continuous_redraw {
                     window.request_redraw();

@@ -35,7 +35,7 @@ impl App {
             return;
         };
 
-        renderer.set_display_mode(self.state.initial_display_mode);
+        renderer.set_display_mode(effect.display_mode);
 
         if effect.enable_hdr {
             renderer.set_hdr_post_processing(true);
