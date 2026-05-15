@@ -64,15 +64,25 @@ fn main() {
     let (target, orbit_radius) = fit_camera_to_scene(&mut graph, CameraFitConfig::default());
     let ctrl = CameraController::new(target, orbit_radius);
 
+    use std::sync::atomic::AtomicBool;
+
     let tier_atom = Arc::new(AtomicU32::new(initial_tier));
     let tier_text = tier_atom.clone();
     let tier_render = tier_atom.clone();
     let tier_key = tier_atom.clone();
 
+    let wf_overlay_atom = Arc::new(AtomicBool::new(false));
+    let wf_key = wf_overlay_atom.clone();
+    let wf_render = wf_overlay_atom.clone();
+    let wf_text = wf_overlay_atom.clone();
+
     println!("[DIAG] Starting at tier {}", initial_tier);
-    println!("Keys 1-4: switch tier | Ctrl+1-4: display mode");
+    println!("Keys 1-4: switch tier | F5: flat+mesh edges | W: wireframe");
     println!("Orbit camera to observe tier degradation during interaction");
 
+    // Track last-applied tier so we only call set_display_tier on change.
+    let mut last_tier: u32 = initial_tier;
+    let mut last_wf: bool = false;
     let mut app = App::new(graph)
         .with_camera_controller(ctrl)
         .with_initial_display_mode(DisplayMode::Shaded)
@@ -80,22 +90,43 @@ fn main() {
         .with_continuous_redraw(true)
         .with_pre_render_hook(move |renderer| {
             let t = tier_render.load(Ordering::Relaxed);
-            renderer.set_display_tier(CadDisplayTier::from_u32(t));
+            if t != last_tier {
+                last_tier = t;
+                renderer.set_display_tier(CadDisplayTier::from_u32(t));
+            }
+            let wf = wf_render.load(Ordering::Relaxed);
+            if wf != last_wf {
+                last_wf = wf;
+                renderer.wireframe_overlay = wf;
+            }
+            // When full-mesh-edges is active, enforce FlatWithEdge every frame
+            // so tier changes don't override it back to ShadedWithEdges.
+            if wf {
+                renderer.set_display_mode(DisplayMode::FlatWithEdge);
+            }
         })
         .with_panel_overlay_text_hook(move || {
             let t = tier_text.load(Ordering::Relaxed);
             let tier = CadDisplayTier::from_u32(t);
+            let wf = wf_text.load(Ordering::Relaxed);
+            let mode_line = if wf { " | FullMeshEdges ON" } else { "" };
             format!(
                 "+--- CAD Tier: {:<16} ---+\n\
                  | 1=DesignCreation 2=Visualization |\n\
                  | 3=IndustrialDisplay 4=ProductRen |\n\
-                 | Orbit camera → observe degrade   |\n\
+                 | F5=Flat+MeshEdges{:>13} |\n\
                  +-----------------------------------+",
-                tier_name(tier)
+                tier_name(tier), mode_line
             )
         })
         .with_panel_overlay_key_hook(move |key| -> bool {
             use winit::keyboard::KeyCode;
+            if key == KeyCode::F5 {
+                let prev = wf_key.load(Ordering::Relaxed);
+                wf_key.store(!prev, Ordering::Relaxed);
+                println!("[DIAG] Flat+MeshEdges: {}", if !prev { "ON" } else { "OFF" });
+                return true;
+            }
             let ti: u32 = match key {
                 KeyCode::Digit1 => 0,
                 KeyCode::Digit2 => 1,

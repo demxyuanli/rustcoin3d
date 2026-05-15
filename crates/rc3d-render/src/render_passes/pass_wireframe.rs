@@ -44,7 +44,7 @@ pub(super) fn pass_wireframe(
         let dc = ctx.visible[i];
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
-            color: ctx.outline_color,
+            color: renderer.wireframe_edge_color,
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);

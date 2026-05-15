@@ -71,7 +71,7 @@ impl FpsTracker {
     pub(crate) fn maybe_log(&mut self, stats: &FrameStats, quality: &str) {
         if self.last_log.elapsed().as_secs() >= 1 {
             self.last_log = Instant::now();
-            log::info!(
+            log::debug!(
                 "FPS: {:.1} | frame: {:.2}ms | tris: {} | draws: {} | culled: {} | quality: {}",
                 self.fps(),
                 self.average_frame_ms(),

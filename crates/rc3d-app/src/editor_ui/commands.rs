@@ -4,6 +4,7 @@ use rc3d_actions::MarkupTool;
 use rc3d_core::NodeId;
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::ibl::IblPreset;
+use rc3d_render::renderer::CadDisplayTier;
 use rc3d_render::viewport::LayoutMode;
 use rc3d_scene::node_data::MeasurementType;
 
@@ -62,6 +63,7 @@ pub enum EditorCommand {
     SetGridEnabled(bool),
     SetHudEnabled(bool),
     SetVsyncEnabled(bool),
+    SetCadDisplayTier(CadDisplayTier),
     SetBaseColor(NodeId, [f32; 3]),
     SetMetallic(NodeId, f32),
     SetRoughness(NodeId, f32),

@@ -11,6 +11,8 @@ use crate::shadow::Shadow;
 /// Compiled effect graph, ready to be applied to a `PassContext`.
 #[derive(Clone, Debug)]
 pub struct EffectGraph {
+    pub display_mode: rc3d_core::DisplayMode,
+
     pub run_shadow_pass: bool,
     pub cascade_count: u32,
     pub shadow_map_size: u32,
@@ -35,6 +37,7 @@ impl EffectGraph {
     /// Compile a RenderConfig into an ordered effect graph.
     pub(crate) fn compile(config: &RenderConfig) -> Self {
         let mut g = EffectGraph {
+            display_mode: config.get_display_mode(),
             run_shadow_pass: false,
             cascade_count: 1,
             shadow_map_size: 1,
@@ -86,6 +89,7 @@ impl EffectGraph {
     /// Call this before each frame's render pass setup.
     pub fn apply_booleans(&self) -> EffectBooleans {
         EffectBooleans {
+            display_mode: self.display_mode,
             run_shadow_pass: self.run_shadow_pass,
             enable_ssao: self.enable_ssao,
             enable_ssr: self.enable_ssr,
@@ -104,6 +108,7 @@ impl EffectGraph {
 /// Flat struct of booleans for applying to PassContext.
 #[derive(Clone, Debug, Default)]
 pub struct EffectBooleans {
+    pub display_mode: rc3d_core::DisplayMode,
     pub run_shadow_pass: bool,
     pub enable_ssao: bool,
     pub enable_ssr: bool,

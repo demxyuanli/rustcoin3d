@@ -34,7 +34,7 @@ use super::renderer_types::{FrameDiagnostics, FrameStats};
 pub enum CadDisplayTier {
     /// Model editing/creation: Flat shading, edges only. 60+ fps.
     DesignCreation = 0,
-    /// Visualization/review: PBR + IBL + CSM shadows + edges + motion blur.
+    /// Visualization/review: PBR + IBL + CSM shadows + edges.
     Visualization = 1,
     /// Industrial/engineering display: + SSAO, TAA/FXAA, color grading.
     IndustrialDisplay = 2,
@@ -84,14 +84,14 @@ impl TierConfig {
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
             },
             CadDisplayTier::IndustrialDisplay => Self {
-                flat_shading: false, shadows: true,  edges: true,  motion_blur: false,
+                flat_shading: false, shadows: true,  edges: false, motion_blur: false,
                 ssao: false, taa: false, fxaa: false, color_grading: false,
-                ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
+                ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
             },
             CadDisplayTier::ProductRendering => Self {
                 flat_shading: false, shadows: true,  edges: false, motion_blur: false,
                 ssao: false, taa: false, fxaa: false, color_grading: false,
-                ssr: false, volumetric_fog: false, dof: false, hdr_post: false,
+                ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
             },
         }
     }

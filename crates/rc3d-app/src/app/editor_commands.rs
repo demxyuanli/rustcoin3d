@@ -245,6 +245,11 @@ pub(crate) fn apply_editor_commands(app: &mut App) {
             EditorCommand::SetAdaptiveQualityMode(mode) => {
                 app.state.adaptive_quality_mode = mode;
             }
+            EditorCommand::SetCadDisplayTier(tier) => {
+                if let Some(renderer) = &mut app.state.renderer {
+                    renderer.set_display_tier(tier);
+                }
+            }
             EditorCommand::SetOutlineWidth(w) => {
                 if let Some(r) = &mut app.state.renderer {
                     r.outline_width = w;

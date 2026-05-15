@@ -357,7 +357,7 @@ impl TriangleMesh {
     }
 
     /// Default crease angle (degrees) for [`Self::edge_line_positions_feature`]: technical overlays.
-    pub const DEFAULT_FEATURE_EDGE_CREASE_DEG: f32 = 35.0;
+    pub const DEFAULT_FEATURE_EDGE_CREASE_DEG: f32 = 12.0;
 
     /// Boundary + crease edges for static visualization (`ShadedWithEdges`), not full triangulation.
     ///

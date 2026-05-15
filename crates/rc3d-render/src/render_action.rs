@@ -79,8 +79,23 @@ type PackedLights = (
     u32,
 );
 
-const MAX_EDGE_POSITIONS: usize = 2_000_000;
+const MAX_EDGE_POSITIONS: usize = 50_000_000;
 const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
+
+/// Runtime-configurable feature edge crease angle (degrees).
+/// Default 12°. Set via `Renderer::set_feature_edge_crease_angle`.
+static FEATURE_CREASE_ANGLE_BITS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(12.0f32.to_bits());
+
+fn feature_crease_angle() -> f32 {
+    f32::from_bits(
+        FEATURE_CREASE_ANGLE_BITS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn set_feature_crease_angle(deg: f32) {
+    FEATURE_CREASE_ANGLE_BITS.store(deg.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
 
 fn clamp_edge_positions(arc: Arc<Vec<[f32; 3]>>) -> Arc<Vec<[f32; 3]>> {
     if arc.len() > MAX_EDGE_POSITIONS {
@@ -796,7 +811,7 @@ impl RenderCollector {
                 let mut mesh = rc3d_mesh::TriangleMesh::from_tris(&positions);
                 mesh.compute_tangents();
                 let edge_feature = mesh.edge_line_positions_feature(
-                    rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                    feature_crease_angle(),
                 );
                 let edge_full = mesh.edge_line_positions();
                 let mut vertices = Vec::with_capacity(3);
@@ -998,7 +1013,7 @@ impl RenderCollector {
                         } else {
                             let (phong_verts, indices) = mesh.phong_buffers();
                             let edge_feature = mesh.edge_line_positions_feature(
-                                rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                                feature_crease_angle(),
                             );
                             let edge_full = mesh.edge_line_positions();
                             let local_aabb = mesh.bounding_box();
@@ -1097,7 +1112,7 @@ impl RenderCollector {
                 mesh.compute_tangents();
                 let (phong_verts, indices) = mesh.phong_buffers();
                 let edge_feature = mesh.edge_line_positions_feature(
-                    rc3d_mesh::TriangleMesh::DEFAULT_FEATURE_EDGE_CREASE_DEG,
+                    feature_crease_angle(),
                 );
                 let edge_full = mesh.edge_line_positions();
                 let local_aabb = mesh.bounding_box();

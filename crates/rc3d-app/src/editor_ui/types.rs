@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use rc3d_core::NodeId;
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::ibl::IblPreset;
+use rc3d_render::renderer::CadDisplayTier;
 use rc3d_render::viewport::LayoutMode;
 use rc3d_render::FrameDiagnostics;
 
@@ -70,6 +71,7 @@ pub struct EditorUiContext {
     pub xray_mode: bool,
     pub adaptive_quality_mode: AdaptiveQualityMode,
     pub adaptive_quality_name: String,
+    pub cad_display_tier: CadDisplayTier,
     pub bookmarks: [(bool, &'static str); 9],
     pub selected_count: usize,
 }

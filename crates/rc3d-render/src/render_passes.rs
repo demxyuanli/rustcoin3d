@@ -522,7 +522,6 @@ pub(super) fn execute_passes(
         && ctx.adaptive_quality != AdaptiveQuality::Low;
 
     let edge_worthy = !ctx.performance_mode_active
-        && ctx.adaptive_quality != AdaptiveQuality::Low
         && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine || mode == DisplayMode::FlatWithEdge)
         && mode != DisplayMode::Flat;
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
@@ -851,7 +850,7 @@ pub(super) fn execute_passes(
     let t_collect = t_collect.elapsed().as_secs_f64() * 1000.0;
 
     if renderer.frame.frame_counter % 10 == 0 {
-        log::info!(
+        log::debug!(
             "CPU submit/present/collect: submit={:.1}ms present={:.1}ms collect={:.1}ms",
             t_submit, t_present, t_collect
         );
@@ -899,7 +898,7 @@ pub(super) fn execute_passes(
         let cpu_parts: Vec<String> = stats.cpu_sections.iter()
             .map(|(label, ms)| format!("{}={:.2}ms", label, ms))
             .collect();
-        log::info!(
+        log::debug!(
             "GPU: {} | CPU: {} | frame={:.2}ms draws={} tris={}",
             parts.join(" "),
             cpu_parts.join(" "),
@@ -912,7 +911,7 @@ pub(super) fn execute_passes(
     let t_total = t_entry.elapsed().as_secs_f64() * 1000.0;
     let t_surface = t_surface_start.elapsed().as_secs_f64() * 1000.0;
     if renderer.frame.frame_counter % 10 == 0 {
-        log::info!(
+        log::debug!(
             "execute_passes wall={:.1}ms (surface_acquire={:.1}ms) draws={}",
             t_total, t_surface, draw_calls.len()
         );

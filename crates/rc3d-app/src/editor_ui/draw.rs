@@ -4,6 +4,7 @@ use rc3d_core::math::Quat;
 use rc3d_core::NodeId;
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::ibl::IblPreset;
+use rc3d_render::renderer::CadDisplayTier;
 use rc3d_render::viewport::LayoutMode;
 use rc3d_scene::node_data::MeasurementType;
 use rc3d_scene::{NodeData, SceneGraph};
@@ -211,7 +212,7 @@ pub(super) fn build_ui(
     egui::TopBottomPanel::bottom("rc3d_status").show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label(format!(
-                "FPS: {:.1}  Frame: {:.2} ms  Mode: {}  IBL: {}  Layout: {}  Active VP: {}  Sel: {}  AQ: {:?} ({})",
+                "FPS: {:.1}  Frame: {:.2} ms  Mode: {}  IBL: {}  Layout: {}  Active VP: {}  Sel: {}  AQ: {:?} ({})  Tier: {}",
                 ui_ctx.smoothed_fps,
                 ui_ctx.frame_time_ms,
                 ui_ctx.display_mode_label,
@@ -221,6 +222,7 @@ pub(super) fn build_ui(
                 ui_ctx.selected_count,
                 ui_ctx.adaptive_quality_mode,
                 ui_ctx.adaptive_quality_name,
+                tier_name(ui_ctx.cad_display_tier),
             ));
         });
     });
@@ -822,6 +824,23 @@ fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnM
             }
         });
 
+    ui.label("CAD display tier");
+    let mut tier = ui_ctx.cad_display_tier;
+    egui::ComboBox::from_id_salt("cad_tier")
+        .selected_text(tier_name(tier))
+        .show_ui(ui, |ui| {
+            for t in [
+                CadDisplayTier::DesignCreation,
+                CadDisplayTier::Visualization,
+                CadDisplayTier::IndustrialDisplay,
+                CadDisplayTier::ProductRendering,
+            ] {
+                if ui.selectable_value(&mut tier, t, tier_name(t)).clicked() {
+                    push(EditorCommand::SetCadDisplayTier(t));
+                }
+            }
+        });
+
     ui.label("View preset");
     let mut vp = ViewPreset::Iso;
     egui::ComboBox::from_id_salt("view_preset")
@@ -872,5 +891,14 @@ fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnM
         if ui.selectable_label(false, format!("{m:?}")).clicked() {
             push(EditorCommand::SetMeasurementMode(Some(m)));
         }
+    }
+}
+
+fn tier_name(t: CadDisplayTier) -> &'static str {
+    match t {
+        CadDisplayTier::DesignCreation => "Design Creation",
+        CadDisplayTier::Visualization => "Visualization",
+        CadDisplayTier::IndustrialDisplay => "Industrial Display",
+        CadDisplayTier::ProductRendering => "Product Rendering",
     }
 }

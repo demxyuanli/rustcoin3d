@@ -85,9 +85,12 @@ fn draw_flat_triangle_batches(
     let mut last_bound_mesh = None;
     for &i in ctx.solid_order {
         let dc = ctx.visible[i];
+        let face_color = renderer.flat_face_color.unwrap_or(
+            [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
+        );
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
-            color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
+            color: face_color,
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);

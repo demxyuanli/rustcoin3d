@@ -98,10 +98,27 @@ pub struct Renderer {
     pub enable_ldr_fxaa: bool,
     pub hdr_post_processing: bool,
     pub global_display_mode: DisplayMode,
+    /// Display mode explicitly chosen by the user (may differ from global_display_mode
+    /// when a tier forces flat shading). Used to restore the user's choice when leaving
+    /// a flat-shading tier.
+    user_display_mode: DisplayMode,
+    /// Effective CAD tier: allow CSM shadow pass when geometry/display mode allow it.
+    pub(crate) tier_wants_shadow: bool,
+    /// Effective CAD tier: allow outline/edge overlay passes when display mode allows it.
+    pub(crate) tier_wants_edges: bool,
+    /// When true, edge overlay uses all triangle edges (wireframe) instead of feature edges.
+    pub wireframe_overlay: bool,
     pub grid_enabled: bool,
     pub hud_enabled: bool,
     pub outline_width: f32,
+    /// Selection/bbox outline color. Default: orange.
     pub outline_color: [f32; 4],
+    /// Feature edge color (ShadedWithEdges / FlatWithEdge). Default: red.
+    pub feature_edge_color: [f32; 4],
+    /// Full wireframe overlay edge color. Default: dark blue.
+    pub wireframe_edge_color: [f32; 4],
+    /// Face fill color for flat-shading mode. When `Some`, overrides material color.
+    pub flat_face_color: Option<[f32; 4]>,
     pub xray_mode: bool,
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
@@ -109,6 +126,10 @@ pub struct Renderer {
     /// When true, the renderer skips expensive passes (shadows, edges, SSAO)
     /// even below the triangle threshold. Set by the app during camera orbit/pan/zoom.
     pub interaction_active: bool,
+
+    /// Set when `set_display_tier` runs: tier-driven toggles are enforced each frame via
+    /// `reapply_cad_tier_constraints` so display mode / HDR / post paths cannot bypass CAD tier.
+    pub(crate) cad_tier_authoritative: bool,
 
     // ── Frame state tier ──
     pub(crate) frame: FrameState,
@@ -213,6 +234,7 @@ impl Renderer {
 
     /// Set the CAD display quality tier. Clamped by GPU capability on Basic tier.
     pub fn set_display_tier(&mut self, tier: CadDisplayTier) {
+        self.cad_tier_authoritative = true;
         let max_tier = match self.gpu.gpu_capability.tier {
             GpuTier::Basic => CadDisplayTier::Visualization,
             GpuTier::Standard => CadDisplayTier::IndustrialDisplay,
@@ -228,7 +250,13 @@ impl Renderer {
         if self.gpu.requested_tier != requested {
             self.gpu.requested_tier = requested;
             self.gpu.effective_tier = requested;
-            self.apply_tier_config();
+            self.apply_tier_config(true);
+        } else if self.gpu.effective_tier != requested {
+            // Effective can lag behind requested during orbit degrade/recovery; choosing the
+            // same tier again (or repeating a tier hotkey) must snap visuals without changing request.
+            self.gpu.effective_tier = requested;
+            self.gpu.tier_cooldown_frames = 0;
+            self.apply_tier_config(true);
         }
     }
 
@@ -259,9 +287,16 @@ impl Renderer {
             if self.gpu.effective_tier != degraded {
                 self.gpu.effective_tier = degraded;
                 self.gpu.tier_cooldown_frames = 0;
-                self.apply_tier_config();
+                self.apply_tier_config(false);
             }
             return;
+        }
+
+        // Snap down when effective exceeds allowed target (requested lowered or clamp tightened).
+        if self.gpu.effective_tier > clamped {
+            self.gpu.effective_tier = clamped;
+            self.gpu.tier_cooldown_frames = 0;
+            self.apply_tier_config(false);
         }
 
         // Recovery: step up one tier per cooldown period
@@ -274,23 +309,38 @@ impl Renderer {
                 if next_tier <= clamped {
                     self.gpu.effective_tier = next_tier;
                     self.gpu.tier_cooldown_frames = 30;
-                    self.apply_tier_config();
+                    self.apply_tier_config(false);
                 }
             }
         }
     }
 
-    fn apply_tier_config(&mut self) {
+    /// Apply feature toggles for the current effective tier.
+    ///
+    /// When `user_initiated` is true (user changed tier via UI), the tier's
+    /// display-mode semantics are also applied (e.g. DesignCreation → Flat).
+    /// When false (automatic degradation/recovery), display mode is preserved
+    /// so the user's explicit choice is not overridden.
+    fn apply_tier_config(&mut self, user_initiated: bool) {
         let cfg = TierConfig::for_tier(self.gpu.effective_tier);
-        log::info!(
-            "Tier config applied: {:?} | HDR={} SSAO={} TAA={} SSR={} DOF={} Fog={}",
-            self.gpu.effective_tier, cfg.hdr_post, cfg.ssao, cfg.taa, cfg.ssr, cfg.dof, cfg.volumetric_fog
+        log::debug!(
+            "Tier config applied: {:?} (user={}) | HDR={} SSAO={} TAA={} SSR={} DOF={} Fog={}",
+            self.gpu.effective_tier, user_initiated,
+            cfg.hdr_post, cfg.ssao, cfg.taa, cfg.ssr, cfg.dof, cfg.volumetric_fog
         );
-        let display_mode = if cfg.flat_shading {
-            DisplayMode::Flat
-        } else {
-            self.global_display_mode
-        };
+        // Apply display-mode semantics on user-initiated tier switch.
+        // Entering a flat-shading tier forces Flat; leaving restores user's choice.
+        if user_initiated {
+            self.global_display_mode = if cfg.flat_shading {
+                if cfg.edges { DisplayMode::FlatWithEdge } else { DisplayMode::Flat }
+            } else if cfg.edges {
+                DisplayMode::ShadedWithEdges
+            } else {
+                DisplayMode::Shaded
+            };
+        }
+        self.tier_wants_shadow = cfg.shadows;
+        self.tier_wants_edges = cfg.edges;
         // Derive feature toggles from tier config
         self.enable_taa = cfg.taa;
         self.enable_motion_blur = cfg.motion_blur && self.gpu.motion_blur.is_some();
@@ -302,7 +352,6 @@ impl Renderer {
             self.ensure_post_fx_targets();
         }
         self.hdr_post_processing = cfg.hdr_post;
-        self.global_display_mode = display_mode;
         // Motion blur needs TAA reference + HDR; guard against missing resources
         if self.enable_motion_blur && !self.hdr_post_processing {
             self.enable_motion_blur = false;
@@ -310,6 +359,35 @@ impl Renderer {
         if self.enable_motion_blur {
             self.enable_taa = true;
         }
+    }
+
+    /// Flat-shading tiers (e.g. DesignCreation) always render as Flat; display-mode changes
+    /// still update `user_display_mode` so leaving the tier restores the user's choice.
+    fn clamp_global_display_mode_for_flat_shading_tier(&mut self) {
+        let cfg = TierConfig::for_tier(self.gpu.effective_tier);
+        if cfg.flat_shading {
+            // Wireframe is an explicit user choice; don't overwrite it.
+            if self.global_display_mode == DisplayMode::Wireframe {
+                return;
+            }
+            self.global_display_mode = if cfg.edges {
+                DisplayMode::FlatWithEdge
+            } else {
+                DisplayMode::Flat
+            };
+        }
+    }
+
+    /// Re-apply pipeline toggles for the current effective CAD tier (used when tier is
+    /// authoritative so interaction overrides / inspector cannot bypass tier presets).
+    pub fn reapply_cad_tier_constraints(&mut self) {
+        self.apply_tier_config(false);
+        self.clamp_global_display_mode_for_flat_shading_tier();
+    }
+
+    /// Whether CAD tier was explicitly chosen via [`Self::set_display_tier`].
+    pub fn cad_tier_authoritative(&self) -> bool {
+        self.cad_tier_authoritative
     }
 
     pub fn set_hdr_post_processing(&mut self, enabled: bool) {
@@ -427,7 +505,7 @@ impl Renderer {
             | wgpu::Features::PIPELINE_CACHE
             | wgpu::Features::MULTI_DRAW_INDIRECT;
         let features = adapter.features() & requested_features;
-        let wireframe_supported = features.contains(wgpu::Features::POLYGON_MODE_LINE);
+        let wireframe_supported = true; // wireframe pass uses line-list edges, not PolygonMode::Line
         let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let multi_draw_indirect_supported = features.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
@@ -604,14 +682,22 @@ impl Renderer {
             enable_ldr_fxaa: true,
             hdr_post_processing: false,
             global_display_mode: DisplayMode::Shaded,
+            user_display_mode: DisplayMode::Shaded,
+            tier_wants_shadow: true,
+            tier_wants_edges: true,
+            wireframe_overlay: false,
             grid_enabled: false,
             hud_enabled: true,
             outline_width: 0.022,
-            outline_color: [1.0, 0.5, 0.0, 1.0],
+            outline_color: [1.0, 0.5, 0.0, 1.0], // orange
+            feature_edge_color: [0.9, 0.15, 0.1, 1.0], // red
+            wireframe_edge_color: [0.15, 0.25, 0.7, 1.0], // dark blue
+            flat_face_color: Some([0.68, 0.72, 0.78, 1.0]), // light blue-gray, CAD default
             xray_mode: false,
             screen_space_selection_outline: true,
             ibl_preset,
             interaction_active: false,
+            cad_tier_authoritative: false,
             // Profiler
             gpu_timer,
             cpu_span: crate::profiler::CpuSpanCollector::default(),
@@ -789,6 +875,7 @@ impl Renderer {
         // ── Multi-viewport layout ──
         renderer.frame.viewport_layout.rebuild(renderer.config.width, renderer.config.height);
 
+        renderer.apply_tier_config(false);
         renderer
     }
 
@@ -955,6 +1042,8 @@ impl Renderer {
         self.enable_omni_shadows = settings.lighting.omni_shadows;
         self.set_ibl_preset(settings.lighting.ibl_preset);
         self.global_display_mode = settings.display.display_mode;
+        self.user_display_mode = settings.display.display_mode;
+        self.clamp_global_display_mode_for_flat_shading_tier();
         self.grid_enabled = settings.display.grid_enabled;
         self.hud_enabled = settings.display.hud_enabled;
         self.outline_width = settings.display.outline_width;
@@ -994,12 +1083,45 @@ impl Renderer {
     }
 
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
+        self.user_display_mode = mode;
         self.global_display_mode = mode;
+        self.clamp_global_display_mode_for_flat_shading_tier();
     }
 
-    /// RGBA for mesh outline pass, wireframe/edge-overlay defaults, and selection edge/bbox lines.
+    pub fn display_tier(&self) -> CadDisplayTier {
+        self.gpu.effective_tier
+    }
+
+    /// User-requested CAD tier (before interaction-time degradation).
+    pub fn requested_display_tier(&self) -> CadDisplayTier {
+        self.gpu.requested_tier
+    }
+
+    /// RGBA for mesh outline pass and selection edge/bbox lines. Default: orange [1.0, 0.5, 0.0, 1.0].
     pub fn set_outline_color(&mut self, rgba: [f32; 4]) {
         self.outline_color = rgba;
+    }
+
+    /// RGBA for feature (crease) edges in ShadedWithEdges / FlatWithEdge modes. Default: red.
+    pub fn set_feature_edge_color(&mut self, rgba: [f32; 4]) {
+        self.feature_edge_color = rgba;
+    }
+
+    /// RGBA for full wireframe overlay edges (F5). Default: dark blue.
+    pub fn set_wireframe_edge_color(&mut self, rgba: [f32; 4]) {
+        self.wireframe_edge_color = rgba;
+    }
+
+    /// Override face fill color in flat-shading mode. `None` uses material color. Default: `None`.
+    pub fn set_flat_face_color(&mut self, rgba: Option<[f32; 4]>) {
+        self.flat_face_color = rgba;
+    }
+
+    /// Set feature edge crease angle in degrees. Default: 12°.
+    /// Lower values include more edges (smoother surfaces show more structure).
+    /// Takes effect on next scene traversal (mesh cache rebuild).
+    pub fn set_feature_edge_crease_angle(&mut self, deg: f32) {
+        crate::render_action::set_feature_crease_angle(deg);
     }
 
     pub fn set_taa(&mut self, enabled: bool) {
