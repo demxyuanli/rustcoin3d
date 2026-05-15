@@ -36,7 +36,7 @@ fn vs_sobel(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 fn sample_depth(uv: vec2<f32>, offset: vec2<f32>) -> f32 {
-    return textureSampleLevel(depth_tex, depth_sampler, uv + offset * u.texel_size, 0.0);
+    return textureSample(depth_tex, depth_sampler, uv + offset * u.texel_size);
 }
 
 @fragment
