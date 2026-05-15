@@ -593,9 +593,13 @@ pub(super) fn execute_passes(
             let ec = renderer.feature_edge_color;
             let tw = ew.max(1) as f32;
             let th = eh.max(1) as f32;
+            // WGSL Uniforms struct: texel_size(vec2), threshold(f32), _pad, edge_color(vec3)
             let locals: [f32; 8] = [
-                renderer.ss_edge_threshold, ec[0], ec[1], ec[2],
-                1.0 / tw, 1.0 / th, 0.0, 0.0,
+                1.0 / tw, 1.0 / th,  // texel_size: vec2<f32>  offset 0
+                renderer.ss_edge_threshold,  // threshold: f32    offset 8
+                0.0,                          // _pad             offset 12
+                ec[0], ec[1], ec[2],          // edge_color(vec3) offset 16
+                0.0,                          // struct pad       offset 28
             ];
             renderer.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&locals));
             let bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
