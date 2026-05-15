@@ -1,7 +1,7 @@
 // Screen-space edge detection via Sobel 3x3 depth gradient.
-// Reads linear depth texture and outputs edge intensity.
+// Reads a depth texture (Depth32Float) and outputs edge intensity.
 
-@group(0) @binding(0) var depth_tex: texture_2d<f32>;
+@group(0) @binding(0) var depth_tex: texture_depth_2d;
 @group(0) @binding(1) var depth_sampler: sampler;
 
 struct Uniforms {
@@ -36,7 +36,7 @@ fn vs_sobel(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 fn sample_depth(uv: vec2<f32>, offset: vec2<f32>) -> f32 {
-    return textureSampleLevel(depth_tex, depth_sampler, uv + offset * u.texel_size, 0.0).r;
+    return textureSampleLevel(depth_tex, depth_sampler, uv + offset * u.texel_size, 0.0);
 }
 
 @fragment
