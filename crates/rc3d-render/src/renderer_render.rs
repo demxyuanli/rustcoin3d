@@ -81,7 +81,7 @@ impl super::Renderer {
                             }
                         }
                         if !indices.is_empty() {
-                            log::info!("GPU cull: {} visible (CPU: {})",
+                            log::debug!("GPU cull: {} visible (CPU: {})",
                                 indices.len(), self.frame.visible_indices.len());
                             gpu_visible = Some(indices);
                         }
@@ -112,6 +112,12 @@ impl super::Renderer {
             );
         });
         self.frame.frame_counter = self.frame.frame_counter.wrapping_add(1);
+        // Resolve interaction degradation/recovery before computing passes so shadow/outline
+        // and tier-driven flags match this frame's PassContext.
+        self.update_tier();
+        if self.cad_tier_authoritative {
+            self.reapply_cad_tier_constraints();
+        }
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
         self.frame.animation_time_sec += dt_sec;
 
@@ -122,7 +128,7 @@ impl super::Renderer {
                 pc.save_to_disk();
             }
             if let Some(ref pool) = self.gpu.assets.mesh_pool {
-                log::info!(
+                log::debug!(
                     "MeshPool: {}/{} slots, {} MB / {} MB, {} uploads/frame",
                     pool.len(), crate::mesh_pool::DEFAULT_POOL_SIZE,
                     pool.total_bytes() / (1024 * 1024),
@@ -188,7 +194,7 @@ impl super::Renderer {
             self.frame.static_frame_count = 0;
         }
         self.frame.last_vp = vp;
-        let frustum = Frustum::from_view_projection(vp);
+        let frustum = Frustum::from_view_projection(vp, first.depth_reversed_z);
 
         let visible: Vec<&DrawCall> = self.cpu_span.measure("bvh_frustum_cull", || {
             // Build BVH items: reuse cached Vec when count matches (skip allocation),
@@ -396,8 +402,8 @@ impl super::Renderer {
                             &self.device,
                             &verts,
                             Some(&md.indices),
-                            &[],
-                            &[],
+                            &dc.edge_positions,
+                            &dc.wireframe_edge_positions,
                         );
                         self.gpu.assets.mesh_insert(ptr, mesh_id, self.frame.frame_counter, Some(&mut self.gpu.gpu_meshes));
                         Some(mesh_id)
@@ -578,6 +584,7 @@ impl super::Renderer {
         };
         let run_outline = !self.frame.performance_mode_active
             && self.gpu.adaptive_quality == AdaptiveQuality::High
+            && self.tier_wants_edges
             && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
 
         let solid_wants_shadow = !self.frame.performance_mode_active
@@ -586,7 +593,8 @@ impl super::Renderer {
                 DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
             )
             && mode != DisplayMode::Flat
-            && mode != DisplayMode::FlatWithEdge;
+            && mode != DisplayMode::FlatWithEdge
+            && self.tier_wants_shadow;
 
         let (camera_proj, camera_inv_proj) = if let Some((p, ip)) = ssao_projection {
             (p, ip)
@@ -713,7 +721,6 @@ impl super::Renderer {
             light_sets: &light_sets_snapshot,
         };
 
-        self.update_tier();
         let mut stats = render_passes::execute_passes(
             self,
             &ctx,
@@ -762,7 +769,7 @@ impl super::Renderer {
         stats.gpu_pass_times_us = gpu_pass;
         if self.frame.frame_counter % 10 == 0 {
             if let Some([shadow, solid, post, total]) = gpu_pass {
-                log::info!(
+                log::debug!(
                     "GPU pass timings (us): shadow={:.0} solid={:.0} post={:.0} total={:.0}",
                     shadow, solid, post, total
                 );

@@ -111,6 +111,53 @@ impl NurbsSurface {
         }
     }
 
+    /// Extract an isoparametric edge as a NURBS curve for boundary matching.
+    ///
+    /// Returns the control points along the specified edge. For UMin/UMax the
+    /// curve runs in the v direction; for VMin/VMax it runs in the u direction.
+    pub fn boundary_curve(&self, edge: BoundaryEdge) -> crate::NurbsCurve {
+        match edge {
+            BoundaryEdge::UMin => {
+                let cp: Vec<Vec3> = (0..self.v_count())
+                    .map(|j| {
+                        let p = &self.control_points[0][j];
+                        Vec3::new(p[0] / p[3], p[1] / p[3], p[2] / p[3])
+                    })
+                    .collect();
+                crate::NurbsCurve::from_points(&cp, self.v_degree)
+            }
+            BoundaryEdge::UMax => {
+                let u_last = self.u_count() - 1;
+                let cp: Vec<Vec3> = (0..self.v_count())
+                    .map(|j| {
+                        let p = &self.control_points[u_last][j];
+                        Vec3::new(p[0] / p[3], p[1] / p[3], p[2] / p[3])
+                    })
+                    .collect();
+                crate::NurbsCurve::from_points(&cp, self.v_degree)
+            }
+            BoundaryEdge::VMin => {
+                let cp: Vec<Vec3> = (0..self.u_count())
+                    .map(|i| {
+                        let p = &self.control_points[i][0];
+                        Vec3::new(p[0] / p[3], p[1] / p[3], p[2] / p[3])
+                    })
+                    .collect();
+                crate::NurbsCurve::from_points(&cp, self.u_degree)
+            }
+            BoundaryEdge::VMax => {
+                let v_last = self.v_count() - 1;
+                let cp: Vec<Vec3> = (0..self.u_count())
+                    .map(|i| {
+                        let p = &self.control_points[i][v_last];
+                        Vec3::new(p[0] / p[3], p[1] / p[3], p[2] / p[3])
+                    })
+                    .collect();
+                crate::NurbsCurve::from_points(&cp, self.u_degree)
+            }
+        }
+    }
+
     /// Uniform tessellation into a TriangleMesh.
     pub fn tessellate_uniform(
         &self,
@@ -281,6 +328,15 @@ impl NurbsSurface {
 }
 
 /// Output of [`NurbsSurface::tessellate_uniform_with_normals`].
+/// Which isoparametric edge of a NURBS surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryEdge {
+    UMin, // u = 0
+    UMax, // u = 1
+    VMin, // v = 0
+    VMax, // v = 1
+}
+
 pub struct TessellatedSurface {
     pub positions: Vec<glam::Vec3>,
     pub normals: Vec<glam::Vec3>,
@@ -349,6 +405,19 @@ fn subdivide_quad_screen(
     let (s10x, s10y) = proj(clip10);
     let (s01x, s01y) = proj(clip01);
     let (s11x, s11y) = proj(clip11);
+
+    // ── Viewport culling: skip quads fully outside the viewport ──
+    // Recover budget for visible quads; off-screen quads contribute nothing.
+    let sx_min = s00x.min(s10x).min(s01x).min(s11x);
+    let sx_max = s00x.max(s10x).max(s01x).max(s11x);
+    let sy_min = s00y.min(s10y).min(s01y).min(s11y);
+    let sy_max = s00y.max(s10y).max(s01y).max(s11y);
+    let vw = viewport.0;
+    let vh = viewport.1;
+    if sx_max < 0.0 || sx_min > vw || sy_max < 0.0 || sy_min > vh {
+        emit_quad(indices, idx00, idx10, idx01, idx11);
+        return;
+    }
 
     let edge_len = |x1: f32, y1: f32, x2: f32, y2: f32| -> f32 {
         if x1.is_infinite() || x2.is_infinite() { return f32::MAX; }

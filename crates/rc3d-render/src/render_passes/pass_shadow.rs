@@ -16,7 +16,7 @@ pub(super) fn pass_shadow_depth(
     // Build per-cascade frustums once for CPU-side pre-culling.
     // Each cascade only submits draws whose AABB intersects its frustum.
     let cascade_frustums: Vec<Frustum> = (0..cascade_count)
-        .map(|c| Frustum::from_view_projection(ctx.csm_view_proj[c as usize]))
+        .map(|c| Frustum::from_view_projection(ctx.csm_view_proj[c as usize], ctx.depth_reversed_z))
         .collect();
 
     let dummy = ShadowDrawUniforms {

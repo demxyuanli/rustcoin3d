@@ -7,7 +7,11 @@ pub struct Frustum {
 }
 
 impl Frustum {
-    pub fn from_view_projection(vp: Mat4) -> Self {
+    /// Build frustum from a world→clip view-projection matrix.
+    ///
+    /// `depth_reversed_z` must match the projection matrix: `false` for standard
+    /// wgpu (ndc_z ∈ [0,1], near→0), `true` for reverse-Z (ndc_z ∈ [1,0], near→1).
+    pub fn from_view_projection(vp: Mat4, depth_reversed_z: bool) -> Self {
         let cols = vp.to_cols_array();
         // rows of the VP matrix
         let r0 = Vec4::new(cols[0], cols[4], cols[8], cols[12]);
@@ -23,14 +27,21 @@ impl Frustum {
                 (n, p.w)
             }
         };
+        let (near_plane, far_plane) = if depth_reversed_z {
+            // Reverse-Z: near at z_clip=w (r2 - r3), far at z_clip=0 (r2)
+            (make_plane(r2 - r3), make_plane(r2))
+        } else {
+            // Forward-Z: near at z_clip=0 (r2), far at z_clip=w (r3 - r2)
+            (make_plane(r2), make_plane(r3 - r2))
+        };
         Self {
             planes: [
                 make_plane(r3 + r0), // left
                 make_plane(r3 - r0), // right
                 make_plane(r3 + r1), // bottom
                 make_plane(r3 - r1), // top
-                make_plane(r2),       // near (wgpu: z_clip ∈ [0, w], near at z_clip=0)
-                make_plane(r3 - r2), // far
+                near_plane,
+                far_plane,
             ],
         }
     }
@@ -56,5 +67,46 @@ impl Frustum {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Mat4;
+
+    fn aabb_at(min: [f32; 3], max: [f32; 3]) -> Aabb {
+        let min = Vec3::from_array(min);
+        let max = Vec3::from_array(max);
+        Aabb::from_point(min).union(&Aabb::from_point(max))
+    }
+
+    /// Forward-Z perspective: near=1, far=100, fov=90°, aspect=1.
+    fn forward_z_vp() -> Mat4 {
+        let proj = Mat4::perspective_rh(90.0f32.to_radians(), 1.0, 1.0, 100.0);
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        proj * view
+    }
+
+    #[test]
+    fn forward_z_aabb_in_front_passes() {
+        let f = Frustum::from_view_projection(forward_z_vp(), false);
+        // Camera at z=5 looking at z=0, near=1. AABB at z=2 (3 units in front of camera).
+        assert!(f.intersects_aabb(&aabb_at([-1.0, -1.0, 2.0], [1.0, 1.0, 3.0])));
+    }
+
+    #[test]
+    fn forward_z_aabb_behind_near_rejected() {
+        let f = Frustum::from_view_projection(forward_z_vp(), false);
+        // Camera at z=5, near=1 → near plane at world z=4. AABB at z=4.6 discarded.
+        assert!(!f.intersects_aabb(&aabb_at([-0.1, -0.1, 4.6], [0.1, 0.1, 4.7])));
+    }
+
+    #[test]
+    fn forward_and_reverse_use_different_near() {
+        let vp = forward_z_vp();
+        let fwd = Frustum::from_view_projection(vp, false);
+        let rev = Frustum::from_view_projection(vp, true);
+        assert_ne!(fwd.planes[4], rev.planes[4]);
     }
 }
