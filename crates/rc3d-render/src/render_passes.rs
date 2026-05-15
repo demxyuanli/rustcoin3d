@@ -307,7 +307,8 @@ pub(super) fn execute_passes(
         && renderer.gpu.cluster_renderer.is_some()
         && renderer.gpu.hzb.is_some()
         && renderer.gpu.hzb_baker.is_some()
-        && renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled;
+        && renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled
+        && !(renderer.interaction_active && renderer.skip_prepass_interaction);
     let run_meshlet_hzb_prepass = if requested_meshlet_hzb_prepass {
         true
     } else {
@@ -577,6 +578,66 @@ pub(super) fn execute_passes(
             &view,
             ctx.bg_color,
         );
+    }
+
+    // Screen-space edge detection: replaces geometry edges during interaction
+    let ss_edge_active = renderer.screen_space_edges
+        && renderer.interaction_active
+        && renderer.gpu.ss_edge_pipeline.is_some();
+    if ss_edge_active {
+        if let (Some(ref pl), Some(ref bgl), Some(ref uniform)) = (
+            renderer.gpu.ss_edge_pipeline.as_ref(),
+            renderer.gpu.ss_edge_bgl.as_ref(),
+            renderer.gpu.ss_edge_uniform.as_ref(),
+        ) {
+            let ec = renderer.feature_edge_color;
+            let tw = ew.max(1) as f32;
+            let th = eh.max(1) as f32;
+            let locals: [f32; 8] = [
+                renderer.ss_edge_threshold, ec[0], ec[1], ec[2],
+                1.0 / tw, 1.0 / th, 0.0, 0.0,
+            ];
+            renderer.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&locals));
+            let bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("SS Edge BG"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&depth_read_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            renderer.gpu.ss_edge_sampler.as_ref().unwrap(),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut edge_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("SS Edge Detection"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                edge_pass.set_pipeline(pl);
+                edge_pass.set_bind_group(0, &bg, &[]);
+                edge_pass.draw(0..3, 0..1);
+            }
+        }
     }
 
     if defer_line_overlays {

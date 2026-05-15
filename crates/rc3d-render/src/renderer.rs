@@ -119,6 +119,14 @@ pub struct Renderer {
     pub wireframe_edge_color: [f32; 4],
     /// Face fill color for flat-shading mode. When `Some`, overrides material color.
     pub flat_face_color: Option<[f32; 4]>,
+    /// Resolution scale factor during interaction (0.25..1.0). Default 0.5 = 50% per axis.
+    pub interaction_render_scale: f32,
+    /// When true, use screen-space edge detection instead of geometry edges during interaction.
+    pub screen_space_edges: bool,
+    /// When true, skip depth prepass during interaction.
+    pub skip_prepass_interaction: bool,
+    /// Sobel gradient threshold for screen-space edge detection (depth units). Default 0.015.
+    pub ss_edge_threshold: f32,
     pub xray_mode: bool,
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
@@ -594,6 +602,161 @@ impl Renderer {
             1,
         ));
         let post_fx_pipelines = post_processor::create_post_fx_pipelines(&device, config.format);
+
+        // Upscale pipeline for dynamic resolution interaction blit
+        let upscale_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Upscale Shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shaders/upscale.wgsl"))),
+        });
+        let upscale_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Upscale BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let upscale_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Upscale Pipeline Layout"),
+            bind_group_layouts: &[&upscale_bgl],
+            push_constant_ranges: &[],
+        });
+        let upscale_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Upscale Pipeline"),
+            layout: Some(&upscale_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &upscale_shader,
+                entry_point: Some("vs_upscale"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &upscale_shader,
+                entry_point: Some("fs_upscale"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            depth_stencil: None,
+            cache: None,
+        });
+        let upscale_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Upscale Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // Screen-space edge detection pipeline
+        let ss_edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SS Edge Shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shaders/edge_detect.wgsl"))),
+        });
+        let ss_edge_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("SS Edge Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let ss_edge_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("SS Edge BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let ss_edge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("SS Edge Pipeline Layout"),
+            bind_group_layouts: &[&ss_edge_bgl],
+            push_constant_ranges: &[],
+        });
+        let ss_edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("SS Edge Pipeline"),
+            layout: Some(&ss_edge_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ss_edge_shader,
+                entry_point: Some("vs_edge"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &ss_edge_shader,
+                entry_point: Some("fs_edge"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            depth_stencil: None,
+            cache: None,
+        });
+        let ss_edge_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SS Edge Uniform"),
+            size: 32, // 8 floats (threshold + edge_rgb + texel_x/y + padding)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let (ssao_noise_tex, ssao_noise_view) = post_processor::create_ssao_noise(&device, &queue);
         let instance_stride = std::mem::size_of::<InstanceData>() as u64;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -693,6 +856,10 @@ impl Renderer {
             feature_edge_color: [0.9, 0.15, 0.1, 1.0], // red
             wireframe_edge_color: [0.15, 0.25, 0.7, 1.0], // dark blue
             flat_face_color: Some([0.68, 0.72, 0.78, 1.0]), // light blue-gray, CAD default
+            interaction_render_scale: 1.0, // default off — explicit opt-in via set_interaction_render_scale
+            screen_space_edges: true,
+            skip_prepass_interaction: true,
+            ss_edge_threshold: 0.015,
             xray_mode: false,
             screen_space_selection_outline: true,
             ibl_preset,
@@ -804,6 +971,17 @@ impl Renderer {
                 selection_outline_targets: None,
                 ldr_shade_tex: None,
                 ldr_shade_view: None,
+                interaction_downscale_tex: None,
+                interaction_downscale_view: None,
+                interaction_downscale_depth: None,
+                interaction_downscale_depth_view: None,
+                upscale_pipeline: Some(upscale_pipeline),
+                upscale_bgl: Some(upscale_bgl),
+                upscale_sampler: Some(upscale_sampler),
+                ss_edge_pipeline: Some(ss_edge_pipeline),
+                ss_edge_bgl: Some(ss_edge_bgl),
+                ss_edge_uniform: Some(ss_edge_uniform),
+                ss_edge_sampler: Some(ss_edge_sampler),
                 transform_buffer: None,
                 indirect_args_buffer: None,
                 instance_indices_buffer: None,
@@ -913,6 +1091,57 @@ impl Renderer {
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
         });
         self.gpu.depth_texture = Some((texture, view, depth_only));
+    }
+
+    /// Create or resize intermediate HDR+Depth textures for dynamic resolution scaling.
+    pub(super) fn ensure_interaction_downscale_targets(&mut self, full_w: u32, full_h: u32) {
+        let scale = self.interaction_render_scale;
+        let w = ((full_w as f32) * scale).max(64.0) as u32;
+        let h = ((full_h as f32) * scale).max(64.0) as u32;
+        let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+
+        // Check if resize needed
+        let need_resize = self.gpu.interaction_downscale_tex.as_ref().map_or(true, |t| {
+            t.width() != w || t.height() != h
+        });
+
+        if need_resize {
+            // Color texture (HDR-compatible when hdr_post_processing is on)
+            let color_fmt = if self.hdr_post_processing {
+                wgpu::TextureFormat::Rgba16Float
+            } else {
+                self.config.format
+            };
+            let color_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Interaction Downscale Color"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_fmt,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Depth texture
+            let depth_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Interaction Downscale Depth"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32FloatStencil8,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            self.gpu.interaction_downscale_tex = Some(color_tex);
+            self.gpu.interaction_downscale_view = Some(color_view);
+            self.gpu.interaction_downscale_depth = Some(depth_tex);
+            self.gpu.interaction_downscale_depth_view = Some(depth_view);
+        }
     }
 
     pub(super) fn create_depth_texture(&mut self) {
@@ -1122,6 +1351,23 @@ impl Renderer {
     /// Takes effect on next scene traversal (mesh cache rebuild).
     pub fn set_feature_edge_crease_angle(&mut self, deg: f32) {
         crate::render_action::set_feature_crease_angle(deg);
+    }
+
+    /// Set interaction render scale (0.25..1.0). Default: 0.5.
+    /// Lower = faster interaction but softer image. 1.0 = no scaling.
+    pub fn set_interaction_render_scale(&mut self, scale: f32) {
+        self.interaction_render_scale = scale.clamp(0.25, 1.0);
+    }
+
+    /// Enable screen-space edge detection during interaction (replaces geometry edges).
+    pub fn set_screen_space_edges(&mut self, enabled: bool) {
+        self.screen_space_edges = enabled;
+    }
+
+    /// Set Sobel gradient threshold for screen-space edge detection. Default: 0.015.
+    /// Higher = fewer detected edges.
+    pub fn set_ss_edge_threshold(&mut self, threshold: f32) {
+        self.ss_edge_threshold = threshold;
     }
 
     pub fn set_taa(&mut self, enabled: bool) {

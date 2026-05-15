@@ -791,15 +791,137 @@ impl super::Renderer {
         &mut self,
         draw_calls: &[DrawCall],
         scene: &SceneGraph,
-        post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+        mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
     ) -> FrameStats {
-        self.render_draw_calls_core(
-            draw_calls,
-            scene,
-            post_swapchain_overlay,
-            render_passes::FramePresentation::Swapchain,
+        let scale_active = self.interaction_active
+            && self.interaction_render_scale < 0.999
+            && self.gpu.upscale_pipeline.is_some();
+        if !scale_active {
+            return self.render_draw_calls_core(
+                draw_calls, scene, post_swapchain_overlay,
+                render_passes::FramePresentation::Swapchain, None,
+            );
+        }
+
+        // Dynamic resolution: render to downscaled intermediate, then upscale to swapchain.
+        let (ew, eh) = (self.config.width, self.config.height);
+        self.ensure_interaction_downscale_targets(ew, eh);
+
+        // Take intermediate textures out to avoid borrow conflicts with render_draw_calls_core
+        let down_tex = self.gpu.interaction_downscale_tex.take();
+        let down_view = self.gpu.interaction_downscale_view.take();
+        let down_depth = self.gpu.interaction_downscale_depth.take();
+        let _down_depth_view = self.gpu.interaction_downscale_depth_view.take();
+
+        let (down_tex, down_view, down_depth) = match (down_tex, down_view, down_depth) {
+            (Some(t), Some(v), Some(d)) => (t, v, d),
+            _ => return self.render_draw_calls_core(
+                draw_calls, scene, post_swapchain_overlay,
+                render_passes::FramePresentation::Swapchain, None,
+            ),
+        };
+        let down_w = down_tex.width();
+        let down_h = down_tex.height();
+
+        // Replace depth texture with downscaled version for the offscreen render
+        let saved_depth = self.gpu.depth_texture.take();
+        let depth_tex2 = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Interaction depth"),
+            size: wgpu::Extent3d { width: down_w, height: down_h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32FloatStencil8,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dv = depth_tex2.create_view(&wgpu::TextureViewDescriptor::default());
+        let drv = depth_tex2.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Interaction depth readonly"),
+            format: Some(wgpu::TextureFormat::Depth32Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            base_mip_level: 0, mip_level_count: Some(1),
+            base_array_layer: 0, array_layer_count: Some(1),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        });
+        self.gpu.depth_texture = Some((depth_tex2, dv, drv));
+
+        let stats = self.render_draw_calls_core(
+            draw_calls, scene, None,
+            render_passes::FramePresentation::OffscreenSurface {
+                output_texture: &down_tex,
+                output_view: &down_view,
+                width_px: down_w,
+                height_px: down_h,
+            },
             None,
-        )
+        );
+
+        // Restore original depth + intermediate textures
+        self.gpu.depth_texture = saved_depth;
+        self.gpu.interaction_downscale_tex = Some(down_tex);
+        self.gpu.interaction_downscale_view = Some(down_view);
+        self.gpu.interaction_downscale_depth = Some(down_depth);
+        self.gpu.interaction_downscale_depth_view = _down_depth_view;
+
+        // Upscale from intermediate to swapchain
+        let swapchain_frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(_) => return stats,
+        };
+        let swapchain_view = swapchain_frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let upscale_bgl = self.gpu.upscale_bgl.as_ref().unwrap();
+        let upscale_sampler = self.gpu.upscale_sampler.as_ref().unwrap();
+        let intermediate_view = self
+            .gpu
+            .interaction_downscale_view
+            .as_ref()
+            .expect("Intermediate view must exist");
+        let upscale_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Upscale BindGroup"),
+            layout: upscale_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(intermediate_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(upscale_sampler),
+                },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Upscale Encoder"),
+        });
+        {
+            let mut upscale_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Upscale to Swapchain"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &swapchain_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            upscale_pass.set_pipeline(self.gpu.upscale_pipeline.as_ref().unwrap());
+            upscale_pass.set_bind_group(0, &upscale_bg, &[]);
+            upscale_pass.draw(0..3, 0..1);
+        }
+        // Post-swapchain overlay (e.g. egui) runs on the upscaled swapchain view
+        if let Some(ref mut hook) = post_swapchain_overlay {
+            hook(&mut encoder, &swapchain_view);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        swapchain_frame.present();
+
+        stats
     }
 
     pub fn render_draw_calls_to_viewport_texture<'t>(

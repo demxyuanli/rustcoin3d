@@ -234,6 +234,20 @@ pub(crate) struct GpuInternals {
     pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
     pub ldr_shade_tex: Option<wgpu::Texture>,
     pub ldr_shade_view: Option<wgpu::TextureView>,
+    /// Intermediate HDR texture for dynamic resolution scaling during interaction.
+    pub interaction_downscale_tex: Option<wgpu::Texture>,
+    pub interaction_downscale_view: Option<wgpu::TextureView>,
+    pub interaction_downscale_depth: Option<wgpu::Texture>,
+    pub interaction_downscale_depth_view: Option<wgpu::TextureView>,
+    /// Upscale pipeline + BGL + sampler for dynamic resolution interaction blit.
+    pub upscale_pipeline: Option<wgpu::RenderPipeline>,
+    pub upscale_bgl: Option<wgpu::BindGroupLayout>,
+    pub upscale_sampler: Option<wgpu::Sampler>,
+    /// Screen-space edge detection pipeline + BGL + uniform buffer.
+    pub ss_edge_pipeline: Option<wgpu::RenderPipeline>,
+    pub ss_edge_bgl: Option<wgpu::BindGroupLayout>,
+    pub ss_edge_uniform: Option<wgpu::Buffer>,
+    pub ss_edge_sampler: Option<wgpu::Sampler>,
     /// GPU compute culling: per-object transforms (STORAGE, updated each frame).
     pub transform_buffer: Option<wgpu::Buffer>,
     /// GPU compute culling: indirect draw args (STORAGE | INDIRECT).
