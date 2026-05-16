@@ -21,6 +21,8 @@ pub mod offscreen;
 pub mod parallel_traversal;
 pub mod ibl;
 pub mod light_set;
+pub mod lod_state;
+pub mod streaming_lod;
 pub mod material_library;
 pub mod mesh_pool;
 pub mod motion_blur;

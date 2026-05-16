@@ -1,7 +1,8 @@
 use rc3d_core::math::Vec3;
-use rc3d_render::dirty_flags::mark_node_dirty;
 use rc3d_scene::node_entry::dirty_flags::GEOMETRY;
 use rc3d_scene::{NodeData, SceneGraph};
+
+use crate::dirty_flags::mark_node_dirty;
 
 type MeshLodStage = (Vec<Vec3>, Option<Vec<[f32; 2]>>, Vec<i32>);
 
@@ -33,7 +34,7 @@ const STREAM_LOD_TARGETS: &[usize] = &[
 ];
 const STREAM_STEP_MS: u64 = 180;
 
-pub(crate) struct FullResPatch {
+pub struct FullResPatch {
     pub coord_node: rc3d_core::NodeId,
     pub ifs_node: rc3d_core::NodeId,
     pub tex_node: Option<rc3d_core::NodeId>,
@@ -47,7 +48,7 @@ pub(crate) struct FullResPatch {
     pub stream_start: Option<std::time::Instant>,
 }
 
-pub(super) fn apply_lod_stage_to_graph(
+pub fn apply_lod_stage_to_graph(
     graph: &mut SceneGraph,
     coord_id: rc3d_core::NodeId,
     ifs_id: rc3d_core::NodeId,
@@ -146,7 +147,7 @@ impl FullResPatch {
     }
 }
 
-pub(super) fn gaussian_triangle_budget(t_s: f64, total_tris: usize) -> usize {
+pub fn gaussian_triangle_budget(t_s: f64, total_tris: usize) -> usize {
     if t_s <= 0.0 {
         return 0;
     }
@@ -158,7 +159,7 @@ pub(super) fn gaussian_triangle_budget(t_s: f64, total_tris: usize) -> usize {
     ((total_tris as f64) * fraction) as usize
 }
 
-pub(super) fn apply_decimated_preview(graph: &mut SceneGraph) -> Vec<FullResPatch> {
+pub fn apply_decimated_preview(graph: &mut SceneGraph) -> Vec<FullResPatch> {
     let mut patches = Vec::new();
     for &root in graph.roots().to_vec().iter() {
         collect_preview_patches(graph, root, &mut patches);
@@ -365,6 +366,6 @@ fn decimate_indexed_face_set(
     (new_points, new_tex, new_index)
 }
 
-pub(super) const fn stream_step_ms() -> u64 {
+pub const fn stream_step_ms() -> u64 {
     STREAM_STEP_MS
 }
