@@ -11,6 +11,9 @@ mod lod_state;
 mod measurement;
 mod streaming_lod;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use app_state::AppState;
 pub(crate) use editor_session::EditorSession;
 pub(crate) use input_state::InputState;
