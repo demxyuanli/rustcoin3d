@@ -19,3 +19,6 @@ egui-winit = "0.31"
 eframe = { version = "0.31", default-features = false, features = ["wgpu"] }
 rfd = "0.15"
 log = { workspace = true }
+
+[dev-dependencies]
+slotmap = { workspace = true }

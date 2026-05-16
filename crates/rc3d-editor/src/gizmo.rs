@@ -2,7 +2,7 @@
 
 use rc3d_core::math::Mat4;
 use rc3d_core::NodeId;
-use rc3d_gizmo::Gizmo;
+use rc3d_gizmo::{Gizmo, GizmoMode};
 use rc3d_render::viewport::{ProjectionType, Viewport};
 use rc3d_scene::node_data::NodeData;
 use rc3d_scene::SceneGraph;
@@ -67,4 +67,25 @@ pub fn pick_view_proj(graph: &SceneGraph, vc: &ViewportCamera, vport: &Viewport)
         }
     };
     (v, p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gizmo_mode_variants_are_distinct() {
+        let t = GizmoMode::Translate;
+        let r = GizmoMode::Rotate;
+        let s = GizmoMode::Scale;
+
+        assert_ne!(t, r);
+        assert_ne!(t, s);
+        assert_ne!(r, s);
+
+        // Verify each is equal to itself
+        assert_eq!(t, GizmoMode::Translate);
+        assert_eq!(r, GizmoMode::Rotate);
+        assert_eq!(s, GizmoMode::Scale);
+    }
 }

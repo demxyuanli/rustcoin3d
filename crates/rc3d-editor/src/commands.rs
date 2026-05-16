@@ -107,3 +107,36 @@ pub enum EditorCommand {
         node: NodeId,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_command_display_mode_variant_constructs() {
+        let cmd = EditorCommand::SetDisplayMode(EditorDisplayMode::Shaded);
+        // Verify construction succeeds without panic (the primary goal).
+        // Also verify the variant matches.
+        match &cmd {
+            EditorCommand::SetDisplayMode(mode) => assert_eq!(*mode, EditorDisplayMode::Shaded),
+            _ => panic!("expected SetDisplayMode, got different variant"),
+        }
+    }
+
+    #[test]
+    fn editor_command_all_display_mode_variants() {
+        for mode in &[
+            EditorDisplayMode::Wireframe,
+            EditorDisplayMode::Shaded,
+            EditorDisplayMode::ShadedWithEdges,
+            EditorDisplayMode::HiddenLine,
+            EditorDisplayMode::FlatWithEdge,
+        ] {
+            let cmd = EditorCommand::SetDisplayMode(*mode);
+            match cmd {
+                EditorCommand::SetDisplayMode(m) => assert_eq!(m, *mode),
+                _ => panic!("unexpected variant"),
+            }
+        }
+    }
+}
