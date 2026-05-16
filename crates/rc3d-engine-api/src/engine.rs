@@ -214,3 +214,133 @@ impl Engine {
         &mut self.world
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::World;
+    use crate::camera::CameraController;
+    use crate::fps_tracker::FpsTracker;
+    use crate::import;
+    use rc3d_core::math::Vec3;
+    use rc3d_core::EngineError;
+    use rc3d_scene::node_data::{NodeData, SeparatorNode};
+    use rc3d_scene::SceneGraph;
+    use std::path::Path;
+
+    // ----------------------------------------------------------------
+    // World tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn world_construction_empty_graph() {
+        let graph = SceneGraph::new();
+        let world = World::new(graph);
+        assert!(world.graph.roots().is_empty());
+        assert!(world.engines.is_none());
+    }
+
+    #[test]
+    fn world_load_scene_replaces_graph() {
+        let graph1 = SceneGraph::new();
+        let mut world = World::new(graph1);
+
+        let mut graph2 = SceneGraph::new();
+        graph2.add_root(NodeData::Separator(SeparatorNode));
+
+        // Simulates the effect of Engine::load_scene
+        world.graph = graph2;
+        assert_eq!(world.graph.roots().len(), 1);
+    }
+
+    #[test]
+    fn world_scene_mut_returns_mutable_graph() {
+        let graph = SceneGraph::new();
+        let mut world = World::new(graph);
+        let g: &mut SceneGraph = &mut world.graph;
+
+        let root = g.add_root(NodeData::Separator(SeparatorNode));
+        assert_eq!(g.roots().len(), 1);
+        assert!(g.get(root).is_some());
+    }
+
+    #[test]
+    fn world_scene_returns_immutable_graph() {
+        let graph = SceneGraph::new();
+        let world = World::new(graph);
+        let g: &SceneGraph = &world.graph;
+        assert!(g.roots().is_empty());
+    }
+
+    // ----------------------------------------------------------------
+    // Import error-path tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn import_unknown_extension_returns_error() {
+        let mut graph = SceneGraph::new();
+        let result = import::import_file(&mut graph, Path::new("model.xyz"));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            EngineError::Parse(msg) => {
+                assert!(
+                    msg.contains("Unknown format") || msg.contains("xyz"),
+                    "expected unknown-format error, got: {msg}"
+                );
+            }
+            other => panic!("expected EngineError::Parse, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn import_empty_path_returns_error() {
+        let mut graph = SceneGraph::new();
+        let result = import::import_file(&mut graph, Path::new(""));
+        assert!(result.is_err());
+    }
+
+    // ----------------------------------------------------------------
+    // CameraController defaults
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn camera_controller_defaults() {
+        let target = Vec3::new(1.0, 2.0, 3.0);
+        let distance = 10.0;
+        let cam = CameraController::new(target, distance);
+
+        assert_eq!(cam.target, target);
+        assert_eq!(cam.distance, distance);
+        assert_eq!(cam.yaw, 0.0);
+        assert_eq!(cam.pitch, 0.4);
+        assert_eq!(cam.up, Vec3::Y);
+        assert!(!cam.middle_orbit_held);
+        assert!(!cam.left_orbit_held);
+        assert!(!cam.panning);
+        assert!(!cam.walk_mode);
+        assert!(cam.bookmarks.iter().all(|b| b.is_none()));
+        // position_changed starts true so the first frame always traverses
+        assert!(cam.position_changed.get());
+    }
+
+    // ----------------------------------------------------------------
+    // FpsTracker tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn fps_tracker_initial_state() {
+        let tracker = FpsTracker::new(120);
+        assert_eq!(tracker.average_frame_ms(), 0.0);
+        assert_eq!(tracker.fps(), 0.0);
+        assert_eq!(tracker.smoothed_fps(), 0.0);
+    }
+
+    #[test]
+    fn fps_tracker_push_updates_metrics() {
+        let mut tracker = FpsTracker::new(120);
+        let frame_ms: f32 = 16.67; // ~60 FPS
+        tracker.push(frame_ms);
+        assert!(tracker.average_frame_ms() > 0.0);
+        assert!(tracker.fps() > 0.0);
+        assert!(tracker.smoothed_fps() > 0.0);
+    }
+}
