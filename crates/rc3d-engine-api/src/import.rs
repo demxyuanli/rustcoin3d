@@ -1,1 +1,52 @@
-// Placeholder — implemented in Phase 1.7
+//! File import with auto-format detection.
+//!
+//! Delegates to the low-level `rc3d_io` parsers and wraps imported geometry
+//! in a `Separator` node before adding it to the scene graph.
+
+use std::path::Path;
+
+use rc3d_core::{EngineError, EngineResult, NodeId};
+use rc3d_scene::node_data::{NodeData, SeparatorNode};
+use rc3d_scene::SceneGraph;
+
+/// Import a 3D file into the scene graph.
+///
+/// The file format is auto-detected from the extension (stl, obj, gltf, glb,
+/// fbx, iv). All imported geometry is wrapped in a root-level `Separator`
+/// node whose [`NodeId`] is returned.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Parse`] if the file format is not recognized or
+/// parsing fails. Returns [`EngineError::Io`] if the file cannot be read.
+pub fn import_file(graph: &mut SceneGraph, path: impl AsRef<Path>) -> EngineResult<NodeId> {
+    let path = path.as_ref();
+    let imported = rc3d_io::import_file(path).map_err(|e| EngineError::Parse(e.to_string()))?;
+
+    // Wrap all imported roots under a new Separator
+    let sep = graph.add_root(NodeData::Separator(SeparatorNode));
+    for &root in imported.roots() {
+        copy_subtree(&imported, graph, root, sep);
+    }
+    Ok(sep)
+}
+
+/// Deep-copy a node and all its descendants from `src` to `dst` under `dst_parent`.
+///
+/// The two graphs must be independent (different `SlotMap` allocations).
+/// Node data is cloned, so the original graph is unchanged.
+pub(crate) fn copy_subtree(
+    src: &SceneGraph,
+    dst: &mut SceneGraph,
+    src_id: NodeId,
+    dst_parent: NodeId,
+) -> NodeId {
+    let entry = src.get(src_id).expect("copy_subtree: source node exists");
+    let new_id = dst.add_child(dst_parent, entry.data.clone());
+    if let Some(children) = src.children(src_id) {
+        for &child in children {
+            copy_subtree(src, dst, child, new_id);
+        }
+    }
+    new_id
+}
