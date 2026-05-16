@@ -40,4 +40,12 @@ pub struct AppState {
     pub pending_effect_graph: Option<EffectGraph>,
     /// Dynamic NURBS surfaces that re-tessellate on camera movement.
     pub dynamic_surfaces: Vec<DynamicSurface>,
+    /// Set by `render_interaction_frame` after inline render; cleared by `RedrawRequested`
+    /// to skip the next full-quality frame (avoids double-rendering when both paths fire).
+    pub interaction_frame_rendered: bool,
+    /// Time of last inline render — used to rate-limit `render_interaction_frame`
+    /// so CursorMoved floods (100s/sec on Windows) don't stall the event loop.
+    pub last_inline_render_time: std::time::Instant,
+    /// Counts completed inline renders for periodic diagnostic logging.
+    pub interaction_render_count: u64,
 }

@@ -12,7 +12,7 @@ use rc3d_gizmo::GizmoMode;
 use rc3d_render::background::{BgMode, ImageFit};
 use rc3d_render::{AdaptiveControl, DrawCall, Renderer};
 
-use crate::editor_ui::{EditorCommand, EditorUi, EditorUiContext, RenderFeatureFlags};
+use crate::editor_ui::{EditorCommand, EditorUi};
 
 use super::streaming_lod::stream_step_ms;
 
@@ -59,6 +59,9 @@ pub(crate) fn resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         app.apply_effect_graph();
         if let Some(window) = &app.state.window {
             window.set_visible(true);
+            // Initial paint when not using continuous_redraw (otherwise the first frame may
+            // never schedule without user input).
+            window.request_redraw();
         }
     }
 }
@@ -104,9 +107,6 @@ pub(crate) fn window_event(
             app.state.adaptive_last_interaction = Instant::now();
             let prev = app.input.cursor_pos;
             app.input.cursor_pos = (position.x, position.y);
-            let cam_orbiting = app.state.camera_controller.as_ref().map_or(false, |c| {
-                c.middle_orbit_held || c.left_orbit_held || c.panning
-            });
             if app.camera_left_orbit_enabled() {
                 if let Some((ax, ay)) = app.editor.left_pick_arm_pos {
                     let dx = app.input.cursor_pos.0 - ax;
@@ -119,28 +119,25 @@ pub(crate) fn window_event(
             if !app.editor.measurement_mode {
                 app.editor_on_cursor_moved();
             }
+            let tris_hint = app.state.last_render_stats.visible_triangles;
+            // Only skip pointer dispatch when we know the scene is large (>100k visible tris).
+            // tris_hint == 0 means stats not ready yet (first frames) — do not treat as large.
+            let large_scene = tris_hint > 100_000;
             if !ui_consumed
                 && !app.editor.measurement_mode
                 && !app.should_block_handle_event_pointer_dispatch(true)
+                && !large_scene
             {
-                let large_scene = app.state.last_render_stats.visible_triangles > 100_000;
-                if !large_scene {
-                    let dx = (app.input.cursor_pos.0 - prev.0) as f32;
-                    let dy = (app.input.cursor_pos.1 - prev.1) as f32;
-                    app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
-                        x: 0.0,
-                        y: 0.0,
-                        dx,
-                        dy,
-                    });
-                }
+                let dx = (app.input.cursor_pos.0 - prev.0) as f32;
+                let dy = (app.input.cursor_pos.1 - prev.1) as f32;
+                app.dispatch_handle_event_for_pointer(rc3d_actions::Event::MouseMove {
+                    x: 0.0,
+                    y: 0.0,
+                    dx,
+                    dy,
+                });
             }
-            // Request redraw during camera interaction so frames stay in sync with input
-            if cam_orbiting {
-                if let Some(window) = &app.state.window {
-                    window.request_redraw();
-                }
-            }
+            // Redraw handled by legacy camera handler (after camera update).
         }
         WindowEvent::KeyboardInput {
             event: key_event, ..
@@ -587,76 +584,7 @@ pub(crate) fn window_event(
                 }
             }
 
-            let selected_set = app.state.world.graph.selected_nodes().clone();
-            let selected_count = selected_set.len();
-            // Snapshot bookmarks outside of renderer/editor borrow scope
-            let bookmarks: [(bool, &'static str); 9] = {
-                let mut bm = [(false, ""); 9];
-                if let Some(ctrl) = app.active_camera_controller_mut() {
-                    for (i, slot) in ctrl.bookmarks.iter().enumerate() {
-                        if slot.is_some() {
-                            bm[i] = (true, "saved");
-                        }
-                    }
-                }
-                bm
-            };
-            if app.state.editor_ui_enabled {
-                if let (Some(ui), Some(window), Some(renderer)) = (
-                    &mut app.state.editor_ui,
-                    &app.state.window,
-                    &app.state.renderer,
-                ) {
-                    let ui_ctx = EditorUiContext {
-                        selected: selected_set,
-                        display_mode_label: format!("{:?}", renderer.display_mode()),
-                        ibl_label: renderer.ibl_preset_name().to_string(),
-                        ibl_preset: renderer.ibl_preset,
-                        gizmo_mode: app.editor.gizmo.mode,
-                        layout_mode: renderer.viewport_layout().layout_mode,
-                        layout_mode_label: format!("{:?}", renderer.viewport_layout().layout_mode),
-                        active_viewport_label: format!(
-                            "{:?}",
-                            renderer.viewport_layout().active_id
-                        ),
-                        smoothed_fps: app.state.fps_tracker.smoothed_fps(),
-                        frame_time_ms: app.state.last_frame_time_ms,
-                        diagnostics: app.state.last_render_stats.diagnostics.clone(),
-                        hidden_nodes: app.state.hidden_nodes.clone(),
-                        render_features: RenderFeatureFlags {
-                            taa: renderer.enable_taa,
-                            motion_blur: renderer.enable_motion_blur,
-                            ssr: renderer.enable_ssr,
-                            color_grading: renderer.enable_color_grading,
-                            dof: renderer.enable_dof,
-                            volumetric_fog: renderer.enable_volumetric_fog,
-                            cluster_lights: renderer.enable_cluster_lights,
-                            omni_shadows: renderer.enable_omni_shadows,
-                            xray: renderer.xray_mode,
-                        },
-                        hdr_enabled: renderer.hdr_post_processing,
-                        vsync_enabled: matches!(
-                            renderer.config.present_mode,
-                            wgpu::PresentMode::AutoVsync
-                        ),
-                        grid_enabled: app.editor.grid_enabled,
-                        hud_enabled: renderer.hud_enabled,
-                        outline_width: renderer.outline_width,
-                        outline_color: renderer.outline_color,
-                        xray_mode: renderer.xray_mode,
-                        adaptive_quality_mode: app.state.adaptive_quality_mode,
-                        adaptive_quality_name: renderer.adaptive_quality_name().to_string(),
-                        cad_display_tier: renderer.requested_display_tier(),
-                        bookmarks,
-                        selected_count,
-                    };
-                    ui.run(window, &app.state.world.graph, renderer, &ui_ctx);
-                    for cmd in ui.take_commands() {
-                        app.state.editor_commands.push_back(cmd);
-                    }
-                }
-                app.apply_editor_commands();
-            }
+            app.prepare_editor_ui_frame();
 
             // Dynamic NURBS surface re-tessellation — snapshot camera before renderer borrow
             let ds_update: Option<(Vec3, Mat4, f32, f32, bool)> = {
@@ -967,10 +895,6 @@ pub(crate) fn window_event(
                     renderer.set_light_sets(light_sets);
                 }
 
-                if let Some(hook) = &mut app.pre_render_hook {
-                    hook(renderer);
-                }
-
                 let cam_interacting =
                     app.state.camera_controller.as_ref().map_or(false, |c| {
                         c.middle_orbit_held || c.left_orbit_held || c.panning
@@ -980,6 +904,10 @@ pub(crate) fn window_event(
                             || vc.controller.panning
                     });
                 renderer.interaction_active = cam_interacting;
+
+                if let Some(hook) = &mut app.pre_render_hook {
+                    hook(renderer);
+                }
 
                 let interaction_tris: u64 = if cam_interacting {
                     app.state
@@ -996,6 +924,20 @@ pub(crate) fn window_event(
                 } else {
                     0
                 };
+                // Huge meshes: render interaction frames at reduced resolution (then upscale).
+                // Full-quality shaded passes every move for 1M+ tris is the main cost, not redraw flags.
+                if cam_interacting {
+                    let scale = if interaction_tris > 1_000_000 {
+                        0.5
+                    } else if interaction_tris > 500_000 {
+                        0.67
+                    } else {
+                        1.0
+                    };
+                    renderer.set_interaction_render_scale(scale);
+                } else {
+                    renderer.set_interaction_render_scale(1.0);
+                }
                 let interaction_quality_override = cam_interacting && interaction_tris > 200_000;
                 let saved_hdr = renderer.hdr_post_processing;
                 let saved_display = renderer.display_mode();
@@ -1010,7 +952,9 @@ pub(crate) fn window_event(
                     }
                 }
 
-                if !app.state.world.collector.draw_calls.is_empty() || renderer.has_overlay_elements() {
+                let inline_skip = app.state.interaction_frame_rendered;
+                app.state.interaction_frame_rendered = false;
+                if !inline_skip && (!app.state.world.collector.draw_calls.is_empty() || renderer.has_overlay_elements()) {
                     let mut overlay = None;
                     if let Some(ui) = &mut app.state.editor_ui {
                         overlay = Some(ui as *mut EditorUi);
@@ -1123,7 +1067,10 @@ pub(crate) fn window_event(
                 if renderer.cad_tier_authoritative() {
                     renderer.reapply_cad_tier_constraints();
                 }
-                if app.state.continuous_redraw {
+                // During interaction, inline render handles frames — skip the
+                // continuous_redraw loop so RedrawRequested doesn't flood the event
+                // queue and starve CursorMoved events (which drive camera updates).
+                if app.state.continuous_redraw && !cam_interacting {
                     window.request_redraw();
                 }
             }
@@ -1139,14 +1086,31 @@ pub(crate) fn window_event(
     // Tick fly-to camera animation (outside renderer borrow scope)
     {
         let dt_s = app.state.last_frame_time_ms / 1000.0;
-        let mut flying = false;
+        let mut flying_legacy = false;
         if let Some(ref mut ctrl) = app.state.camera_controller {
-            flying = ctrl.tick_fly(dt_s);
+            flying_legacy = ctrl.tick_fly(dt_s);
         }
-        if !flying {
+        if !flying_legacy {
             if let Some(vc) = app.state.viewport_cameras.active_mut() {
                 vc.controller.tick_fly(dt_s);
             }
+        }
+    }
+
+    // Event-driven apps do not pump redraw by default; fly-to needs a redraw each frame until done.
+    let camera_fly_active = app
+        .state
+        .camera_controller
+        .as_ref()
+        .is_some_and(|c| c.is_flying())
+        || app
+            .state
+            .viewport_cameras
+            .active()
+            .is_some_and(|vc| vc.controller.is_flying());
+    if camera_fly_active {
+        if let Some(w) = &app.state.window {
+            w.request_redraw();
         }
     }
 
@@ -1163,14 +1127,11 @@ pub(crate) fn window_event(
         if let Some(ref mut ctrl) = app.state.camera_controller {
             if !app.editor.measurement_mode && !block_orbit {
                 App::dispatch_camera_event(ctrl, &event, &cursor_for_camera_delta, left_orbit);
-                if let Some(window) = &app.state.window {
-                    match event {
-                        WindowEvent::CursorMoved { .. }
-                        | WindowEvent::MouseInput { .. }
-                        | WindowEvent::MouseWheel { .. }
-                        | WindowEvent::KeyboardInput { .. } => window.request_redraw(),
-                        _ => {}
-                    }
+                match &event {
+                    WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::KeyboardInput { .. } => app.request_redraw_from_camera(),
+                    _ => {}
                 }
             }
         }
@@ -1182,6 +1143,29 @@ pub(crate) fn window_event(
             && !block_orbit
         {
             app.dispatch_multi_viewport_camera(&event, &cursor_for_camera_delta, left_orbit);
+            match &event {
+                WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. } => app.request_redraw_from_camera(),
+                _ => {}
+            }
+        }
+
+        // Orbit/pan button release: queue a full redraw after every camera controller has been
+        // updated. Calling request_redraw_from_camera only inside the legacy block runs before
+        // viewport dispatch; is_camera_interacting() can stay true, so with continuous_redraw
+        // that helper returns without scheduling — missing the recovery-quality frame.
+        if !app.editor.measurement_mode && !block_orbit {
+            if let WindowEvent::MouseInput { state, button, .. } = &event {
+                if *state == winit::event::ElementState::Released
+                    && (matches!(button, MouseButton::Middle | MouseButton::Right)
+                        || (left_orbit && matches!(button, MouseButton::Left)))
+                {
+                    if let Some(window) = &app.state.window {
+                        window.request_redraw();
+                    }
+                }
+            }
         }
     }
 }

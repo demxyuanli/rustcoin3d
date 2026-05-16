@@ -571,7 +571,19 @@ impl super::Renderer {
 
         let base_mode = if self.frame.performance_mode_active {
             match self.global_display_mode {
-                DisplayMode::HiddenLine | DisplayMode::Wireframe | DisplayMode::FlatWithEdge => DisplayMode::Shaded,
+                DisplayMode::HiddenLine | DisplayMode::Wireframe => DisplayMode::Shaded,
+                // DesignCreation tier uses FlatWithEdge — degrade to Flat, not Shaded,
+                // to preserve flat-shading appearance during interaction.
+                // Flat-shading tiers (DesignCreation): keep FlatWithEdge as-is.
+                // Flat rendering is already fast — removing edges doesn't help.
+                DisplayMode::FlatWithEdge => {
+                    use super::renderer_internals::CadDisplayTier;
+                    if self.gpu.effective_tier == CadDisplayTier::DesignCreation {
+                        DisplayMode::FlatWithEdge
+                    } else {
+                        DisplayMode::Shaded
+                    }
+                }
                 _ => self.global_display_mode,
             }
         } else {
@@ -846,6 +858,13 @@ impl super::Renderer {
         });
         self.gpu.depth_texture = Some((depth_tex2, dv, drv));
 
+        // Downscaled depth mismatches full-res intermediate targets (LDR shade, HDR post-fx).
+        // Save and disable both so execute_passes renders directly to the offscreen surface.
+        let saved_ldr_fxaa = self.enable_ldr_fxaa;
+        let saved_hdr = self.hdr_post_processing;
+        self.enable_ldr_fxaa = false;
+        self.hdr_post_processing = false;
+
         let stats = self.render_draw_calls_core(
             draw_calls, scene, None,
             render_passes::FramePresentation::OffscreenSurface {
@@ -856,6 +875,9 @@ impl super::Renderer {
             },
             None,
         );
+
+        self.hdr_post_processing = saved_hdr;
+        self.enable_ldr_fxaa = saved_ldr_fxaa;
 
         // Restore original depth + intermediate textures
         self.gpu.depth_texture = saved_depth;

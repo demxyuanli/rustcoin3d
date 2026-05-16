@@ -32,6 +32,7 @@ use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop};
 
 use crate::adaptive_quality::AdaptiveQualityMode;
 use crate::camera_controller::CameraController;
+use crate::editor_ui::{EditorUi, EditorUiContext, RenderFeatureFlags};
 
 use crate::viewport_camera::{ViewportCamera, ViewportCameraSet};
 use crate::world::World;
@@ -81,7 +82,10 @@ impl App {
                 enable_hdr_post_processing: false,
                 adaptive_quality_mode: AdaptiveQualityMode::On,
                 adaptive_last_interaction: Instant::now(),
-                continuous_redraw: true,
+                // Event-driven by default so camera interaction uses inline render_interaction_frame()
+                // (see request_redraw_from_camera). Opt in with with_continuous_redraw(true) for
+                // idle animation / always-on redraw loops.
+                continuous_redraw: false,
                 last_frame_time: Instant::now(),
                 last_frame_time_ms: 0.0,
                 fps_tracker: FpsTracker::new(120),
@@ -96,6 +100,9 @@ impl App {
                 bg_settings: None,
                 pending_effect_graph: None,
                 dynamic_surfaces: Vec::new(),
+                interaction_frame_rendered: false,
+                last_inline_render_time: std::time::Instant::now(),
+                interaction_render_count: 0,
             },
             editor: EditorSession {
                 gizmo: rc3d_gizmo::Gizmo::new(),
@@ -167,9 +174,9 @@ impl App {
         self.graph_load_hook = Some(Box::new(hook));
     }
 
-    fn poll_pending_graph_load(&mut self) {
+    fn poll_pending_graph_load(&mut self) -> bool {
         let Some(rx) = self.pending_graph_rx.as_ref() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
             Ok(Ok(graph)) => {
@@ -190,15 +197,18 @@ impl App {
                 if let Some(hook) = self.graph_load_hook.take() {
                     hook(self);
                 }
+                true
             }
             Ok(Err(e)) => {
                 self.pending_graph_rx = None;
                 log::error!("Async scene load failed: {}", e);
+                false
             }
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => {
                 self.pending_graph_rx = None;
                 log::warn!("Async scene load channel disconnected");
+                false
             }
         }
     }
@@ -209,6 +219,11 @@ impl App {
     }
 
     pub fn with_engines(mut self, engines: rc3d_engine::EngineRegistry) -> Self {
+        // Engines advance only inside RedrawRequested; event-driven redraw would stall.
+        // Callers can override with .with_continuous_redraw(false) after this (e.g. idle/power).
+        if !engines.engines.is_empty() {
+            self.state.continuous_redraw = true;
+        }
         self.state.world.engines = Some(engines);
         self
     }
@@ -323,11 +338,20 @@ impl ApplicationHandler for App {
         event_handler::resumed(self, event_loop);
     }
 
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let applied = self.poll_pending_graph_load();
+        if let Some(w) = &self.state.window {
+            if applied || self.pending_graph_rx.is_some() {
+                w.request_redraw();
+            }
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         _window_id: winit::window::WindowId,
-        event: WindowEvent,
+        event: winit::event::WindowEvent,
     ) {
         event_handler::window_event(self, event_loop, _window_id, event);
     }
@@ -965,6 +989,189 @@ impl App {
             Some(ctrl)
         } else {
             None
+        }
+    }
+
+    fn is_camera_interacting(&self) -> bool {
+        self.state.camera_controller.as_ref().map_or(false, |c| {
+            c.middle_orbit_held || c.left_orbit_held || c.panning
+        }) || self.state.viewport_cameras.cameras.iter().any(|vc| {
+            vc.controller.middle_orbit_held
+                || vc.controller.left_orbit_held
+                || vc.controller.panning
+        })
+    }
+
+    pub(super) fn prepare_editor_ui_frame(&mut self) {
+        if !self.state.editor_ui_enabled {
+            return;
+        }
+        let selected_set = self.state.world.graph.selected_nodes().clone();
+        let selected_count = selected_set.len();
+        let bookmarks: [(bool, &'static str); 9] = {
+            let mut bm = [(false, ""); 9];
+            if let Some(ctrl) = self.active_camera_controller_mut() {
+                for (i, slot) in ctrl.bookmarks.iter().enumerate() {
+                    if slot.is_some() {
+                        bm[i] = (true, "saved");
+                    }
+                }
+            }
+            bm
+        };
+        if let (Some(ui), Some(window), Some(renderer)) = (
+            &mut self.state.editor_ui,
+            &self.state.window,
+            &self.state.renderer,
+        ) {
+            let ui_ctx = EditorUiContext {
+                selected: selected_set,
+                display_mode_label: format!("{:?}", renderer.display_mode()),
+                ibl_label: renderer.ibl_preset_name().to_string(),
+                ibl_preset: renderer.ibl_preset,
+                gizmo_mode: self.editor.gizmo.mode,
+                layout_mode: renderer.viewport_layout().layout_mode,
+                layout_mode_label: format!("{:?}", renderer.viewport_layout().layout_mode),
+                active_viewport_label: format!("{:?}", renderer.viewport_layout().active_id),
+                smoothed_fps: self.state.fps_tracker.smoothed_fps(),
+                frame_time_ms: self.state.last_frame_time_ms,
+                diagnostics: self.state.last_render_stats.diagnostics.clone(),
+                hidden_nodes: self.state.hidden_nodes.clone(),
+                render_features: RenderFeatureFlags {
+                    taa: renderer.enable_taa,
+                    motion_blur: renderer.enable_motion_blur,
+                    ssr: renderer.enable_ssr,
+                    color_grading: renderer.enable_color_grading,
+                    dof: renderer.enable_dof,
+                    volumetric_fog: renderer.enable_volumetric_fog,
+                    cluster_lights: renderer.enable_cluster_lights,
+                    omni_shadows: renderer.enable_omni_shadows,
+                    xray: renderer.xray_mode,
+                },
+                hdr_enabled: renderer.hdr_post_processing,
+                vsync_enabled: matches!(
+                    renderer.config.present_mode,
+                    wgpu::PresentMode::AutoVsync
+                ),
+                grid_enabled: self.editor.grid_enabled,
+                hud_enabled: renderer.hud_enabled,
+                outline_width: renderer.outline_width,
+                outline_color: renderer.outline_color,
+                xray_mode: renderer.xray_mode,
+                adaptive_quality_mode: self.state.adaptive_quality_mode,
+                adaptive_quality_name: renderer.adaptive_quality_name().to_string(),
+                cad_display_tier: renderer.requested_display_tier(),
+                bookmarks,
+                selected_count,
+            };
+            ui.run(window, &self.state.world.graph, renderer, &ui_ctx);
+            for cmd in ui.take_commands() {
+                self.state.editor_commands.push_back(cmd);
+            }
+        }
+        self.apply_editor_commands();
+    }
+
+    pub(super) fn request_redraw_from_camera(&mut self) {
+        if self.is_camera_interacting() {
+            self.render_interaction_frame();
+            return;
+        }
+        if let Some(window) = &self.state.window {
+            window.request_redraw();
+        }
+    }
+
+    fn render_interaction_frame(&mut self) {
+        // Rate-limit: CursorMoved can fire 100s/sec on Windows. Rendering every event
+        // would stall the event loop. Skip if we rendered recently.
+        const MIN_INTERACTION_FRAME_MS: u64 = 8;
+        let since_last = self.state.last_inline_render_time.elapsed().as_millis() as u64;
+        if since_last < MIN_INTERACTION_FRAME_MS {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        if self.state.world.cached_draw_calls.is_empty() {
+            // No draw list yet (first frames or cache invalidated). Inline path cannot render;
+            // still schedule a full RedrawRequested so camera motion is not dropped.
+            if let Some(window) = &self.state.window {
+                window.request_redraw();
+            }
+            return;
+        }
+        self.prepare_editor_ui_frame();
+        let roots = self.state.world.graph.roots().to_vec();
+        let aspect = self.state.renderer.as_ref()
+            .map(|r| r.config.width as f32 / r.config.height.max(1) as f32).unwrap_or(1.0);
+        let vp_proj = roots.first().and_then(|&r| Self::find_camera_projection(&self.state.world.graph, r))
+            .unwrap_or_else(|| Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 1000.0));
+        let (vp_view, cam_pos) = if let Some(vc) = self.state.viewport_cameras.active() {
+            (vc.controller.view_matrix(), vc.controller.eye_position())
+        } else if let Some(ref ctrl) = self.state.camera_controller {
+            (ctrl.view_matrix(), ctrl.eye_position())
+        } else { return; };
+        let sync_interaction_active = self.is_camera_interacting();
+        self.state.world.collector.draw_calls = self.state.world.cached_draw_calls.clone();
+        rc3d_render::render_action::apply_world_camera(
+            &mut self.state.world.collector.draw_calls, vp_view, vp_proj, cam_pos);
+        let Some(renderer) = self.state.renderer.as_mut() else { return };
+        // Interaction quality: use Flat mode + no HDR for faster rendering during drag.
+        let saved_display = renderer.display_mode();
+        let saved_hdr = renderer.hdr_post_processing;
+        let tris: u64 = self.state.world.collector.draw_calls.iter()
+            .map(|dc| dc.indices.as_ref().map_or(dc.vertices.len() as u64 / 3, |i| i.len() as u64 / 3))
+            .sum();
+        let saved_interaction_scale = renderer.interaction_render_scale;
+        let interaction_scale = if tris > 1_000_000 {
+            0.5
+        } else if tris > 500_000 {
+            0.67
+        } else {
+            1.0
+        };
+        renderer.set_interaction_render_scale(interaction_scale);
+        if tris > 500_000 {
+            renderer.set_display_mode(DisplayMode::Flat);
+        }
+        renderer.hdr_post_processing = false;
+        renderer.interaction_active = true;
+        let use_editor_overlay =
+            self.state.editor_ui_enabled && self.state.editor_ui.is_some();
+        if use_editor_overlay {
+            let ui_ptr = self.state.editor_ui.as_mut().unwrap() as *mut EditorUi;
+            let device = renderer.device.clone();
+            let queue = renderer.queue.clone();
+            renderer.render_draw_calls_with_overlay(
+                &self.state.world.collector.draw_calls,
+                &self.state.world.graph,
+                Some(&mut |encoder, view| {
+                    let ui = unsafe { &mut *ui_ptr };
+                    ui.paint(&device, &queue, encoder, view);
+                }),
+            );
+        } else {
+            renderer.render_draw_calls(
+                &self.state.world.collector.draw_calls,
+                &self.state.world.graph,
+            );
+        }
+        renderer.set_interaction_render_scale(saved_interaction_scale);
+        renderer.set_display_mode(saved_display);
+        renderer.hdr_post_processing = saved_hdr;
+        // Inline render forced interaction_active for tier/degrade paths; sync back so release
+        // is not stuck in interaction quality until a full RedrawRequested runs.
+        renderer.interaction_active = sync_interaction_active;
+        // Prevent the next RedrawRequested from double-rendering.
+        self.state.interaction_frame_rendered = true;
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(t0);
+        self.state.last_inline_render_time = now;
+        self.state.interaction_render_count += 1;
+        if self.state.interaction_render_count % 30 == 0 {
+            log::info!(
+                "[INTERACTION] frame {:.1}ms tris={} scale={:.2}",
+                dt.as_secs_f64() * 1000.0, tris, interaction_scale,
+            );
         }
     }
 
