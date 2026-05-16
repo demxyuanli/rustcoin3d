@@ -18,6 +18,7 @@ members = [
     "crates/rc3d-pdf",
     "crates/rc3d-scene-api",
     "crates/rc3d-effects",
+    "crates/rc3d-engine-api",
 ]
 resolver = "2"
 
@@ -66,3 +67,4 @@ rc3d-script = { path = "crates/rc3d-script" }
 rc3d-cli-editor = { path = "crates/rc3d-cli-editor" }
 rc3d-scene-api = { path = "crates/rc3d-scene-api" }
 rc3d-effects = { path = "crates/rc3d-effects" }
+rc3d-engine-api = { path = "crates/rc3d-engine-api" }

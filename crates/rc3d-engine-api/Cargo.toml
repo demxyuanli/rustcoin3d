@@ -1,0 +1,20 @@
+[package]
+name = "rc3d-engine-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rc3d-core = { workspace = true }
+rc3d-scene = { workspace = true }
+rc3d-render = { workspace = true }
+rc3d-engine = { workspace = true }
+rc3d-io = { workspace = true }
+rc3d-actions = { workspace = true }
+rc3d-scene-api = { workspace = true }
+rc3d-effects = { workspace = true }
+rc3d-nurbs = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+log = { workspace = true }
+pollster = { workspace = true }
