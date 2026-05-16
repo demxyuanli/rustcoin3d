@@ -22,6 +22,9 @@ mod pass_viewport;
 mod pass_wireframe;
 
 pub(crate) mod draw_opaque;
+
+#[cfg(test)]
+mod pass_markup_tests;
 use draw_opaque::draw_opaque_triangle_batches;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
