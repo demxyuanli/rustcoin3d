@@ -4,7 +4,7 @@ use rc3d_core::math::Vec3;
 use rc3d_core::{DisplayMode, EngineResult, NodeId};
 use rc3d_render::render_action::DrawCall;
 use rc3d_render::viewport::{LayoutMode, ViewportLayout};
-use rc3d_render::{FrameStats, Renderer};
+use rc3d_render::{AdaptiveControl, FrameStats, Renderer};
 use rc3d_scene::SceneGraph;
 
 use crate::background::BackgroundSettings;
@@ -24,6 +24,37 @@ pub struct Engine {
     pub controller: CameraController,
     pub viewport_cameras: ViewportCameraSet,
     pub fps: FpsTracker,
+
+    /// When true, requests a redraw on every `AboutToWait` event, even when
+    /// the scene is idle (no user interaction). Set to `true` for animated
+    /// scenes or when polling external data. Default: `false`.
+    pub continuous_redraw: bool,
+
+    /// Adaptive quality control mode (Disabled, Locked, Dynamic).
+    pub adaptive_control: AdaptiveControl,
+
+    /// Optional callback that returns a string to display as an on-screen HUD
+    /// overlay. The string is rendered at the top-left of each viewport.
+    pub hud_text_hook: Option<Box<dyn Fn() -> String>>,
+
+    /// Optional callback invoked by [`render`] just before the draw calls are
+    /// submitted to the GPU. Use this to modify renderer state each frame
+    /// (e.g. to inject custom uniforms or toggle debug overlays).
+    pub pre_render_hook: Option<Box<dyn FnMut(&mut Renderer)>>,
+
+    /// Optional callback invoked when the user clicks on geometry in the
+    /// scene. Receives the scene graph, the picked NodeId, and the
+    /// world-space intersection point.
+    pub on_pick: Option<Box<dyn FnMut(&mut SceneGraph, NodeId, Vec3)>>,
+
+    /// Optional keyboard event hook. Receives the physical key. Return `true`
+    /// to request a redraw after handling the keypress.
+    pub panel_overlay_key_hook: Option<Box<dyn Fn(winit::keyboard::PhysicalKey) -> bool>>,
+
+    /// Optional mouse click hook for HUD overlay interaction.
+    /// Receives (x, y, window_width, window_height). Return `true` to request
+    /// a redraw after handling the click.
+    pub panel_overlay_mouse_hook: Option<Box<dyn Fn(f32, f32, u32, u32) -> bool>>,
 }
 
 impl Engine {
@@ -43,6 +74,13 @@ impl Engine {
             controller,
             viewport_cameras: ViewportCameraSet::default(),
             fps: FpsTracker::new(120),
+            continuous_redraw: false,
+            adaptive_control: AdaptiveControl::Disabled,
+            hud_text_hook: None,
+            pre_render_hook: None,
+            on_pick: None,
+            panel_overlay_key_hook: None,
+            panel_overlay_mouse_hook: None,
         }
     }
 
@@ -66,6 +104,15 @@ impl Engine {
         if let Some(ref mut r) = self.renderer {
             r.set_post_effect_params(vignette, chromatic, bloom, grain);
         }
+    }
+
+    /// Set the adaptive quality control mode.
+    ///
+    /// `AdaptiveControl::Disabled` locks quality at High.
+    /// `AdaptiveControl::Dynamic { allow_downgrade: true }` enables automatic
+    /// quality downgrades based on frame time.
+    pub fn set_adaptive_quality(&mut self, mode: AdaptiveControl) {
+        self.adaptive_control = mode;
     }
 
     /// Replace the current scene graph.
@@ -134,6 +181,8 @@ impl Engine {
     /// controller state, traverses the scene graph, and submits draw calls
     /// to the GPU.
     pub fn render(&mut self) -> FrameStats {
+        // Extract pre-render hook to avoid borrow conflict with renderer
+        let mut pre_hook = self.pre_render_hook.take();
         let renderer = self.renderer.as_mut().expect("renderer not initialized");
 
         // 1. Reapply CAD tier constraints
@@ -160,7 +209,12 @@ impl Engine {
         );
         renderer.set_effect_commands(effect_cmds);
 
-        // 7. Render
+        // 7. Call pre-render hook (before GPU submission)
+        if let Some(ref mut h) = pre_hook {
+            h(renderer);
+        }
+
+        // 8. Render
         let cache = &self.world.cached_draw_calls;
         let dc: &[DrawCall] = if cache.is_empty() {
             &self.world.collector.draw_calls
@@ -169,7 +223,11 @@ impl Engine {
         };
         let stats = renderer.render_draw_calls(dc, &self.world.graph);
 
-        // 8. Track FPS
+        // 9. Report frame time for adaptive quality controller
+        renderer.report_frame_time_ms(stats.frame_time_ms as f32, self.adaptive_control);
+
+        // 10. Restore pre-render hook and track FPS
+        self.pre_render_hook = pre_hook;
         self.fps.push(stats.frame_time_ms as f32);
 
         stats

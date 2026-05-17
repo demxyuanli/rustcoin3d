@@ -5,7 +5,7 @@
 //! configure the renderer, and register engines before the event loop starts.
 
 use rc3d_engine_api::Engine;
-use winit::event::{Event, WindowEvent};
+use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::WindowAttributes;
 
@@ -43,6 +43,56 @@ pub fn run_example(title: &str, setup: impl FnOnce(&mut Engine)) {
         },
         Event::AboutToWait => {
             window.request_redraw();
+        }
+        _ => {}
+    });
+}
+
+/// Run a rustcoin3d example with hook support.
+///
+/// Like [`run_example`], but conditionally requests redraw based on
+/// [`Engine::continuous_redraw`] and dispatches keyboard events to
+/// [`Engine::panel_overlay_key_hook`].
+///
+/// Use this for examples that need on-screen HUD overlays, animation-driven
+/// redraw, or interactive panel overlays via keyboard.
+pub fn run_example_with_hooks(title: &str, setup: impl FnOnce(&mut Engine)) {
+    env_logger::init();
+
+    let event_loop = EventLoop::new().expect("failed to create event loop");
+
+    let window = event_loop
+        .create_window(WindowAttributes::default().with_title(title))
+        .expect("failed to create window");
+
+    let mut engine = Engine::new(&window);
+    setup(&mut engine);
+
+    let _ = event_loop.run(move |event, elwt| match event {
+        Event::WindowEvent { event, .. } => match event {
+            WindowEvent::RedrawRequested => {
+                engine.render();
+                window.request_redraw();
+            }
+            WindowEvent::CloseRequested => elwt.exit(),
+            WindowEvent::Resized(size) => {
+                engine.resize(size.width, size.height);
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed {
+                    if let Some(ref mut hook) = engine.panel_overlay_key_hook {
+                        if hook(event.physical_key) {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+        Event::AboutToWait => {
+            if engine.continuous_redraw {
+                window.request_redraw();
+            }
         }
         _ => {}
     });
