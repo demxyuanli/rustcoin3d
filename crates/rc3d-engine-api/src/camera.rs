@@ -222,6 +222,28 @@ impl CameraController {
         }
     }
 
+    /// Recursively update all PerspectiveCamera/OrthographicCamera nodes
+    /// in the subtree rooted at `node` with this controller's current state.
+    pub fn update_camera_recursive(
+        &self,
+        graph: &mut SceneGraph,
+        node: NodeId,
+        aspect: f32,
+    ) {
+        let Some(entry) = graph.get(node) else { return };
+        if matches!(
+            entry.data,
+            NodeData::PerspectiveCamera(_) | NodeData::OrthographicCamera(_)
+        ) {
+            self.update_camera_node(graph, node, aspect);
+            return;
+        }
+        let children: Vec<NodeId> = entry.children.clone();
+        for child in children {
+            self.update_camera_recursive(graph, child, aspect);
+        }
+    }
+
     /// Save current camera state to bookmark slot 0-8.
     pub fn save_bookmark(&mut self, slot: usize, name: &'static str) {
         if slot < 9 {

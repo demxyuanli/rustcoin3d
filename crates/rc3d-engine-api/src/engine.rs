@@ -196,6 +196,17 @@ impl Engine {
         self.world.reset_collector(dm);
 
         // 4. Update camera nodes from controller state
+        let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
+
+        // Legacy path: update all PerspectiveCamera/OrthographicCamera nodes
+        // from the main CameraController so orbit/pan/zoom take effect.
+        let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
+        for &root in &roots {
+            self.controller
+                .update_camera_recursive(&mut self.world.graph, root, aspect);
+        }
+
+        // Viewport-camera path: update cameras bound to specific viewports
         let layout = renderer.viewport_layout();
         self.viewport_cameras.update_all(&mut self.world.graph, &layout);
 
