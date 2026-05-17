@@ -1,199 +1,6 @@
-//! Advanced rendering effects: Decal, Volume, PointCloud.
-//! Each effect is lazy-initialized when first needed.
-
-use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::NodeId;
 use wgpu::util::DeviceExt;
-use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_data::AnnotationElement;
 
-#[derive(Clone, Debug, Default)]
-pub struct EffectCommands {
-    pub decals: Vec<DecalDrawCommand>,
-    pub volumes: Vec<VolumeDrawCommand>,
-    pub point_clouds: Vec<PointCloudDrawCommand>,
-    pub annotation_elements: Vec<ProjectedAnnotation>,
-}
-
-impl EffectCommands {
-    pub fn is_empty(&self) -> bool {
-        self.decals.is_empty() && self.volumes.is_empty() && self.point_clouds.is_empty() && self.annotation_elements.is_empty()
-    }
-}
-
-/// A 3D annotation element collected during scene traversal, with its world-space transform.
-/// Projection to screen coordinates happens in the render pass.
-#[derive(Clone, Debug)]
-pub struct ProjectedAnnotation {
-    pub element: AnnotationElement,
-    pub model_matrix: Mat4,
-}
-
-#[derive(Clone, Debug)]
-pub struct DecalDrawCommand {
-    pub model_matrix: Mat4,
-    pub position: Vec3,
-    pub direction: Vec3,
-    pub size: [f32; 2],
-    pub texture_path: String,
-    pub color: [f32; 4],
-    pub opacity: f32,
-    pub is_overlay: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct VolumeDrawCommand {
-    pub model_matrix: Mat4,
-    pub dimensions: [u32; 3],
-    pub texture_path: String,
-    pub density_scale: f32,
-    pub color_map: [[f32; 4]; 4],
-    pub is_overlay: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct PointCloudDrawCommand {
-    pub model_matrix: Mat4,
-    pub file_path: String,
-    pub max_visible_points: u32,
-    pub point_size: f32,
-    pub color: [f32; 4],
-    pub is_overlay: bool,
-}
-
-pub fn collect_effect_nodes(graph: &SceneGraph) -> EffectCommands {
-    let mut commands = EffectCommands::default();
-    for &root in graph.roots() {
-        collect_effect_recursive(graph, root, Mat4::IDENTITY, false, &mut commands);
-    }
-    commands
-}
-
-fn collect_effect_recursive(
-    graph: &SceneGraph,
-    node: NodeId,
-    model_matrix: Mat4,
-    inside_annotation: bool,
-    commands: &mut EffectCommands,
-) {
-    let Some(entry) = graph.get(node) else { return };
-    match &entry.data {
-        NodeData::Decal(decal) => {
-            commands.decals.push(DecalDrawCommand {
-                model_matrix,
-                position: decal.position,
-                direction: decal.direction,
-                size: decal.size,
-                texture_path: decal.texture_path.clone(),
-                color: decal.color,
-                opacity: decal.opacity,
-                is_overlay: inside_annotation,
-            });
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-            }
-        }
-        NodeData::Volume(volume) => {
-            commands.volumes.push(VolumeDrawCommand {
-                model_matrix,
-                dimensions: volume.dimensions,
-                texture_path: volume.texture_path.clone(),
-                density_scale: volume.density_scale,
-                color_map: volume.color_map,
-                is_overlay: inside_annotation,
-            });
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-            }
-        }
-        NodeData::PointCloud(point_cloud) => {
-            commands.point_clouds.push(PointCloudDrawCommand {
-                model_matrix,
-                file_path: point_cloud.file_path.clone(),
-                max_visible_points: point_cloud.max_visible_points,
-                point_size: point_cloud.point_size,
-                color: point_cloud.color,
-                is_overlay: inside_annotation,
-            });
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-            }
-        }
-        NodeData::Transform(transform) => {
-            let next_model = model_matrix * transform.to_matrix();
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, next_model, inside_annotation, commands);
-            }
-        }
-        NodeData::ResetTransform(_) => {
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, Mat4::IDENTITY, inside_annotation, commands);
-            }
-        }
-        NodeData::Separator(_) => {
-            let mut local_model = model_matrix;
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, local_model, inside_annotation, commands);
-                // If child was a Transform, accumulate for subsequent siblings
-                if let Some(ce) = graph.get(child) {
-                    if let NodeData::Transform(t) = &ce.data {
-                        local_model = local_model * t.to_matrix();
-                    }
-                }
-            }
-        }
-        NodeData::Annotation(_) => {
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, model_matrix, true, commands);
-            }
-        }
-        NodeData::AnnotationSet(ann) => {
-            if ann.visible {
-                for el in &ann.elements {
-                    commands.annotation_elements.push(ProjectedAnnotation {
-                        element: el.clone(),
-                        model_matrix,
-                    });
-                }
-            }
-        }
-        NodeData::Switch(sw) => match sw.which_child {
-            -2 => {}
-            -1 => {
-                for &child in &sw.children {
-                    collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-                }
-            }
-            idx if idx >= 0 => {
-                if let Some(&child) = sw.children.get(idx as usize) {
-                    collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-                }
-            }
-            _ => {}
-        },
-        NodeData::MultipleCopy(mc) => {
-            for &copy_matrix in &mc.copies {
-                let next_model = model_matrix * copy_matrix;
-                for &child in &mc.children {
-                    collect_effect_recursive(graph, child, next_model, inside_annotation, commands);
-                }
-            }
-        }
-        NodeData::Lod(lod) => {
-            let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
-            if let Some(level_data) = lod.levels.get(level) {
-                for &child in &level_data.children {
-                    collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-                }
-            }
-        }
-        _ => {
-            for &child in &entry.children {
-                collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
-            }
-        }
-    }
-}
+use super::collect::{DecalDrawCommand, PointCloudDrawCommand, VolumeDrawCommand};
 
 /// Decal projection pipeline resources.
 pub struct DecalPass {
@@ -208,7 +15,7 @@ impl DecalPass {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Decal Project"),
             source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/decal_project.wgsl").into(),
+                include_str!("../../shaders/decal_project.wgsl").into(),
             ),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -388,7 +195,7 @@ impl VolumePass {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Volume Raymarch"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/volume_raymarch.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/volume_raymarch.wgsl").into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Volume BGL"),
@@ -504,7 +311,7 @@ impl PointCloudPass {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Point Cloud"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/point_cloud.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/point_cloud.wgsl").into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("PointCloud BGL"),
@@ -599,97 +406,5 @@ impl PointCloudPass {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..(cmd.max_visible_points.min(16384)), 0..1);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rc3d_core::math::Vec3;
-    use rc3d_scene::{
-        DecalNode, GroupNode, NodeData, PointCloudNode, SceneGraph, TransformNode, VolumeNode,
-    };
-
-    #[test]
-    fn collect_effect_nodes_preserves_decal_volume_and_point_cloud_fields() {
-        let mut graph = SceneGraph::new();
-        let root = graph.add_root(NodeData::Group(GroupNode));
-        graph.add_child(
-            root,
-            NodeData::Decal(DecalNode {
-                position: Vec3::new(1.0, 2.0, 3.0),
-                direction: Vec3::NEG_Y,
-                size: [4.0, 5.0],
-                texture_path: "decal.png".to_string(),
-                color: [1.0, 0.5, 0.25, 0.75],
-                opacity: 0.8,
-            }),
-        );
-        graph.add_child(
-            root,
-            NodeData::Volume(VolumeNode {
-                dimensions: [16, 32, 64],
-                texture_path: "volume.raw".to_string(),
-                density_scale: 2.5,
-                color_map: [[0.1, 0.2, 0.3, 0.4]; 4],
-            }),
-        );
-        graph.add_child(
-            root,
-            NodeData::PointCloud(PointCloudNode {
-                file_path: "points.bin".to_string(),
-                max_visible_points: 1234,
-                point_size: 3.0,
-                color: [0.2, 0.4, 0.6, 1.0],
-            }),
-        );
-
-        let commands = collect_effect_nodes(&graph);
-
-        assert_eq!(commands.decals.len(), 1);
-        assert_eq!(commands.decals[0].texture_path, "decal.png");
-        assert_eq!(commands.decals[0].position, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(commands.decals[0].size, [4.0, 5.0]);
-        assert_eq!(commands.decals[0].opacity, 0.8);
-        assert_eq!(commands.volumes.len(), 1);
-        assert_eq!(commands.volumes[0].texture_path, "volume.raw");
-        assert_eq!(commands.volumes[0].dimensions, [16, 32, 64]);
-        assert_eq!(commands.volumes[0].density_scale, 2.5);
-        assert_eq!(commands.point_clouds.len(), 1);
-        assert_eq!(commands.point_clouds[0].file_path, "points.bin");
-        assert_eq!(commands.point_clouds[0].max_visible_points, 1234);
-        assert_eq!(commands.point_clouds[0].point_size, 3.0);
-    }
-
-    #[test]
-    fn collect_effect_nodes_recurses_through_effect_children_and_transforms() {
-        let mut graph = SceneGraph::new();
-        let root = graph.add_root(NodeData::Group(GroupNode));
-        let transform = graph.add_child(
-            root,
-            NodeData::Transform(TransformNode::from_translation(Vec3::new(10.0, 0.0, 0.0))),
-        );
-        let decal = graph.add_child(
-            transform,
-            NodeData::Decal(DecalNode {
-                texture_path: "outer.png".to_string(),
-                ..Default::default()
-            }),
-        );
-        graph.add_child(
-            decal,
-            NodeData::PointCloud(PointCloudNode {
-                file_path: "nested.bin".to_string(),
-                ..Default::default()
-            }),
-        );
-
-        let commands = collect_effect_nodes(&graph);
-
-        assert_eq!(commands.decals.len(), 1);
-        assert_eq!(commands.point_clouds.len(), 1);
-        assert_eq!(commands.decals[0].model_matrix.w_axis.x, 10.0);
-        assert_eq!(commands.point_clouds[0].model_matrix.w_axis.x, 10.0);
-        assert_eq!(commands.point_clouds[0].file_path, "nested.bin");
     }
 }
