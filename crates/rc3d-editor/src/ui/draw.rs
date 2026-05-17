@@ -317,10 +317,9 @@ pub(super) fn build_ui(
         if ctx.input(|i| {
             i.pointer.button_clicked(egui::PointerButton::Primary)
                 || i.pointer.button_clicked(egui::PointerButton::Secondary)
-        }) {
-            if context_menu_pos.is_some() {
-                *context_menu_pos = None;
-            }
+        }) && context_menu_pos.is_some()
+        {
+            *context_menu_pos = None;
         }
     }
 

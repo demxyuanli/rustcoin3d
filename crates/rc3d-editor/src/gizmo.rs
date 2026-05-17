@@ -2,7 +2,9 @@
 
 use rc3d_core::math::Mat4;
 use rc3d_core::NodeId;
-use rc3d_gizmo::{Gizmo, GizmoMode};
+use rc3d_gizmo::Gizmo;
+#[cfg(test)]
+use rc3d_gizmo::GizmoMode;
 use rc3d_render::viewport::{ProjectionType, Viewport};
 use rc3d_scene::node_data::NodeData;
 use rc3d_scene::SceneGraph;
