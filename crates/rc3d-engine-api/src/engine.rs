@@ -222,7 +222,15 @@ impl Engine {
         // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();
 
-        // 7. Fallback: if traversal found no camera, apply a default projection.
+        // 7. Collect markup overlay vertices (annotations, text, dimensions)
+        let markup_root = self.world.graph.roots().first().copied().unwrap_or_default();
+        renderer.collect_markup_vertices(&self.world.graph, markup_root);
+
+        // 8. Transfer light sets from collector to renderer
+        let light_sets = std::mem::take(&mut self.world.collector.light_sets);
+        renderer.set_light_sets(light_sets);
+
+        // 9. Fallback: if traversal found no camera, apply a default projection.
         // Without this, the collector stays at IDENTITY and nothing renders.
         if self.world.collector.projection_matrix == Mat4::IDENTITY {
             self.world.collector.projection_matrix =
