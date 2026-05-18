@@ -18,7 +18,7 @@ use winit::window::WindowAttributes;
 /// });
 /// ```
 pub fn run_example(title: &str, setup: impl FnOnce(&mut Engine)) {
-    env_logger::init();
+    let _ = env_logger::try_init();
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
 
@@ -83,7 +83,7 @@ pub fn run_example(title: &str, setup: impl FnOnce(&mut Engine)) {
 /// Use this for examples that need on-screen HUD overlays, animation-driven
 /// redraw, or interactive panel overlays via keyboard.
 pub fn run_example_with_hooks(title: &str, setup: impl FnOnce(&mut Engine)) {
-    env_logger::init();
+    let _ = env_logger::try_init();
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
 

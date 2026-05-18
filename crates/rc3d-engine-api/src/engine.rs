@@ -3,7 +3,7 @@ use std::path::Path;
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::{DisplayMode, EngineResult, NodeId};
-use rc3d_render::render_action::{apply_world_camera, DrawCall};
+use rc3d_render::render_action::DrawCall;
 use rc3d_render::viewport::{LayoutMode, ViewportLayout};
 use rc3d_render::{AdaptiveControl, FrameStats, Renderer};
 use rc3d_scene::SceneGraph;
