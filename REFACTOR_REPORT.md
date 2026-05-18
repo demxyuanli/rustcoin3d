@@ -34,30 +34,34 @@ Examples migrated to rc3d-examples: 37
 Old examples in rc3d-app: 0 (all migrated)
 All checks: PASS
 
---- Final Verification (2026-05-17) ---
+--- Final Verification (2026-05-18) ---
 
-1. cargo test --workspace
-   Result: 283 passed, 5 ignored, 0 failed (47 suites, 0.55s)
-   Status: PASS
+All 46 examples compiled individually: PASS (0 errors each)
 
-2. cargo check --workspace
-   Result: 0 errors, 13 warnings (pre-existing, 0 new)
-   Status: PASS
+Example feature parity:
+  Full interactive (HUD+keyboard+mouse): 10 examples (stl_diagnostic, import_viewer,
+    import_viewer_async, render_features, editor, adaptive_stress_test,
+    large_scene_stress, pbr_variant_viewer, profile_viewer, animation_control_panel)
+  Simple render: 36 examples
 
-3. Example count
-   Result: 46 files in crates/rc3d-examples/examples/
-   Status: PASS
+Engine.render() fixes applied:
+  1. renderer.set_materials() before traversal
+  2. collector.material_library from World.materials
+  3. set_hidden_nodes() support
+  4. reserve_draw_calls() pre-allocation
+  5. Default projection fallback (IDENTITY → perspective_rh)
+  6. apply_world_camera() MVP computation
+  7. Draw call caching for static frame fast path
+  8. clear_all_dirty_flags() after traversal
+  9. Legacy camera update_camera_recursive()
+ 10. renderer.update_hud() for HUD text overlay
+ 11. CameraController.dispatch_window_event() for mouse orbit/pan/zoom
 
-4. cargo build --workspace --examples
-   Result: 0 errors, 29 warnings (pre-existing)
-   All examples link successfully.
-   Status: PASS
+All checks:
+  cargo test --workspace: 283 passed, 0 failed
+  cargo check --workspace: 0 errors
+  cargo build --workspace --examples: 46/46 link
+  clippy: 0 errors
+  docs: built successfully
 
-5. rc3d-app lines
-   app/mod.rs: 74 lines
-   lib.rs:      2 lines
-   Total:      76 lines (threshold: <150)
-   Status: PASS
-
-All 5 verification checks: PASS
 Refactor complete.
