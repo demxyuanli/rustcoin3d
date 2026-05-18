@@ -72,25 +72,30 @@ fn main() {
             radius: 0.8, height: 2.0,
         }));
 
-        // Annotation overlay
-        let ann = graph.add_child(root, NodeData::Annotation(AnnotationNode));
-        graph.add_child(ann, NodeData::Text2(Text2Node {
-            string: "Cube".into(),
-            position: [100.0, 50.0],
-            size: 18.0,
-            color: [1.0, 0.6, 0.2, 1.0],
-        }));
-        graph.add_child(ann, NodeData::Text2(Text2Node {
-            string: "Sphere".into(),
-            position: [380.0, 50.0],
-            size: 18.0,
-            color: [0.2, 0.8, 0.3, 1.0],
-        }));
-        graph.add_child(ann, NodeData::Text2(Text2Node {
-            string: "Cylinder".into(),
-            position: [650.0, 50.0],
-            size: 18.0,
-            color: [0.3, 0.4, 0.9, 1.0],
+        // Markup overlay — screen-space text labels rendered via MarkupNode/MarkupElement
+        let mk = graph.add_child(root, NodeData::Markup(MarkupNode {
+            elements: vec![
+                MarkupElement::Text {
+                    position: [100.0, 50.0],
+                    string: "Cube".into(),
+                    size: 18.0,
+                    color: [1.0, 0.6, 0.2, 1.0],
+                },
+                MarkupElement::Text {
+                    position: [380.0, 50.0],
+                    string: "Sphere".into(),
+                    size: 18.0,
+                    color: [0.2, 0.8, 0.3, 1.0],
+                },
+                MarkupElement::Text {
+                    position: [650.0, 50.0],
+                    string: "Cylinder".into(),
+                    size: 18.0,
+                    color: [0.3, 0.4, 0.9, 1.0],
+                },
+            ],
+            visible: true,
+            ..Default::default()
         }));
     });
 }

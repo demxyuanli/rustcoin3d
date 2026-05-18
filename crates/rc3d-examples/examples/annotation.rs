@@ -42,12 +42,17 @@ fn main() {
         );
         graph.add_child(root, NodeData::Cube(CubeNode::default()));
 
-        let ann = graph.add_child(root, NodeData::Annotation(AnnotationNode));
-        graph.add_child(ann, NodeData::Text2(Text2Node {
-            string: "OVERLAY TEXT".into(),
-            position: [200.0, 100.0],
-            size: 32.0,
-            color: [1.0, 0.8, 0.0, 1.0],
+        let _mk = graph.add_child(root, NodeData::Markup(MarkupNode {
+            elements: vec![
+                MarkupElement::Text {
+                    position: [200.0, 100.0],
+                    string: "OVERLAY TEXT".into(),
+                    size: 32.0,
+                    color: [1.0, 0.8, 0.0, 1.0],
+                },
+            ],
+            visible: true,
+            ..Default::default()
         }));
     });
 }
