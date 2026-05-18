@@ -1587,6 +1587,11 @@ impl Renderer {
         );
     }
 
+    /// Collect text strings from MarkupElement::Text nodes for HUD overlay rendering.
+    pub fn collect_markup_text(&self, graph: &rc3d_scene::SceneGraph) -> Vec<String> {
+        crate::render_passes::pass_markup::collect_markup_text_lines(graph)
+    }
+
     pub fn has_overlay_elements(&self) -> bool {
         !self.frame.markup_vertices.is_empty() || self.hud_enabled
     }

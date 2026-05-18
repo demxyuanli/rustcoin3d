@@ -275,6 +275,12 @@ impl Engine {
             renderer.display_mode(),
             renderer.ibl_preset_name(),
         );
+        // Collect MarkupElement::Text strings for overlay display
+        let markup_text = renderer.collect_markup_text(&self.world.graph);
+        if !markup_text.is_empty() {
+            mode_name.push('\n');
+            mode_name.push_str(&markup_text.join("\n"));
+        }
         if let Some(ref text_hook) = self.hud_text_hook {
             let overlay = text_hook();
             if !overlay.is_empty() {

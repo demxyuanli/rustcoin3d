@@ -28,6 +28,31 @@ pub fn collect_markup_lines(
     vertices
 }
 
+/// Collect all MarkupElement::Text strings from the scene graph for HUD overlay display.
+pub fn collect_markup_text_lines(graph: &SceneGraph) -> Vec<String> {
+    let mut lines = Vec::new();
+    for &root in graph.roots() {
+        collect_text_recursive(graph, root, &mut lines);
+    }
+    lines
+}
+
+fn collect_text_recursive(graph: &SceneGraph, node: NodeId, out: &mut Vec<String>) {
+    let Some(entry) = graph.get(node) else { return };
+    if let NodeData::Markup(m) = &entry.data {
+        if m.visible {
+            for el in &m.elements {
+                if let MarkupElement::Text { string, position, .. } = el {
+                    out.push(format!("{:>4.0},{:<4.0} {}", position[0], position[1], string));
+                }
+            }
+        }
+    }
+    for &child in &entry.children {
+        collect_text_recursive(graph, child, out);
+    }
+}
+
 fn collect_recursive(graph: &SceneGraph, node: NodeId, out: &mut Vec<MarkupVertex>) {
     let Some(entry) = graph.get(node) else { return };
 
@@ -184,8 +209,12 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<MarkupVertex>) {
                 prev_b = curr;
             }
         }
-        MarkupElement::Text { .. } => {
-            // Text elements are deferred to HUD/glyphon layer.
+        MarkupElement::Text { position, color, .. } => {
+            // Render a small underline marker at the text position so the
+            // label is visible even without the glyphon text layer.
+            let w = 8.0;
+            out.push(MarkupVertex { position: [position[0], position[1], 0.0], color });
+            out.push(MarkupVertex { position: [position[0] + w, position[1], 0.0], color });
         }
     }
 }
@@ -466,10 +495,10 @@ mod tests {
     // ── Text (deferred) ──
 
     #[test]
-    fn test_text_element_no_vertices() {
+    fn test_text_element_produces_underline_marker() {
         let (g, root) = make_markup_graph(
             vec![MarkupElement::Text {
-                position: [0.0, 0.0],
+                position: [100.0, 200.0],
                 string: "hello".into(),
                 size: 14.0,
                 color: [1.0, 1.0, 1.0, 1.0],
@@ -477,7 +506,10 @@ mod tests {
             true,
         );
         let v = collect_markup_lines(&g, root, 800, 600);
-        assert!(v.is_empty());
+        // Text now renders an underline marker: 2 vertices
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].position, [100.0, 200.0, 0.0]);
+        assert_eq!(v[1].position, [108.0, 200.0, 0.0]);
     }
 
     // ── Multiple elements ──
