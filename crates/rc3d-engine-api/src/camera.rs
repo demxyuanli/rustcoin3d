@@ -3,6 +3,7 @@ use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
 use std::cell::Cell;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 /// Saved camera state for a bookmark slot.
 #[derive(Clone, Copy, Debug)]
@@ -241,6 +242,74 @@ impl CameraController {
         let children: Vec<NodeId> = entry.children.clone();
         for child in children {
             self.update_camera_recursive(graph, child, aspect);
+        }
+    }
+
+    /// Dispatch a winit window event to the camera controller.
+    ///
+    /// Handles mouse orbit (middle/left drag), pan (right drag), and zoom
+    /// (scroll wheel). Returns `true` if the camera state changed.
+    ///
+    /// `cursor_pos` should be the cursor position BEFORE this event
+    /// (used to compute deltas for `CursorMoved`).
+    /// `left_orbit_enabled` enables left-button orbit (typically when editor
+    /// UI is disabled and no pick callback is set).
+    pub fn dispatch_window_event(
+        &mut self,
+        event: &WindowEvent,
+        cursor_pos: (f64, f64),
+        left_orbit_enabled: bool,
+    ) -> bool {
+        match event {
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (MouseButton::Middle, ElementState::Pressed) => {
+                        self.middle_orbit_held = true;
+                    }
+                    (MouseButton::Middle, ElementState::Released) => {
+                        self.middle_orbit_held = false;
+                    }
+                    (MouseButton::Left, ElementState::Pressed) if left_orbit_enabled => {
+                        self.left_orbit_held = true;
+                    }
+                    (MouseButton::Left, ElementState::Released) if left_orbit_enabled => {
+                        self.left_orbit_held = false;
+                    }
+                    (MouseButton::Right, ElementState::Pressed) => {
+                        self.panning = true;
+                    }
+                    (MouseButton::Right, ElementState::Released) => {
+                        self.panning = false;
+                    }
+                    _ => return false,
+                }
+                self.position_changed.set(true);
+                true
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let dx = (position.x - cursor_pos.0) as f32 * 0.005;
+                let dy = (position.y - cursor_pos.1) as f32 * 0.005;
+                if self.middle_orbit_held || self.left_orbit_held {
+                    self.orbit(dx, dy);
+                    return true;
+                }
+                if self.panning {
+                    let dx = (position.x - cursor_pos.0) as f32;
+                    let dy = (position.y - cursor_pos.1) as f32;
+                    self.pan(dx, dy);
+                    return true;
+                }
+                false
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+                };
+                self.zoom(scroll);
+                true
+            }
+            _ => false,
         }
     }
 

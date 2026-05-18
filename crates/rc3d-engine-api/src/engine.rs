@@ -261,7 +261,27 @@ impl Engine {
         let dc = &self.world.cached_draw_calls;
         let stats = renderer.render_draw_calls(dc, &self.world.graph);
 
-        // 13. Report frame time for adaptive quality controller
+        // 13. Update HUD overlay (renders FPS counter + hook text in top-left corner)
+        let mut mode_name = format!(
+            "{:?} | IBL:{}",
+            renderer.display_mode(),
+            renderer.ibl_preset_name(),
+        );
+        if let Some(ref text_hook) = self.hud_text_hook {
+            let overlay = text_hook();
+            if !overlay.is_empty() {
+                mode_name.push('\n');
+                mode_name.push_str(&overlay);
+            }
+        }
+        renderer.update_hud(
+            self.fps.smoothed_fps(),
+            self.fps.average_frame_ms(),
+            &stats,
+            &mode_name,
+        );
+
+        // 14. Report frame time for adaptive quality controller
         renderer.report_frame_time_ms(stats.frame_time_ms as f32, self.adaptive_control);
 
         // 14. Restore pre-render hook and track FPS
