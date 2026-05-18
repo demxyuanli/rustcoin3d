@@ -56,9 +56,13 @@ impl World {
         self.collector.projection_matrix = Mat4::IDENTITY;
         self.collector.projection_orthographic = false;
         self.collector.global_display_mode = display_mode;
+        self.collector.material_library = Some(self.materials.clone());
     }
 
     pub fn traverse_all_roots(&mut self) {
+        // Pre-allocate draw call capacity for performance
+        self.collector
+            .reserve_draw_calls(self.cached_draw_calls.len());
         let roots: Vec<NodeId> = self.graph.roots().to_vec();
         for root in roots {
             self.collector.traverse(&self.graph, root);

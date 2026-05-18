@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::path::Path;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::{DisplayMode, EngineResult, NodeId};
-use rc3d_render::render_action::DrawCall;
+use rc3d_render::render_action::{apply_world_camera, DrawCall};
 use rc3d_render::viewport::{LayoutMode, ViewportLayout};
 use rc3d_render::{AdaptiveControl, FrameStats, Renderer};
 use rc3d_scene::SceneGraph;
@@ -55,6 +56,9 @@ pub struct Engine {
     /// Receives (x, y, window_width, window_height). Return `true` to request
     /// a redraw after handling the click.
     pub panel_overlay_mouse_hook: Option<Box<dyn Fn(f32, f32, u32, u32) -> bool>>,
+
+    /// Nodes hidden from rendering (e.g. via editor Hide command).
+    pub hidden_nodes: HashSet<NodeId>,
 }
 
 impl Engine {
@@ -81,6 +85,7 @@ impl Engine {
             on_pick: None,
             panel_overlay_key_hook: None,
             panel_overlay_mouse_hook: None,
+            hidden_nodes: HashSet::new(),
         }
     }
 
@@ -191,11 +196,15 @@ impl Engine {
         // 2. Evaluate engines (animation, simulation, etc.)
         self.world.evaluate_engines();
 
-        // 3. Reset collector for this frame
-        let dm = renderer.global_display_mode;
-        self.world.reset_collector(dm);
+        // 3. Set materials on renderer (so shader lookups work during draw)
+        renderer.set_materials(self.world.materials.clone());
 
-        // 4. Update camera nodes from controller state
+        // 4. Reset collector for this frame
+        let dm = renderer.display_mode();
+        self.world.reset_collector(dm);
+        self.world.collector.set_hidden_nodes(&self.hidden_nodes);
+
+        // 5. Update camera nodes from controller state
         let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
 
         // Legacy path: update all PerspectiveCamera/OrthographicCamera nodes
@@ -210,34 +219,52 @@ impl Engine {
         let layout = renderer.viewport_layout();
         self.viewport_cameras.update_all(&mut self.world.graph, &layout);
 
-        // 5. Traverse scene graph to populate draw calls
+        // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();
 
-        // 6. Send effect commands to renderer
+        // 7. Fallback: if traversal found no camera, apply a default projection.
+        // Without this, the collector stays at IDENTITY and nothing renders.
+        if self.world.collector.projection_matrix == Mat4::IDENTITY {
+            self.world.collector.projection_matrix =
+                Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 1000.0);
+            self.world.collector.view_matrix =
+                Mat4::look_at_rh(Vec3::new(0.0, 2.0, 8.0), Vec3::ZERO, Vec3::Y);
+            self.world.collector.camera_pos = Vec3::new(0.0, 2.0, 8.0);
+        }
+
+        // 8. Apply camera matrices to draw calls
+        rc3d_render::render_action::apply_world_camera(
+            &mut self.world.collector.draw_calls,
+            self.world.collector.view_matrix,
+            self.world.collector.projection_matrix,
+            self.world.collector.camera_pos,
+        );
+
+        // 9. Cache draw calls for static-frame fast path
+        self.world.cached_draw_calls = self.world.collector.draw_calls.clone();
+        // Clear stale dirty flags after full traversal
+        rc3d_render::dirty_flags::clear_all_dirty_flags(&mut self.world.graph);
+
+        // 10. Send effect commands to renderer
         let effect_cmds = std::mem::replace(
             &mut self.world.collector.effect_commands,
             Default::default(),
         );
         renderer.set_effect_commands(effect_cmds);
 
-        // 7. Call pre-render hook (before GPU submission)
+        // 11. Call pre-render hook (before GPU submission)
         if let Some(ref mut h) = pre_hook {
             h(renderer);
         }
 
-        // 8. Render
-        let cache = &self.world.cached_draw_calls;
-        let dc: &[DrawCall] = if cache.is_empty() {
-            &self.world.collector.draw_calls
-        } else {
-            cache
-        };
+        // 12. Render using cached draw calls for consistent state
+        let dc = &self.world.cached_draw_calls;
         let stats = renderer.render_draw_calls(dc, &self.world.graph);
 
-        // 9. Report frame time for adaptive quality controller
+        // 13. Report frame time for adaptive quality controller
         renderer.report_frame_time_ms(stats.frame_time_ms as f32, self.adaptive_control);
 
-        // 10. Restore pre-render hook and track FPS
+        // 14. Restore pre-render hook and track FPS
         self.pre_render_hook = pre_hook;
         self.fps.push(stats.frame_time_ms as f32);
 
