@@ -8,7 +8,7 @@
 //! Usage: cargo run -p rc3d-examples --example stl_diagnostic_full_test [file.stl]
 
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rc3d_core::math::Vec3;

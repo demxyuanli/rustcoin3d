@@ -42,6 +42,8 @@ pub struct PostFxPipelines {
     pub blit_bgl: wgpu::BindGroupLayout,
     pub blit_pipeline: wgpu::RenderPipeline,
     pub copy_pipeline: wgpu::ComputePipeline,
+    pub velocity_bgl: wgpu::BindGroupLayout,
+    pub velocity_pipeline: wgpu::ComputePipeline,
     pub bloom_bgl: wgpu::BindGroupLayout,
     pub bloom_prefilter: wgpu::ComputePipeline,
     pub ssao_sampler: wgpu::Sampler,
@@ -67,6 +69,10 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     let copy_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Copy texture"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/copy_texture.wgsl").into()),
+    });
+    let velocity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Velocity"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/velocity.wgsl").into()),
     });
     let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("SSAO"),
@@ -220,6 +226,38 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         label: Some("Copy texture"), layout: Some(&bloom_pll), module: &copy_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
     });
 
+    let velocity_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Velocity BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: false } },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rg16Float, view_dimension: wgpu::TextureViewDimension::D2 },
+                count: None,
+            },
+        ],
+    });
+    let velocity_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Velocity PLL"), bind_group_layouts: &[&velocity_bgl], push_constant_ranges: &[],
+    });
+    let velocity_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Velocity"), layout: Some(&velocity_pll), module: &velocity_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
+    });
+
     let ssao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("SSAO BGL"),
         entries: &[
@@ -364,6 +402,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         bloom_bgl,
         bloom_prefilter,
         copy_pipeline,
+        velocity_bgl,
+        velocity_pipeline,
         ssao_sampler,
         ssao_bgl,
         ssao_blur_bgl,
@@ -394,6 +434,9 @@ pub struct PostFxTextures {
     /// Post-FX scratch textures (avoid read-write conflict on HDR within single dispatch).
     pub scratch_tex: wgpu::Texture,
     pub scratch_view: wgpu::TextureView,
+    /// Screen-space velocity (Rg16Float) for motion blur.
+    pub velocity_tex: wgpu::Texture,
+    pub velocity_view: wgpu::TextureView,
 }
 
 pub fn ensure_post_fx_textures(
@@ -472,6 +515,14 @@ pub fn ensure_post_fx_textures(
     });
     let scratch_view = scratch_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // Velocity buffer for motion blur (Rg16Float)
+    let velocity_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Velocity"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rg16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
+    });
+    let velocity_view = velocity_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
     let tonemap_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Tonemap BG"), layout: &p.tonemap_bgl,
         entries: &[
@@ -491,7 +542,7 @@ pub fn ensure_post_fx_textures(
         ],
     });
 
-    PostFxTextures { hdr_tex, hdr_view, tonemap_bg, post_ldr_tex: post_ldr, post_ldr_view, blit_bg, bloom_tex, bloom_view, ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view, ssr_tex, ssr_view, taa_tex, taa_view, scratch_tex, scratch_view }
+    PostFxTextures { hdr_tex, hdr_view, tonemap_bg, post_ldr_tex: post_ldr, post_ldr_view, blit_bg, bloom_tex, bloom_view, ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view, ssr_tex, ssr_view, taa_tex, taa_view, scratch_tex, scratch_view, velocity_tex, velocity_view }
 }
 
 pub fn create_ssao_noise(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {

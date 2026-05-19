@@ -8,6 +8,7 @@ use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
 use std::sync::OnceLock;
 use wgpu::util::DeviceExt;
+use bytemuck;
 
 mod pass_edge;
 pub(crate) mod pass_effects;
@@ -727,6 +728,41 @@ pub(super) fn execute_passes(
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
 
+            // ── Velocity buffer (for motion blur) ──
+            if renderer.enable_motion_blur {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP Velocity");
+                let inv_vp = (ctx.scene_vp).inverse();
+                let vp_prev = renderer.frame.last_vp;
+                // VelocityParams uniform: mat4x4 + mat4x4 + vec2 + vec2 = 144 bytes
+                let mut vel_data: Vec<u8> = Vec::with_capacity(144);
+                for row in &inv_vp.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
+                for row in &vp_prev.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
+                vel_data.extend_from_slice(bytemuck::bytes_of(&[0.0f32; 4])); // _pad0 + _pad1
+                let vel_uniform = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Velocity Params"),
+                    contents: &vel_data,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+                let vel_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Velocity BG"),
+                    layout: &pl.velocity_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&pl.ssao_sampler) },
+                        wgpu::BindGroupEntry { binding: 2, resource: vel_uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&fx.velocity_view) },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Velocity"), timestamp_writes: None,
+                });
+                pass.set_pipeline(&pl.velocity_pipeline);
+                pass.set_bind_group(0, &vel_bg, &[]);
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                drop(pass);
+                renderer.gpu_timer.end(&mut encoder, ti);
+            }
+
             // ── Motion Blur ──
             if renderer.enable_motion_blur {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP MotionBlur");
@@ -734,7 +770,7 @@ pub(super) fn execute_passes(
                 if let Some(ref mb) = renderer.gpu.motion_blur {
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        src, &depth_read_view, &depth_read_view,
+                        src, &fx.velocity_view, &depth_read_view,
                         dst, w, h, 16, 0.5,
                     );
                     hdr_is_src = !hdr_is_src;
