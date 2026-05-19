@@ -222,8 +222,7 @@ impl Engine {
         // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();
 
-        // 7. Snapshot annotation labels (reads from collector, needs &World not &self)
-        let annotation_labels = Self::collect_annotation_labels(&self.world);
+        // 7. (reserved for future use)
 
         // 8. Collect markup overlay vertices (annotations, text, dimensions)
         let markup_root = self.world.graph.roots().first().copied().unwrap_or_default();
@@ -256,7 +255,14 @@ impl Engine {
         // Clear stale dirty flags after full traversal
         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut self.world.graph);
 
-        // 11. Send effect commands to renderer
+        // 11. Project annotation labels to screen positions for glyphon text rendering
+        renderer.collect_annotation_label_positions(
+            &self.world.collector.effect_commands,
+            self.world.collector.view_matrix,
+            self.world.collector.projection_matrix,
+        );
+
+        // 12. Send effect commands to renderer
         let effect_cmds = std::mem::replace(
             &mut self.world.collector.effect_commands,
             Default::default(),
@@ -279,12 +285,9 @@ impl Engine {
             renderer.ibl_preset_name(),
         );
         let markup_text = renderer.collect_markup_text(&self.world.graph);
-        let mut overlay_lines: Vec<&str> = Vec::new();
-        for s in &markup_text { overlay_lines.push(s); }
-        for s in &annotation_labels { overlay_lines.push(s); }
-        if !overlay_lines.is_empty() {
+        if !markup_text.is_empty() {
             mode_name.push('\n');
-            mode_name.push_str(&overlay_lines.join("\n"));
+            mode_name.push_str(&markup_text.join("\n"));
         }
         if let Some(ref text_hook) = self.hud_text_hook {
             let overlay = text_hook();
@@ -315,23 +318,6 @@ impl Engine {
         if let Some(ref mut r) = self.renderer {
             r.resize(width, height);
         }
-    }
-
-    /// Collect label strings from 3D annotation elements for HUD overlay display.
-    fn collect_annotation_labels(world: &World) -> Vec<String> {
-        use rc3d_scene::node_data::AnnotationElement;
-        let mut labels = Vec::new();
-        for pa in &world.collector.effect_commands.annotation_elements {
-            let text = match &pa.element {
-                AnnotationElement::Dimension { label, .. } => label.clone(),
-                AnnotationElement::Leader { text, .. } => text.clone(),
-                AnnotationElement::Datum { .. } => continue,
-            };
-            if !text.is_empty() {
-                labels.push(text);
-            }
-        }
-        labels
     }
 
     /// Access the wgpu device (for external rendering integration).

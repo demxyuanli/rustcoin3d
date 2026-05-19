@@ -6,12 +6,12 @@ use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
 
 /// A text draw command ready for rendering.
-pub(crate) struct TextDrawCommand {
-    pub(crate) string: String,
-    pub(crate) screen_pos: [f32; 2],
-    pub(crate) size: f32,
-    pub(crate) color: [f32; 4],
-    pub(crate) is_3d: bool,
+pub struct TextDrawCommand {
+    pub string: String,
+    pub screen_pos: [f32; 2],
+    pub size: f32,
+    pub color: [f32; 4],
+    pub is_3d: bool,
 }
 
 /// Overlay lines (no positioning — rendered as HUD block) + positioned text entries.

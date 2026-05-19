@@ -1592,6 +1592,58 @@ impl Renderer {
         crate::render_passes::pass_markup::collect_markup_text_lines(graph)
     }
 
+    /// Project 3D annotation labels to screen positions and push them as
+    /// positioned text for rendering by the glyphon HUD overlay.
+    pub fn collect_annotation_label_positions(
+        &mut self,
+        effect_commands: &crate::render_passes::pass_effects::EffectCommands,
+        view_matrix: glam::Mat4,
+        projection_matrix: glam::Mat4,
+    ) {
+        if let Some(ref mut hud) = self.gpu.hud {
+            hud.positioned_texts.clear();
+            for pa in &effect_commands.annotation_elements {
+                use rc3d_scene::node_data::AnnotationElement;
+                let (pos, string, color) = match &pa.element {
+                    AnnotationElement::Dimension { start, end, offset_dir, label, color, .. } => {
+                        // Midpoint of dimension line offset
+                        let mid = [
+                            (start[0] + end[0]) * 0.5 + offset_dir[0],
+                            (start[1] + end[1]) * 0.5 + offset_dir[1],
+                            (start[2] + end[2]) * 0.5 + offset_dir[2],
+                        ];
+                        (mid, label.clone(), *color)
+                    }
+                    AnnotationElement::Leader { anchor, label_offset, text, color, .. } => {
+                        let pos_3d = [
+                            anchor[0] + label_offset[0] * 0.02,
+                            anchor[1] + label_offset[1] * 0.02,
+                            anchor[2],
+                        ];
+                        (pos_3d, text.clone(), *color)
+                    }
+                    _ => continue,
+                };
+                if string.is_empty() { continue; }
+                // Project 3D position to screen
+                let world = glam::Vec3::new(pos[0], pos[1], pos[2]);
+                let model = pa.model_matrix;
+                let clip = projection_matrix * view_matrix * model * world.extend(1.0);
+                if clip.w.abs() < 0.0001 { continue; }
+                let ndc = clip / clip.w;
+                let sx = (ndc.x * 0.5 + 0.5) * self.config.width as f32;
+                let sy = (1.0 - (ndc.y * 0.5 + 0.5)) * self.config.height as f32;
+                hud.positioned_texts.push(crate::render_passes::pass_text::TextDrawCommand {
+                    string,
+                    screen_pos: [sx, sy],
+                    size: 14.0,
+                    color,
+                    is_3d: false,
+                });
+            }
+        }
+    }
+
     pub fn has_overlay_elements(&self) -> bool {
         !self.frame.markup_vertices.is_empty() || self.hud_enabled
     }
