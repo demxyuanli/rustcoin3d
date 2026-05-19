@@ -222,15 +222,18 @@ impl Engine {
         // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();
 
-        // 7. Collect markup overlay vertices (annotations, text, dimensions)
+        // 7. Snapshot annotation labels (reads from collector, needs &World not &self)
+        let annotation_labels = Self::collect_annotation_labels(&self.world);
+
+        // 8. Collect markup overlay vertices (annotations, text, dimensions)
         let markup_root = self.world.graph.roots().first().copied().unwrap_or_default();
         renderer.collect_markup_vertices(&self.world.graph, markup_root);
 
-        // 8. Transfer light sets from collector to renderer
+        // 9. Transfer light sets from collector to renderer
         let light_sets = std::mem::take(&mut self.world.collector.light_sets);
         renderer.set_light_sets(light_sets);
 
-        // 9. Fallback: if traversal found no camera, apply a default projection.
+        // 10. Fallback: if traversal found no camera, apply a default projection.
         // Without this, the collector stays at IDENTITY and nothing renders.
         if self.world.collector.projection_matrix == Mat4::IDENTITY {
             self.world.collector.projection_matrix =
@@ -240,7 +243,7 @@ impl Engine {
             self.world.collector.camera_pos = Vec3::new(0.0, 2.0, 8.0);
         }
 
-        // 8. Apply camera matrices to draw calls
+        // 11. Apply camera matrices to draw calls
         rc3d_render::render_action::apply_world_camera(
             &mut self.world.collector.draw_calls,
             self.world.collector.view_matrix,
@@ -248,38 +251,40 @@ impl Engine {
             self.world.collector.camera_pos,
         );
 
-        // 9. Cache draw calls for static-frame fast path
+        // 10. Cache draw calls for static-frame fast path
         self.world.cached_draw_calls = self.world.collector.draw_calls.clone();
         // Clear stale dirty flags after full traversal
         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut self.world.graph);
 
-        // 10. Send effect commands to renderer
+        // 11. Send effect commands to renderer
         let effect_cmds = std::mem::replace(
             &mut self.world.collector.effect_commands,
             Default::default(),
         );
         renderer.set_effect_commands(effect_cmds);
 
-        // 11. Call pre-render hook (before GPU submission)
+        // 12. Call pre-render hook (before GPU submission)
         if let Some(ref mut h) = pre_hook {
             h(renderer);
         }
 
-        // 12. Render using cached draw calls for consistent state
+        // 13. Render using cached draw calls for consistent state
         let dc = &self.world.cached_draw_calls;
         let stats = renderer.render_draw_calls(dc, &self.world.graph);
 
-        // 13. Update HUD overlay (renders FPS counter + hook text in top-left corner)
+        // 14. Update HUD overlay (renders FPS + markup text + annotation labels)
         let mut mode_name = format!(
             "{:?} | IBL:{}",
             renderer.display_mode(),
             renderer.ibl_preset_name(),
         );
-        // Collect MarkupElement::Text strings for overlay display
         let markup_text = renderer.collect_markup_text(&self.world.graph);
-        if !markup_text.is_empty() {
+        let mut overlay_lines: Vec<&str> = Vec::new();
+        for s in &markup_text { overlay_lines.push(s); }
+        for s in &annotation_labels { overlay_lines.push(s); }
+        if !overlay_lines.is_empty() {
             mode_name.push('\n');
-            mode_name.push_str(&markup_text.join("\n"));
+            mode_name.push_str(&overlay_lines.join("\n"));
         }
         if let Some(ref text_hook) = self.hud_text_hook {
             let overlay = text_hook();
@@ -310,6 +315,23 @@ impl Engine {
         if let Some(ref mut r) = self.renderer {
             r.resize(width, height);
         }
+    }
+
+    /// Collect label strings from 3D annotation elements for HUD overlay display.
+    fn collect_annotation_labels(world: &World) -> Vec<String> {
+        use rc3d_scene::node_data::AnnotationElement;
+        let mut labels = Vec::new();
+        for pa in &world.collector.effect_commands.annotation_elements {
+            let text = match &pa.element {
+                AnnotationElement::Dimension { label, .. } => label.clone(),
+                AnnotationElement::Leader { text, .. } => text.clone(),
+                AnnotationElement::Datum { .. } => continue,
+            };
+            if !text.is_empty() {
+                labels.push(text);
+            }
+        }
+        labels
     }
 
     /// Access the wgpu device (for external rendering integration).
