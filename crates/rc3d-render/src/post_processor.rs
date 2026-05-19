@@ -41,6 +41,7 @@ pub struct PostFxPipelines {
     pub fxaa_ldr_pipeline: wgpu::RenderPipeline,
     pub blit_bgl: wgpu::BindGroupLayout,
     pub blit_pipeline: wgpu::RenderPipeline,
+    pub copy_pipeline: wgpu::ComputePipeline,
     pub bloom_bgl: wgpu::BindGroupLayout,
     pub bloom_prefilter: wgpu::ComputePipeline,
     pub ssao_sampler: wgpu::Sampler,
@@ -62,6 +63,10 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     let bloom_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Bloom prefilter"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom_prefilter.wgsl").into()),
+    });
+    let copy_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Copy texture"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/copy_texture.wgsl").into()),
     });
     let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("SSAO"),
@@ -211,6 +216,10 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         label: Some("Bloom prefilter"), layout: Some(&bloom_pll), module: &bloom_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
     });
 
+    let copy_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Copy texture"), layout: Some(&bloom_pll), module: &copy_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
+    });
+
     let ssao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("SSAO BGL"),
         entries: &[
@@ -354,6 +363,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         blit_pipeline,
         bloom_bgl,
         bloom_prefilter,
+        copy_pipeline,
         ssao_sampler,
         ssao_bgl,
         ssao_blur_bgl,

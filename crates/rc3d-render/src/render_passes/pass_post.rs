@@ -122,6 +122,37 @@ pub(super) fn pass_tonemap_hdr_to_post_ldr(
     pass.draw(0..3, 0..1);
 }
 
+/// Full-resolution texture copy (src → dst) via compute dispatch.
+/// Used for ping-pong buffer resolution in post-processing chain.
+pub(super) fn pass_copy_texture(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pl: &crate::post_processor::PostFxPipelines,
+    src: &wgpu::TextureView,
+    dst: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+) {
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Copy BG"),
+        layout: &pl.bloom_bgl,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&pl.tonemap_sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+        ],
+    });
+    let wg_x = width.div_ceil(8);
+    let wg_y = height.div_ceil(8);
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("Copy texture"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(&pl.copy_pipeline);
+    pass.set_bind_group(0, &bg, &[]);
+    pass.dispatch_workgroups(wg_x, wg_y, 1);
+}
+
 pub(super) fn pass_fxaa_ldr_to_swapchain(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

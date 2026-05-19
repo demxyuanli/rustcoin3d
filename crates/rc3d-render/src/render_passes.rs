@@ -681,30 +681,40 @@ pub(super) fn execute_passes(
             let proj = ctx.camera_proj.to_cols_array_2d();
             let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
 
+            // ── Ping-pong buffers: avoid read-write conflict on same texture ──
+            // hdr_is_src: true → rendered image is in hdr_view, scratch is free
+            //             false → rendered image is in scratch_view, hdr is free
+            let mut hdr_is_src = true;
+            let hdr: &wgpu::TextureView = &fx.hdr_view;
+            let alt: &wgpu::TextureView = &fx.scratch_view;
+
             // ── SSR (screen-space reflections) ──
             if renderer.enable_ssr {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSR");
+                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref ssr) = renderer.gpu.ssr_pass {
                     if let Some(ref hzb) = renderer.gpu.hzb {
                         ssr.trace(
                             &renderer.device, &renderer.queue, &mut encoder,
-                            &fx.hdr_view, &depth_read_view,
-                            &hzb.max_pyramid.full_view, &fx.ssr_view,
+                            src, &depth_read_view,
+                            &hzb.max_pyramid.full_view, dst,
                             w, h,
                             ctx.camera_inv_proj, Mat4::IDENTITY,
                         );
+                        hdr_is_src = !hdr_is_src;
                     }
                 }
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
 
-            // ── Volumetric Fog ──
+            // ── Volumetric Fog (reads depth only, writes to dst) ──
             if renderer.enable_volumetric_fog {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP VolFog");
+                let (_src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref fog) = renderer.gpu.volumetric_fog {
                     fog.compute(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &depth_read_view, &fx.hdr_view, w, h,
+                        &depth_read_view, dst, w, h,
                         ctx.camera_inv_proj,
                         Vec3::from(ctx.camera_pos),
                         Vec3::new(0.5, -0.8, 0.3),
@@ -712,6 +722,7 @@ pub(super) fn execute_passes(
                         Vec3::new(0.6, 0.7, 0.8),
                         0.02, 0.5, 100.0, 32,
                     );
+                    hdr_is_src = !hdr_is_src;
                 }
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
@@ -719,12 +730,14 @@ pub(super) fn execute_passes(
             // ── Motion Blur ──
             if renderer.enable_motion_blur {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP MotionBlur");
+                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref mb) = renderer.gpu.motion_blur {
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &depth_read_view, &depth_read_view,
-                        &fx.scratch_view, w, h, 16, 0.5,
+                        src, &depth_read_view, &depth_read_view,
+                        dst, w, h, 16, 0.5,
                     );
+                    hdr_is_src = !hdr_is_src;
                 }
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
@@ -732,12 +745,14 @@ pub(super) fn execute_passes(
             // ── DOF ──
             if renderer.enable_dof {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP DOF");
+                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref dof) = renderer.gpu.dof_pass {
                     dof.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &depth_read_view, &fx.scratch_view,
+                        src, &depth_read_view, dst,
                         w, h, 5.0, 2.0,
                     );
+                    hdr_is_src = !hdr_is_src;
                 }
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
@@ -745,12 +760,27 @@ pub(super) fn execute_passes(
             // ── Color Grading ──
             if renderer.enable_color_grading {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP ColorGrading");
+                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref cg) = renderer.gpu.color_grading {
                     cg.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &fx.scratch_view, w, h, 1.0,
+                        src, dst, w, h, 1.0,
                     );
+                    hdr_is_src = !hdr_is_src;
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
+            }
+
+            // ── Ensure HDR has the current accumulated image for Bloom/SSAO ──
+            // Bloom reads from hdr_view; SSAO reads from depth only.
+            // If the accumulated image is in alt, copy it back to hdr for bloom+tonemap.
+            if !hdr_is_src {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP PingPongBlit");
+                pass_post::pass_copy_texture(
+                    &renderer.device, &mut encoder, pl,
+                    alt, hdr, w, h,
+                );
+                hdr_is_src = true;
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
 
@@ -769,15 +799,27 @@ pub(super) fn execute_passes(
             // ── TAA (temporal anti-aliasing) ──
             if renderer.enable_taa {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP TAA");
+                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
                 if let Some(ref mut taa) = renderer.gpu.taa_pass {
                     taa.ensure_history(&renderer.device, w, h);
                     taa.resolve(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &depth_read_view, &depth_read_view,
-                        &fx.taa_view,
+                        src, &depth_read_view, &depth_read_view,
+                        dst,
                         0.05, 1.0,
                     );
+                    hdr_is_src = !hdr_is_src;
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
+            }
+
+            // ── Final: ensure hdr_view has the accumulated result for tonemap ──
+            if !hdr_is_src {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP FinalBlit");
+                pass_post::pass_copy_texture(
+                    &renderer.device, &mut encoder, pl,
+                    alt, hdr, w, h,
+                );
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
 

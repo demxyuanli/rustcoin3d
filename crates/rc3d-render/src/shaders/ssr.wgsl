@@ -76,6 +76,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
+    let original = textureSampleLevel(t_color, s_linear, uv, 0.0);
 
     let depth = textureSampleLevel(t_depth, s_point, uv, 0.0).r;
     let view_pos = view_pos_from_depth(uv, depth);
@@ -90,8 +91,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hit_uv = trace_ssr(view_pos, R, vec2<f32>(dims));
 
     if hit_uv.x < 0.0 {
-        // No reflection — write black
-        textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(0.0));
+        // No reflection — write original unchanged
+        textureStore(output_tex, vec2<i32>(gid.xy), original);
         return;
     }
 
@@ -108,5 +109,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let fade = edge_fade * dist_fade * 0.5; // 50% max contribution
 
-    textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(reflected_color * fade, 1.0));
+    textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(original.rgb + reflected_color * fade, 1.0));
 }
