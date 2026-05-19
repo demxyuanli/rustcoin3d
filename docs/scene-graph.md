@@ -145,17 +145,34 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 | `AnnotationSet` | `AnnotationSetNode` | 3D annotation elements placed under an `Annotation` node. Contains `Vec<AnnotationElement>` |
 
 **AnnotationElement variants** (3D world-space, projected to screen each frame):
-| Variant | Key Fields | Purpose |
-|---------|-----------|---------|
-| `Dimension` | `start, end, offset_dir, extension_len, arrow_size, color` | Linear dimension line with arrows |
-| `Leader` | `anchor, label_offset, text, color` | Leader line from object to label |
-| `Datum` | `position, size, color` | Reference datum cross marker |
+| Variant | Purpose |
+|---------|---------|
+| `Dimension` | Linear dimension (extension lines + arrows); `label_mode` + auto format |
+| `AngleDimension` | Arc between two rays from `center` |
+| `RadialDimension` | Center to perimeter with arrow |
+| `DiameterDimension` | Line through center between `p1` and `p2` |
+| `Leader` | Anchor to label (pixel `label_offset`) |
+| `Callout` | Leader + circular callout at label |
+| `Datum` | Datum cross at a point |
 
-**Design rules** (FreeCAD-aligned):
-1. **Single-plane**: Each annotation lies on one coordinate-axis-parallel plane (∥XY/XZ/YZ). No annotation straddles two faces.
-2. **All 3D**: Line geometry computed entirely in 3D world units, projected once via `proj_pt()`. No screen-space mixing.
-3. **Fixed world axes**: Leader/Datum use fixed world-space axes (not camera-relative) to prevent camera drift.
-4. **Dimension offset**: `offset_dir` (3D vector, magnitude = offset distance) defines placement relative to measurement points. `off_n = normalize(offset_dir)` is perpendicular for arrow opening.
+**AnnotationSetNode** also carries `AnnotationStyle` (extension/arrow defaults, `font_size`, `decimals`, `unit_suffix`, `arc_segments`).
+
+**Label modes** (`AnnotationLabelMode`): `Auto` (format from geometry when `label` empty), `Fixed` (use `label`), `Prefix` (`label` + formatted value).
+
+**Logic** lives in `rc3d-scene/src/annotation/` (geometry, format, label resolve). Rendering: `pass_markup::project_annotation_elements`.
+
+**AnnotationPoint** — spatial fields (`start`, `end`, `center`, `anchor`, `position`, …) use `AnnotationPoint` instead of raw `[f32; 3]`:
+- `AnnotationPoint::local([x,y,z])` — coordinates in `AnnotationSet` local space (default).
+- `AnnotationPoint::on_node(node_id, local)` — point in that node's local space; renderer uses `prepare_annotation_for_render` (`model_matrix = set_matrix * node_world`).
+- Serde: plain `[f32;3]` array or `{ "node": "...", "local": [...] }`.
+
+**From interactive measurement** — `rc3d_scene::annotation::{world_distance_annotation, world_angle_annotation, world_radius_annotation, world_diameter_annotation}` build an `AnnotationSetNode` from world picks. `rc3d_actions::MeasurementAction::build_annotation_set()` / `create_annotation_node()` wrap this for tools.
+
+**Design rules**:
+1. **Single-plane**: Each annotation on one axis-aligned plane (∥XY/XZ/YZ).
+2. **All 3D**: Geometry in world units, one VP projection per frame.
+3. **Fixed world axes**: Leader/Callout label offsets map along world +X/+Y from anchor.
+4. **Plane-aligned text**: Labels rotated to the projected dimension tangent (not HUD-horizontal).
 
 **Scene graph example**:
 ```rust

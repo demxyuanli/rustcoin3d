@@ -1,13 +1,10 @@
-//! Screen-space markup overlay rendering.
+//! Markup overlay rendering.
 //!
-//! Collects all MarkupNodes from the scene graph and renders their elements
-//! as screen-space line geometry with depth_compare: Always (overlay).
+//! - Legacy `MarkupNode` elements: 2D screen-pixel lines.
+//! - `AnnotationSet` elements: model-local 3D geometry projected with the scene camera (NDC).
 
-mod labels;
-mod projection;
+pub(crate) mod projection;
 mod primitives;
-
-pub use labels::build_annotation_label_commands;
 
 use crate::vertex::MarkupVertex;
 use rc3d_core::NodeId;
@@ -234,22 +231,17 @@ pub fn pass_markup(
     effect_commands: &EffectCommands,
 ) {
     // ── Combine 2D screen-space markup + projected 3D annotations ──
+    renderer.frame.annotation_label_texts.clear();
     let projected = project_annotation_elements(
         &effect_commands.annotation_elements,
         scene_vp,
         surface_w as f32,
         surface_h as f32,
         depth_reversed_z,
+        &mut renderer.frame.annotation_label_texts,
     );
-    let combined = if projected.is_empty() {
-        std::borrow::Cow::Borrowed(&renderer.frame.markup_vertices)
-    } else {
-        let mut v = renderer.frame.markup_vertices.clone();
-        v.extend_from_slice(&projected);
-        std::borrow::Cow::Owned(v)
-    };
-
-    if combined.is_empty() {
+    let legacy = &renderer.frame.markup_vertices;
+    if projected.is_empty() && legacy.is_empty() {
         return;
     }
 
@@ -270,21 +262,42 @@ pub fn pass_markup(
 
     pass.set_pipeline(&renderer.gpu.pipelines.markup_lines);
 
-    let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();
-    let uniforms = crate::vertex::FlatUniforms {
-        mvp,
-        color: [0.0; 4], // unused — fs_markup uses vertex colors
-    };
+    // 3D annotations: NDC vertices + identity MVP (same camera as mesh, world-fixed on model).
+    if !projected.is_empty() {
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+        let uniforms = crate::vertex::FlatUniforms {
+            mvp: identity,
+            color: [0.0; 4],
+        };
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("annotation markup vb"),
+                contents: bytemuck::cast_slice(&projected),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
+            pass.set_vertex_buffer(0, vb.slice(..));
+            pass.draw(0..projected.len() as u32, 0..1);
+        }
+    }
 
-    if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
-        let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("markup vb"),
-            contents: bytemuck::cast_slice(&combined),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
-        pass.set_vertex_buffer(0, vb.slice(..));
-        pass.draw(0..combined.len() as u32, 0..1);
+    // Legacy 2D MarkupNode overlay (screen pixels).
+    if !legacy.is_empty() {
+        let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();
+        let uniforms = crate::vertex::FlatUniforms {
+            mvp,
+            color: [0.0; 4],
+        };
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("legacy markup vb"),
+                contents: bytemuck::cast_slice(legacy),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
+            pass.set_vertex_buffer(0, vb.slice(..));
+            pass.draw(0..legacy.len() as u32, 0..1);
+        }
     }
 }
 

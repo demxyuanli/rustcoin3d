@@ -151,29 +151,29 @@ impl super::Renderer {
                     render_passes::pass_text::collect_text_nodes(scene, text_vp, text_viewport, text_cam)
                 });
                 hud.overlay_lines = t.overlay_lines;
-                hud.positioned_texts = t.positioned;
+                hud.scene_positioned_texts = t.positioned;
                 if hud.overlay_lines.is_empty()
-                    && hud.positioned_texts.is_empty()
+                    && hud.scene_positioned_texts.is_empty()
                     && self.frame.frame_counter >= 2
                 {
                     self.frame.has_text_nodes = false;
                 }
             } else {
                 hud.overlay_lines = Vec::new();
-                hud.positioned_texts.clear();
+                hud.scene_positioned_texts.clear();
             };
         }
-        let effect_commands = if self.frame.has_effect_nodes || self.frame.frame_counter < 2 {
-            let cmds = self.cpu_span.measure("effect_collect", || {
+        let mut effect_commands = std::mem::take(&mut self.frame.effect_commands);
+        if effect_commands.is_empty()
+            && (self.frame.has_effect_nodes || self.frame.frame_counter < 2)
+        {
+            effect_commands = self.cpu_span.measure("effect_collect", || {
                 render_passes::pass_effects::collect_effect_nodes(scene)
             });
-            if cmds.is_empty() && self.frame.frame_counter >= 2 {
+            if effect_commands.is_empty() && self.frame.frame_counter >= 2 {
                 self.frame.has_effect_nodes = false;
             }
-            cmds
-        } else {
-            crate::render_passes::pass_effects::EffectCommands::default()
-        };
+        }
 
         if draw_calls.is_empty() {
             return render_passes::render_overlay_only_frame(
@@ -186,8 +186,16 @@ impl super::Renderer {
         }
 
         let first = &draw_calls[0];
-        let vp = first.mvp * first.model_matrix.inverse();
+        // Always prefer VP from current draw calls (updated each frame via apply_world_camera).
+        // Cached frame.scene_vp must not win — it freezes annotations/grid when the camera moves.
+        let vp_from_draws = crate::render_action::view_projection_from_draw_call(first);
+        let vp = if vp_from_draws != Mat4::IDENTITY {
+            vp_from_draws
+        } else {
+            self.frame.scene_vp
+        };
         self.frame.scene_vp = vp;
+        self.frame.scene_depth_reversed_z = first.depth_reversed_z;
         // Camera moved? Force re-cull even if AABBs are static.
         let camera_moved = vp != self.frame.last_vp;
         if camera_moved {
@@ -496,6 +504,11 @@ impl super::Renderer {
         light_hashes.clear();
         light_hashes.extend(visible.iter().map(|dc| dc.light_key));
 
+        self.frame.scene_camera_pos = draw_calls
+            .first()
+            .map(|dc| dc.camera_pos)
+            .unwrap_or(Vec3::ZERO);
+
         let (mut solid_order, mut edge_order, mut selected_order) = if self.frame.bvh_fully_static && self.frame.static_frame_count >= 2 {
             (std::mem::take(&mut self.frame.solid_order_buf),
              std::mem::take(&mut self.frame.edge_order_buf),
@@ -530,8 +543,6 @@ impl super::Renderer {
                         mesh_handles[i].map(|m| m.data().as_ffi()).unwrap_or(0),
                     )
                 });
-                let camera_pos_vec: Vec3 = draw_calls.first().map(|dc| dc.camera_pos).unwrap_or(Vec3::ZERO);
-                self.frame.scene_camera_pos = camera_pos_vec;
                 (solid_order, edge_order, selected_order)
             })
         };
@@ -1018,7 +1029,7 @@ impl super::Renderer {
         let quality_name = self.adaptive_quality_name();
         let hud_mode_name = format!("{mode_name} [{quality_name}]");
         if let Some(hud) = &mut self.gpu.hud {
-            hud.update_text(&self.device, &self.queue, fps, frame_time_ms, stats, &hud_mode_name);
+            hud.set_fps_buffer_text(fps, frame_time_ms, stats, &hud_mode_name);
         }
     }
 

@@ -6,12 +6,17 @@ use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
 
 /// A text draw command ready for rendering.
+#[derive(Clone)]
 pub struct TextDrawCommand {
     pub string: String,
     pub screen_pos: [f32; 2],
     pub size: f32,
     pub color: [f32; 4],
     pub is_3d: bool,
+    /// When true, glyph is rotated by `baseline_angle_rad` (dimension labels use horizontal text).
+    pub plane_aligned: bool,
+    /// Screen-space baseline angle (radians); 0 = horizontal, readable regardless of camera orbit.
+    pub baseline_angle_rad: f32,
 }
 
 /// Overlay lines (no positioning — rendered as HUD block) + positioned text entries.
@@ -70,6 +75,8 @@ fn collect_recursive(
                         size: t.size,
                         color: t.color,
                         is_3d: false,
+                        plane_aligned: false,
+                        baseline_angle_rad: 0.0,
                     });
                 }
             } else {
@@ -91,6 +98,8 @@ fn collect_recursive(
                     size: t.size,
                     color: t.color,
                     is_3d: true,
+                    plane_aligned: false,
+                    baseline_angle_rad: 0.0,
                 });
             }
         }

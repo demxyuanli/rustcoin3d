@@ -76,4 +76,38 @@ impl MeasurementAction {
         }
         sep
     }
+
+    /// Persistent 3D annotation from completed measurement picks (world space).
+    pub fn build_annotation_set(&self) -> Option<rc3d_scene::node_data::AnnotationSetNode> {
+        use rc3d_scene::annotation::{
+            world_angle_annotation, world_distance_annotation, world_radius_annotation,
+            AnnotationStyle,
+        };
+        if !self.completed {
+            return None;
+        }
+        let color = [1.0, 1.0, 0.0, 1.0];
+        let style = AnnotationStyle::default();
+        Some(match self.mode {
+            MeasurementMode::Distance if self.points.len() >= 2 => {
+                world_distance_annotation(self.points[0], self.points[1], color, style)
+            }
+            MeasurementMode::Angle if self.points.len() >= 3 => {
+                world_angle_annotation(self.points[0], self.points[1], self.points[2], color, style)
+            }
+            MeasurementMode::Radius if self.points.len() >= 2 => {
+                world_radius_annotation(self.points[0], self.points[1], color, style)
+            }
+            _ => return None,
+        })
+    }
+
+    /// Add `Annotation` + `AnnotationSet` under `parent` from a completed measurement.
+    pub fn create_annotation_node(&self, graph: &mut SceneGraph, parent: NodeId) -> Option<NodeId> {
+        use rc3d_scene::node_data::*;
+        let set = self.build_annotation_set()?;
+        let ann = graph.add_child(parent, NodeData::Annotation(AnnotationNode));
+        let set_id = graph.add_child(ann, NodeData::AnnotationSet(set));
+        Some(set_id)
+    }
 }

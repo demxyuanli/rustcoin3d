@@ -375,6 +375,15 @@ pub struct PostFxTextures {
     pub ssao_view: wgpu::TextureView,
     pub ssao_blur_tex: wgpu::Texture,
     pub ssao_blur_view: wgpu::TextureView,
+    /// SSR output texture (separate from HDR to avoid read-write conflict in compute dispatch).
+    pub ssr_tex: wgpu::Texture,
+    pub ssr_view: wgpu::TextureView,
+    /// TAA output texture (separate from HDR to avoid read-write conflict).
+    pub taa_tex: wgpu::Texture,
+    pub taa_view: wgpu::TextureView,
+    /// Post-FX scratch textures (avoid read-write conflict on HDR within single dispatch).
+    pub scratch_tex: wgpu::Texture,
+    pub scratch_view: wgpu::TextureView,
 }
 
 pub fn ensure_post_fx_textures(
@@ -393,6 +402,7 @@ pub fn ensure_post_fx_textures(
         mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
@@ -428,6 +438,30 @@ pub fn ensure_post_fx_textures(
     });
     let ssao_blur_view = ssao_blur_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // SSR output — separate texture to avoid read-write conflict on HDR within single dispatch
+    let ssr_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SSR output"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
+    });
+    let ssr_view = ssr_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // TAA output — separate texture to avoid read-write conflict on HDR
+    let taa_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("TAA output"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
+    });
+    let taa_view = taa_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Scratch texture for passes that read from and write to HDR within one dispatch
+    let scratch_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("PostFX scratch"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
+    });
+    let scratch_view = scratch_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
     let tonemap_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Tonemap BG"), layout: &p.tonemap_bgl,
         entries: &[
@@ -447,7 +481,7 @@ pub fn ensure_post_fx_textures(
         ],
     });
 
-    PostFxTextures { hdr_tex, hdr_view, tonemap_bg, post_ldr_tex: post_ldr, post_ldr_view, blit_bg, bloom_tex, bloom_view, ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view }
+    PostFxTextures { hdr_tex, hdr_view, tonemap_bg, post_ldr_tex: post_ldr, post_ldr_view, blit_bg, bloom_tex, bloom_view, ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view, ssr_tex, ssr_view, taa_tex, taa_view, scratch_tex, scratch_view }
 }
 
 pub fn create_ssao_noise(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {

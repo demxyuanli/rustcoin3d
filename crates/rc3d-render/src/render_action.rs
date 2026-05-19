@@ -261,6 +261,12 @@ pub fn apply_world_camera(
     }
 }
 
+/// Extract `projection * view` from a draw call after [`apply_world_camera`].
+#[inline]
+pub fn view_projection_from_draw_call(dc: &DrawCall) -> Mat4 {
+    dc.mvp * dc.model_matrix.inverse()
+}
+
 /// Opaque cache-target pointer. Not Send-safe by default, but our use is
 /// strictly single-threaded during traversal, so Send is manually implemented.
 struct CacheTarget(*mut crate::flat_draw_cache::FlatDrawCache);
@@ -592,12 +598,17 @@ impl RenderCollector {
             }
             NodeData::AnnotationSet(ann) => {
                 if ann.visible {
+                    let set_matrix = self.state.model_matrix();
                     for el in &ann.elements {
-                        // Collect 3D annotation elements for projection in the render pass
+                        let (element, el_model) =
+                            rc3d_scene::annotation::prepare_annotation_for_render(
+                                graph, set_matrix, el,
+                            );
                         self.effect_commands.annotation_elements.push(
                             crate::render_passes::pass_effects::ProjectedAnnotation {
-                                element: el.clone(),
-                                model_matrix: self.state.model_matrix(),
+                                element,
+                                model_matrix: el_model,
+                                style: ann.style.clone(),
                             },
                         );
                     }
@@ -1418,10 +1429,50 @@ impl rc3d_actions::Action for RenderCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Mat4;
     use rc3d_core::math::Vec3;
     use rc3d_scene::{
         AnnotationNode, Coordinate3Node, GroupNode, IndexedLineSetNode, NodeData, SceneGraph,
     };
+
+    #[test]
+    fn view_projection_from_draw_call_strips_model() {
+        let model = Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0));
+        let view = Mat4::look_at_rh(glam::Vec3::new(0.0, 2.0, 8.0), glam::Vec3::ZERO, glam::Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+        let expected_vp = proj * view;
+        let mut dc = DrawCall::default();
+        dc.model_matrix = model;
+        apply_world_camera(
+            std::slice::from_mut(&mut dc),
+            view,
+            proj,
+            Vec3::new(0.0, 2.0, 8.0),
+        );
+        let extracted = view_projection_from_draw_call(&dc);
+        assert!(
+            extracted.abs_diff_eq(expected_vp, 1e-4),
+            "VP should match camera after stripping model"
+        );
+    }
+
+    #[test]
+    fn draw_call_vp_must_win_over_stale_cached_scene_vp() {
+        let view_a = Mat4::look_at_rh(glam::Vec3::new(0.0, 2.0, 8.0), glam::Vec3::ZERO, glam::Vec3::Y);
+        let view_b = Mat4::look_at_rh(glam::Vec3::new(5.0, 2.0, 8.0), glam::Vec3::ZERO, glam::Vec3::Y);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+        let stale_vp = proj * view_a;
+        let mut dc = DrawCall::default();
+        apply_world_camera(std::slice::from_mut(&mut dc), view_b, proj, Vec3::new(5.0, 2.0, 8.0));
+        let fresh_vp = view_projection_from_draw_call(&dc);
+        let chosen = if fresh_vp != Mat4::IDENTITY {
+            fresh_vp
+        } else {
+            stale_vp
+        };
+        assert!(chosen.abs_diff_eq(proj * view_b, 1e-4));
+        assert!(!chosen.abs_diff_eq(stale_vp, 1e-4));
+    }
 
     #[test]
     fn annotation_children_emit_overlay_draw_calls() {

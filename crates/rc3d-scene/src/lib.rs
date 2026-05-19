@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod annotation;
 pub mod custom_node;
 pub mod node_data;
 pub mod node_entry;
@@ -9,6 +10,7 @@ pub mod sensors;
 pub mod traversal;
 
 pub use animation::*;
+pub use annotation::*;
 pub use custom_node::CustomNodeData;
 pub use node_data::*;
 pub use node_data::FieldDescriptor;

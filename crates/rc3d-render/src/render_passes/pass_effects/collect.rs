@@ -1,6 +1,7 @@
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
-use rc3d_scene::node_data::AnnotationElement;
+use rc3d_scene::annotation::prepare_annotation_for_render;
+use rc3d_scene::node_data::{AnnotationElement, AnnotationStyle};
 use rc3d_scene::{NodeData, SceneGraph};
 
 #[derive(Clone, Debug, Default)]
@@ -23,6 +24,7 @@ impl EffectCommands {
 pub struct ProjectedAnnotation {
     pub element: AnnotationElement,
     pub model_matrix: Mat4,
+    pub style: AnnotationStyle,
 }
 
 #[derive(Clone, Debug)]
@@ -148,9 +150,12 @@ fn collect_effect_recursive(
         NodeData::AnnotationSet(ann) => {
             if ann.visible {
                 for el in &ann.elements {
+                    let (element, el_model) =
+                        prepare_annotation_for_render(graph, model_matrix, el);
                     commands.annotation_elements.push(ProjectedAnnotation {
-                        element: el.clone(),
-                        model_matrix,
+                        element,
+                        model_matrix: el_model,
+                        style: ann.style.clone(),
                     });
                 }
             }

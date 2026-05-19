@@ -219,6 +219,13 @@ impl Renderer {
         self.frame.effect_commands = cmds;
     }
 
+    /// Scene camera view-projection (`projection * view`) from the last graph traversal.
+    pub fn set_scene_view_projection(&mut self, view: Mat4, projection: Mat4) {
+        self.frame.scene_vp = projection * view;
+        self.frame.scene_depth_reversed_z =
+            rc3d_core::depth_reversed_z_from_projection(projection);
+    }
+
     /// Reconfigure cascaded shadow map resolution and cascade count.
     ///
     /// Recreates shadow resources if the requested parameters differ from current.
@@ -878,9 +885,11 @@ impl Renderer {
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),
+                annotation_label_texts: Vec::new(),
                 clip_planes: Vec::new(),
                 section_cap_tints: Vec::new(),
                 scene_vp: Mat4::IDENTITY,
+                scene_depth_reversed_z: false,
                 scene_camera_pos: Vec3::ZERO,
                 animation_time_sec: 0.0,
                 frame_counter: 0,
@@ -1592,28 +1601,11 @@ impl Renderer {
         crate::render_passes::pass_markup::collect_markup_text_lines(graph)
     }
 
-    /// Append projected annotation labels to HUD positioned text (call before HUD render).
-    pub fn append_annotation_labels_for_hud(
-        &mut self,
-        effect_commands: &crate::render_passes::pass_effects::EffectCommands,
-        scene_vp: glam::Mat4,
-        depth_reversed_z: bool,
-    ) {
-        let labels = crate::render_passes::pass_markup::build_annotation_label_commands(
-            effect_commands,
-            scene_vp,
-            self.config.width,
-            self.config.height,
-            depth_reversed_z,
-        );
+    /// Prepare HUD overlay: scene text + plane-aligned annotation labels.
+    pub fn prepare_hud_overlay_for_render(&mut self) {
         if let Some(ref mut hud) = self.gpu.hud {
-            hud.positioned_texts.extend(labels);
-        }
-    }
-
-    /// Prepare glyphon atlas for the in-frame HUD overlay pass.
-    pub fn prepare_hud_gpu_atlas_for_render(&mut self) {
-        if let Some(ref mut hud) = self.gpu.hud {
+            hud.positioned_texts.clone_from(&hud.scene_positioned_texts);
+            hud.prepare_plane_annotation_glyphs(&self.frame.annotation_label_texts);
             hud.prepare_gpu_atlas_for_render(&self.device, &self.queue);
         }
     }

@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use glyphon::{
-    Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    Attrs, Buffer, Cache, Color, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest,
+    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextRenderer, Viewport,
 };
 
 use crate::render_passes::pass_text::TextDrawCommand;
@@ -43,8 +46,13 @@ pub struct HudRenderer {
     /// User-defined overlay text lines displayed above FPS stats.
     pub overlay_lines: Vec<String>,
     /// Positioned text entries from Billboards / Text3 nodes.
+    pub(crate) scene_positioned_texts: Vec<TextDrawCommand>,
+    /// Merged list (scene Text2/3 only) rebuilt each HUD pass.
     pub(crate) positioned_texts: Vec<TextDrawCommand>,
     positioned_buffers: Vec<Buffer>,
+    empty_buffer: Buffer,
+    plane_custom_glyphs: Vec<CustomGlyph>,
+    plane_glyph_cache: HashMap<u16, crate::plane_text::PlaneGlyphCacheEntry>,
 }
 
 impl HudRenderer {
@@ -74,6 +82,15 @@ impl HudRenderer {
             Attrs::new().family(Family::SansSerif),
             Shaping::Advanced,
         );
+        let mut empty_buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 17.0));
+        empty_buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        empty_buffer.set_text(
+            &mut font_system,
+            "",
+            Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+        );
+        empty_buffer.shape_until_scroll(&mut font_system, false);
         let mut hud = Self {
             font_system,
             swash_cache,
@@ -84,8 +101,12 @@ impl HudRenderer {
             width,
             height,
             overlay_lines: Vec::new(),
+            scene_positioned_texts: Vec::new(),
             positioned_texts: Vec::new(),
             positioned_buffers: Vec::new(),
+            empty_buffer,
+            plane_custom_glyphs: Vec::new(),
+            plane_glyph_cache: HashMap::new(),
         };
         hud.viewport.update(queue, Resolution { width, height });
         hud
@@ -117,6 +138,17 @@ impl HudRenderer {
         }
     }
 
+    /// Rasterize plane-aligned annotation labels as rotated custom glyphs.
+    pub fn prepare_plane_annotation_glyphs(&mut self, labels: &[TextDrawCommand]) {
+        let (glyphs, cache) = crate::plane_text::build_plane_label_custom_glyphs(
+            &mut self.font_system,
+            &mut self.swash_cache,
+            labels,
+        );
+        self.plane_custom_glyphs = glyphs;
+        self.plane_glyph_cache = cache;
+    }
+
     /// Upload current FPS + positioned text to the glyphon atlas (call before HUD render pass).
     pub fn prepare_gpu_atlas_for_render(
         &mut self,
@@ -124,18 +156,20 @@ impl HudRenderer {
         queue: &wgpu::Queue,
     ) {
         self.prepare_positioned_texts();
-        let mut areas: Vec<TextArea> = Vec::with_capacity(1 + self.positioned_texts.len());
+        let bounds = TextBounds {
+            left: 0,
+            top: 0,
+            right: self.width as i32,
+            bottom: self.height as i32,
+        };
+        let mut areas: Vec<TextArea> =
+            Vec::with_capacity(2 + self.positioned_texts.len() + usize::from(!self.plane_custom_glyphs.is_empty()));
         areas.push(TextArea {
             buffer: &self.buffer,
             left: 12.0,
             top: 12.0,
             scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: 0,
-                right: self.width as i32,
-                bottom: self.height as i32,
-            },
+            bounds,
             default_color: Color::rgb(240, 240, 240),
             custom_glyphs: &[],
         });
@@ -146,12 +180,7 @@ impl HudRenderer {
                 left: cmd.screen_pos[0],
                 top: cmd.screen_pos[1],
                 scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: self.width as i32,
-                    bottom: self.height as i32,
-                },
+                bounds,
                 default_color: Color::rgba(
                     (col[0] * 255.0) as u8,
                     (col[1] * 255.0) as u8,
@@ -161,7 +190,19 @@ impl HudRenderer {
                 custom_glyphs: &[],
             });
         }
-        if let Err(e) = self.text_renderer.prepare(
+        if !self.plane_custom_glyphs.is_empty() {
+            areas.push(TextArea {
+                buffer: &self.empty_buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds,
+                default_color: Color::rgb(255, 255, 255),
+                custom_glyphs: &self.plane_custom_glyphs,
+            });
+        }
+        let cache = self.plane_glyph_cache.clone();
+        if let Err(e) = self.text_renderer.prepare_with_custom(
             device,
             queue,
             &mut self.font_system,
@@ -169,15 +210,19 @@ impl HudRenderer {
             &self.viewport,
             areas,
             &mut self.swash_cache,
+            move |req: RasterizeCustomGlyphRequest| {
+                cache
+                    .get(&req.id)
+                    .map(|entry| crate::plane_text::glyph_for_request(entry, &req))
+            },
         ) {
             log::error!("HUD prepare (render pass): {:?}", e);
         }
     }
 
-    pub fn update_text(
+    /// Update the FPS / stats block only (glyph upload happens in `prepare_gpu_atlas_for_render`).
+    pub fn set_fps_buffer_text(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         fps: f32,
         frame_time_ms: f32,
         stats: &FrameStats,
@@ -191,71 +236,6 @@ impl HudRenderer {
             Shaping::Advanced,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
-
-        // Ensure enough positioned buffers exist
-        self.positioned_buffers.clear();
-        for cmd in &self.positioned_texts {
-            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
-            buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
-            buf.set_text(
-                &mut self.font_system,
-                &cmd.string,
-                Attrs::new().family(Family::SansSerif),
-                Shaping::Advanced,
-            );
-            buf.shape_until_scroll(&mut self.font_system, false);
-            self.positioned_buffers.push(buf);
-        }
-
-        let mut areas: Vec<TextArea> = Vec::with_capacity(1 + self.positioned_texts.len());
-        areas.push(TextArea {
-            buffer: &self.buffer,
-            left: 12.0,
-            top: 12.0,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: 0,
-                right: self.width as i32,
-                bottom: self.height as i32,
-            },
-            default_color: Color::rgb(240, 240, 240),
-            custom_glyphs: &[],
-        });
-        for (i, cmd) in self.positioned_texts.iter().enumerate() {
-            let col = cmd.color;
-            areas.push(TextArea {
-                buffer: &self.positioned_buffers[i],
-                left: cmd.screen_pos[0],
-                top: cmd.screen_pos[1],
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: self.width as i32,
-                    bottom: self.height as i32,
-                },
-                default_color: Color::rgba(
-                    (col[0] * 255.0) as u8,
-                    (col[1] * 255.0) as u8,
-                    (col[2] * 255.0) as u8,
-                    (col[3] * 255.0) as u8,
-                ),
-                custom_glyphs: &[],
-            });
-        }
-
-        if let Err(e) = self.text_renderer.prepare(
-            device,
-            queue,
-            &mut self.font_system,
-            &mut self.atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        ) {
-            log::error!("HUD prepare: {:?}", e);
-        }
     }
 
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {

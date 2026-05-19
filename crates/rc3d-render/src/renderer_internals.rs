@@ -120,10 +120,13 @@ pub struct GpuCapability {
 
 pub(crate) struct FrameState {
     pub markup_vertices: Vec<MarkupVertex>,
+    /// Screen-space labels projected together with annotation lines in `pass_markup`.
+    pub annotation_label_texts: Vec<crate::render_passes::pass_text::TextDrawCommand>,
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,
     pub scene_vp: Mat4,
+    pub scene_depth_reversed_z: bool,
     pub scene_camera_pos: Vec3,
     pub animation_time_sec: f32,
     pub frame_counter: u64,

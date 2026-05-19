@@ -22,6 +22,7 @@ struct SsrParamsUniform {
     roughness_cutoff: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,  // WGSL uniform struct alignment: size must be multiple of 16 (mat4x4)
 }
 
 impl SsrPass {
@@ -178,6 +179,7 @@ impl SsrPass {
                 roughness_cutoff: 0.7,
                 _pad0: 0.0,
                 _pad1: 0.0,
+                _pad2: 0.0,
             }),
         );
 

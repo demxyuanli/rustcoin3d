@@ -685,7 +685,7 @@ pub(super) fn execute_passes(
                         ssr.trace(
                             &renderer.device, &renderer.queue, &mut encoder,
                             &fx.hdr_view, &depth_read_view,
-                            &hzb.max_pyramid.full_view, &fx.hdr_view,
+                            &hzb.max_pyramid.full_view, &fx.ssr_view,
                             w, h,
                             ctx.camera_inv_proj, Mat4::IDENTITY,
                         );
@@ -715,7 +715,7 @@ pub(super) fn execute_passes(
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &depth_read_view, &depth_read_view,
-                        &fx.hdr_view, w, h, 16, 0.5,
+                        &fx.scratch_view, w, h, 16, 0.5,
                     );
                 }
             }
@@ -725,7 +725,7 @@ pub(super) fn execute_passes(
                 if let Some(ref dof) = renderer.gpu.dof_pass {
                     dof.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &depth_read_view, &fx.hdr_view,
+                        &fx.hdr_view, &depth_read_view, &fx.scratch_view,
                         w, h, 5.0, 2.0,
                     );
                 }
@@ -736,7 +736,7 @@ pub(super) fn execute_passes(
                 if let Some(ref cg) = renderer.gpu.color_grading {
                     cg.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        &fx.hdr_view, &fx.hdr_view, w, h, 1.0,
+                        &fx.hdr_view, &fx.scratch_view, w, h, 1.0,
                     );
                 }
             }
@@ -756,7 +756,7 @@ pub(super) fn execute_passes(
                     taa.resolve(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &depth_read_view, &depth_read_view,
-                        &fx.hdr_view,
+                        &fx.taa_view,
                         0.05, 1.0,
                     );
                 }
@@ -877,12 +877,7 @@ pub(super) fn execute_passes(
     renderer.gpu.line_pool.flush(&renderer.queue);
 
     if renderer.hud_enabled {
-        renderer.append_annotation_labels_for_hud(
-            ctx.effect_commands,
-            ctx.scene_vp,
-            ctx.depth_reversed_z,
-        );
-        renderer.prepare_hud_gpu_atlas_for_render();
+        renderer.prepare_hud_overlay_for_render();
         if let Some(hud) = renderer.gpu.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),
@@ -1068,18 +1063,21 @@ pub(super) fn render_overlay_only_frame(
         });
     }
 
-    // Markup overlay — push_flat inside, then flush before submit
+    // Markup overlay — use traversal VP when geometry pass is skipped (no draw calls).
+    let scene_vp = renderer.frame.scene_vp;
+    let depth_reversed_z = renderer
+        .frame
+        .scene_depth_reversed_z;
     pass_markup::pass_markup(
         renderer, &mut encoder, view, ew, eh,
-        Mat4::IDENTITY, false, effect_commands,
+        scene_vp, depth_reversed_z, effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
     // HUD overlay
     if renderer.hud_enabled {
-        renderer.append_annotation_labels_for_hud(effect_commands, Mat4::IDENTITY, false);
-        renderer.prepare_hud_gpu_atlas_for_render();
+        renderer.prepare_hud_overlay_for_render();
         if let Some(hud) = renderer.gpu.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),

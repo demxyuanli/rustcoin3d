@@ -16,6 +16,7 @@ pub mod gpu_culling;
 pub mod gpu_resource;
 pub mod gpu_skinning;
 pub mod hud;
+mod plane_text;
 pub mod hzb;
 pub mod offscreen;
 pub mod parallel_traversal;

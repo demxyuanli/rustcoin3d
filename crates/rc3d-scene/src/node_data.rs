@@ -991,44 +991,147 @@ pub struct MarkupNode {
 
 // ── 3D Annotation Elements (world-space, projected to screen each frame) ──
 
+pub use crate::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
+
 /// A 3D annotation element positioned in world space.
 /// Projected to screen coordinates each frame using the camera VP matrix.
+///
+/// Each element lies on one coordinate-axis-parallel plane; geometry is built in 3D
+/// then projected once per frame.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum AnnotationElement {
-    /// Dimension line between two 3D points, with extension lines and arrowheads.
+    /// Linear dimension between two points (extension lines + arrows).
     Dimension {
-        start: [f32; 3],
-        end: [f32; 3],
-        /// Offset direction in world space for extension lines.
+        start: AnnotationPoint,
+        end: AnnotationPoint,
+        /// Offset direction in set-local space (magnitude = offset distance).
         offset_dir: [f32; 3],
+        #[serde(default = "default_annotation_extension_len")]
         extension_len: f32,
+        #[serde(default = "default_annotation_arrow_size")]
         arrow_size: f32,
+        #[serde(default)]
         label: String,
+        #[serde(default)]
+        label_mode: AnnotationLabelMode,
         color: [f32; 4],
     },
-    /// Leader line from a 3D anchor point.
+    /// Angular dimension: arc between rays `center`→`arm1` and `center`→`arm2`.
+    AngleDimension {
+        center: AnnotationPoint,
+        arm1: AnnotationPoint,
+        arm2: AnnotationPoint,
+        radius: f32,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        label_mode: AnnotationLabelMode,
+        color: [f32; 4],
+    },
+    /// Radial dimension from `center` to `perimeter`.
+    RadialDimension {
+        center: AnnotationPoint,
+        perimeter: AnnotationPoint,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        label_mode: AnnotationLabelMode,
+        #[serde(default = "default_annotation_arrow_size")]
+        arrow_size: f32,
+        color: [f32; 4],
+    },
+    /// Diameter dimension through `center` between `p1` and `p2`.
+    DiameterDimension {
+        center: AnnotationPoint,
+        p1: AnnotationPoint,
+        p2: AnnotationPoint,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        label_mode: AnnotationLabelMode,
+        #[serde(default = "default_annotation_arrow_size")]
+        arrow_size: f32,
+        color: [f32; 4],
+    },
+    /// Leader line from a 3D anchor to a label (pixel offset from anchor).
     Leader {
-        anchor: [f32; 3],
-        /// Screen-space offset for the label position (in pixels, from projected anchor).
+        anchor: AnnotationPoint,
         label_offset: [f32; 2],
         text: String,
         color: [f32; 4],
     },
-    /// Small datum tag (cross/dot) at a 3D point.
+    /// Leader + circular callout at the label.
+    Callout {
+        anchor: AnnotationPoint,
+        label_offset: [f32; 2],
+        text: String,
+        radius: f32,
+        color: [f32; 4],
+    },
+    /// Datum cross at a 3D point.
     Datum {
-        position: [f32; 3],
+        position: AnnotationPoint,
         size: f32,
         color: [f32; 4],
     },
 }
 
-/// Annotation set: a leaf node containing 3D annotation elements.
-/// Place inside an `Annotation` grouping node for overlay rendering.
-/// Elements are projected from world space to screen space each frame.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+fn default_annotation_extension_len() -> f32 {
+    0.3
+}
+
+fn default_annotation_arrow_size() -> f32 {
+    0.15
+}
+
+impl AnnotationElement {
+    /// Linear dimension with auto label from measured distance.
+    pub fn linear_auto(
+        start: [f32; 3],
+        end: [f32; 3],
+        offset_dir: [f32; 3],
+        color: [f32; 4],
+    ) -> Self {
+        Self::Dimension {
+            start: AnnotationPoint::local(start),
+            end: AnnotationPoint::local(end),
+            offset_dir,
+            extension_len: default_annotation_extension_len(),
+            arrow_size: default_annotation_arrow_size(),
+            label: String::new(),
+            label_mode: AnnotationLabelMode::Auto,
+            color,
+        }
+    }
+
+    /// Leader with text at pixel offset from projected anchor.
+    pub fn leader(anchor: [f32; 3], label_offset: [f32; 2], text: impl Into<String>, color: [f32; 4]) -> Self {
+        Self::Leader {
+            anchor: AnnotationPoint::local(anchor),
+            label_offset,
+            text: text.into(),
+            color,
+        }
+    }
+}
+
+/// Annotation set: leaf node of 3D elements under an [`Annotation`](AnnotationNode) group.
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AnnotationSetNode {
     pub elements: Vec<AnnotationElement>,
     pub visible: bool,
+    #[serde(default)]
+    pub style: AnnotationStyle,
+}
+
+impl Default for AnnotationSetNode {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            visible: true,
+            style: AnnotationStyle::default(),
+        }
+    }
 }
 
 impl Default for MarkupNode {

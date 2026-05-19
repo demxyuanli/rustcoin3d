@@ -261,6 +261,10 @@ impl Engine {
             Default::default(),
         );
         renderer.set_effect_commands(effect_cmds);
+        renderer.set_scene_view_projection(
+            self.world.collector.view_matrix,
+            self.world.collector.projection_matrix,
+        );
 
         // 12. Call pre-render hook (before GPU submission)
         if let Some(ref mut h) = pre_hook {
