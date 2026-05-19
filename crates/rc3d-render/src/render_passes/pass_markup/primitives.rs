@@ -91,6 +91,25 @@ pub(super) fn project_annotation_elements(
                 }
                 if !ok { continue; }
 
+                // Label background rect at dimension-line midpoint
+                let label_cx = (scr[4][0] + scr[5][0]) * 0.5;
+                let label_cy = (scr[4][1] + scr[5][1]) * 0.5;
+                let label_w = 36.0;
+                let label_h = 14.0;
+                let bg = [color[0] * 0.12, color[1] * 0.12, color[2] * 0.12, 0.82];
+                let x0 = label_cx - label_w * 0.5;
+                let y0 = label_cy - label_h * 0.5;
+                let x1 = x0 + label_w;
+                let y1 = y0 + label_h;
+                out.push(MarkupVertex { position: [x0, y0, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x1, y0, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x1, y1, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x0, y0, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x1, y1, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x0, y1, 0.0], color: bg });
+                out.push(MarkupVertex { position: [x0, y1, 0.0], color });
+                out.push(MarkupVertex { position: [x1, y1, 0.0], color });
+
                 // Dimension line
                 out.push(MarkupVertex { position: [scr[4][0], scr[4][1], 0.0], color });
                 out.push(MarkupVertex { position: [scr[5][0], scr[5][1], 0.0], color });
@@ -140,6 +159,21 @@ pub(super) fn project_annotation_elements(
                     anchor[2] + world_x.z * world_dx + world_y.z * world_dy,
                 ];
                 let Some(lp) = proj_pt(&label_3d) else { continue };
+
+                // Label background rect at leader label position
+                let lx0 = lp[0] - 32.0;
+                let ly0 = lp[1] - 6.0;
+                let lx1 = lp[0] + 32.0;
+                let ly1 = lp[1] + 10.0;
+                let lbg = [color[0] * 0.12, color[1] * 0.12, color[2] * 0.12, 0.82];
+                out.push(MarkupVertex { position: [lx0, ly0, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx1, ly0, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx1, ly1, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx0, ly0, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx1, ly1, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx0, ly1, 0.0], color: lbg });
+                out.push(MarkupVertex { position: [lx0, ly1, 0.0], color });
+                out.push(MarkupVertex { position: [lx1, ly1, 0.0], color });
 
                 // Leader line (both endpoints in 3D, fixed in world)
                 out.push(MarkupVertex { position: [ap[0], ap[1], 0.0], color });
