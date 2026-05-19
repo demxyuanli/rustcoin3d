@@ -750,7 +750,7 @@ pub(super) fn execute_passes(
                     dof.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         src, &depth_read_view, dst,
-                        w, h, 5.0, 2.0,
+                        w, h, renderer.dof_focus_distance, renderer.dof_aperture,
                     );
                     hdr_is_src = !hdr_is_src;
                 }

@@ -14,6 +14,8 @@
 //!   F9  — Cluster Lights
 //!   F10 — Omni Shadows
 //!   F11 — X-Ray Mode
+//!   ,/. — DOF focus distance -/+
+//!   ;/' — DOF aperture -/+
 //!   =/- — Bloom strength +/-
 //!   [/] — Vignette +/-
 //!
@@ -122,6 +124,16 @@ fn main() {
     let bloom_key = bloom_val;
     let vignette_key = vignette_val;
 
+    // DOF params (stored as tenths: focus*10, aperture*10)
+    let dof_focus_val = Arc::new(AtomicU32::new(50)); // 5.0 * 10
+    let dof_aperture_val = Arc::new(AtomicU32::new(20)); // 2.0 * 10
+    let dof_focus_hook = dof_focus_val.clone();
+    let dof_aperture_hook = dof_aperture_val.clone();
+    let dof_focus_hud = dof_focus_val.clone();
+    let dof_aperture_hud = dof_aperture_val.clone();
+    let dof_focus_key = dof_focus_val;
+    let dof_aperture_key = dof_aperture_val;
+
     // GPU timing storage (written by pre_render_hook, read by HUD hook)
     let gpu_timings: Arc<Mutex<Vec<(String, f64)>>> = Arc::new(Mutex::new(Vec::new()));
     let gpu_timings_hook = gpu_timings.clone();
@@ -129,6 +141,7 @@ fn main() {
 
     println!("[FULL] Keys: F1=HDR F2=SSR F3=TAA F4=MBlur F5=DOF F6=ColorGrading F7=VolFog");
     println!("[FULL]       F8=WireOverlay F9=ClusterLights F10=OmniShadow F11=XRay");
+    println!("[FULL]       ,/.=DOFfocus ;/'=DOFaperture =/-=bloom [/]=vignette");
 
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let window = event_loop
@@ -178,6 +191,10 @@ fn main() {
         let vig = vignette_hook.load(Ordering::Relaxed) as f32 / 10.0;
         renderer.set_post_effect_params(vig, 0.0, bloom, 0.0);
 
+        // DOF params
+        renderer.dof_focus_distance = dof_focus_hook.load(Ordering::Relaxed) as f32 / 10.0;
+        renderer.dof_aperture = dof_aperture_hook.load(Ordering::Relaxed) as f32 / 10.0;
+
         // Collect GPU timings from previous frame for HUD display
         let ts = &renderer.gpu_timer.last_timestamps;
         let labels = &renderer.gpu_timer.labels;
@@ -212,6 +229,8 @@ fn main() {
         };
         let bloom = bloom_hud.load(Ordering::Relaxed) as f32 / 10.0;
         let vig = vignette_hud.load(Ordering::Relaxed) as f32 / 10.0;
+        let dof_focus = dof_focus_hud.load(Ordering::Relaxed) as f32 / 10.0;
+        let dof_ap = dof_aperture_hud.load(Ordering::Relaxed) as f32 / 10.0;
 
         // Build GPU timing lines
         let gpu_lines: String = gpu_timings_hud
@@ -245,6 +264,7 @@ fn main() {
              |F10 Omni Shadows:   {}   |\n\
              |F11 X-Ray:          {}   |\n\
              | Bloom: {:.1}  Vig: {:.1}    |\n\
+             | DOF fcs: {:.1}  DOF ap: {:.1} |\n\
              +---------------------------+\n\
              {gpu_lines}",
             on(hdr),
@@ -260,6 +280,8 @@ fn main() {
             on(tg_hud.xray.load(Ordering::Relaxed)),
             bloom,
             vig,
+            dof_focus,
+            dof_ap,
         )
     }));
 
@@ -377,6 +399,40 @@ fn main() {
                 if v < 20 {
                     vignette_key.store(v + 1, Ordering::Relaxed);
                     println!("[FULL] Vignette: {:.1}", (v + 1) as f32 / 10.0);
+                }
+                true
+            }
+            // DOF focus: Comma/Period (decrease/increase)
+            KeyCode::Comma => {
+                let v = dof_focus_key.load(Ordering::Relaxed);
+                if v > 10 {
+                    dof_focus_key.store(v - 1, Ordering::Relaxed);
+                    println!("[FULL] DOF focus: {:.1}", (v.saturating_sub(1)) as f32 / 10.0);
+                }
+                true
+            }
+            KeyCode::Period => {
+                let v = dof_focus_key.load(Ordering::Relaxed);
+                if v < 500 {
+                    dof_focus_key.store(v + 1, Ordering::Relaxed);
+                    println!("[FULL] DOF focus: {:.1}", (v + 1) as f32 / 10.0);
+                }
+                true
+            }
+            // DOF aperture: Semicolon/Quote (decrease/increase)
+            KeyCode::Semicolon => {
+                let v = dof_aperture_key.load(Ordering::Relaxed);
+                if v > 5 {
+                    dof_aperture_key.store(v - 1, Ordering::Relaxed);
+                    println!("[FULL] DOF aperture: {:.1}", (v.saturating_sub(1)) as f32 / 10.0);
+                }
+                true
+            }
+            KeyCode::Quote => {
+                let v = dof_aperture_key.load(Ordering::Relaxed);
+                if v < 100 {
+                    dof_aperture_key.store(v + 1, Ordering::Relaxed);
+                    println!("[FULL] DOF aperture: {:.1}", (v + 1) as f32 / 10.0);
                 }
                 true
             }

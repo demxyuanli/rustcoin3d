@@ -128,6 +128,10 @@ pub struct Renderer {
     /// Sobel gradient threshold for screen-space edge detection (depth units). Default 0.015.
     pub ss_edge_threshold: f32,
     pub xray_mode: bool,
+    /// Depth of field: world-space focus distance (default 5.0).
+    pub dof_focus_distance: f32,
+    /// Depth of field: lens aperture size (default 2.0).
+    pub dof_aperture: f32,
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
 
@@ -868,6 +872,8 @@ impl Renderer {
             skip_prepass_interaction: true,
             ss_edge_threshold: 0.015,
             xray_mode: false,
+            dof_focus_distance: 5.0,
+            dof_aperture: 2.0,
             screen_space_selection_outline: true,
             ibl_preset,
             interaction_active: false,
