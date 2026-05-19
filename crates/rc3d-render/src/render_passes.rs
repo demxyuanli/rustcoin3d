@@ -34,6 +34,7 @@ pub(crate) struct PassContext<'a> {
     pub solid_order: &'a [usize],
     pub edge_order: &'a [usize],
     pub selected_order: &'a [usize],
+    #[allow(dead_code)]
     pub transparent_order: &'a [usize],
     pub mesh_handles: &'a [Option<crate::gpu_resource::MeshId>],
     pub mode: DisplayMode,
@@ -50,7 +51,9 @@ pub(crate) struct PassContext<'a> {
     /// CSM cascade view-projection matrices (one per cascade)
     pub csm_view_proj: [Mat4; CSM_CASCADE_COUNT],
     /// CSM split depths in view space: [near, split1, split2, far] (4 values)
+    #[allow(dead_code)]
     pub csm_split_depths: [f32; CSM_CASCADE_COUNT],
+    #[allow(dead_code)]
     pub shadow_params: [f32; 4],
     pub run_shadow_pass: bool,
     /// Camera projection matrix (for SSAO depth reconstruction)
@@ -380,7 +383,7 @@ pub(super) fn execute_passes(
     }
 
     if solid_mode && renderer.enable_cluster_lights {
-        if let (Some(ref culler), Some(ref resources)) =
+        if let (Some(culler), Some(resources)) =
             (renderer.gpu.cluster_light_culler.as_ref(), renderer.gpu.cluster_lights.as_ref())
         {
             use crate::cluster_lighting::{GpuPointLight, GpuSpotLight};
@@ -578,7 +581,7 @@ pub(super) fn execute_passes(
             &mut encoder,
             &renderer.gpu.post_fx_pipelines,
             renderer.gpu.ldr_shade_view.as_ref().expect("LDR shade view"),
-            &view,
+            view,
             ctx.bg_color,
         );
     }
@@ -588,7 +591,7 @@ pub(super) fn execute_passes(
         && renderer.interaction_active
         && renderer.gpu.ss_edge_pipeline.is_some();
     if ss_edge_active {
-        if let (Some(ref pl), Some(ref bgl), Some(ref uniform)) = (
+        if let (Some(pl), Some(bgl), Some(uniform)) = (
             renderer.gpu.ss_edge_pipeline.as_ref(),
             renderer.gpu.ss_edge_bgl.as_ref(),
             renderer.gpu.ss_edge_uniform.as_ref(),
@@ -629,7 +632,7 @@ pub(super) fn execute_passes(
                 let mut edge_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("SS Edge Detection"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
@@ -649,15 +652,15 @@ pub(super) fn execute_passes(
 
     if defer_line_overlays {
         if edge_worthy || has_overlay {
-            pass_edge::pass_edge_overlay(renderer, &mut encoder, &view, &depth_view, ctx, edge_worthy, &scene_pl);
+            pass_edge::pass_edge_overlay(renderer, &mut encoder, view, &depth_view, ctx, edge_worthy, &scene_pl);
         }
         if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
             if run_geom_sel_edge {
-                pass_selection::pass_selection_edge(renderer, &mut encoder, &view, &depth_view, ctx, &scene_pl);
+                pass_selection::pass_selection_edge(renderer, &mut encoder, view, &depth_view, ctx, &scene_pl);
             }
             pass_selection::pass_selection_bbox(
                 &mut encoder,
-                &view,
+                view,
                 &depth_view,
                 ctx,
                 &scene_pl,
@@ -680,6 +683,7 @@ pub(super) fn execute_passes(
 
             // ── SSR (screen-space reflections) ──
             if renderer.enable_ssr {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSR");
                 if let Some(ref ssr) = renderer.gpu.ssr_pass {
                     if let Some(ref hzb) = renderer.gpu.hzb {
                         ssr.trace(
@@ -691,10 +695,12 @@ pub(super) fn execute_passes(
                         );
                     }
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // ── Volumetric Fog ──
             if renderer.enable_volumetric_fog {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP VolFog");
                 if let Some(ref fog) = renderer.gpu.volumetric_fog {
                     fog.compute(
                         &renderer.device, &renderer.queue, &mut encoder,
@@ -707,10 +713,12 @@ pub(super) fn execute_passes(
                         0.02, 0.5, 100.0, 32,
                     );
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // ── Motion Blur ──
             if renderer.enable_motion_blur {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP MotionBlur");
                 if let Some(ref mb) = renderer.gpu.motion_blur {
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
@@ -718,10 +726,12 @@ pub(super) fn execute_passes(
                         &fx.scratch_view, w, h, 16, 0.5,
                     );
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // ── DOF ──
             if renderer.enable_dof {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP DOF");
                 if let Some(ref dof) = renderer.gpu.dof_pass {
                     dof.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
@@ -729,28 +739,36 @@ pub(super) fn execute_passes(
                         w, h, 5.0, 2.0,
                     );
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // ── Color Grading ──
             if renderer.enable_color_grading {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP ColorGrading");
                 if let Some(ref cg) = renderer.gpu.color_grading {
                     cg.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         &fx.hdr_view, &fx.scratch_view, w, h, 1.0,
                     );
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // Bloom prefilter (compute dispatch: read HDR, write half-res bloom)
+            let ti = renderer.gpu_timer.begin(&mut encoder, "PP Bloom");
             pass_post::pass_bloom_prefilter(&renderer.device, &mut encoder, pl, fx);
-            // SSAO (read depth, write AO)
+            renderer.gpu_timer.end(&mut encoder, ti);
+            // SSAO (read depth, write AO) + blur
+            let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSAO");
             pass_post::pass_ssao(&renderer.device, &mut encoder, pl, fx,
                 &depth_read_view, &renderer.gpu.ssao_noise_view, &proj, &inv_proj);
             // SSAO blur (read AO + depth, write blurred AO)
             pass_post::pass_ssao_blur(&renderer.device, &mut encoder, pl, fx, &depth_read_view);
+            renderer.gpu_timer.end(&mut encoder, ti);
 
             // ── TAA (temporal anti-aliasing) ──
             if renderer.enable_taa {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP TAA");
                 if let Some(ref mut taa) = renderer.gpu.taa_pass {
                     taa.ensure_history(&renderer.device, w, h);
                     taa.resolve(
@@ -760,12 +778,15 @@ pub(super) fn execute_passes(
                         0.05, 1.0,
                     );
                 }
+                renderer.gpu_timer.end(&mut encoder, ti);
             }
 
             // Tonemap + FXAA + Bloom + SSAO
+            let ti = renderer.gpu_timer.begin(&mut encoder, "PP Tonemap");
             pass_post::pass_tonemap_hdr_to_post_ldr(&mut encoder, pl, fx, ctx.bg_color);
             // Blit to swapchain
-            pass_post::pass_blit_post_ldr_to_swapchain(&mut encoder, pl, fx, &view, ctx.bg_color);
+            pass_post::pass_blit_post_ldr_to_swapchain(&mut encoder, pl, fx, view, ctx.bg_color);
+            renderer.gpu_timer.end(&mut encoder, ti);
         }
     }
     renderer.gpu_timer.end(&mut encoder, ti_post);
@@ -784,7 +805,7 @@ pub(super) fn execute_passes(
         pass_grid::pass_grid(
             renderer,
             &mut encoder,
-            &view,
+            view,
             &depth_view,
             renderer.frame.scene_vp,
             renderer.frame.scene_camera_pos,
@@ -805,7 +826,7 @@ pub(super) fn execute_passes(
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Viewport Borders"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -870,8 +891,15 @@ pub(super) fn execute_passes(
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
     pass_markup::pass_markup(
-        renderer, &mut encoder, &view, ew, eh,
-        ctx.scene_vp, ctx.depth_reversed_z, ctx.effect_commands,
+        renderer,
+        &mut encoder,
+        view,
+        &depth_view,
+        ew,
+        eh,
+        ctx.scene_vp,
+        ctx.depth_reversed_z,
+        ctx.effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
@@ -879,10 +907,34 @@ pub(super) fn execute_passes(
     if renderer.hud_enabled {
         renderer.prepare_hud_overlay_for_render();
         if let Some(hud) = renderer.gpu.hud.as_ref() {
+            if hud.has_plane_annotation_glyphs() {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Annotation Text Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                hud.render_plane_annotations(&mut pass, ctx.depth_reversed_z);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -893,7 +945,7 @@ pub(super) fn execute_passes(
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            hud.render(&mut pass);
+            hud.render_hud_chrome(&mut pass);
         }
     }
     if let Some(cb) = &mut post_swapchain_overlay {
@@ -1068,17 +1120,56 @@ pub(super) fn render_overlay_only_frame(
     let depth_reversed_z = renderer
         .frame
         .scene_depth_reversed_z;
+    if renderer.gpu.depth_texture.is_none() {
+        renderer.create_depth_texture();
+    }
+    let depth_view = renderer
+        .gpu
+        .depth_texture
+        .as_ref()
+        .map(|(_, v, _)| v.clone());
+
     pass_markup::pass_markup(
-        renderer, &mut encoder, view, ew, eh,
-        scene_vp, depth_reversed_z, effect_commands,
+        renderer,
+        &mut encoder,
+        view,
+        depth_view.as_ref().expect("depth texture"),
+        ew,
+        eh,
+        scene_vp,
+        depth_reversed_z,
+        effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
-    // HUD overlay
     if renderer.hud_enabled {
         renderer.prepare_hud_overlay_for_render();
-        if let Some(hud) = renderer.gpu.hud.as_ref() {
+        if let (Some(hud), Some(depth_view)) = (renderer.gpu.hud.as_ref(), depth_view.as_ref()) {
+            if hud.has_plane_annotation_glyphs() {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Annotation Text Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                hud.render_plane_annotations(&mut pass, depth_reversed_z);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1093,7 +1184,7 @@ pub(super) fn render_overlay_only_frame(
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            hud.render(&mut pass);
+            hud.render_hud_chrome(&mut pass);
         }
     }
 

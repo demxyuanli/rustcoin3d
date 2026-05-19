@@ -23,7 +23,7 @@
 use std::env;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
@@ -122,6 +122,11 @@ fn main() {
     let bloom_key = bloom_val;
     let vignette_key = vignette_val;
 
+    // GPU timing storage (written by pre_render_hook, read by HUD hook)
+    let gpu_timings: Arc<Mutex<Vec<(String, f64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let gpu_timings_hook = gpu_timings.clone();
+    let gpu_timings_hud = gpu_timings.clone();
+
     println!("[FULL] Keys: F1=HDR F2=SSR F3=TAA F4=MBlur F5=DOF F6=ColorGrading F7=VolFog");
     println!("[FULL]       F8=WireOverlay F9=ClusterLights F10=OmniShadow F11=XRay");
 
@@ -172,6 +177,23 @@ fn main() {
         let bloom = bloom_hook.load(Ordering::Relaxed) as f32 / 10.0;
         let vig = vignette_hook.load(Ordering::Relaxed) as f32 / 10.0;
         renderer.set_post_effect_params(vig, 0.0, bloom, 0.0);
+
+        // Collect GPU timings from previous frame for HUD display
+        let ts = &renderer.gpu_timer.last_timestamps;
+        let labels = &renderer.gpu_timer.labels;
+        let period_ns = renderer.gpu_timer.timestamp_period_ns as f64;
+        let mut timings = Vec::with_capacity(labels.len());
+        for (i, label) in labels.iter().enumerate() {
+            let bi = i * 2;
+            if bi + 1 < ts.len() {
+                let dur_ticks = ts[bi + 1].saturating_sub(ts[bi]);
+                let dur_us = dur_ticks as f64 * period_ns / 1000.0;
+                timings.push((label.to_string(), dur_us));
+            }
+        }
+        if let Ok(mut g) = gpu_timings_hook.lock() {
+            *g = timings;
+        }
     }));
 
     // HUD overlay: live status of every toggle
@@ -190,6 +212,25 @@ fn main() {
         };
         let bloom = bloom_hud.load(Ordering::Relaxed) as f32 / 10.0;
         let vig = vignette_hud.load(Ordering::Relaxed) as f32 / 10.0;
+
+        // Build GPU timing lines
+        let gpu_lines: String = gpu_timings_hud
+            .lock()
+            .map(|timings| {
+                let mut out = String::from(
+                    "+--- GPU Timings (us) -------+\n",
+                );
+                for (label, us) in timings.iter() {
+                    out.push_str(&format!(
+                        "| {:<24} {:>5.0} |\n",
+                        label, us
+                    ));
+                }
+                out.push_str("+---------------------------+\n");
+                out
+            })
+            .unwrap_or_default();
+
         format!(
             "+--- Full Effects Toggle ---+\n\
              | F1 HDR Post:       {}   |\n\
@@ -204,7 +245,8 @@ fn main() {
              |F10 Omni Shadows:   {}   |\n\
              |F11 X-Ray:          {}   |\n\
              | Bloom: {:.1}  Vig: {:.1}    |\n\
-             +---------------------------+",
+             +---------------------------+\n\
+             {gpu_lines}",
             on(hdr),
             dep(tg_hud.ssr.load(Ordering::Relaxed)),
             dep(tg_hud.taa.load(Ordering::Relaxed)),
