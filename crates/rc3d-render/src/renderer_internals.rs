@@ -62,6 +62,7 @@ pub struct TierConfig {
     pub motion_blur: bool,
     pub ssao: bool,
     pub taa: bool,
+    #[allow(dead_code)]
     pub fxaa: bool,
     pub color_grading: bool,
     pub ssr: bool,
@@ -105,13 +106,16 @@ pub enum GpuTier {
     /// Mid-range discrete GPU: HZB occlusion, 2 LOD levels.
     Standard,
     /// High-end discrete GPU: HZB full precision, distance-based LOD.
+    #[allow(dead_code)]
     Enhanced,
 }
 
 #[derive(Clone, Debug)]
 pub struct GpuCapability {
     pub tier: GpuTier,
+    #[allow(dead_code)]
     pub is_integrated: bool,
+    #[allow(dead_code)]
     pub max_draw_indirect_count: u32,
     /// Whether meshlet GPU cull (frustum+HZB)→compact→draw_indexed_indirect is enabled.
     /// False on Basic tier (integrated GPU) where cull sync issues cause artifacts.
@@ -120,8 +124,8 @@ pub struct GpuCapability {
 
 pub(crate) struct FrameState {
     pub markup_vertices: Vec<MarkupVertex>,
-    /// Screen-space labels projected together with annotation lines in `pass_markup`.
-    pub annotation_label_texts: Vec<crate::render_passes::pass_text::TextDrawCommand>,
+    /// World-space annotation labels drawn in `pass_markup`.
+    pub annotation_world_labels: Vec<crate::world_label::WorldLabelCommand>,
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,
@@ -190,6 +194,7 @@ pub(crate) struct GpuInternals {
     pub assets: GpuAssetManager,
     pub materials: MaterialLibrary,
     pub hud: Option<HudRenderer>,
+    pub world_label_font: crate::world_label_font::WorldLabelFont,
     pub adaptive_quality: AdaptiveQuality,
     pub adaptive_frame_time_ema_ms: f32,
     pub adaptive_switch_cooldown_frames: u8,
@@ -215,6 +220,7 @@ pub(crate) struct GpuInternals {
     #[allow(dead_code)]
     pub shader_cache: ShaderVariantCache,
     pub shader_reload: ShaderHotReload,
+    #[allow(dead_code)]
     pub auto_exposure: AutoExposure,
     pub taa_pass: Option<TaaPass>,
     #[allow(dead_code)]

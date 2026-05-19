@@ -241,7 +241,7 @@ impl Engine for OneShotEngine {
     fn evaluate(&mut self, _graph: &mut SceneGraph, time: f64) {
         if !self.active { return; }
         if self.elapsed == 0.0 { self.last_time = time; }
-        let dt = (time - self.last_time).max(0.0).min(0.1);
+        let dt = (time - self.last_time).clamp(0.0, 0.1);
         self.last_time = time;
         self.elapsed += dt;
         if self.elapsed >= self.duration { self.active = false; }
@@ -358,7 +358,7 @@ impl InterpolateFloatEngine {
 impl Engine for InterpolateFloatEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
         if self.elapsed == 0.0 { self.last_time = time; }
-        let dt = (time - self.last_time).max(0.0).min(0.1);
+        let dt = (time - self.last_time).clamp(0.0, 0.1);
         self.last_time = time;
         self.elapsed += dt;
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
@@ -387,7 +387,7 @@ impl InterpolateRotationEngine {
 impl Engine for InterpolateRotationEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
         if self.elapsed == 0.0 { self.last_time = time; }
-        let dt = (time - self.last_time).max(0.0).min(0.1);
+        let dt = (time - self.last_time).clamp(0.0, 0.1);
         self.last_time = time;
         self.elapsed += dt;
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
@@ -430,6 +430,12 @@ impl Engine for ComposeVec3fEngine {
 /// Toggle engine (Coin3D SoOnOff).
 #[derive(Debug, Clone)]
 pub struct OnOffEngine { pub state: bool, pub triggered: bool }
+impl Default for OnOffEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OnOffEngine {
     pub fn new() -> Self { Self { state: false, triggered: false } }
     pub fn trigger(&mut self) { self.triggered = true; }
@@ -445,6 +451,12 @@ impl Engine for OnOffEngine {
 /// Trigger on any input change (Coin3D SoTriggerAny).
 #[derive(Debug, Clone)]
 pub struct TriggerAnyEngine { pub fired: bool, pub triggered: bool }
+impl Default for TriggerAnyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TriggerAnyEngine {
     pub fn new() -> Self { Self { fired: false, triggered: false } }
     pub fn trigger(&mut self) { self.triggered = true; }

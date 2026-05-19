@@ -73,8 +73,8 @@ impl AutoExposure {
         });
 
         // Buffer size: one f32 per 8x8 block
-        let blocks_x = (max_width + 7) / 8;
-        let blocks_y = (max_height + 7) / 8;
+        let blocks_x = max_width.div_ceil(8);
+        let blocks_y = max_height.div_ceil(8);
         let buf_count = blocks_x * blocks_y;
         let buf_size = (buf_count * 4) as u64;
 
@@ -121,8 +121,8 @@ impl AutoExposure {
         hdr_height: u32,
         delta_time: f32,
     ) -> f32 {
-        let blocks_x = (hdr_width + 7) / 8;
-        let blocks_y = (hdr_height + 7) / 8;
+        let blocks_x = hdr_width.div_ceil(8);
+        let blocks_y = hdr_height.div_ceil(8);
 
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("AutoExposure BG"),

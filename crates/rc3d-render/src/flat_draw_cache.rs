@@ -128,6 +128,12 @@ pub struct FlatDrawCache {
     pub total_triangles: u64,
 }
 
+impl Default for FlatDrawCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlatDrawCache {
     pub fn new() -> Self {
         Self {

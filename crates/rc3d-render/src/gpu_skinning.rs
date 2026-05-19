@@ -3,7 +3,6 @@
 /// Uploads bind-pose vertex data + skin weights + bone matrices,
 /// dispatches a compute pass, and outputs animated vertices into
 /// a GPU buffer ready for rendering.
-
 use glam::Mat4;
 use rc3d_scene::animation::VertexSkinData;
 use wgpu::util::DeviceExt;
@@ -284,6 +283,6 @@ impl GpuSkinningPass {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &resources.skin_bg, &[]);
-        pass.dispatch_workgroups((resources.vertex_count + 63) / 64, 1, 1);
+        pass.dispatch_workgroups(resources.vertex_count.div_ceil(64), 1, 1);
     }
 }

@@ -185,7 +185,7 @@ impl ClusterTree {
             let (first_child, child_count) = if i + 1 < lod_meshlets.len() {
                 let next_count = lod_meshlets[i + 1].total_meshlets;
                 (vec![0u32; cs.meshlet_count as usize],
-                 if cs.meshlet_count > 0 { vec![next_count as u32] } else { vec![] })
+                 if cs.meshlet_count > 0 { vec![next_count] } else { vec![] })
             } else {
                 (vec![0u32; cs.meshlet_count as usize],
                  vec![0u32; cs.meshlet_count as usize])
@@ -223,7 +223,7 @@ impl ClusterTree {
 
             levels.push(ClusterLodLevel {
                 set: cs,
-                cluster_count: md.total_meshlets as u32,
+                cluster_count: md.total_meshlets,
                 first_child,
                 child_count,
                 first_child_buf,
@@ -304,7 +304,7 @@ impl ClusterTree {
         pass.set_bind_group(0, bind_group, &[]);
         let pc: [u32; 4] = [cluster_count, hzb_mip, use_hzb, 0];
         pass.set_push_constants(0, bytemuck::bytes_of(&pc));
-        let wg_count = (cluster_count + 63) / 64;
+        let wg_count = cluster_count.div_ceil(64);
         pass.dispatch_workgroups(wg_count, 1, 1);
     }
 }

@@ -219,11 +219,12 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<MarkupVertex>) {
     }
 }
 
-/// Render markup lines as an overlay.
+/// Render markup lines; 3D annotations depth-test against the scene depth buffer.
 pub fn pass_markup(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
+    depth_view: &wgpu::TextureView,
     surface_w: u32,
     surface_h: u32,
     scene_vp: glam::Mat4,
@@ -231,58 +232,106 @@ pub fn pass_markup(
     effect_commands: &EffectCommands,
 ) {
     // ── Combine 2D screen-space markup + projected 3D annotations ──
-    renderer.frame.annotation_label_texts.clear();
+    let mut world_labels = std::mem::take(&mut renderer.frame.annotation_world_labels);
     let projected = project_annotation_elements(
         &effect_commands.annotation_elements,
         scene_vp,
         surface_w as f32,
         surface_h as f32,
         depth_reversed_z,
-        &mut renderer.frame.annotation_label_texts,
+        &mut world_labels,
     );
     let legacy = &renderer.frame.markup_vertices;
-    if projected.is_empty() && legacy.is_empty() {
+    if projected.is_empty() && legacy.is_empty() && world_labels.is_empty() {
         return;
     }
 
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Markup Overlay"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-    });
-
-    pass.set_pipeline(&renderer.gpu.pipelines.markup_lines);
-
-    // 3D annotations: NDC vertices + identity MVP (same camera as mesh, world-fixed on model).
-    if !projected.is_empty() {
+    // 3D annotations: NDC lines + world-space label quads, depth-tested against solid pass.
+    if !projected.is_empty() || !world_labels.is_empty() {
+        let markup_pl = if depth_reversed_z {
+            &renderer.gpu.pipelines.markup_lines_reverse
+        } else {
+            &renderer.gpu.pipelines.markup_lines_forward
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Markup 3D"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(markup_pl);
         let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
         let uniforms = crate::vertex::FlatUniforms {
             mvp: identity,
             color: [0.0; 4],
         };
-        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
-            let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("annotation markup vb"),
-                contents: bytemuck::cast_slice(&projected),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
-            pass.set_vertex_buffer(0, vb.slice(..));
-            pass.draw(0..projected.len() as u32, 0..1);
+        if !projected.is_empty() {
+            if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+                let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("annotation markup vb"),
+                    contents: bytemuck::cast_slice(&projected),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.draw(0..projected.len() as u32, 0..1);
+            }
+        }
+        if !world_labels.is_empty() {
+            let device = &renderer.device;
+            let queue = &renderer.queue;
+            let flat_pool = &mut renderer.gpu.flat_pool;
+            let pipelines = &renderer.gpu.pipelines;
+            let font = &mut renderer.gpu.world_label_font;
+            let label_attrs = font.label_attrs();
+            crate::world_label::draw_world_labels(
+                device,
+                queue,
+                flat_pool,
+                pipelines,
+                &mut pass,
+                &world_labels,
+                scene_vp,
+                depth_reversed_z,
+                &mut font.font_system,
+                &mut font.swash_cache,
+                label_attrs,
+            );
         }
     }
 
-    // Legacy 2D MarkupNode overlay (screen pixels).
+    // Legacy 2D MarkupNode overlay (screen pixels, no depth).
     if !legacy.is_empty() {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Markup Screen"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&renderer.gpu.pipelines.markup_lines_screen);
         let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();
         let uniforms = crate::vertex::FlatUniforms {
             mvp,

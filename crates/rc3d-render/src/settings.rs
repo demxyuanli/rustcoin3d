@@ -2,6 +2,7 @@ use crate::ibl::IblPreset;
 use rc3d_core::DisplayMode;
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct RenderSettings {
     pub post_effect: PostEffectSettings,
     pub lighting: LightingSettings,
@@ -66,16 +67,6 @@ pub struct DisplaySettings {
     pub screen_space_selection_outline: bool,
 }
 
-impl Default for RenderSettings {
-    fn default() -> Self {
-        Self {
-            post_effect: PostEffectSettings::default(),
-            lighting: LightingSettings::default(),
-            display: DisplaySettings::default(),
-            performance: PerformanceSettings::default(),
-        }
-    }
-}
 
 impl Default for PostEffectSettings {
     fn default() -> Self {

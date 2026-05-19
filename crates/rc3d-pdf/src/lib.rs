@@ -31,12 +31,10 @@ impl PdfDocument {
         // Object 1: Catalog
         buf.push_str("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
         // Object 2: Pages
-        buf.push_str(&format!("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"));
+        buf.push_str("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
         // Object 3: Page with content stream
         let content = self.render_content();
-        buf.push_str(&format!(
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n"
-        ));
+        buf.push_str("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n");
         // Object 4: Content stream
         buf.push_str(&format!(
             "4 0 obj\n<< /Length {} >>\nstream\nBT\n/F1 12 Tf\n{}\nET\nendstream\nendobj\n",

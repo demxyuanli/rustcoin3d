@@ -17,8 +17,8 @@ pub(super) fn pass_bloom_prefilter(
         ],
     });
     let bloom_size = fx.bloom_tex.size();
-    let wg_x = (bloom_size.width + 7) / 8;
-    let wg_y = (bloom_size.height + 7) / 8;
+    let wg_x = bloom_size.width.div_ceil(8);
+    let wg_y = bloom_size.height.div_ceil(8);
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Bloom prefilter"), timestamp_writes: None,

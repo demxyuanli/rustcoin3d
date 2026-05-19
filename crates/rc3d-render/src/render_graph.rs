@@ -230,7 +230,7 @@ pub fn order_respects_edges(passes: &[RenderPassNode], order: &[usize]) -> bool 
                 continue;
             }
             let my_pos = order_pos[&idx];
-            if !producers.iter().any(|pi| order_pos.get(pi).map_or(false, |pp| *pp < my_pos)) {
+            if !producers.iter().any(|pi| order_pos.get(pi).is_some_and(|pp| *pp < my_pos)) {
                 return false;
             }
         }

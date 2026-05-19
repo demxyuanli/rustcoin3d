@@ -34,7 +34,7 @@ pub fn node_world_matrix(graph: &SceneGraph, target: NodeId) -> Option<Mat4> {
         let entry = graph.get(node)?;
         let mut m = cur;
         if let NodeData::Transform(t) = &entry.data {
-            m = m * t.to_matrix();
+            m *= t.to_matrix();
         }
         if node == target {
             let frame = if matches!(entry.data, NodeData::Transform(_)) {

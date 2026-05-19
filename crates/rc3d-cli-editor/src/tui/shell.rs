@@ -117,7 +117,7 @@ pub fn run_tui_thread(
                 scrollback_push(&mut scrollback, format!("> {line}"));
 
                 let outcome = match session.state.try_write() {
-                    Ok(mut w) => submit(&line, &mut *w),
+                    Ok(mut w) => submit(&line, &mut w),
                     Err(_) => {
                         scrollback_push(&mut scrollback, "Engine busy — retry.".into());
                         continue;

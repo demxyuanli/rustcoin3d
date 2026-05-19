@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub mod adaptive_quality;
 pub mod asset_manager;
 pub mod dirty_flags;
@@ -17,6 +18,9 @@ pub mod gpu_resource;
 pub mod gpu_skinning;
 pub mod hud;
 mod plane_text;
+mod font_loader;
+mod world_label;
+mod world_label_font;
 pub mod hzb;
 pub mod offscreen;
 pub mod parallel_traversal;
@@ -83,7 +87,12 @@ pub use renderer::{
 };
 pub use settings::{DisplaySettings, LightingSettings, PostEffectSettings, RenderSettings};
 pub use texture_cache::{ibl_from_image_path, TextureCache, TextureHandle};
-pub use vertex::{FlatUniforms, GlobalFrameUniforms, InstanceData, LineVertex, MarkupVertex, SceneUniforms, ShadowDrawUniforms, Vertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT};
+pub use vertex::{
+    FlatUniforms, GlobalFrameUniforms, InstanceData, LineVertex, MarkupVertex, SceneUniforms,
+    ShadowDrawUniforms, Vertex, WorldLabelVertex, MAX_INSTANCES, MAX_LIGHTS, CSM_CASCADE_COUNT,
+};
+pub use font_loader::{configure_font_system, new_label_font_system, LabelFont, ENV_FONT_DIR, ENV_FONT_PATH};
+pub use world_label::WorldLabelCommand;
 pub use viewport::{
     LayoutMode, ProjectionType, Viewport, ViewportId, ViewportLayout, ViewportRect, ViewportSplitAxis,
     VIEWPORT_SPLITTER_HIT_PX,

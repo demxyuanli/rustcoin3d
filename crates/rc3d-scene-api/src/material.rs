@@ -127,7 +127,7 @@ impl Material {
             emissive_texture: self.emissive_texture.clone(),
             metallic_roughness_texture: self.metallic_roughness_texture.clone(),
             occlusion_texture: self.occlusion_texture.clone(),
-            alpha_mode: self.alpha_mode.clone(),
+            alpha_mode: self.alpha_mode,
             alpha_cutoff: self.alpha_cutoff,
             double_sided: self.double_sided,
             anisotropic: self.anisotropic,

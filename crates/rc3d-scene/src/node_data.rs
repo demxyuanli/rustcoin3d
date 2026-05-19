@@ -105,17 +105,14 @@ pub struct MaterialNode {
 
 /// Alpha rendering mode following glTF conventions.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum AlphaMode {
+    #[default]
     Opaque,
     Mask,
     Blend,
 }
 
-impl Default for AlphaMode {
-    fn default() -> Self {
-        Self::Opaque
-    }
-}
 
 impl MaterialNode {
     pub fn from_diffuse(diffuse: Vec3) -> Self {
@@ -357,13 +354,11 @@ impl Default for MaterialBindingNode { fn default() -> Self { Self { value: Mate
 /// When encountered during traversal, the referenced file is imported
 /// and its scene graph is merged in-place.
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Default)]
 pub struct FileNode {
     pub path: String,
 }
 
-impl Default for FileNode {
-    fn default() -> Self { Self { path: String::new() } }
-}
 
 /// GPU ray tracing render mode (compute-based path tracing, HOOPS Luminate equivalent).
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -773,19 +768,12 @@ pub struct LodLevel {
 /// LOD switch node (Coin3D SoLOD / SoLevelOfDetail pattern).
 /// Selects one child group based on camera distance.
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Default)]
 pub struct LodNode {
     pub levels: Vec<LodLevel>,
     pub current_level: usize,
 }
 
-impl Default for LodNode {
-    fn default() -> Self {
-        Self {
-            levels: Vec::new(),
-            current_level: 0,
-        }
-    }
-}
 
 /// Section/cutting plane node (Coin3D SoClipPlane pattern).
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -826,16 +814,12 @@ impl Default for SwitchNode {
 /// MultipleCopy node: repeats child traversal with offset transforms
 /// (Coin3D SoMultipleCopy pattern).
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Default)]
 pub struct MultipleCopyNode {
     pub copies: Vec<rc3d_core::math::Mat4>,
     pub children: Vec<rc3d_core::NodeId>,
 }
 
-impl Default for MultipleCopyNode {
-    fn default() -> Self {
-        Self { copies: Vec::new(), children: Vec::new() }
-    }
-}
 
 /// Screen-space 2D text label (Coin3D SoText2 pattern).
 #[derive(Serialize, Deserialize, Clone, Debug)]

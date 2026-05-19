@@ -15,15 +15,11 @@ pub fn open_uniform_knots(degree: usize, n_control_points: usize) -> Vec<f32> {
     let n_knots = n_control_points + degree + 1;
     let mut knots = Vec::with_capacity(n_knots);
     let n_interior = n_knots.saturating_sub(2 * (degree + 1));
-    for _ in 0..=degree {
-        knots.push(0.0);
-    }
+    knots.resize(knots.len() + degree + 1, 0.0);
     for i in 1..=n_interior {
         knots.push(i as f32 / (n_interior + 1) as f32);
     }
-    for _ in 0..=degree {
-        knots.push(1.0);
-    }
+    knots.resize(knots.len() + degree + 1, 1.0);
     knots
 }
 

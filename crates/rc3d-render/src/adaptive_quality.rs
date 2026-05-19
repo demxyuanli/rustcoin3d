@@ -52,6 +52,12 @@ pub struct AdaptiveController {
     consecutive_under: u32,
 }
 
+impl Default for AdaptiveController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdaptiveController {
     pub fn new() -> Self {
         Self {

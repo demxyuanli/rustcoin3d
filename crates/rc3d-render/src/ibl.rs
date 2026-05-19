@@ -255,8 +255,8 @@ fn load_equirectangular_hdr(
         let mut src_w = w;
         let mut src_h = h;
         for mip in 1..mip_level_count {
-            let dst_w = (src_w + 1) / 2;
-            let dst_h = (src_h + 1) / 2;
+            let dst_w = src_w.div_ceil(2);
+            let dst_h = src_h.div_ceil(2);
 
             let src_view = texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("IBL Mip Src"),
@@ -457,7 +457,7 @@ fn create_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bg, &[]);
-        let wg = (lut_size + 7) / 8;
+        let wg = lut_size.div_ceil(8);
         pass.dispatch_workgroups(wg, wg, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));

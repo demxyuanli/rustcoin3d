@@ -7,7 +7,7 @@ const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.5;
 
 fn typed_to_bytes<T>(data: &[T]) -> &[u8] {
-    let byte_count = data.len() * std::mem::size_of::<T>();
+    let byte_count = std::mem::size_of_val(data);
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, byte_count) }
 }
 

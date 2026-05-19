@@ -147,15 +147,15 @@ impl ShaderVariantCache {
         source: &str,
     ) -> &wgpu::ShaderModule {
         let entry_key = (key, source_kind);
-        if !self.cache.contains_key(&entry_key) {
+        self.cache.entry(entry_key).or_insert_with(|| {
             let features = ShaderFeatures { bits: key };
             let processed = preprocess_wgsl(source, features);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("perm"),
                 source: wgpu::ShaderSource::Wgsl(processed.into()),
             });
-            self.cache.insert(entry_key, ShaderModuleEntry { module });
-        }
+            ShaderModuleEntry { module }
+        });
         &self.cache[&entry_key].module
     }
 
@@ -170,6 +170,10 @@ impl ShaderVariantCache {
 
     pub fn len(&self) -> usize {
         self.cache.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
     }
 }
 

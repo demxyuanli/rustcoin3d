@@ -58,8 +58,8 @@ impl Bvh {
             if node.is_leaf {
                 let first = node.data[0] as usize;
                 let count = node.data[1] as usize;
-                for j in first..first + count {
-                    let internal_idx = item_indices[j] as usize;
+                for &idx in &item_indices[first..first + count] {
+                    let internal_idx = idx as usize;
                     if internal_idx < item_to_leaf.len() {
                         item_to_leaf[internal_idx] = node_idx;
                     }

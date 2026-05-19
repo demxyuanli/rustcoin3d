@@ -13,6 +13,12 @@ pub struct App {
     window: Option<winit::window::Window>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         Self {

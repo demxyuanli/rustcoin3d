@@ -280,7 +280,7 @@ impl VolumePass {
             uniform_data.extend_from_slice(&[cmd.dimensions[0] as f32, cmd.dimensions[1] as f32, cmd.dimensions[2] as f32, 0.0]);
             uniform_data.push(cmd.density_scale);
             for cm in &cmd.color_map { uniform_data.extend_from_slice(cm); }
-            for _ in 0..3 { uniform_data.push(0.0); }
+            uniform_data.extend_from_slice(&[0.0; 3]);
             queue.write_buffer(&self.params_buf, 0, bytemuck::cast_slice(&uniform_data));
 
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {

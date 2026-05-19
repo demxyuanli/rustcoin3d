@@ -285,16 +285,16 @@ impl PointCloudOoc {
         let n = u32::from_le_bytes(buf4) as usize;
         let mut offsets = vec![0u64; n];
         let mut buf8 = [0u8; 8];
-        for i in 0..n {
+        for off in offsets.iter_mut().take(n) {
             f.read_exact(&mut buf8)?;
-            offsets[i] = u64::from_le_bytes(buf8);
+            *off = u64::from_le_bytes(buf8);
         }
         let mut info = Vec::with_capacity(n);
-        for i in 0..n {
-            f.seek(std::io::SeekFrom::Start(offsets[i]))?;
+        for &off in &offsets {
+            f.seek(std::io::SeekFrom::Start(off))?;
             f.read_exact(&mut buf4)?;
             let count = u32::from_le_bytes(buf4);
-            info.push((offsets[i], count));
+            info.push((off, count));
         }
         self.stream_tile_offsets = Some(info);
         self.stream_tile_count = n;

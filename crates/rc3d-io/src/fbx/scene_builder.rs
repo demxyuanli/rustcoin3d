@@ -32,7 +32,7 @@ pub fn build_scene(data: &FbxData) -> Result<SceneGraph, super::FbxError> {
                     && data
                         .objects
                         .get(&conn2.child)
-                        .map_or(false, |o| matches!(o, FbxObject::Material(_)))
+                        .is_some_and(|o| matches!(o, FbxObject::Material(_)))
                 {
                     geo_to_material.insert(conn.child, conn2.child);
                     break;

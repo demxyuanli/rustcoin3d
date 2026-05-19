@@ -34,8 +34,8 @@ impl MeshLodChain {
         let radius = self.bounding_radius.max(0.001);
         // Screen-space size of bounding sphere
         let screen_radius = (radius / distance) * (screen_height / (2.0 * (fov_y / 2.0).tan()));
-        let level = ((1.0 / screen_radius.max(0.001)) as usize).min(self.levels.len() - 1);
-        level
+        
+        ((1.0 / screen_radius.max(0.001)) as usize).min(self.levels.len() - 1)
     }
 
     /// Get a reference to a specific LOD level.

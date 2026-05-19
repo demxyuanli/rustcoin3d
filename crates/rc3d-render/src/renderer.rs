@@ -15,7 +15,7 @@ mod renderer_internals;
 
 pub use renderer_types::*;
 pub use renderer_internals::CadDisplayTier;
-pub(crate) use renderer_internals::{GpuCapability, GpuTier, TierConfig};
+pub(crate) use renderer_internals::{GpuTier, TierConfig};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
@@ -885,7 +885,7 @@ impl Renderer {
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),
-                annotation_label_texts: Vec::new(),
+                annotation_world_labels: Vec::new(),
                 clip_planes: Vec::new(),
                 section_cap_tints: Vec::new(),
                 scene_vp: Mat4::IDENTITY,
@@ -937,6 +937,7 @@ impl Renderer {
                 assets: GpuAssetManager::new(),
                 materials: MaterialLibrary::new(),
                 hud: None,
+                world_label_font: crate::world_label_font::WorldLabelFont::new(),
                 adaptive_quality: AdaptiveQuality::High,
                 adaptive_frame_time_ema_ms: 16.7,
                 adaptive_switch_cooldown_frames: 0,
@@ -1601,12 +1602,15 @@ impl Renderer {
         crate::render_passes::pass_markup::collect_markup_text_lines(graph)
     }
 
-    /// Prepare HUD overlay: scene text + plane-aligned annotation labels.
+    /// Prepare HUD overlay: scene Text2/Text3 (annotation labels use world quads in pass_markup).
     pub fn prepare_hud_overlay_for_render(&mut self) {
         if let Some(ref mut hud) = self.gpu.hud {
             hud.positioned_texts.clone_from(&hud.scene_positioned_texts);
-            hud.prepare_plane_annotation_glyphs(&self.frame.annotation_label_texts);
-            hud.prepare_gpu_atlas_for_render(&self.device, &self.queue);
+            hud.prepare_gpu_atlas_for_render(
+                &self.device,
+                &self.queue,
+                self.frame.scene_depth_reversed_z,
+            );
         }
     }
 

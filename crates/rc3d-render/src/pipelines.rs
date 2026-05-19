@@ -1,5 +1,5 @@
 use crate::shader_permutation::{ShaderFeatures, ShaderVariantCache};
-use crate::vertex::{LineVertex, MarkupVertex, Vertex};
+use crate::vertex::{LineVertex, MarkupVertex, Vertex, WorldLabelVertex};
 use bitflags::bitflags;
 
 #[path = "pipelines_build_depth.rs"]
@@ -56,12 +56,21 @@ pub struct PipelineSet {
     pub reverse_hdr: DepthModePipelines,
     /// Line list on swapchain without depth stencil (viewport split borders overlay).
     pub viewport_border_lines: wgpu::RenderPipeline,
-    /// Line list without depth (markup/redline screen-space overlay).
-    pub markup_lines: wgpu::RenderPipeline,
+    /// Line list without depth (legacy 2D MarkupNode screen-space overlay).
+    pub markup_lines_screen: wgpu::RenderPipeline,
+    /// Projected 3D annotation lines with depth test (forward-Z: Less).
+    pub markup_lines_forward: wgpu::RenderPipeline,
+    /// Projected 3D annotation lines with depth test (reverse-Z: Greater).
+    pub markup_lines_reverse: wgpu::RenderPipeline,
     /// Line list with depth-test (forward-Z: Less).
     pub grid_lines_forward: wgpu::RenderPipeline,
     /// Line list with depth-test (reverse-Z: Greater).
     pub grid_lines_reverse: wgpu::RenderPipeline,
+    /// World-space annotation label quads (uniform + label texture).
+    pub world_label_bgl: wgpu::BindGroupLayout,
+    pub world_label_sampler: wgpu::Sampler,
+    pub world_label_forward: wgpu::RenderPipeline,
+    pub world_label_reverse: wgpu::RenderPipeline,
 }
 
 impl PipelineSet {
@@ -112,6 +121,10 @@ impl PipelineSet {
         let flat_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Flat Color Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/flat_color.wgsl").into()),
+        });
+        let world_label_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("World Label Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/world_label.wgsl").into()),
         });
         let section_cap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Section Cap Shader"),
@@ -412,7 +425,7 @@ impl PipelineSet {
             &lit_pll,
             &flat_pll,
             &outline_pll,
-            &pbr_shader,
+            pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
@@ -426,7 +439,7 @@ impl PipelineSet {
             &lit_pll,
             &flat_pll,
             &outline_pll,
-            &pbr_shader,
+            pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
@@ -442,7 +455,7 @@ impl PipelineSet {
             &lit_pll,
             &flat_pll,
             &outline_pll,
-            &pbr_shader,
+            pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
@@ -456,7 +469,7 @@ impl PipelineSet {
             &lit_pll,
             &flat_pll,
             &outline_pll,
-            &pbr_shader,
+            pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &outline_shader,
@@ -502,8 +515,8 @@ impl PipelineSet {
             cache: None,
         });
 
-        let markup_lines = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Markup overlay lines (no depth)"),
+        let markup_lines_screen = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Markup screen-space lines (no depth)"),
             layout: Some(&flat_pll),
             vertex: wgpu::VertexState {
                 module: &flat_shader,
@@ -531,10 +544,56 @@ impl PipelineSet {
                 conservative: false,
             },
             depth_stencil: None,
-            multisample: viewport_border_ms.clone(),
+            multisample: viewport_border_ms,
             multiview: None,
             cache: None,
         });
+
+        let make_markup_depth_pipeline = |label: &str, cmp: wgpu::CompareFunction| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&flat_pll),
+                vertex: wgpu::VertexState {
+                    module: &flat_shader,
+                    entry_point: Some("vs_markup"),
+                    buffers: &[MarkupVertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &flat_shader,
+                    entry_point: Some("fs_markup"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::LineList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth_format,
+                    depth_write_enabled: false,
+                    depth_compare: cmp,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: viewport_border_ms,
+                multiview: None,
+                cache: None,
+            })
+        };
+        let markup_lines_forward =
+            make_markup_depth_pipeline("Markup 3D lines (forward-Z)", wgpu::CompareFunction::Less);
+        let markup_lines_reverse =
+            make_markup_depth_pipeline("Markup 3D lines (reverse-Z)", wgpu::CompareFunction::Greater);
 
         let make_grid_pipeline = |label: &str, cmp: wgpu::CompareFunction| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -580,6 +639,98 @@ impl PipelineSet {
         let grid_lines_forward = make_grid_pipeline("Grid lines (forward-Z)", wgpu::CompareFunction::Less);
         let grid_lines_reverse = make_grid_pipeline("Grid lines (reverse-Z)", wgpu::CompareFunction::Greater);
 
+        let world_label_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("World Label BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let world_label_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("World Label Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let world_label_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("World Label PLL"),
+            bind_group_layouts: &[&world_label_bgl],
+            push_constant_ranges: &[],
+        });
+        let make_world_label_pipeline = |label: &str, cmp: wgpu::CompareFunction| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&world_label_pll),
+                vertex: wgpu::VertexState {
+                    module: &world_label_shader,
+                    entry_point: Some("vs_world_label"),
+                    buffers: &[WorldLabelVertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &world_label_shader,
+                    entry_point: Some("fs_world_label"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth_format,
+                    depth_write_enabled: false,
+                    depth_compare: cmp,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: viewport_border_ms,
+                multiview: None,
+                cache: None,
+            })
+        };
+        let world_label_forward =
+            make_world_label_pipeline("World label (forward-Z)", wgpu::CompareFunction::Less);
+        let world_label_reverse =
+            make_world_label_pipeline("World label (reverse-Z)", wgpu::CompareFunction::Greater);
+
         Self {
             phong_bgl,
             pbr_material_bgl,
@@ -594,9 +745,15 @@ impl PipelineSet {
             forward_hdr,
             reverse_hdr,
             viewport_border_lines,
-            markup_lines,
+            markup_lines_screen,
+            markup_lines_forward,
+            markup_lines_reverse,
             grid_lines_forward,
             grid_lines_reverse,
+            world_label_bgl,
+            world_label_sampler,
+            world_label_forward,
+            world_label_reverse,
         }
     }
 }
@@ -605,6 +762,12 @@ impl PipelineSet {
 /// Uses LRU eviction (max 16 variants) to bound memory.
 pub struct PbrVariantCache {
     cache: lru::LruCache<PbrFeatures, wgpu::ShaderModule>,
+}
+
+impl Default for PbrVariantCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PbrVariantCache {

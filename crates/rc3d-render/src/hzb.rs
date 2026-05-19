@@ -292,8 +292,8 @@ impl HzbBaker {
                 });
                 pass.set_pipeline(&self.depth_to_mip0_pipeline);
                 pass.set_bind_group(0, &bg, &[]);
-                let wg_x = (max_pyramid.width + 7) / 8;
-                let wg_y = (max_pyramid.height + 7) / 8;
+                let wg_x = max_pyramid.width.div_ceil(8);
+                let wg_y = max_pyramid.height.div_ceil(8);
                 pass.dispatch_workgroups(wg_x, wg_y, 1);
             }
 
@@ -307,8 +307,8 @@ impl HzbBaker {
                     });
                     pass.set_pipeline(&self.downsample_max_pipeline);
                     pass.set_bind_group(0, &max_pyramid.downsample_max_bgs[mip - 1], &[]);
-                    let wg_x = (dst_w + 7) / 8;
-                    let wg_y = (dst_h + 7) / 8;
+                    let wg_x = dst_w.div_ceil(8);
+                    let wg_y = dst_h.div_ceil(8);
                     pass.dispatch_workgroups(wg_x, wg_y, 1);
                 }
             }
@@ -336,8 +336,8 @@ impl HzbBaker {
                 });
                 pass.set_pipeline(&self.depth_to_mip0_pipeline);
                 pass.set_bind_group(0, &bg, &[]);
-                let wg_x = (min_pyramid.width + 7) / 8;
-                let wg_y = (min_pyramid.height + 7) / 8;
+                let wg_x = min_pyramid.width.div_ceil(8);
+                let wg_y = min_pyramid.height.div_ceil(8);
                 pass.dispatch_workgroups(wg_x, wg_y, 1);
             }
 
@@ -351,8 +351,8 @@ impl HzbBaker {
                     });
                     pass.set_pipeline(&self.downsample_min_pipeline);
                     pass.set_bind_group(0, &min_pyramid.downsample_min_bgs[mip - 1], &[]);
-                    let wg_x = (dst_w + 7) / 8;
-                    let wg_y = (dst_h + 7) / 8;
+                    let wg_x = dst_w.div_ceil(8);
+                    let wg_y = dst_h.div_ceil(8);
                     pass.dispatch_workgroups(wg_x, wg_y, 1);
                 }
             }

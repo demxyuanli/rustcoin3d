@@ -4,7 +4,7 @@
 /// - Mipmap auto-generation from loaded image data
 /// - Compressed format detection (BC7/BC5/BC4) for supported platforms
 /// - Optimal format selection based on texture type and device capabilities
-
+///
 /// GPU-ready compressed texture format variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompressedFormat {
@@ -199,7 +199,7 @@ pub fn upload_texture_with_mips(
         for (level, (data, w, h)) in chain.iter().enumerate().skip(1) {
             let bytes_per_row = 4 * w;
             // Pad to 256-byte alignment if needed
-            let padded_bytes_per_row = ((bytes_per_row + 255) / 256) * 256;
+            let padded_bytes_per_row = bytes_per_row.div_ceil(256) * 256;
             let mut padded = vec![0u8; (padded_bytes_per_row * h) as usize];
             for row in 0..*h as usize {
                 let src_start = row * bytes_per_row as usize;

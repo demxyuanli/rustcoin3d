@@ -7,7 +7,6 @@ use rc3d_scene::SceneGraph;
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::cluster::{ClusterRenderer, ClusterSet};
 use crate::frustum::Frustum;
-use crate::vertex::GlobalFrameUniforms;
 use crate::gpu_skinning::GpuSkinningPass;
 use crate::render_action::DrawCall;
 use crate::render_passes;
@@ -138,22 +137,33 @@ impl super::Renderer {
             }
         }
 
-        // Compute VP + camera_pos early for text billboard projection
+        // Compute VP + camera_pos early for Text3 world labels
         let text_vp = draw_calls.first().map(|dc| dc.mvp * dc.model_matrix.inverse());
         let text_cam = draw_calls.first().map(|dc| dc.camera_pos);
         let text_viewport = self.gpu.hud.as_ref().map(|h| (h.width, h.height));
+        self.frame.annotation_world_labels.clear();
 
         // Fast-path: auto-learn whether scene has text/effect nodes.
         // First 2 frames always traverse to detect; after that, skip if empty.
         if let Some(hud) = &mut self.gpu.hud {
             if self.frame.has_text_nodes || self.frame.frame_counter < 2 {
+                let world_labels = &mut self.frame.annotation_world_labels;
+                let depth_rz = self.frame.scene_depth_reversed_z;
                 let t = self.cpu_span.measure("text_collect", || {
-                    render_passes::pass_text::collect_text_nodes(scene, text_vp, text_viewport, text_cam)
+                    render_passes::pass_text::collect_text_nodes(
+                        scene,
+                        text_vp,
+                        text_viewport,
+                        text_cam,
+                        depth_rz,
+                        world_labels,
+                    )
                 });
                 hud.overlay_lines = t.overlay_lines;
                 hud.scene_positioned_texts = t.positioned;
                 if hud.overlay_lines.is_empty()
                     && hud.scene_positioned_texts.is_empty()
+                    && self.frame.annotation_world_labels.is_empty()
                     && self.frame.frame_counter >= 2
                 {
                     self.frame.has_text_nodes = false;
@@ -298,8 +308,8 @@ impl super::Renderer {
 
         // ── GPU compute culling (runs alongside CPU culling for now) ──
         if self.gpu.gpu_cull_enabled {
-            if let (Some(ref cull_pass), Some(ref transform_buf), Some(ref indirect_buf),
-                    Some(ref _instance_buf), Some(ref frustum_buf), Some(ref _bg)) = (
+            if let (Some(cull_pass), Some(transform_buf), Some(indirect_buf),
+                    Some(_instance_buf), Some(frustum_buf), Some(_bg)) = (
                 self.gpu.gpu_cull_pass.as_ref(),
                 self.gpu.transform_buffer.as_ref(),
                 self.gpu.indirect_args_buffer.as_ref(),
@@ -309,8 +319,8 @@ impl super::Renderer {
             ) {
                 // Upload transforms (all objects for now; dirty-tracking TBD)
                 let transforms: Vec<crate::vertex::GpuObjectTransform> = draw_calls.iter()
-                    .enumerate()
-                    .map(|(_i, dc)| crate::vertex::GpuObjectTransform {
+                    
+                    .map(|dc| crate::vertex::GpuObjectTransform {
                         model_matrix: dc.model_matrix.to_cols_array_2d(),
                         aabb_min: dc.aabb.as_ref().map_or([0.0f32; 3], |a| a.min.to_array()),
                         flags: 0,
@@ -678,8 +688,8 @@ impl super::Renderer {
                             csm_split_depths[i] = (splits[i + 1] - camera_near) / far_range;
                         }
                     }
-                    for i in cascade_count as usize..CSM_CASCADE_COUNT {
-                        csm_split_depths[i] = 1.0;
+                    for s in &mut csm_split_depths[cascade_count as usize..CSM_CASCADE_COUNT] {
+                        *s = 1.0;
                     }
 
                     let inv = 1.0 / sm_size as f32;
@@ -1125,7 +1135,7 @@ impl super::Renderer {
                         pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                     } else {
-                        pass.draw(0..mesh.vertex_count as u32, 0..1);
+                        pass.draw(0..mesh.vertex_count, 0..1);
                     }
                 }
             }

@@ -3,6 +3,9 @@
 //! Every example calls [`run_example`] with a title and a setup closure.
 //! The closure receives `&mut Engine` so it can build the scene graph,
 //! configure the renderer, and register engines before the event loop starts.
+//!
+//! TODO: migrate from EventLoop::run / create_window to run_app / ActiveEventLoop API (winit 0.30).
+#![allow(deprecated)]
 
 use rc3d_engine_api::Engine;
 use winit::event::{ElementState, Event, WindowEvent};

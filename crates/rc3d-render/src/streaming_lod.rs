@@ -278,8 +278,7 @@ fn build_stream_stages(
     let mut out = Vec::new();
     let n = STREAM_LOD_TARGETS.len();
     let mut last_tris: usize = 0;
-    for i in 0..n {
-        let t = STREAM_LOD_TARGETS[i];
+    for &t in &STREAM_LOD_TARGETS[..n] {
         if t >= tri_count {
             break;
         }

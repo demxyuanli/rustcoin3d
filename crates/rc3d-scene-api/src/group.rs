@@ -33,7 +33,7 @@ impl Group {
     }
 
     /// Add a shape to this group.
-    pub fn add(mut self, shape: impl Shape + Clone + 'static) -> Self {
+    pub fn add_shape(mut self, shape: impl Shape + Clone + 'static) -> Self {
         let mut geometry_nodes = Vec::new();
         // Build geometry nodes into a temporary graph to capture all siblings
         let mut tmp_graph = SceneGraph::new();

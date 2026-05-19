@@ -10,6 +10,12 @@ pub struct SectionPlaneAction {
     pub has_caps: bool,
 }
 
+impl Default for SectionPlaneAction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SectionPlaneAction {
     pub fn new() -> Self {
         Self { planes: Vec::new(), cap_tints: Vec::new(), has_caps: false }

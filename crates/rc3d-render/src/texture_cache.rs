@@ -240,8 +240,8 @@ impl TextureCache {
 
             let dst_w = (w >> mip).max(1);
             let dst_h = (h >> mip).max(1);
-            let wg_x = (dst_w + 7) / 8;
-            let wg_y = (dst_h + 7) / 8;
+            let wg_x = dst_w.div_ceil(8);
+            let wg_y = dst_h.div_ceil(8);
 
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -311,12 +311,12 @@ impl TextureCache {
 
         // Generate mip chain if pipeline is available
         // This is done separately after insert to avoid borrow issues
-        let handle = textures.insert(GpuTexture2d {
+        
+        textures.insert(GpuTexture2d {
             _texture: texture,
             view,
             mip_level_count: mip_count,
-        });
-        handle
+        })
     }
 
     pub fn white_handle(&self) -> TextureHandle {

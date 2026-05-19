@@ -105,7 +105,7 @@ pub fn tessellate_sphere(radius: f32, slices: u32, stacks: u32) -> TriangleMesh 
     positions.push(Vec3::new(0.0, -radius, 0.0));
     texcoords.push([0.5, 1.0]);
 
-    let south_idx = (1 + ring_count * slices) as u32;
+    let south_idx = 1 + ring_count * slices;
 
     for j in 0..slices {
         let jp = (j + 1) % slices;

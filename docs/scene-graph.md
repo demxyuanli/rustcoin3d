@@ -155,7 +155,7 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 | `Callout` | Leader + circular callout at label |
 | `Datum` | Datum cross at a point |
 
-**AnnotationSetNode** also carries `AnnotationStyle` (extension/arrow defaults, `font_size`, `decimals`, `unit_suffix`, `arc_segments`).
+**AnnotationSetNode** also carries `AnnotationStyle` (extension/arrow defaults, `label_height_factor`, `font_size` as min screen px, `decimals`, `unit_suffix`, `arc_segments`).
 
 **Label modes** (`AnnotationLabelMode`): `Auto` (format from geometry when `label` empty), `Fixed` (use `label`), `Prefix` (`label` + formatted value).
 
@@ -172,7 +172,8 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 1. **Single-plane**: Each annotation on one axis-aligned plane (∥XY/XZ/YZ).
 2. **All 3D**: Geometry in world units, one VP projection per frame.
 3. **Fixed world axes**: Leader/Callout label offsets map along world +X/+Y from anchor.
-4. **Plane-aligned text**: Labels rotated to the projected dimension tangent (not HUD-horizontal).
+4. **World-space text**: Labels are textured quads on the annotation plane (`world_label` pass), height `extension_len * label_height_factor` with `font_size` as minimum screen-pixel floor.
+5. **Label font**: On startup loads the first available font from `RC3D_FONT_PATH`, `RC3D_FONT_DIR`, or OS defaults (`arial.ttf` / `segoeui.ttf` on Windows). Set `RC3D_FONT_PATH` to a `.ttf` before launching the app to use a custom font.
 
 **Scene graph example**:
 ```rust

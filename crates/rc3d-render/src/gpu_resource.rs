@@ -207,7 +207,7 @@ impl GpuResourceManager {
 }
 
 pub struct GpuUniformPool {
-    buffer: wgpu::Buffer,
+    pub(crate) buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     stride: u64,

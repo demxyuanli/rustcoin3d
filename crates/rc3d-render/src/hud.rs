@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use glyphon::{
-    Attrs, Buffer, Cache, Color, CustomGlyph, Family, FontSystem, Metrics, RasterizeCustomGlyphRequest,
-    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
+    Attrs, Buffer, Cache, Color, CustomGlyph, Family, FontSystem, Metrics,
+    RasterizeCustomGlyphRequest, Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds,
     TextRenderer, Viewport,
 };
 
@@ -34,12 +34,31 @@ fn compose_hud_text(
     text
 }
 
+fn glyphon_depth_stencil(compare: wgpu::CompareFunction) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32FloatStencil8,
+        depth_write_enabled: false,
+        depth_compare: compare,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
+fn depth_from_glyph_metadata(metadata: usize) -> f32 {
+    f32::from_bits(metadata as u32)
+}
+
 pub struct HudRenderer {
-    font_system: FontSystem,
-    swash_cache: SwashCache,
+    pub(crate) font_system: FontSystem,
+    pub(crate) swash_cache: SwashCache,
     viewport: Viewport,
     atlas: TextAtlas,
+    /// FPS / scene Text2 — always on top (no depth test).
     text_renderer: TextRenderer,
+    /// Plane annotation labels — depth-tested (forward-Z).
+    annotation_text_renderer_forward: TextRenderer,
+    /// Plane annotation labels — depth-tested (reverse-Z).
+    annotation_text_renderer_reverse: TextRenderer,
     buffer: Buffer,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -52,7 +71,10 @@ pub struct HudRenderer {
     positioned_buffers: Vec<Buffer>,
     empty_buffer: Buffer,
     plane_custom_glyphs: Vec<CustomGlyph>,
-    plane_glyph_cache: HashMap<u16, crate::plane_text::PlaneGlyphCacheEntry>,
+    /// Persistent mask data keyed by custom glyph id (glyphon atlas contract).
+    plane_glyph_raster_by_id: HashMap<u16, crate::plane_text::PlaneGlyphCacheEntry>,
+    plane_label_raster_cache: crate::plane_text::PlaneLabelRasterCache,
+    label_attrs: Attrs<'static>,
 }
 
 impl HudRenderer {
@@ -66,30 +88,30 @@ impl HudRenderer {
         let cache = Cache::new(device);
         let mut atlas = TextAtlas::new(device, queue, &cache, surface_format);
         let viewport = Viewport::new(device, &cache);
-        let text_renderer = TextRenderer::new(
+        let ms = wgpu::MultisampleState::default();
+        let text_renderer = TextRenderer::new(&mut atlas, device, ms, None);
+        let annotation_text_renderer_forward = TextRenderer::new(
             &mut atlas,
             device,
-            wgpu::MultisampleState::default(),
-            None,
+            ms,
+            Some(glyphon_depth_stencil(wgpu::CompareFunction::Less)),
+        );
+        let annotation_text_renderer_reverse = TextRenderer::new(
+            &mut atlas,
+            device,
+            ms,
+            Some(glyphon_depth_stencil(wgpu::CompareFunction::Greater)),
         );
         let mut font_system = FontSystem::new();
+        let _family = crate::font_loader::configure_font_system(&mut font_system);
+        let label_attrs = Attrs::new().family(Family::SansSerif);
         let swash_cache = SwashCache::new();
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 22.0));
         buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(
-            &mut font_system,
-            "",
-            Attrs::new().family(Family::SansSerif),
-            Shaping::Advanced,
-        );
+        buffer.set_text(&mut font_system, "", label_attrs, Shaping::Advanced);
         let mut empty_buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 17.0));
         empty_buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        empty_buffer.set_text(
-            &mut font_system,
-            "",
-            Attrs::new().family(Family::SansSerif),
-            Shaping::Advanced,
-        );
+        empty_buffer.set_text(&mut font_system, "", label_attrs, Shaping::Advanced);
         empty_buffer.shape_until_scroll(&mut font_system, false);
         let mut hud = Self {
             font_system,
@@ -97,6 +119,8 @@ impl HudRenderer {
             viewport,
             atlas,
             text_renderer,
+            annotation_text_renderer_forward,
+            annotation_text_renderer_reverse,
             buffer,
             width,
             height,
@@ -106,7 +130,9 @@ impl HudRenderer {
             positioned_buffers: Vec::new(),
             empty_buffer,
             plane_custom_glyphs: Vec::new(),
-            plane_glyph_cache: HashMap::new(),
+            plane_glyph_raster_by_id: HashMap::new(),
+            plane_label_raster_cache: crate::plane_text::PlaneLabelRasterCache::new(),
+            label_attrs,
         };
         hud.viewport.update(queue, Resolution { width, height });
         hud
@@ -120,19 +146,17 @@ impl HudRenderer {
         self.viewport.update(queue, Resolution { width, height });
     }
 
+    pub fn has_plane_annotation_glyphs(&self) -> bool {
+        !self.plane_custom_glyphs.is_empty()
+    }
+
     /// Prepare positioned-text buffers from the current `positioned_texts` list.
-    /// Must be called before the HUD render pass if `positioned_texts` were modified.
     pub fn prepare_positioned_texts(&mut self) {
         self.positioned_buffers.clear();
         for cmd in &self.positioned_texts {
             let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
             buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
-            buf.set_text(
-                &mut self.font_system,
-                &cmd.string,
-                Attrs::new().family(Family::SansSerif),
-                Shaping::Advanced,
-            );
+            buf.set_text(&mut self.font_system, &cmd.string, self.label_attrs, Shaping::Advanced);
             buf.shape_until_scroll(&mut self.font_system, false);
             self.positioned_buffers.push(buf);
         }
@@ -140,30 +164,77 @@ impl HudRenderer {
 
     /// Rasterize plane-aligned annotation labels as rotated custom glyphs.
     pub fn prepare_plane_annotation_glyphs(&mut self, labels: &[TextDrawCommand]) {
-        let (glyphs, cache) = crate::plane_text::build_plane_label_custom_glyphs(
+        self.plane_custom_glyphs = crate::plane_text::build_plane_label_custom_glyphs(
+            &mut self.plane_label_raster_cache,
+            &mut self.plane_glyph_raster_by_id,
             &mut self.font_system,
             &mut self.swash_cache,
             labels,
         );
-        self.plane_custom_glyphs = glyphs;
-        self.plane_glyph_cache = cache;
     }
 
-    /// Upload current FPS + positioned text to the glyphon atlas (call before HUD render pass).
-    pub fn prepare_gpu_atlas_for_render(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-        self.prepare_positioned_texts();
-        let bounds = TextBounds {
+    fn text_bounds(&self) -> TextBounds {
+        TextBounds {
             left: 0,
             top: 0,
             right: self.width as i32,
             bottom: self.height as i32,
+        }
+    }
+
+    /// Upload plane annotation glyphs with per-label NDC depth (call before depth-tested render pass).
+    pub fn prepare_plane_annotation_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        depth_reversed_z: bool,
+    ) {
+        if self.plane_custom_glyphs.is_empty() {
+            return;
+        }
+        let bounds = self.text_bounds();
+        let areas = [TextArea {
+            buffer: &self.empty_buffer,
+            left: 0.0,
+            top: 0.0,
+            scale: 1.0,
+            bounds,
+            default_color: Color::rgb(255, 255, 255),
+            custom_glyphs: &self.plane_custom_glyphs,
+        }];
+        let rasters = self.plane_glyph_raster_by_id.clone();
+        let renderer = if depth_reversed_z {
+            &mut self.annotation_text_renderer_reverse
+        } else {
+            &mut self.annotation_text_renderer_forward
         };
-        let mut areas: Vec<TextArea> =
-            Vec::with_capacity(2 + self.positioned_texts.len() + usize::from(!self.plane_custom_glyphs.is_empty()));
+        if let Err(e) = renderer.prepare_with_depth_and_custom(
+            device,
+            queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+            depth_from_glyph_metadata,
+            move |req: RasterizeCustomGlyphRequest| {
+                Some(
+                    rasters
+                        .get(&req.id)
+                        .map(|entry| crate::plane_text::glyph_for_request(entry, &req))
+                        .unwrap_or_else(|| crate::plane_text::fallback_custom_glyph_raster(&req)),
+                )
+            },
+        ) {
+            log::error!("Annotation text prepare: {:?}", e);
+        }
+    }
+
+    /// Upload FPS / scene Text2 buffers (no depth; drawn on top).
+    pub fn prepare_hud_chrome_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.prepare_positioned_texts();
+        let bounds = self.text_bounds();
+        let mut areas = Vec::with_capacity(1 + self.positioned_texts.len());
         areas.push(TextArea {
             buffer: &self.buffer,
             left: 12.0,
@@ -190,19 +261,7 @@ impl HudRenderer {
                 custom_glyphs: &[],
             });
         }
-        if !self.plane_custom_glyphs.is_empty() {
-            areas.push(TextArea {
-                buffer: &self.empty_buffer,
-                left: 0.0,
-                top: 0.0,
-                scale: 1.0,
-                bounds,
-                default_color: Color::rgb(255, 255, 255),
-                custom_glyphs: &self.plane_custom_glyphs,
-            });
-        }
-        let cache = self.plane_glyph_cache.clone();
-        if let Err(e) = self.text_renderer.prepare_with_custom(
+        if let Err(e) = self.text_renderer.prepare(
             device,
             queue,
             &mut self.font_system,
@@ -210,17 +269,21 @@ impl HudRenderer {
             &self.viewport,
             areas,
             &mut self.swash_cache,
-            move |req: RasterizeCustomGlyphRequest| {
-                cache
-                    .get(&req.id)
-                    .map(|entry| crate::plane_text::glyph_for_request(entry, &req))
-            },
         ) {
-            log::error!("HUD prepare (render pass): {:?}", e);
+            log::error!("HUD chrome prepare: {:?}", e);
         }
     }
 
-    /// Update the FPS / stats block only (glyph upload happens in `prepare_gpu_atlas_for_render`).
+    pub fn prepare_gpu_atlas_for_render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        depth_reversed_z: bool,
+    ) {
+        self.prepare_plane_annotation_atlas(device, queue, depth_reversed_z);
+        self.prepare_hud_chrome_atlas(device, queue);
+    }
+
     pub fn set_fps_buffer_text(
         &mut self,
         fps: f32,
@@ -232,16 +295,32 @@ impl HudRenderer {
         self.buffer.set_text(
             &mut self.font_system,
             &text,
-            Attrs::new().family(Family::SansSerif),
+                self.label_attrs,
             Shaping::Advanced,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if let Err(e) = self.text_renderer.render(&self.atlas, &self.viewport, pass) {
-            log::error!("HUD render: {:?}", e);
+    pub fn render_plane_annotations(&self, pass: &mut wgpu::RenderPass<'_>, depth_reversed_z: bool) {
+        let renderer = if depth_reversed_z {
+            &self.annotation_text_renderer_reverse
+        } else {
+            &self.annotation_text_renderer_forward
+        };
+        if let Err(e) = renderer.render(&self.atlas, &self.viewport, pass) {
+            log::error!("Annotation text render: {:?}", e);
         }
+    }
+
+    pub fn render_hud_chrome(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Err(e) = self.text_renderer.render(&self.atlas, &self.viewport, pass) {
+            log::error!("HUD chrome render: {:?}", e);
+        }
+    }
+
+    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.render_plane_annotations(pass, false);
+        self.render_hud_chrome(pass);
     }
 }
 

@@ -456,7 +456,7 @@ impl RenderCollector {
                 for &child in &entry.children {
                     let Some(ce) = graph.get(child) else { continue };
                     if let NodeData::Transform(t) = &ce.data {
-                        accum = accum * t.to_matrix();
+                        accum *= t.to_matrix();
                         self.state.set_model_matrix(accum);
                         for &gc in &ce.children {
                             self.traverse_node(graph, gc);

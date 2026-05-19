@@ -284,7 +284,7 @@ impl<R: Seek + Read> FbxParser<R> {
                         let pre_mat = Mat4::from_rotation_z(pre.z.to_radians())
                             * Mat4::from_rotation_y(pre.y.to_radians())
                             * Mat4::from_rotation_x(pre.x.to_radians());
-                        transform = transform * pre_mat;
+                        transform *= pre_mat;
                     }
 
                     model.local_transform = transform;

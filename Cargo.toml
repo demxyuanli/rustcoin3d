@@ -72,3 +72,13 @@ rc3d-effects = { path = "crates/rc3d-effects" }
 rc3d-engine-api = { path = "crates/rc3d-engine-api" }
 rc3d-editor = { path = "crates/rc3d-editor" }
 rc3d-examples = { path = "crates/rc3d-examples" }
+
+[workspace.lints.clippy]
+# Style preferences — not actionable at current scale
+too_many_arguments = "allow"
+type_complexity = "allow"
+# Intentional: extends lifetimes for safety in generated code
+drop_non_drop = "allow"
+# Code patterns that cannot be trivially refactored
+same_item_push = "allow"
+needless_borrows_for_generic_args = "allow"

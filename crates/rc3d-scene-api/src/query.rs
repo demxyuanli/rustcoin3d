@@ -36,7 +36,7 @@ impl<'a> Query<'a> {
             .filter(|&id| {
                 self.graph
                     .get(id)
-                    .map_or(false, |entry| predicate(&entry.data))
+                    .is_some_and(|entry| predicate(&entry.data))
             })
             .collect()
     }
@@ -82,7 +82,7 @@ impl<'a> Query<'a> {
             .filter(|&id| {
                 self.graph
                     .get(id)
-                    .map_or(false, |e| predicate(&e.data))
+                    .is_some_and(|e| predicate(&e.data))
             })
             .count()
     }
@@ -103,7 +103,7 @@ impl SceneQueryExt for SceneGraph {
 
     fn find_all_ids<P: Fn(&NodeData) -> bool>(&self, predicate: P) -> Vec<NodeId> {
         self.traverse_all()
-            .filter(|&id| self.get(id).map_or(false, |e| predicate(&e.data)))
+            .filter(|&id| self.get(id).is_some_and(|e| predicate(&e.data)))
             .collect()
     }
 }

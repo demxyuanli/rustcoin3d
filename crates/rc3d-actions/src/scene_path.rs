@@ -39,7 +39,7 @@ impl ScenePath {
         for &node_id in &self.nodes {
             if let Some(entry) = graph.get(node_id) {
                 if let NodeData::Transform(t) = &entry.data {
-                    m = m * t.to_matrix();
+                    m *= t.to_matrix();
                 }
             }
         }
@@ -64,6 +64,12 @@ pub struct SearchAction {
     pub results: Vec<ScenePath>,
     #[allow(dead_code)]
     current_path: ScenePath,
+}
+
+impl Default for SearchAction {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SearchAction {

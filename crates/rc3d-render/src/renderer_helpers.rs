@@ -318,7 +318,7 @@ impl Renderer {
 
     fn estimate_gpu_uniform_pool_bytes(&self) -> u64 {
         fn pool_bytes(pool: &GpuUniformPool) -> u64 {
-            (pool.stride() * pool.capacity() as u64) as u64
+            pool.stride() * pool.capacity() as u64
         }
         pool_bytes(&self.gpu.phong_pool)
             + pool_bytes(&self.gpu.shadow_pool)

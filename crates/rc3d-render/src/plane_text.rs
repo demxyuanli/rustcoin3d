@@ -1,5 +1,7 @@
 //! Rasterize annotation labels on their plane tangent (rotated screen baseline).
 
+use std::collections::HashMap;
+
 use glyphon::{
     Attrs, Buffer, Color, ContentType, CustomGlyph, Family, FontSystem, Metrics, RasterizedCustomGlyph,
     Shaping, SwashCache, SwashContent,
@@ -7,7 +9,58 @@ use glyphon::{
 
 use crate::render_passes::pass_text::TextDrawCommand;
 
-struct PlaneGlyphRaster {
+/// Stable raster cache: reuse glyph IDs and masks across frames (avoids atlas flicker).
+pub struct PlaneLabelRasterCache {
+    entries: HashMap<PlaneLabelKey, CachedPlaneLabelRaster>,
+    next_id: u16,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct PlaneLabelKey {
+    text: String,
+    size_tenths: u16,
+    /// Baseline angle in tenths of a degree (coarse bucket avoids per-frame re-rasterize).
+    angle_deci_deg: i16,
+}
+
+#[derive(Clone)]
+struct CachedPlaneLabelRaster {
+    glyph_id: u16,
+    width: u16,
+    height: u16,
+    anchor_x: f32,
+    anchor_y: f32,
+    raster: PlaneGlyphCacheEntry,
+}
+
+impl PlaneLabelRasterCache {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    fn alloc_id(&mut self) -> u16 {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        id
+    }
+}
+
+fn snap_screen_half_pixel(pos: [f32; 2]) -> [f32; 2] {
+    [(pos[0] * 2.0).round() / 2.0, (pos[1] * 2.0).round() / 2.0]
+}
+
+fn label_cache_key(cmd: &TextDrawCommand) -> PlaneLabelKey {
+    PlaneLabelKey {
+        text: cmd.string.clone(),
+        size_tenths: (cmd.size * 10.0).round().clamp(1.0, u16::MAX as f32) as u16,
+        angle_deci_deg: (cmd.baseline_angle_rad.to_degrees() * 10.0).round() as i16,
+    }
+}
+
+pub(crate) struct PlaneGlyphRaster {
     pub data: Vec<u8>,
     pub width: u16,
     pub height: u16,
@@ -218,7 +271,10 @@ fn rotate_mask(
             dst[di] = dst[di].saturating_add(a);
         }
     }
-    (dst, dw, dh, dst_cx, dst_cy)
+    // Anchor: where the unrotated glyph center lands inside the output bitmap (top-left origin).
+    let anchor_x = dst_cx - min_x;
+    let anchor_y = dst_cy - min_y;
+    (dst, dw, dh, anchor_x, anchor_y)
 }
 
 fn rotate_corner(x: f32, y: f32, cos_a: f32, sin_a: f32) -> (f32, f32) {
@@ -254,55 +310,88 @@ pub fn rasterize_plane_aligned_label(
     })
 }
 
-/// Build custom glyphs for plane-aligned annotation labels (one glyph per label).
+/// Build custom glyphs; raster is cached by text/size/angle, only screen position updates each frame.
+/// `raster_by_id` is append-only: glyphon requires `Some` for every id it has seen before.
 pub fn build_plane_label_custom_glyphs(
+    cache: &mut PlaneLabelRasterCache,
+    raster_by_id: &mut HashMap<u16, PlaneGlyphCacheEntry>,
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
     labels: &[TextDrawCommand],
-) -> (
-    Vec<CustomGlyph>,
-    std::collections::HashMap<u16, PlaneGlyphCacheEntry>,
-) {
-    use std::collections::HashMap;
-
+) -> Vec<CustomGlyph> {
     let mut glyphs = Vec::new();
-    let mut rasterized = HashMap::new();
-    let mut next_id: u16 = 1;
 
     for cmd in labels.iter().filter(|c| c.plane_aligned) {
-        let Some(img) = rasterize_plane_aligned_label(font_system, swash_cache, cmd) else {
-            continue;
+        let key = label_cache_key(cmd);
+        let cached = if let Some(c) = cache.entries.get(&key) {
+            c.clone()
+        } else {
+            let Some(img) = rasterize_plane_aligned_label(font_system, swash_cache, cmd) else {
+                continue;
+            };
+            let glyph_id = cache.alloc_id();
+            let entry = CachedPlaneLabelRaster {
+                glyph_id,
+                width: img.width,
+                height: img.height,
+                anchor_x: img.anchor_x,
+                anchor_y: img.anchor_y,
+                raster: (
+                    img.width,
+                    img.height,
+                    RasterizedCustomGlyph {
+                        data: img.data,
+                        content_type: ContentType::Mask,
+                    },
+                ),
+            };
+            cache.entries.insert(key, entry.clone());
+            entry
         };
-        let id = next_id;
-        next_id = next_id.wrapping_add(1).max(1);
 
+        let screen = snap_screen_half_pixel(cmd.screen_pos);
         glyphs.push(CustomGlyph {
-            id,
-            left: cmd.screen_pos[0] - img.anchor_x,
-            top: cmd.screen_pos[1] - img.anchor_y,
-            width: f32::from(img.width),
-            height: f32::from(img.height),
+            id: cached.glyph_id,
+            left: screen[0] - cached.anchor_x,
+            top: screen[1] - cached.anchor_y,
+            width: f32::from(cached.width),
+            height: f32::from(cached.height),
             color: Some(Color::rgba(
                 (cmd.color[0] * 255.0) as u8,
                 (cmd.color[1] * 255.0) as u8,
                 (cmd.color[2] * 255.0) as u8,
                 (cmd.color[3] * 255.0) as u8,
             )),
-            snap_to_physical_pixel: true,
-            metadata: 0,
+            snap_to_physical_pixel: false,
+            metadata: cmd.clip_depth_ndc.to_bits() as usize,
         });
-        rasterized.insert(
-            id,
-            (
-                img.width,
-                img.height,
-                RasterizedCustomGlyph {
-                    data: img.data,
-                    content_type: ContentType::Mask,
-                },
-            ),
-        );
+        raster_by_id.insert(cached.glyph_id, cached.raster);
     }
 
-    (glyphs, rasterized)
+    glyphs
+}
+
+/// Fallback when the atlas asks for an id not in the current frame list (must not return `None`).
+pub fn fallback_custom_glyph_raster(req: &glyphon::RasterizeCustomGlyphRequest) -> RasterizedCustomGlyph {
+    RasterizedCustomGlyph {
+        data: vec![0u8; req.width as usize * req.height as usize],
+        content_type: ContentType::Mask,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotate_mask_zero_angle_anchor_is_bitmap_center() {
+        let w = 100u32;
+        let h = 20u32;
+        let src = vec![255u8; (w * h) as usize];
+        let (_, dw, dh, ax, ay) = rotate_mask(&src, w, h, 0.0);
+        assert_eq!(dw, w);
+        assert_eq!(dh, h);
+        assert!((ax - w as f32 * 0.5).abs() < 0.01);
+        assert!((ay - h as f32 * 0.5).abs() < 0.01);
+    }
 }

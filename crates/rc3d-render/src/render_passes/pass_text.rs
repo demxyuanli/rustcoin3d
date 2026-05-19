@@ -1,9 +1,13 @@
 //! Text rendering pass for Text2/Text3 scene-graph nodes.
-//! Collects text draw commands for rendering via the existing HUD glyphon system.
+//! Text2 → HUD overlay; Text3 → world-space quads (`world_label` pass).
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::{NodeData, SceneGraph};
+
+use crate::world_label::{
+    camera_billboard_basis, resolve_label_height_world, WorldLabelCommand,
+};
 
 /// A text draw command ready for rendering.
 #[derive(Clone)]
@@ -17,6 +21,8 @@ pub struct TextDrawCommand {
     pub plane_aligned: bool,
     /// Screen-space baseline angle (radians); 0 = horizontal, readable regardless of camera orbit.
     pub baseline_angle_rad: f32,
+    /// NDC depth at the label anchor (for glyphon depth-tested annotation text).
+    pub clip_depth_ndc: f32,
 }
 
 /// Overlay lines (no positioning — rendered as HUD block) + positioned text entries.
@@ -25,24 +31,36 @@ pub(crate) struct TextCollection {
     pub positioned: Vec<TextDrawCommand>,
 }
 
-/// Collect all Text2/Text3 draw commands from the scene graph.
+/// Collect Text2 (HUD) and Text3 (world quads) from the scene graph.
 pub fn collect_text_nodes(
     graph: &SceneGraph,
     view_proj: Option<Mat4>,
     viewport: Option<(u32, u32)>,
     camera_pos: Option<Vec3>,
+    depth_reversed_z: bool,
+    world_labels: &mut Vec<WorldLabelCommand>,
 ) -> TextCollection {
     let mut overlay_lines = Vec::new();
     let mut positioned = Vec::new();
     for &root in graph.roots() {
         collect_recursive(
-            graph, root, Mat4::IDENTITY,
-            view_proj, viewport, camera_pos,
+            graph,
+            root,
+            Mat4::IDENTITY,
+            view_proj,
+            viewport,
+            camera_pos,
+            depth_reversed_z,
             false,
-            &mut overlay_lines, &mut positioned,
+            &mut overlay_lines,
+            &mut positioned,
+            world_labels,
         );
     }
-    TextCollection { overlay_lines, positioned }
+    TextCollection {
+        overlay_lines,
+        positioned,
+    }
 }
 
 fn collect_recursive(
@@ -52,9 +70,11 @@ fn collect_recursive(
     view_proj: Option<Mat4>,
     viewport: Option<(u32, u32)>,
     camera_pos: Option<Vec3>,
+    depth_reversed_z: bool,
     inside_billboard: bool,
     overlay_lines: &mut Vec<String>,
     positioned: &mut Vec<TextDrawCommand>,
+    world_labels: &mut Vec<WorldLabelCommand>,
 ) {
     let Some(entry) = graph.get(node) else { return };
     match &entry.data {
@@ -77,6 +97,7 @@ fn collect_recursive(
                         is_3d: false,
                         plane_aligned: false,
                         baseline_angle_rad: 0.0,
+                        clip_depth_ndc: clip.z,
                     });
                 }
             } else {
@@ -85,21 +106,34 @@ fn collect_recursive(
         }
         NodeData::Text3(t) => {
             let world_pos = model.transform_point3(t.position);
-            if let (Some(vp), Some((vw, vh))) = (view_proj, viewport) {
+            if let (Some(vp), Some((vw, vh)), Some(cam)) = (view_proj, viewport, camera_pos) {
                 let clip = vp.project_point3(world_pos);
                 if clip.z > 1.0 || clip.z < -1.0 {
                     return;
                 }
-                let sx = (clip.x * 0.5 + 0.5) * vw as f32;
-                let sy = (1.0 - (clip.y * 0.5 + 0.5)) * vh as f32;
-                positioned.push(TextDrawCommand {
+                let (tangent, bitangent) = camera_billboard_basis(world_pos, cam);
+                let at = t.position.into();
+                let ext = t.size * 0.02;
+                let height_world = resolve_label_height_world(
+                    ext,
+                    0.5,
+                    t.size,
+                    at,
+                    bitangent,
+                    model,
+                    vp,
+                    vw as f32,
+                    vh as f32,
+                    depth_reversed_z,
+                );
+                world_labels.push(WorldLabelCommand {
                     string: t.string.clone(),
-                    screen_pos: [sx, sy],
-                    size: t.size,
+                    model_matrix: model,
+                    at,
+                    tangent,
+                    bitangent,
+                    height_world,
                     color: t.color,
-                    is_3d: true,
-                    plane_aligned: false,
-                    baseline_angle_rad: 0.0,
                 });
             }
         }
@@ -113,10 +147,17 @@ fn collect_recursive(
             let new_model = model * facing;
             for &child in &entry.children {
                 collect_recursive(
-                    graph, child, new_model,
-                    view_proj, viewport, camera_pos,
+                    graph,
+                    child,
+                    new_model,
+                    view_proj,
+                    viewport,
+                    camera_pos,
+                    depth_reversed_z,
                     true,
-                    overlay_lines, positioned,
+                    overlay_lines,
+                    positioned,
+                    world_labels,
                 );
             }
         }
@@ -124,15 +165,33 @@ fn collect_recursive(
             let m = model * t.to_matrix();
             for &child in &entry.children {
                 collect_recursive(
-                    graph, child, m,
-                    view_proj, viewport, camera_pos,
+                    graph,
+                    child,
+                    m,
+                    view_proj,
+                    viewport,
+                    camera_pos,
+                    depth_reversed_z,
                     inside_billboard,
-                    overlay_lines, positioned,
+                    overlay_lines,
+                    positioned,
+                    world_labels,
                 );
             }
         }
         NodeData::Separator(_)
-        | NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::ResetTransform(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ExplodedView(_) | NodeData::ReflectionPlane(_)
+        | NodeData::Group(_)
+        | NodeData::Environment(_)
+        | NodeData::ShapeHints(_)
+        | NodeData::Annotation(_)
+        | NodeData::ResetTransform(_)
+        | NodeData::Texture2Transform(_)
+        | NodeData::MaterialBinding(_)
+        | NodeData::IndexedLineSet(_)
+        | NodeData::File(_)
+        | NodeData::Decal(_)
+        | NodeData::ExplodedView(_)
+        | NodeData::ReflectionPlane(_)
         | NodeData::Lod(_)
         | NodeData::EventCallback(_)
         | NodeData::SectionPlane(_)
@@ -141,20 +200,34 @@ fn collect_recursive(
         | NodeData::HandlerNode(_) => {
             for &child in &entry.children {
                 collect_recursive(
-                    graph, child, model,
-                    view_proj, viewport, camera_pos,
+                    graph,
+                    child,
+                    model,
+                    view_proj,
+                    viewport,
+                    camera_pos,
+                    depth_reversed_z,
                     inside_billboard,
-                    overlay_lines, positioned,
+                    overlay_lines,
+                    positioned,
+                    world_labels,
                 );
             }
         }
         _ => {
             for &child in &entry.children {
                 collect_recursive(
-                    graph, child, model,
-                    view_proj, viewport, camera_pos,
+                    graph,
+                    child,
+                    model,
+                    view_proj,
+                    viewport,
+                    camera_pos,
+                    depth_reversed_z,
                     inside_billboard,
-                    overlay_lines, positioned,
+                    overlay_lines,
+                    positioned,
+                    world_labels,
                 );
             }
         }
@@ -200,15 +273,17 @@ mod tests {
             }),
         );
 
-        let result = collect_text_nodes(&graph, None, None, None);
+        let mut world_labels = Vec::new();
+        let result = collect_text_nodes(&graph, None, None, None, false, &mut world_labels);
 
         assert_eq!(result.overlay_lines.len(), 1);
         assert_eq!(result.overlay_lines[0], "screen label");
         assert!(result.positioned.is_empty());
+        assert!(world_labels.is_empty());
     }
 
     #[test]
-    fn collect_text3_nodes_projects_with_parent_transform() {
+    fn collect_text3_nodes_emits_world_labels() {
         let mut graph = SceneGraph::new();
         let root = graph.add_root(NodeData::Group(GroupNode));
         let transform = graph.add_child(
@@ -225,14 +300,24 @@ mod tests {
             }),
         );
 
-        // Without VP, Text3 falls through (no projection)
-        let result = collect_text_nodes(&graph, None, None, None);
+        let mut world_labels = Vec::new();
+        let result = collect_text_nodes(&graph, None, None, None, false, &mut world_labels);
         assert!(result.positioned.is_empty());
+        assert!(world_labels.is_empty());
 
-        // With VP, should produce positioned text
-        let vp = Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0) * Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::new(11.0, 22.0, 33.0), Vec3::Y);
-        let result = collect_text_nodes(&graph, Some(vp), Some((800, 600)), Some(Vec3::new(0.0, 0.0, 5.0)));
-        assert!(!result.positioned.is_empty());
-        assert_eq!(result.positioned[0].string, "world label");
+        let vp = Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)
+            * Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::new(11.0, 22.0, 33.0), Vec3::Y);
+        let mut world_labels = Vec::new();
+        let result = collect_text_nodes(
+            &graph,
+            Some(vp),
+            Some((800, 600)),
+            Some(Vec3::new(0.0, 0.0, 5.0)),
+            false,
+            &mut world_labels,
+        );
+        assert!(result.positioned.is_empty());
+        assert_eq!(world_labels.len(), 1);
+        assert_eq!(world_labels[0].string, "world label");
     }
 }

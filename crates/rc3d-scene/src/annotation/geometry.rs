@@ -135,7 +135,6 @@ pub fn angle_dimension_label_point(
 }
 
 fn slerp_direction(a: Vec3, b: Vec3, t: f32, axis: Vec3) -> Vec3 {
-    let a = a;
     let mut b = b;
     // Orient b to the same hemisphere as a around axis.
     if a.cross(b).dot(axis) < 0.0 {

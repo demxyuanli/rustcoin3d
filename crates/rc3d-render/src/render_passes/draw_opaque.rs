@@ -286,7 +286,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     let subgroup = &sd[sub_start..sub_end];
                     sub_start = sub_end;
 
-                    if let Some(mesh_id) = first_mesh {
+                    if let Some(_mesh_id) = first_mesh {
                         if !subgroup.is_empty() {
                             let first_instance = (instance_cursor / instance_stride) as u32;
                             for &i in subgroup {

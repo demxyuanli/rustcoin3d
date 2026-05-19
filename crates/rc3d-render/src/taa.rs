@@ -11,7 +11,7 @@ impl HaltonSequence {
         Self { base, index: 0 }
     }
 
-    pub fn next(&mut self) -> f32 {
+    pub fn next_halton(&mut self) -> f32 {
         self.index += 1;
         let mut result = 0.0f32;
         let mut f = 1.0f32 / self.base as f32;
@@ -45,8 +45,8 @@ impl TaaJitter {
     /// Returns the jitter offset in NDC units.
     pub fn next_jitter(&mut self, width: u32, height: u32) -> Vec2 {
         self.sample_count = self.sample_count.wrapping_add(1);
-        let x = self.halton_x.next();
-        let y = self.halton_y.next();
+        let x = self.halton_x.next_halton();
+        let y = self.halton_y.next_halton();
         Vec2::new(
             (x - 0.5) * 2.0 / width as f32,
             (y - 0.5) * 2.0 / height as f32,
@@ -336,6 +336,6 @@ impl TaaPass {
         // Dispatch based on history texture dimensions
         let w = self.history_texture.as_ref().map(|t| t.width()).unwrap_or(1);
         let h = self.history_texture.as_ref().map(|t| t.height()).unwrap_or(1);
-        pass.dispatch_workgroups((w + 7) / 8, (h + 7) / 8, 1);
+        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
     }
 }

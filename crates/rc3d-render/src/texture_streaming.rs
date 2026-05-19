@@ -19,6 +19,12 @@ pub struct TextureStreamer {
     _loaded_data: Vec<(usize, Vec<u8>, u32, u32)>, // (pending_index, rgba_data, width, height)
 }
 
+impl Default for TextureStreamer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TextureStreamer {
     pub fn new() -> Self {
         Self {

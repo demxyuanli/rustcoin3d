@@ -30,5 +30,5 @@ pub fn sort_by_count_desc<K, C: Ord>(items: &mut [(K, C)]) {
 /// assert_eq!(items[0].name, "B");
 /// ```
 pub fn sort_by_key_count_desc<T, C: Ord, F: FnMut(&T) -> C>(items: &mut [T], mut key: F) {
-    items.sort_by(|a, b| key(b).cmp(&key(a)));
+    items.sort_by_key(|item| std::cmp::Reverse(key(item)));
 }

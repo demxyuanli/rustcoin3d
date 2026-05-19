@@ -175,7 +175,7 @@ impl GpuCullPass {
         pass.set_bind_group(0, bind_group, &[]);
         let pc: [u32; 1] = [object_count];
         pass.set_push_constants(0, bytemuck::bytes_of(&pc));
-        let workgroup_count = (object_count + 255) / 256;
+        let workgroup_count = object_count.div_ceil(256);
         pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 }

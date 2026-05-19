@@ -28,8 +28,8 @@ pub fn resolve_skeleton(
             Some(FbxObject::Deformer(FbxDeformer::Cluster { bone_id, .. })) => *bone_id,
             _ => continue,
         };
-        if !bone_id_to_index.contains_key(&bone_id) {
-            bone_id_to_index.insert(bone_id, bone_ids.len());
+        if let std::collections::hash_map::Entry::Vacant(e) = bone_id_to_index.entry(bone_id) {
+            e.insert(bone_ids.len());
             bone_ids.push(bone_id);
         }
     }
@@ -150,19 +150,17 @@ fn find_skin_for_geometry(
 ) -> Option<i64> {
     // Geometry -> Skin: find Deformer(Skin) connected to geometry
     for conn in connections {
-        if conn.child == geo_id {
-            if matches!(objects.get(&conn.parent), Some(FbxObject::Deformer(FbxDeformer::Skin { .. }))) {
+        if conn.child == geo_id
+            && matches!(objects.get(&conn.parent), Some(FbxObject::Deformer(FbxDeformer::Skin { .. }))) {
                 return Some(conn.parent);
             }
-        }
     }
     // Also check: Skin connected as child of Geometry
     for conn in connections {
-        if conn.parent == geo_id {
-            if matches!(objects.get(&conn.child), Some(FbxObject::Deformer(FbxDeformer::Skin { .. }))) {
+        if conn.parent == geo_id
+            && matches!(objects.get(&conn.child), Some(FbxObject::Deformer(FbxDeformer::Skin { .. }))) {
                 return Some(conn.child);
             }
-        }
     }
     None
 }

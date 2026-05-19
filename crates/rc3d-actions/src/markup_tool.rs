@@ -22,6 +22,12 @@ pub struct MarkupAction {
     pub current_mouse: Vec2,
 }
 
+impl Default for MarkupAction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkupAction {
     pub fn new() -> Self {
         Self {
@@ -78,7 +84,7 @@ impl MarkupAction {
         self.current_mouse = screen_pos;
         let element = match self.tool {
             MarkupTool::Line => {
-                if self.click_points.len() >= 1 {
+                if !self.click_points.is_empty() {
                     let start = self.click_points[0];
                     Some(MarkupElement::Line {
                         start: [start.x, start.y],
@@ -91,7 +97,7 @@ impl MarkupAction {
                 }
             }
             MarkupTool::Rect => {
-                if self.click_points.len() >= 1 {
+                if !self.click_points.is_empty() {
                     let origin = self.click_points[0];
                     let size = [screen_pos.x - origin.x, screen_pos.y - origin.y];
                     Some(MarkupElement::Rect {
@@ -105,7 +111,7 @@ impl MarkupAction {
                 }
             }
             MarkupTool::Circle => {
-                if self.click_points.len() >= 1 {
+                if !self.click_points.is_empty() {
                     let center = self.click_points[0];
                     let radius = (screen_pos - center).length();
                     Some(MarkupElement::Circle {
@@ -148,7 +154,7 @@ impl MarkupAction {
 
     fn update_preview(&mut self) {
         self.preview_element = match &self.tool {
-            MarkupTool::Line if self.click_points.len() >= 1 => {
+            MarkupTool::Line if !self.click_points.is_empty() => {
                 let start = self.click_points[0];
                 Some(MarkupElement::Line {
                     start: [start.x, start.y],
@@ -157,7 +163,7 @@ impl MarkupAction {
                     width: 1.0,
                 })
             }
-            MarkupTool::Rect if self.click_points.len() >= 1 => {
+            MarkupTool::Rect if !self.click_points.is_empty() => {
                 let origin = self.click_points[0];
                 let size = [
                     self.current_mouse.x - origin.x,
@@ -173,7 +179,7 @@ impl MarkupAction {
                     filled: false,
                 })
             }
-            MarkupTool::Circle if self.click_points.len() >= 1 => {
+            MarkupTool::Circle if !self.click_points.is_empty() => {
                 let center = self.click_points[0];
                 let radius = (self.current_mouse - center).length();
                 Some(MarkupElement::Circle {

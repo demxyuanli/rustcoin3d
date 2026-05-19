@@ -140,10 +140,7 @@ fn apply_prop_set(scene: &mut rc3d_scene::SceneGraph, node: rc3d_core::NodeId, f
             "opacity" => m.opacity = value.parse().unwrap_or(m.opacity),
             _ => {}
         },
-        NodeData::Sphere(s) => match field {
-            "radius" => s.radius = value.parse().unwrap_or(s.radius),
-            _ => {}
-        },
+        NodeData::Sphere(s) => if field == "radius" { s.radius = value.parse().unwrap_or(s.radius) },
         _ => {}
     }
 }

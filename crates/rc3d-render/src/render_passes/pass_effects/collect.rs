@@ -133,7 +133,7 @@ fn collect_effect_recursive(
             for &child in &entry.children {
                 let Some(ce) = graph.get(child) else { continue };
                 if let NodeData::Transform(t) = &ce.data {
-                    accum = accum * t.to_matrix();
+                    accum *= t.to_matrix();
                     for &gc in &ce.children {
                         collect_effect_recursive(graph, gc, accum, inside_annotation, commands);
                     }

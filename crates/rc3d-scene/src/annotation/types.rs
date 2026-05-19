@@ -19,7 +19,11 @@ pub enum AnnotationLabelMode {
 pub struct AnnotationStyle {
     pub extension_len: f32,
     pub arrow_size: f32,
+    /// Minimum projected label height in screen pixels (readability floor).
     pub font_size: f32,
+    /// World label height = `extension_len * label_height_factor` before screen floor.
+    #[serde(default = "default_label_height_factor")]
+    pub label_height_factor: f32,
     pub decimals: u32,
     /// Appended to auto-formatted lengths (e.g. `" mm"`).
     pub unit_suffix: String,
@@ -29,12 +33,17 @@ pub struct AnnotationStyle {
     pub leader_offset_scale: f32,
 }
 
+fn default_label_height_factor() -> f32 {
+    0.5
+}
+
 impl Default for AnnotationStyle {
     fn default() -> Self {
         Self {
             extension_len: 0.3,
             arrow_size: 0.15,
             font_size: 14.0,
+            label_height_factor: default_label_height_factor(),
             decimals: 2,
             unit_suffix: String::new(),
             arc_segments: 24,

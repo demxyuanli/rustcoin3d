@@ -217,7 +217,7 @@ impl Engine {
 
         // Viewport-camera path: update cameras bound to specific viewports
         let layout = renderer.viewport_layout();
-        self.viewport_cameras.update_all(&mut self.world.graph, &layout);
+        self.viewport_cameras.update_all(&mut self.world.graph, layout);
 
         // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();
@@ -256,10 +256,7 @@ impl Engine {
         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut self.world.graph);
 
         // 11. Send effect commands to renderer (annotation labels are projected in render pass)
-        let effect_cmds = std::mem::replace(
-            &mut self.world.collector.effect_commands,
-            Default::default(),
-        );
+        let effect_cmds = std::mem::take(&mut self.world.collector.effect_commands);
         renderer.set_effect_commands(effect_cmds);
         renderer.set_scene_view_projection(
             self.world.collector.view_matrix,

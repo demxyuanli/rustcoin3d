@@ -1,6 +1,9 @@
 use crate::render_passes::pass_effects::ProjectedAnnotation;
-use crate::render_passes::pass_text::TextDrawCommand;
 use crate::vertex::MarkupVertex;
+use crate::world_label::{
+    angle_dimension_label_basis, extent_label_basis, leader_label_basis,
+    linear_dimension_label_basis, normalize3, resolve_label_height_world, WorldLabelCommand,
+};
 use glam::Vec3;
 use rc3d_scene::annotation::{
     angle_dimension_label_point, angle_dimension_lines, angle_degrees, datum_cross_points,
@@ -10,43 +13,16 @@ use rc3d_scene::annotation::{
 };
 use rc3d_scene::node_data::AnnotationElement;
 
-use super::projection::{
-    leader_label_local_3d, ndc_to_screen, project_point_ndc, screen_baseline_from_model_tangent,
-};
+use super::projection::{leader_label_local_3d, project_point_ndc};
 
-/// Per-frame label projection (screen position + plane tangent baseline).
-struct LabelProj<'a> {
+/// Per-frame context for world label height (screen-pixel floor).
+struct LabelCtx<'a> {
     model: glam::Mat4,
     scene_vp: glam::Mat4,
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
     _marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl LabelProj<'_> {
-    /// Same `scene_vp * model` path as annotation lines (NDC, then to pixels).
-    fn screen_pos(&self, p: &[f32; 3]) -> Option<[f32; 2]> {
-        let ndc = project_point_ndc(
-            glam::Vec3::from(*p),
-            self.model,
-            self.scene_vp,
-            self.depth_reversed_z,
-        )?;
-        Some(ndc_to_screen(ndc, self.screen_w, self.screen_h))
-    }
-
-    fn baseline_from_tangent(&self, at: [f32; 3], tangent: [f32; 3]) -> f32 {
-        screen_baseline_from_model_tangent(
-            glam::Vec3::from(at),
-            glam::Vec3::from(tangent),
-            self.model,
-            self.scene_vp,
-            self.screen_w,
-            self.screen_h,
-            self.depth_reversed_z,
-        )
-    }
 }
 
 fn offset_point_along(dir: [f32; 3], from: [f32; 3], distance: f32) -> [f32; 3] {
@@ -118,50 +94,50 @@ fn push_circle_3d(
     }
 }
 
-fn push_plane_label(
-    labels: &mut Vec<TextDrawCommand>,
+fn push_world_label(
+    labels: &mut Vec<WorldLabelCommand>,
+    ctx: &LabelCtx<'_>,
+    style: &AnnotationStyle,
+    extension_len: f32,
     text: String,
-    screen_pos: [f32; 2],
-    baseline_angle_rad: f32,
+    at: [f32; 3],
+    tangent: [f32; 3],
+    bitangent: [f32; 3],
     color: [f32; 4],
-    font_size: f32,
 ) {
     if text.is_empty() {
         return;
     }
-    labels.push(TextDrawCommand {
+    let tangent = normalize3(tangent, [1.0, 0.0, 0.0]);
+    let bitangent = normalize3(bitangent, [0.0, 1.0, 0.0]);
+    let height_world = resolve_label_height_world(
+        extension_len,
+        style.label_height_factor,
+        style.font_size,
+        at,
+        bitangent,
+        ctx.model,
+        ctx.scene_vp,
+        ctx.screen_w,
+        ctx.screen_h,
+        ctx.depth_reversed_z,
+    );
+    labels.push(WorldLabelCommand {
         string: text,
-        screen_pos,
-        size: font_size,
+        model_matrix: ctx.model,
+        at,
+        tangent,
+        bitangent,
+        height_world,
         color,
-        is_3d: false,
-        plane_aligned: true,
-        baseline_angle_rad,
     });
-}
-
-/// Label at a model-local point; baseline follows `tangent` on the annotation plane.
-fn push_model_plane_label(
-    labels: &mut Vec<TextDrawCommand>,
-    lp: &LabelProj<'_>,
-    text: String,
-    at: [f32; 3],
-    tangent: [f32; 3],
-    color: [f32; 4],
-    font_size: f32,
-) {
-    let Some(screen_pos) = lp.screen_pos(&at) else {
-        return;
-    };
-    let baseline = lp.baseline_from_tangent(at, tangent);
-    push_plane_label(labels, text, screen_pos, baseline, color, font_size);
 }
 
 fn draw_linear_dimension(
     out: &mut Vec<MarkupVertex>,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
     proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
-    lp: &LabelProj<'_>,
+    ctx: &LabelCtx<'_>,
     start: [f32; 3],
     end: [f32; 3],
     offset_dir: [f32; 3],
@@ -200,16 +176,27 @@ fn draw_linear_dimension(
         (points[4][1] + points[5][1]) * 0.5,
         (points[4][2] + points[5][2]) * 0.5,
     ];
-    let label_at = offset_point_along(offset_dir, mid_3d, style.font_size * 0.012);
+    let label_at = offset_point_along(offset_dir, mid_3d, extension_len * 0.04);
     let tangent = tangent_xyz(points[4], points[5]);
-    push_model_plane_label(labels, lp, text, label_at, tangent, color, style.font_size);
+    let (_, bitangent) = linear_dimension_label_basis(start, end, offset_dir);
+    push_world_label(
+        labels,
+        ctx,
+        style,
+        extension_len,
+        text,
+        label_at,
+        tangent,
+        bitangent,
+        color,
+    );
 }
 
 fn draw_angle_dimension(
     out: &mut Vec<MarkupVertex>,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
     proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
-    lp: &LabelProj<'_>,
+    ctx: &LabelCtx<'_>,
     center: [f32; 3],
     arm1: [f32; 3],
     arm2: [f32; 3],
@@ -225,15 +212,25 @@ fn draw_angle_dimension(
     let deg = angle_degrees(center, arm1, arm2);
     let text = resolve_angle_label(label, label_mode, deg, style);
     let label_pt = angle_dimension_label_point(center, arm1, arm2, radius);
-    let tangent = tangent_xyz(center, label_pt);
-    push_model_plane_label(labels, lp, text, label_pt, tangent, color, style.font_size);
+    let (tangent, bitangent) = angle_dimension_label_basis(center, arm1, arm2);
+    push_world_label(
+        labels,
+        ctx,
+        style,
+        style.extension_len,
+        text,
+        label_pt,
+        tangent,
+        bitangent,
+        color,
+    );
 }
 
 fn draw_radial_dimension(
     out: &mut Vec<MarkupVertex>,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
     proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
-    lp: &LabelProj<'_>,
+    ctx: &LabelCtx<'_>,
     center: [f32; 3],
     perimeter: [f32; 3],
     arrow_size: f32,
@@ -260,15 +257,25 @@ fn draw_radial_dimension(
         (center[1] + perimeter[1]) * 0.5,
         (center[2] + perimeter[2]) * 0.5,
     ];
-    let tangent = tangent_xyz(center, perimeter);
-    push_model_plane_label(labels, lp, text, mid, tangent, color, style.font_size);
+    let (tangent, bitangent) = extent_label_basis(center, perimeter);
+    push_world_label(
+        labels,
+        ctx,
+        style,
+        style.extension_len,
+        text,
+        mid,
+        tangent,
+        bitangent,
+        color,
+    );
 }
 
 fn draw_diameter_dimension(
     out: &mut Vec<MarkupVertex>,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
     proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
-    lp: &LabelProj<'_>,
+    ctx: &LabelCtx<'_>,
     center: [f32; 3],
     p1: [f32; 3],
     p2: [f32; 3],
@@ -294,21 +301,31 @@ fn draw_diameter_dimension(
     let d = distance_3d(p1, p2);
     let text = resolve_diameter_label(label, label_mode, d, style);
     let mid = [(p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5, (p1[2] + p2[2]) * 0.5];
-    let tangent = tangent_xyz(p1, p2);
-    push_model_plane_label(labels, lp, text, mid, tangent, color, style.font_size);
+    let (tangent, bitangent) = extent_label_basis(p1, p2);
+    push_world_label(
+        labels,
+        ctx,
+        style,
+        style.extension_len,
+        text,
+        mid,
+        tangent,
+        bitangent,
+        color,
+    );
 }
 
 fn draw_leader(
     out: &mut Vec<MarkupVertex>,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
     proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
-    lp: &LabelProj<'_>,
+    ctx: &LabelCtx<'_>,
     anchor: [f32; 3],
     label_offset: [f32; 2],
     leader_offset_scale: f32,
     text: &str,
     color: [f32; 4],
-    font_size: f32,
+    style: &AnnotationStyle,
     callout_radius: Option<f32>,
     arc_segments: u32,
 ) {
@@ -327,19 +344,30 @@ fn draw_leader(
         push_circle_3d(out, proj, label_3d, world_r, color, arc_segments);
     }
     if !text.is_empty() {
-        let tangent = tangent_xyz(anchor, label_3d);
-        push_model_plane_label(labels, lp, text.to_string(), label_3d, tangent, color, font_size);
+        let leader_tangent = tangent_xyz(anchor, label_3d);
+        let (tangent, bitangent) = leader_label_basis(leader_tangent);
+        push_world_label(
+            labels,
+            ctx,
+            style,
+            style.extension_len,
+            text.to_string(),
+            label_3d,
+            tangent,
+            bitangent,
+            color,
+        );
     }
 }
 
-/// Project 3D annotation elements to overlay lines and plane-aligned labels.
+/// Project 3D annotation elements to overlay lines and world-space labels.
 pub(super) fn project_annotation_elements(
     elements: &[ProjectedAnnotation],
     scene_vp: glam::Mat4,
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
-    labels: &mut Vec<TextDrawCommand>,
+    labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
 
@@ -354,7 +382,7 @@ pub(super) fn project_annotation_elements(
                 depth_reversed_z,
             )
         };
-        let lp = LabelProj {
+        let ctx = LabelCtx {
             model,
             scene_vp,
             screen_w,
@@ -379,7 +407,7 @@ pub(super) fn project_annotation_elements(
                     &mut out,
                     labels,
                     &proj_ndc,
-                    &lp,
+                    &ctx,
                     start.coords(),
                     end.coords(),
                     *offset_dir,
@@ -403,7 +431,7 @@ pub(super) fn project_annotation_elements(
                 &mut out,
                 labels,
                 &proj_ndc,
-                &lp,
+                &ctx,
                 center.coords(),
                 arm1.coords(),
                 arm2.coords(),
@@ -426,7 +454,7 @@ pub(super) fn project_annotation_elements(
                     &mut out,
                     labels,
                     &proj_ndc,
-                    &lp,
+                    &ctx,
                     center.coords(),
                     perimeter.coords(),
                     eff.arrow_size,
@@ -450,7 +478,7 @@ pub(super) fn project_annotation_elements(
                     &mut out,
                     labels,
                     &proj_ndc,
-                    &lp,
+                    &ctx,
                     center.coords(),
                     p1.coords(),
                     p2.coords(),
@@ -470,13 +498,13 @@ pub(super) fn project_annotation_elements(
                 &mut out,
                 labels,
                 &proj_ndc,
-                &lp,
+                &ctx,
                 anchor.coords(),
                 *label_offset,
                 style.leader_offset_scale,
                 text,
                 *color,
-                style.font_size,
+                style,
                 None,
                 style.arc_segments,
             ),
@@ -490,13 +518,13 @@ pub(super) fn project_annotation_elements(
                 &mut out,
                 labels,
                 &proj_ndc,
-                &lp,
+                &ctx,
                 anchor.coords(),
                 *label_offset,
                 style.leader_offset_scale,
                 text,
                 *color,
-                style.font_size,
+                style,
                 Some(*radius),
                 style.arc_segments,
             ),
