@@ -160,7 +160,7 @@ impl super::Renderer {
                 }
             } else {
                 hud.overlay_lines = Vec::new();
-                hud.positioned_texts = Vec::new();
+                hud.positioned_texts.clear();
             };
         }
         let effect_commands = if self.frame.has_effect_nodes || self.frame.frame_counter < 2 {

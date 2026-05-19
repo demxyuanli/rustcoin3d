@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .gemini/hooks/crg-session-start.sh",
+            "command": ".gemini/hooks/crg-session-start.cmd",
             "name": "code-review-graph status",
             "timeout": 10000
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .gemini/hooks/crg-update.sh",
+            "command": ".gemini/hooks/crg-update.cmd",
             "name": "code-review-graph update",
             "timeout": 30000
           }

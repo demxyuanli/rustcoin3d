@@ -445,8 +445,20 @@ impl RenderCollector {
         match &entry.data {
             NodeData::Separator(_) => {
                 self.state.push_all();
+                let base = self.state.model_matrix();
+                let mut accum = base;
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    let Some(ce) = graph.get(child) else { continue };
+                    if let NodeData::Transform(t) = &ce.data {
+                        accum = accum * t.to_matrix();
+                        self.state.set_model_matrix(accum);
+                        for &gc in &ce.children {
+                            self.traverse_node(graph, gc);
+                        }
+                    } else {
+                        self.state.set_model_matrix(accum);
+                        self.traverse_node(graph, child);
+                    }
                 }
                 self.state.pop_all();
             }

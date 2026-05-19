@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "git rev-parse --git-dir >/dev/null 2>&1 && code-review-graph update --skip-flows --repo \"D:/source/repos/rustcoin3d\" || true",
+            "command": "code-review-graph update --skip-flows --repo D:/source/repos/rustcoin3d",
             "timeout": 30
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "git rev-parse --git-dir >/dev/null 2>&1 && code-review-graph status --repo \"D:/source/repos/rustcoin3d\" || echo 'Not a git repo, skipping'",
+            "command": "code-review-graph status --repo D:/source/repos/rustcoin3d",
             "timeout": 10
           }
         ]

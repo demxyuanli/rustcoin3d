@@ -3,8 +3,11 @@
 //! Collects all MarkupNodes from the scene graph and renders their elements
 //! as screen-space line geometry with depth_compare: Always (overlay).
 
+mod labels;
 mod projection;
 mod primitives;
+
+pub use labels::build_annotation_label_commands;
 
 use crate::vertex::MarkupVertex;
 use rc3d_core::NodeId;
@@ -226,16 +229,14 @@ pub fn pass_markup(
     view: &wgpu::TextureView,
     surface_w: u32,
     surface_h: u32,
-    view_matrix: glam::Mat4,
-    projection_matrix: glam::Mat4,
+    scene_vp: glam::Mat4,
     depth_reversed_z: bool,
     effect_commands: &EffectCommands,
 ) {
     // ── Combine 2D screen-space markup + projected 3D annotations ──
     let projected = project_annotation_elements(
         &effect_commands.annotation_elements,
-        view_matrix,
-        projection_matrix,
+        scene_vp,
         surface_w as f32,
         surface_h as f32,
         depth_reversed_z,

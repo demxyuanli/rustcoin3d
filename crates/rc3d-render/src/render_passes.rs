@@ -869,16 +869,20 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
-    let view_matrix = ctx.camera_inv_proj * ctx.scene_vp;
     pass_markup::pass_markup(
         renderer, &mut encoder, &view, ew, eh,
-        view_matrix, ctx.camera_proj,
-        ctx.depth_reversed_z, ctx.effect_commands,
+        ctx.scene_vp, ctx.depth_reversed_z, ctx.effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
     if renderer.hud_enabled {
+        renderer.append_annotation_labels_for_hud(
+            ctx.effect_commands,
+            ctx.scene_vp,
+            ctx.depth_reversed_z,
+        );
+        renderer.prepare_hud_gpu_atlas_for_render();
         if let Some(hud) = renderer.gpu.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),
@@ -1067,14 +1071,15 @@ pub(super) fn render_overlay_only_frame(
     // Markup overlay — push_flat inside, then flush before submit
     pass_markup::pass_markup(
         renderer, &mut encoder, view, ew, eh,
-        Mat4::IDENTITY, Mat4::IDENTITY, false,
-        effect_commands,
+        Mat4::IDENTITY, false, effect_commands,
     );
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
     // HUD overlay
     if renderer.hud_enabled {
+        renderer.append_annotation_labels_for_hud(effect_commands, Mat4::IDENTITY, false);
+        renderer.prepare_hud_gpu_atlas_for_render();
         if let Some(hud) = renderer.gpu.hud.as_ref() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HUD Overlay Pass"),

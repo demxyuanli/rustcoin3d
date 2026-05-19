@@ -255,14 +255,7 @@ impl Engine {
         // Clear stale dirty flags after full traversal
         rc3d_render::dirty_flags::clear_all_dirty_flags(&mut self.world.graph);
 
-        // 11. Project annotation labels to screen positions for glyphon text rendering
-        renderer.collect_annotation_label_positions(
-            &self.world.collector.effect_commands,
-            self.world.collector.view_matrix,
-            self.world.collector.projection_matrix,
-        );
-
-        // 12. Send effect commands to renderer
+        // 11. Send effect commands to renderer (annotation labels are projected in render pass)
         let effect_cmds = std::mem::replace(
             &mut self.world.collector.effect_commands,
             Default::default(),
@@ -274,11 +267,11 @@ impl Engine {
             h(renderer);
         }
 
-        // 13. Render using cached draw calls for consistent state
+        // 15. Render using cached draw calls for consistent state
         let dc = &self.world.cached_draw_calls;
         let stats = renderer.render_draw_calls(dc, &self.world.graph);
 
-        // 14. Update HUD overlay (renders FPS + markup text + annotation labels)
+        // 16. Update HUD overlay (renders FPS + markup text in top-left corner)
         let mut mode_name = format!(
             "{:?} | IBL:{}",
             renderer.display_mode(),

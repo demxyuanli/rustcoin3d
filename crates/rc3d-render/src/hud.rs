@@ -99,6 +99,81 @@ impl HudRenderer {
         self.viewport.update(queue, Resolution { width, height });
     }
 
+    /// Prepare positioned-text buffers from the current `positioned_texts` list.
+    /// Must be called before the HUD render pass if `positioned_texts` were modified.
+    pub fn prepare_positioned_texts(&mut self) {
+        self.positioned_buffers.clear();
+        for cmd in &self.positioned_texts {
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
+            buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
+            buf.set_text(
+                &mut self.font_system,
+                &cmd.string,
+                Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            buf.shape_until_scroll(&mut self.font_system, false);
+            self.positioned_buffers.push(buf);
+        }
+    }
+
+    /// Upload current FPS + positioned text to the glyphon atlas (call before HUD render pass).
+    pub fn prepare_gpu_atlas_for_render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        self.prepare_positioned_texts();
+        let mut areas: Vec<TextArea> = Vec::with_capacity(1 + self.positioned_texts.len());
+        areas.push(TextArea {
+            buffer: &self.buffer,
+            left: 12.0,
+            top: 12.0,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: self.width as i32,
+                bottom: self.height as i32,
+            },
+            default_color: Color::rgb(240, 240, 240),
+            custom_glyphs: &[],
+        });
+        for (i, cmd) in self.positioned_texts.iter().enumerate() {
+            let col = cmd.color;
+            areas.push(TextArea {
+                buffer: &self.positioned_buffers[i],
+                left: cmd.screen_pos[0],
+                top: cmd.screen_pos[1],
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: self.width as i32,
+                    bottom: self.height as i32,
+                },
+                default_color: Color::rgba(
+                    (col[0] * 255.0) as u8,
+                    (col[1] * 255.0) as u8,
+                    (col[2] * 255.0) as u8,
+                    (col[3] * 255.0) as u8,
+                ),
+                custom_glyphs: &[],
+            });
+        }
+        if let Err(e) = self.text_renderer.prepare(
+            device,
+            queue,
+            &mut self.font_system,
+            &mut self.atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        ) {
+            log::error!("HUD prepare (render pass): {:?}", e);
+        }
+    }
+
     pub fn update_text(
         &mut self,
         device: &wgpu::Device,

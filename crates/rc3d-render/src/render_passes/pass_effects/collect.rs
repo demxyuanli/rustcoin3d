@@ -127,14 +127,16 @@ fn collect_effect_recursive(
             }
         }
         NodeData::Separator(_) => {
-            let mut local_model = model_matrix;
+            let mut accum = model_matrix;
             for &child in &entry.children {
-                collect_effect_recursive(graph, child, local_model, inside_annotation, commands);
-                // If child was a Transform, accumulate for subsequent siblings
-                if let Some(ce) = graph.get(child) {
-                    if let NodeData::Transform(t) = &ce.data {
-                        local_model = local_model * t.to_matrix();
+                let Some(ce) = graph.get(child) else { continue };
+                if let NodeData::Transform(t) = &ce.data {
+                    accum = accum * t.to_matrix();
+                    for &gc in &ce.children {
+                        collect_effect_recursive(graph, gc, accum, inside_annotation, commands);
                     }
+                } else {
+                    collect_effect_recursive(graph, child, accum, inside_annotation, commands);
                 }
             }
         }
