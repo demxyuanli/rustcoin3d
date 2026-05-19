@@ -204,10 +204,12 @@ impl super::Renderer {
         } else {
             self.frame.scene_vp
         };
+        // Save previous VP for velocity buffer before overwriting last_vp
+        let prev_vp = self.frame.last_vp;
         self.frame.scene_vp = vp;
         self.frame.scene_depth_reversed_z = first.depth_reversed_z;
         // Camera moved? Force re-cull even if AABBs are static.
-        let camera_moved = vp != self.frame.last_vp;
+        let camera_moved = vp != prev_vp;
         if camera_moved {
             self.frame.static_frame_count = 0;
         }
@@ -750,6 +752,7 @@ impl super::Renderer {
             camera_proj,
             camera_inv_proj,
             scene_vp: self.frame.scene_vp,
+            prev_vp,
             effect_commands: &effect_commands,
             light_sets: &light_sets_snapshot,
         };

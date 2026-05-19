@@ -9,7 +9,7 @@ struct MotionBlurParams {
 };
 
 @group(0) @binding(0) var t_color: texture_2d<f32>;     // current frame HDR
-@group(0) @binding(1) var t_velocity: texture_2d<f32>; // Rg16Float velocity
+@group(0) @binding(1) var t_velocity: texture_2d<f32>; // Rgba16Float velocity
 @group(0) @binding(2) var t_depth: texture_2d<f32>;    // linear depth
 @group(0) @binding(3) var s_linear: sampler;
 @group(0) @binding(4) var s_point: sampler;
@@ -19,8 +19,7 @@ struct MotionBlurParams {
 // Soft depth-aware reconstruction weights (favors foreground objects)
 fn compute_weight(depth_sample: f32, depth_center: f32, velocity_mag: f32) -> f32 {
     let depth_diff = abs(depth_sample - depth_center);
-    let depth_weight = 1.0 / (1.0 + depth_diff * 10.0);
-    return depth_weight;
+    return 1.0 / (1.0 + depth_diff * 10.0);
 }
 
 @compute @workgroup_size(8, 8)
@@ -40,7 +39,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let vel_pixels = velocity * tex_size;
     let vel_mag = length(vel_pixels);
 
-    if vel_mag < 0.5 || params.intensity <= 0.0 {
+    if vel_mag < 0.05 || params.intensity <= 0.0 {
         // No motion — write center sample
         let color = textureSampleLevel(t_color, s_linear, uv, 0.0);
         textureStore(output_tex, vec2<i32>(gid.xy), color);
@@ -56,7 +55,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Gather samples along the velocity vector
     for (var i = 0u; i < num_samples; i++) {
         let t = (f32(i) + 0.5) / f32(num_samples) - 0.5; // [-0.5, 0.5]
-        let sample_uv = uv + step * f32(i) * f32(num_samples) * t;
+        let sample_uv = uv + step * t;
 
         // Clamp to screen bounds
         let clamped_uv = clamp(sample_uv, vec2<f32>(0.001), vec2<f32>(0.999));

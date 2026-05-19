@@ -63,6 +63,8 @@ pub(crate) struct PassContext<'a> {
     pub camera_inv_proj: Mat4,
     /// Combined view-projection matrix (proj * view).
     pub scene_vp: Mat4,
+    /// Previous frame's view-projection matrix (for velocity buffer).
+    pub prev_vp: Mat4,
     pub effect_commands: &'a pass_effects::EffectCommands,
     pub light_sets: &'a crate::light_set::LightSetTable,
 }
@@ -732,7 +734,7 @@ pub(super) fn execute_passes(
             if renderer.enable_motion_blur {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP Velocity");
                 let inv_vp = (ctx.scene_vp).inverse();
-                let vp_prev = renderer.frame.last_vp;
+                let vp_prev = ctx.prev_vp;
                 // VelocityParams uniform: mat4x4 + mat4x4 + vec2 + vec2 = 144 bytes
                 let mut vel_data: Vec<u8> = Vec::with_capacity(144);
                 for row in &inv_vp.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
