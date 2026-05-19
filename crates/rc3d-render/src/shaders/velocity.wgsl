@@ -11,7 +11,7 @@ struct VelocityParams {
 @group(0) @binding(0) var t_depth: texture_2d<f32>;
 @group(0) @binding(1) var s_point: sampler;
 @group(0) @binding(2) var<uniform> params: VelocityParams;
-@group(0) @binding(3) var output_vel: texture_storage_2d<rg16float, write>;
+@group(0) @binding(3) var output_vel: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {

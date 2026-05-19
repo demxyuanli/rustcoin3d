@@ -246,7 +246,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 3, visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rg16Float, view_dimension: wgpu::TextureViewDimension::D2 },
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 },
                 count: None,
             },
         ],
@@ -434,7 +434,7 @@ pub struct PostFxTextures {
     /// Post-FX scratch textures (avoid read-write conflict on HDR within single dispatch).
     pub scratch_tex: wgpu::Texture,
     pub scratch_view: wgpu::TextureView,
-    /// Screen-space velocity (Rg16Float) for motion blur.
+    /// Screen-space velocity (Rgba16Float) for motion blur.
     pub velocity_tex: wgpu::Texture,
     pub velocity_view: wgpu::TextureView,
 }
@@ -515,10 +515,10 @@ pub fn ensure_post_fx_textures(
     });
     let scratch_view = scratch_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Velocity buffer for motion blur (Rg16Float)
+    // Velocity buffer for motion blur (Rgba16Float — STORAGE compatible)
     let velocity_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Velocity"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rg16Float,
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
     });
     let velocity_view = velocity_tex.create_view(&wgpu::TextureViewDescriptor::default());
