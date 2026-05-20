@@ -555,9 +555,9 @@ fn setup_scene(mut graph: SceneGraph) -> SceneGraph {
         target_root,
         point_light_idx,
         NodeData::PointLight(PointLightNode {
-            location: Vec3::new(2.0, 3.0, 4.0),
-            color: Vec3::new(1.0, 0.85, 0.7),
-            intensity: 8.0,
+            location: Vec3::new(0.0, 0.0, 10.0),
+            color: Vec3::new(1.0, 0.7, 0.3),
+            intensity: 200.0,
             light_group: None,
         }),
     );

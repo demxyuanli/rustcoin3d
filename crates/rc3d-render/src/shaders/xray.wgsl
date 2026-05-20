@@ -26,10 +26,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let gx = -d00 + d20 - 2.0*d01 + 2.0*d21 - d02 + d22;
     let gy = -d00 - 2.0*d10 - d20 + d02 + 2.0*d12 + d22;
-    let edge = length(vec2<f32>(gx, gy));
+    // Scale for depth buffer precision (small values with reverse-Z)
+    let edge = length(vec2<f32>(gx, gy)) * 500.0;
 
     let color = textureSampleLevel(t_color, s_point, uv, 0.0);
-    // Blend: cyan glow on detected edges
-    let xray_color = mix(color.rgb, vec3<f32>(0.2, 0.8, 1.0), smoothstep(0.01, 0.05, edge));
+    // Blend: cyan glow on detected depth edges
+    let xray_color = mix(color.rgb, vec3<f32>(0.2, 0.9, 1.0), smoothstep(0.01, 0.1, edge));
     textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(xray_color, 1.0));
 }
