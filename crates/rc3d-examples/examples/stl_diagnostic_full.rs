@@ -150,8 +150,13 @@ fn main() {
 
     let mut engine = Engine::new(&window);
     engine.load_scene(graph);
-    // TODO: PointLight not yet collected by scene traversal — omni shadow pass
-    // infrastructure is ready but light collection needs a separate fix.
+    // Add point light as a root node so traversal visits it directly
+    engine.scene_mut().add_root(NodeData::PointLight(PointLightNode {
+        location: Vec3::new(3.0, 4.0, 5.0),
+        color: Vec3::new(1.0, 0.3, 0.1),
+        intensity: 5000.0,
+        light_group: None,
+    }));
     engine.controller = ctrl;
     engine.set_display_mode(DisplayMode::ShadedWithEdges);
     engine.continuous_redraw = true;

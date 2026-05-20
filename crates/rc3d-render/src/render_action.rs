@@ -786,6 +786,7 @@ impl RenderCollector {
                 });
             }
             NodeData::PointLight(light) => {
+                log::info!("[POINT] at {:?} intensity={}", light.location, light.intensity);
                 self.state.add_light(LightData {
                     light_type: LightType::Point,
                     direction: Vec3::ZERO,
