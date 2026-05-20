@@ -108,6 +108,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dist_fade = 1.0 - smoothstep(0.0, params.max_distance, dist);
 
     let fade = edge_fade * dist_fade * 0.5; // 50% max contribution
-
     textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(original.rgb + reflected_color * fade, 1.0));
 }
