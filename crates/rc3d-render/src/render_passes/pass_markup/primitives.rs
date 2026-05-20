@@ -129,6 +129,7 @@ fn push_world_label(
         tangent,
         bitangent,
         height_world,
+        screen_height_px: style.font_size,
         color,
     });
 }

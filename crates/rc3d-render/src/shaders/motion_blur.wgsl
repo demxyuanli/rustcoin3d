@@ -32,21 +32,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let uv = (vec2<f32>(gid.xy) + 0.5) / vec2<f32>(dims);
     let tex_size = vec2<f32>(dims);
 
-    let velocity = textureSampleLevel(t_velocity, s_point, uv, 0.0).rg;
+    let velocity = textureSampleLevel(t_velocity, s_point, uv, 0.0).rg * params.intensity;
     let center_depth = textureSampleLevel(t_depth, s_point, uv, 0.0).r;
 
-    // Velocity magnitude in pixels
+    // Velocity magnitude in pixels (after intensity scaling)
     let vel_pixels = velocity * tex_size;
     let vel_mag = length(vel_pixels);
 
-    if vel_mag < 0.05 || params.intensity <= 0.0 {
-        // No motion — write center sample
+    if vel_mag < 0.05 {
         let color = textureSampleLevel(t_color, s_linear, uv, 0.0);
         textureStore(output_tex, vec2<i32>(gid.xy), color);
         return;
     }
 
-    let num_samples = min(u32(vel_mag * params.intensity * 2.0) + 1u, params.max_samples);
+    let num_samples = min(u32(vel_mag) + 1u, params.max_samples);
     let step = velocity / f32(num_samples);
 
     var accum = vec4<f32>(0.0);

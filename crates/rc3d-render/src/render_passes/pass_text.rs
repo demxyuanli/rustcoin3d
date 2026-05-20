@@ -133,6 +133,7 @@ fn collect_recursive(
                     tangent,
                     bitangent,
                     height_world,
+                    screen_height_px: t.size,
                     color: t.color,
                 });
             }

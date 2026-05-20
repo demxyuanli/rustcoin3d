@@ -150,6 +150,8 @@ fn main() {
 
     let mut engine = Engine::new(&window);
     engine.load_scene(graph);
+    // TODO: PointLight not yet collected by scene traversal — omni shadow pass
+    // infrastructure is ready but light collection needs a separate fix.
     engine.controller = ctrl;
     engine.set_display_mode(DisplayMode::ShadedWithEdges);
     engine.continuous_redraw = true;
@@ -548,19 +550,6 @@ fn setup_scene(mut graph: SceneGraph) -> SceneGraph {
             }),
         );
     }
-
-    // Point light for omni shadow testing
-    let point_light_idx = if has_camera { 4 } else { 8 };
-    graph.insert_child(
-        target_root,
-        point_light_idx,
-        NodeData::PointLight(PointLightNode {
-            location: Vec3::new(8.0, 4.0, 0.0),
-            color: Vec3::new(1.0, 0.6, 0.2),
-            intensity: 300.0,
-            light_group: None,
-        }),
-    );
 
     let has_material = has_node_type_recursive(&graph, target_root, |d| {
         matches!(d, NodeData::Material(_))
