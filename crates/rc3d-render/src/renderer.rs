@@ -246,6 +246,7 @@ impl Renderer {
             &self.gpu.pipelines,
             &self.gpu.shadow_compare_sampler,
             self.gpu.global_frame_buffer.as_ref().unwrap(),
+            self.gpu.omni_shadow_map.as_ref().expect("omni shadow map not initialized"),
             resolution,
             cascade_count,
         ));
@@ -604,11 +605,18 @@ impl Renderer {
         let line_pool = GpuUniformPool::new_line(&device, &pipelines.flat_bgl, 65536);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
+        let omni_renderer = crate::shadow_omni::OmniShadowRenderer::new(&device);
+        let default_omni_shadow = crate::shadow_omni::OmniShadowMap::new(
+            &device,
+            omni_renderer.resource_bgl(),
+            crate::shadow_omni::OMNISHADOW_RESOLUTION,
+        );
         let csm_shadow = Some(shadow_pass::create_csm_shadow_resources(
             &device,
             &pipelines,
             &shadow_compare_sampler,
             &global_frame_buffer,
+            &default_omni_shadow,
             1,
             1,
         ));
@@ -978,6 +986,7 @@ impl Renderer {
                 cluster_lights: None,
                 cluster_light_culler: None,
                 omni_shadow: None,
+                omni_shadow_map: None,
                 bg_pass: None,
                 bg_settings: crate::background::BgSettings::default(),
                 decal_pass: None,
@@ -1053,7 +1062,8 @@ impl Renderer {
         // ── Phase 2: lighting ──
         renderer.gpu.cluster_light_culler = Some(ClusterLightCuller::new(&renderer.device));
         renderer.gpu.cluster_lights = Some(ClusterLightResources::new(&renderer.device));
-        renderer.gpu.omni_shadow = Some(OmniShadowRenderer::new(&renderer.device));
+        renderer.gpu.omni_shadow = Some(omni_renderer);
+        renderer.gpu.omni_shadow_map = Some(default_omni_shadow);
 
         // ── Pipeline cache ──
         let cache_dir = std::path::Path::new("cache");

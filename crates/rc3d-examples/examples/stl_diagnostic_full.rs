@@ -549,6 +549,19 @@ fn setup_scene(mut graph: SceneGraph) -> SceneGraph {
         );
     }
 
+    // Point light for omni shadow testing
+    let point_light_idx = if has_camera { 4 } else { 8 };
+    graph.insert_child(
+        target_root,
+        point_light_idx,
+        NodeData::PointLight(PointLightNode {
+            location: Vec3::new(2.0, 3.0, 4.0),
+            color: Vec3::new(1.0, 0.85, 0.7),
+            intensity: 8.0,
+            light_group: None,
+        }),
+    );
+
     let has_material = has_node_type_recursive(&graph, target_root, |d| {
         matches!(d, NodeData::Material(_))
     });

@@ -233,6 +233,7 @@ pub(crate) struct GpuInternals {
     pub cluster_lights: Option<ClusterLightResources>,
     pub cluster_light_culler: Option<ClusterLightCuller>,
     pub omni_shadow: Option<OmniShadowRenderer>,
+    pub omni_shadow_map: Option<crate::shadow_omni::OmniShadowMap>,
     pub bg_pass: Option<crate::background::BgPass>,
     pub bg_settings: crate::background::BgSettings,
     pub decal_pass: Option<crate::render_passes::pass_effects::DecalPass>,

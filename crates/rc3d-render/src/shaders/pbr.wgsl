@@ -43,6 +43,8 @@ struct GlobalFrameUniforms {
 @group(1) @binding(5) var t_occlusion: texture_2d<f32>;
 @group(2) @binding(0) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(1) var s_shadow: sampler_comparison;
+@group(2) @binding(3) var t_omni_shadow: texture_depth_cube;
+@group(2) @binding(4) var s_omni_shadow: sampler_comparison;
 @group(3) @binding(0) var t_envmap: texture_2d<f32>;
 @group(3) @binding(1) var t_brdf_lut: texture_2d<f32>;
 @group(3) @binding(2) var s_ibl: sampler;
@@ -191,6 +193,17 @@ fn shadow_factor_csm_blended(world_pos: vec3<f32>, world_normal: vec3<f32>, ligh
     return mix(s0, s1, sel.blend);
 }
 
+fn shadow_factor_omni(world_pos: vec3<f32>, light_pos: vec3<f32>, far_plane: f32) -> f32 {
+    let to_light = world_pos - light_pos;
+    let dist = length(to_light);
+    let light_dir = to_light / max(dist, 1e-6);
+    // Sample cube shadow map with depth comparison
+    let z_ref = dist / far_plane;
+    let bias = max(0.005 * (1.0 - abs(dot(normalize(light_dir), normalize(light_dir)))), 0.001);
+    let z_biased = z_ref - bias;
+    return textureSampleCompare(t_omni_shadow, s_omni_shadow, -light_dir, z_biased);
+}
+
 fn shadow_factor_csm(world_pos: vec3<f32>, world_normal: vec3<f32>, light_dir: vec3<f32>, cascade_idx: u32) -> f32 {
     if (g.shadow_params.w < 0.5) {
         return 1.0;
@@ -336,6 +349,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let cascade_sel = select_cascade_blended(view_depth);
             sh = shadow_factor_csm_blended(in.world_pos, in.world_normal, -light_dir, cascade_sel);
             sh = max(sh, 0.3);
+        } else if (light_type == 1) {
+            sh = shadow_factor_omni(in.world_pos, g.light_positions[i].xyz, g.shadow_params.z);
+            sh = max(sh, 0.2);
         }
 #else
         let sh = 1.0;

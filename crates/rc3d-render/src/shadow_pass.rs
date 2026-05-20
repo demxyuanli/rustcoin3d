@@ -17,6 +17,7 @@ pub(super) fn create_csm_shadow_resources(
     pipelines: &PipelineSet,
     compare_sampler: &wgpu::Sampler,
     global_frame_buffer: &wgpu::Buffer,
+    omni_shadow: &crate::shadow_omni::OmniShadowMap,
     resolution: u32,
     cascade_count: u32,
 ) -> CsmShadowResources {
@@ -73,6 +74,14 @@ pub(super) fn create_csm_shadow_resources(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: global_frame_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&omni_shadow.depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&omni_shadow.sampler),
             },
         ],
     });
