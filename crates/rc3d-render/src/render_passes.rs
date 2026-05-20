@@ -691,6 +691,30 @@ pub(super) fn execute_passes(
             let hdr: &wgpu::TextureView = &fx.hdr_view;
             let alt: &wgpu::TextureView = &fx.scratch_view;
 
+            // ── X-Ray (depth edge detection) ──
+            if renderer.xray_mode {
+                let ti = renderer.gpu_timer.begin(&mut encoder, "PP XRay");
+                let xray_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("X-Ray BG"),
+                    layout: &pl.xray_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(hdr) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pl.ssao_sampler) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(alt) },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("X-Ray"), timestamp_writes: None,
+                });
+                pass.set_pipeline(&pl.xray_pipeline);
+                pass.set_bind_group(0, &xray_bg, &[]);
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                drop(pass);
+                hdr_is_src = false; // x-ray wrote to alt; alt is now current
+                renderer.gpu_timer.end(&mut encoder, ti);
+            }
+
             // ── SSR (screen-space reflections) ──
             if renderer.enable_ssr {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSR");
@@ -730,8 +754,8 @@ pub(super) fn execute_passes(
                 renderer.gpu_timer.end(&mut encoder, ti);
             }
 
-            // ── Velocity buffer (for motion blur) ──
-            if renderer.enable_motion_blur {
+            // ── Velocity buffer (for motion blur + TAA) ──
+            if renderer.enable_motion_blur || renderer.enable_taa {
                 let ti = renderer.gpu_timer.begin(&mut encoder, "PP Velocity");
                 let inv_vp = (ctx.scene_vp).inverse();
                 let vp_prev = ctx.prev_vp;
@@ -773,7 +797,7 @@ pub(super) fn execute_passes(
                     mb.apply(
                         &renderer.device, &renderer.queue, &mut encoder,
                         src, &fx.velocity_view, &depth_read_view,
-                        dst, w, h, 16, 0.5,
+                        dst, w, h, 16, 0.25,
                     );
                     hdr_is_src = !hdr_is_src;
                 }
@@ -842,7 +866,7 @@ pub(super) fn execute_passes(
                     taa.ensure_history(&renderer.device, w, h);
                     taa.resolve(
                         &renderer.device, &renderer.queue, &mut encoder,
-                        src, &depth_read_view, &depth_read_view,
+                        src, &fx.velocity_view, &depth_read_view,
                         dst,
                         0.05, 1.0,
                     );

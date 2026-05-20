@@ -44,6 +44,8 @@ pub struct PostFxPipelines {
     pub copy_pipeline: wgpu::ComputePipeline,
     pub velocity_bgl: wgpu::BindGroupLayout,
     pub velocity_pipeline: wgpu::ComputePipeline,
+    pub xray_bgl: wgpu::BindGroupLayout,
+    pub xray_pipeline: wgpu::ComputePipeline,
     pub bloom_bgl: wgpu::BindGroupLayout,
     pub bloom_prefilter: wgpu::ComputePipeline,
     pub ssao_sampler: wgpu::Sampler,
@@ -73,6 +75,10 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     let velocity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Velocity"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/velocity.wgsl").into()),
+    });
+    let xray_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("X-Ray"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/xray.wgsl").into()),
     });
     let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("SSAO"),
@@ -258,6 +264,38 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         label: Some("Velocity"), layout: Some(&velocity_pll), module: &velocity_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
     });
 
+    let xray_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("X-Ray BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: true } },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: false } },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 },
+                count: None,
+            },
+        ],
+    });
+    let xray_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("X-Ray PLL"), bind_group_layouts: &[&xray_bgl], push_constant_ranges: &[],
+    });
+    let xray_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("X-Ray"), layout: Some(&xray_pll), module: &xray_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
+    });
+
     let ssao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("SSAO BGL"),
         entries: &[
@@ -404,6 +442,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         copy_pipeline,
         velocity_bgl,
         velocity_pipeline,
+        xray_bgl,
+        xray_pipeline,
         ssao_sampler,
         ssao_bgl,
         ssao_blur_bgl,
