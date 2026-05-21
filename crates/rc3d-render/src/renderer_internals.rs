@@ -285,6 +285,8 @@ pub(crate) struct GpuInternals {
     pub tier_cooldown_frames: u8,
     /// Global frame uniform buffer (lights, CSM, IBL, shadows) — uploaded once per frame, bound in group 2.
     pub global_frame_buffer: Option<wgpu::Buffer>,
+    /// Velocity buffer for motion blur + TAA (144 bytes, updated each frame).
+    pub velocity_buffer: Option<wgpu::Buffer>,
     pub draw_bufs: DrawBatchBufs,
 }
 

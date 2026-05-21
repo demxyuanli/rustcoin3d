@@ -594,6 +594,14 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        // Velocity buffer for motion blur + TAA (144 bytes: mat4x4 + mat4x4 + vec2 + vec2).
+        let velocity_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Velocity Params"),
+            size: 144,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let selection_outline_pipelines =
             crate::selection_outline::SelectionOutlinePipelines::new(&device, &pipelines.flat_bgl);
         let phong_pool = GpuUniformPool::new_phong(&device, 65536);
@@ -1022,6 +1030,7 @@ impl Renderer {
                 interaction_active: false,
                 tier_cooldown_frames: 0,
                 global_frame_buffer: Some(global_frame_buffer),
+                velocity_buffer: Some(velocity_buffer),
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),
                     meshlet_draws: Vec::with_capacity(4096),

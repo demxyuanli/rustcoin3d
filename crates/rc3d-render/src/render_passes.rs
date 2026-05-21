@@ -773,18 +773,17 @@ pub(super) fn execute_passes(
                 for row in &inv_vp.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
                 for row in &vp_prev.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
                 vel_data.extend_from_slice(bytemuck::bytes_of(&[0.0f32; 4])); // _pad0 + _pad1
-                let vel_uniform = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Velocity Params"),
-                    contents: &vel_data,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+                // Use pre-allocated velocity buffer instead of creating new one each frame
+                if let Some(ref vel_buf) = renderer.gpu.velocity_buffer {
+                    renderer.queue.write_buffer(vel_buf, 0, &vel_data);
+                }
                 let vel_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Velocity BG"),
                     layout: &pl.velocity_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&pl.ssao_sampler) },
-                        wgpu::BindGroupEntry { binding: 2, resource: vel_uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: renderer.gpu.velocity_buffer.as_ref().unwrap().as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&fx.velocity_view) },
                     ],
                 });
