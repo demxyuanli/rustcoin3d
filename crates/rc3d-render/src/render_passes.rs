@@ -291,6 +291,13 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_shadow);
 
+    // ── Omni Shadow Pass ──
+    let ti_omni = renderer.gpu_timer.begin(&mut encoder, "OmniShadow");
+    if renderer.enable_omni_shadows {
+        crate::shadow_omni::render_omni_shadow_pass(renderer, &mut encoder, ctx);
+    }
+    renderer.gpu_timer.end(&mut encoder, ti_omni);
+
     let mode = ctx.mode;
 
     let solid_mode = matches!(

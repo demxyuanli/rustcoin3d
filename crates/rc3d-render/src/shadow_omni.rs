@@ -1,4 +1,5 @@
 use glam::{Mat4, Vec3};
+use wgpu::util::DeviceExt;
 
 pub const OMNISHADOW_RESOLUTION: u32 = 512;
 
@@ -35,16 +36,18 @@ pub fn omni_view_proj_matrices(light_pos: Vec3, z_near: f32, z_far: f32) -> [Mat
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct OmniShadowUniforms {
-    view_proj: [[f32; 4]; 4],
-    light_pos: [f32; 3],
-    far_plane: f32,
+pub struct OmniShadowUniforms {
+    pub view_proj: [[f32; 4]; 4],
+    pub light_pos: [f32; 3],
+    pub far_plane: f32,
 }
 
 /// GPU resources for rendering omnidirectional shadow maps for one point light.
 pub struct OmniShadowMap {
     pub depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
+    /// Per-face 2D views for rendering (base_array_layer = face_index, array_layer_count = 1).
+    pub face_views: [wgpu::TextureView; 6],
     pub bind_group: wgpu::BindGroup,
     pub sampler: wgpu::Sampler,
     pub resolution: u32,
@@ -80,6 +83,17 @@ impl OmniShadowMap {
             ..Default::default()
         });
 
+        // Per-face 2D views for rendering individual cube faces
+        let face_views: [wgpu::TextureView; 6] = std::array::from_fn(|face| {
+            depth_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Omni Shadow Face"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: face as u32,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Omni Shadow Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -110,6 +124,7 @@ impl OmniShadowMap {
         Self {
             depth_texture,
             depth_view,
+            face_views,
             bind_group,
             sampler,
             resolution,
@@ -118,11 +133,10 @@ impl OmniShadowMap {
 }
 
 /// Render pipeline for omnidirectional shadow pass.
-#[allow(dead_code)]
 pub struct OmniShadowRenderer {
-    pipeline: wgpu::RenderPipeline,
-    shadow_bgl: wgpu::BindGroupLayout,
-    uniform_buffer: wgpu::Buffer,
+    pub pipeline: wgpu::RenderPipeline,
+    pub shadow_bgl: wgpu::BindGroupLayout,
+    pub uniform_buffer: wgpu::Buffer,
     omni_resource_bgl: wgpu::BindGroupLayout,
 }
 
@@ -233,5 +247,92 @@ impl OmniShadowRenderer {
     /// Get the bind group layout for sampling omnidirectional shadow maps in the PBR shader.
     pub fn resource_bgl(&self) -> &wgpu::BindGroupLayout {
         &self.omni_resource_bgl
+    }
+}
+
+/// Render the omni-directional shadow map for the first point light in the scene.
+/// Renders all visible geometry to 6 cube faces from the light's perspective.
+pub fn render_omni_shadow_pass(
+    renderer: &mut crate::renderer::Renderer,
+    encoder: &mut wgpu::CommandEncoder,
+    ctx: &crate::render_passes::PassContext<'_>,
+) {
+    let Some(ref omni) = renderer.gpu.omni_shadow else { return };
+    let Some(ref omni_map) = renderer.gpu.omni_shadow_map else { return };
+
+    // Find first point light from light sets
+    let light_set = ctx.light_sets.get(0);
+    let light_positions = light_set.3;
+    let light_types = light_set.2;
+    let light_count = light_set.5 as usize;
+    let mut pl_pos = glam::Vec3::ZERO;
+    let mut found = false;
+    for i in 0..light_count.min(16) {
+        let lt = light_types[i][0] as i32;
+        if lt == 1 {
+            pl_pos = glam::Vec3::from_array([
+                light_positions[i][0],
+                light_positions[i][1],
+                light_positions[i][2],
+            ]);
+            found = true;
+            break;
+        }
+    }
+    if !found { return; }
+
+    let z_near = 0.1;
+    let z_far = 100.0;
+    let vps = omni_view_proj_matrices(pl_pos, z_near, z_far);
+
+    for face in 0..6u32 {
+        let u = OmniShadowUniforms {
+            view_proj: vps[face as usize].to_cols_array_2d(),
+            light_pos: pl_pos.to_array(),
+            far_plane: z_far,
+        };
+        let uf_buf = renderer.device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Omni Shadow Uniforms"),
+                contents: bytemuck::bytes_of(&u),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        );
+        let ubg = renderer.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("Omni Shadow Pass BG"),
+                layout: &omni.shadow_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uf_buf.as_entire_binding(),
+                }],
+            },
+        );
+        let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
+        let mut pass = encoder.begin_render_pass(
+            &wgpu::RenderPassDescriptor {
+                label: Some("Omni Shadow Face"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &omni_map.face_views[face as usize],
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(depth_clear),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            },
+        );
+        pass.set_pipeline(&omni.pipeline);
+        pass.set_bind_group(0, &ubg, &[]);
+
+        let mut last_bound = None;
+        for &vis_idx in ctx.solid_order {
+            if let Some(mesh_id) = ctx.mesh_handles[vis_idx] {
+                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound);
+            }
+        }
     }
 }
