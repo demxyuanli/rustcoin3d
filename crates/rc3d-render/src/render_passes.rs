@@ -235,7 +235,7 @@ pub(super) fn execute_passes(
         renderer
             .gpu.ldr_shade_view
             .as_ref()
-            .expect("LDR shade view")
+            .expect("LDR shade view: enable_taa or enable_fxaa requires post-processing to be initialized")
             .clone()
     } else {
         view.clone()
@@ -562,7 +562,7 @@ pub(super) fn execute_passes(
             let scene_tex_ptr: *const wgpu::Texture = if renderer.hdr_post_processing {
                 std::ptr::from_ref(&renderer.gpu.post_fx.as_ref().unwrap().hdr_tex)
             } else if use_ldr_fxaa {
-                std::ptr::from_ref(renderer.gpu.ldr_shade_tex.as_ref().expect("LDR shade texture"))
+                std::ptr::from_ref(renderer.gpu.ldr_shade_tex.as_ref().expect("LDR shade texture: enable_taa or enable_fxaa requires post-processing to be initialized"))
             } else {
                 scene_tex_raw
             };
