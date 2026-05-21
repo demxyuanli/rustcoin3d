@@ -87,6 +87,9 @@ mod tests {
     #[test]
     fn leader_local_offset_is_camera_independent() {
         let p = leader_label_local_3d([0.0, 0.0, -0.75], [40.0, -30.0], 0.015);
-        assert_eq!(p, [0.6, 0.45, -0.75]);
+        // Use approximate comparison due to floating-point precision
+        assert!((p[0] - 0.6).abs() < 1e-6);
+        assert!((p[1] - 0.45).abs() < 1e-6);
+        assert!((p[2] - (-0.75)).abs() < 1e-6);
     }
 }
