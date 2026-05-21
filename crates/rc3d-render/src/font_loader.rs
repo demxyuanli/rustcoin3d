@@ -85,25 +85,25 @@ fn platform_font_candidates() -> Vec<PathBuf> {
     {
         let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
         let fonts = PathBuf::from(windir).join("Fonts");
-        return vec![
+        vec![
             fonts.join("arial.ttf"),
             fonts.join("segoeui.ttf"),
             fonts.join("calibri.ttf"),
-        ];
+        ]
     }
     #[cfg(target_os = "macos")]
     {
-        return vec![
+        vec![
             PathBuf::from("/System/Library/Fonts/Supplemental/Arial.ttf"),
             PathBuf::from("/Library/Fonts/Arial.ttf"),
-        ];
+        ]
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return vec![
+        vec![
             PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
             PathBuf::from("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
-        ];
+        ]
     }
     #[cfg(not(any(windows, unix)))]
     {

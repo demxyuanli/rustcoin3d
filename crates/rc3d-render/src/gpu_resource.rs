@@ -492,6 +492,10 @@ impl GpuUniformPool {
 
     fn push_bytes(&mut self, bytes: &[u8]) -> Option<u32> {
         if self.cursor >= self.capacity {
+            log::warn!(
+                "GpuUniformPool overflow: cursor={}, capacity={}, consider increasing pool size",
+                self.cursor, self.capacity
+            );
             return None;
         }
         let stride = self.stride as usize;

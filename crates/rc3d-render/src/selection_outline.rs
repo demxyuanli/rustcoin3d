@@ -681,9 +681,16 @@ fn wgpu_depth_clear(depth_reversed_z: bool) -> f32 {
 }
 
 /// Encodes the selection outline pass. `scene_source_tex` must point at the shaded scene texture
-/// (HDR, LDR offscreen, swapchain, or viewport RT) and remain valid for the encode duration.
-/// `target_width_px` / `target_height_px` must match that texture and `shade_view` size (typically
-/// swapchain dims or an off-screen viewport extent — not blindly `renderer.config` when embedding).
+/// (HDR, LDR offscreen, swapchain, or viewport RT) and remain valid until the command buffer
+/// is submitted to the queue.
+///
+/// SAFETY INVARIANT:
+/// - For swapchain: the texture is stored in `acquired_swapchain` which is kept alive until
+///   `present()` is called after `queue.submit()`. The wgpu implementation ensures the texture
+///   remains valid for the duration of GPU command execution, even though the CPU-side drop
+///   happens before the GPU actually executes the commands.
+/// - For offscreen: `output_texture` is passed by reference and is guaranteed to outlive the call.
+/// - The caller is responsible for ensuring this invariant is maintained.
 pub(crate) fn encode_selection_outline_pass(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
@@ -710,7 +717,9 @@ pub(crate) fn encode_selection_outline_pass(
         renderer.gpu.selection_outline_targets.take(),
     );
 
-    // SAFETY: Caller provides a pointer to a texture that outlives this encode; copy uses it read-only.
+    // SAFETY: Per the function's safety invariant, the caller guarantees the texture pointer
+    // remains valid until queue submission. This function only encodes a read-only copy command
+    // that references the texture; the actual GPU execution happens after submission.
     let scene_ptr = scene_source_tex;
 
     let far_ndc = ndc_far_clear(ctx.depth_reversed_z);

@@ -31,7 +31,6 @@ use crate::motion_blur::MotionBlurPass;
 use crate::pipeline_cache::PipelineCacheManager;
 use crate::pipelines::PipelineSet;
 use crate::post_processor::{self};
-use crate::shadow_omni::OmniShadowRenderer;
 use crate::shadow_pass::{self};
 use crate::shader_permutation::ShaderVariantCache;
 use crate::shader_reload::ShaderHotReload;

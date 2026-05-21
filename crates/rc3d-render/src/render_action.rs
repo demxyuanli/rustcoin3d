@@ -84,17 +84,18 @@ const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
 
 /// Runtime-configurable feature edge crease angle (degrees).
 /// Default 12°. Set via `Renderer::set_feature_edge_crease_angle`.
+#[allow(clippy::incompatible_msrv)]
 static FEATURE_CREASE_ANGLE_BITS: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(12.0f32.to_bits());
 
 fn feature_crease_angle() -> f32 {
     f32::from_bits(
-        FEATURE_CREASE_ANGLE_BITS.load(std::sync::atomic::Ordering::Relaxed),
+        FEATURE_CREASE_ANGLE_BITS.load(std::sync::atomic::Ordering::SeqCst),
     )
 }
 
 pub(crate) fn set_feature_crease_angle(deg: f32) {
-    FEATURE_CREASE_ANGLE_BITS.store(deg.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    FEATURE_CREASE_ANGLE_BITS.store(deg.to_bits(), std::sync::atomic::Ordering::SeqCst);
 }
 
 fn clamp_edge_positions(arc: Arc<Vec<[f32; 3]>>) -> Arc<Vec<[f32; 3]>> {
@@ -267,20 +268,36 @@ pub fn view_projection_from_draw_call(dc: &DrawCall) -> Mat4 {
     dc.mvp * dc.model_matrix.inverse()
 }
 
-/// Opaque cache-target pointer. Not Send-safe by default, but our use is
-/// strictly single-threaded during traversal, so Send is manually implemented.
-struct CacheTarget(*mut crate::flat_draw_cache::FlatDrawCache);
+/// Opaque cache-target pointer wrapper.
+/// SAFETY INVARIANT: This type is Send because `RenderCollector` is only ever
+/// accessed from a single thread during traversal. The `cache_ptr` is set by the
+/// same thread that created the `FlatDrawCache`, and `get_mut()` is only called
+/// during that thread's traversal. This invariant MUST be maintained - if
+/// `RenderCollector` is ever accessed from multiple threads, this would cause
+/// data races and undefined behavior.
+struct CacheTarget {
+    ptr: *mut crate::flat_draw_cache::FlatDrawCache,
+    _invariant: std::marker::PhantomData<&'static mut ()>,
+}
+
 unsafe impl Send for CacheTarget {}
 
 impl CacheTarget {
-    fn null() -> Self { Self(std::ptr::null_mut()) }
-    fn is_null(&self) -> bool { self.0.is_null() }
+    fn null() -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            _invariant: std::marker::PhantomData,
+        }
+    }
+    fn is_null(&self) -> bool {
+        self.ptr.is_null()
+    }
     fn set(&mut self, cache: &mut crate::flat_draw_cache::FlatDrawCache) {
-        self.0 = cache as *mut _;
+        self.ptr = cache as *mut _;
     }
     #[allow(clippy::mut_from_ref)]
     unsafe fn get_mut(&self) -> &mut crate::flat_draw_cache::FlatDrawCache {
-        &mut *self.0
+        &mut *self.ptr
     }
 }
 

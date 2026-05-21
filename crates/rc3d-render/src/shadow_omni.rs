@@ -1,5 +1,4 @@
 use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
 
 pub const OMNISHADOW_RESOLUTION: u32 = 512;
 
@@ -138,6 +137,8 @@ pub struct OmniShadowRenderer {
     pub shadow_bgl: wgpu::BindGroupLayout,
     pub uniform_buffer: wgpu::Buffer,
     omni_resource_bgl: wgpu::BindGroupLayout,
+    /// Pre-created bind group for uniform buffer (avoids per-frame allocation).
+    uniform_bind_group: wgpu::BindGroup,
 }
 
 impl OmniShadowRenderer {
@@ -236,11 +237,22 @@ impl OmniShadowRenderer {
             mapped_at_creation: false,
         });
 
+        // Pre-create bind group for uniform buffer to avoid per-frame allocation
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Omni Shadow Uniform BG"),
+            layout: &shadow_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         Self {
             pipeline,
             shadow_bgl,
             uniform_buffer,
             omni_resource_bgl,
+            uniform_bind_group,
         }
     }
 
@@ -252,7 +264,7 @@ impl OmniShadowRenderer {
 
 /// Render the omni-directional shadow map for the first point light in the scene.
 /// Renders all visible geometry to 6 cube faces from the light's perspective.
-pub fn render_omni_shadow_pass(
+pub(crate) fn render_omni_shadow_pass(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
     ctx: &crate::render_passes::PassContext<'_>,
@@ -291,22 +303,11 @@ pub fn render_omni_shadow_pass(
             light_pos: pl_pos.to_array(),
             far_plane: z_far,
         };
-        let uf_buf = renderer.device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Omni Shadow Uniforms"),
-                contents: bytemuck::bytes_of(&u),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        );
-        let ubg = renderer.device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                label: Some("Omni Shadow Pass BG"),
-                layout: &omni.shadow_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uf_buf.as_entire_binding(),
-                }],
-            },
+        // Reuse uniform buffer and bind group instead of allocating each frame
+        renderer.queue.write_buffer(
+            &omni.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&u),
         );
         let depth_clear = if ctx.depth_reversed_z { 0.0 } else { 1.0 };
         let mut pass = encoder.begin_render_pass(
@@ -326,7 +327,7 @@ pub fn render_omni_shadow_pass(
             },
         );
         pass.set_pipeline(&omni.pipeline);
-        pass.set_bind_group(0, &ubg, &[]);
+        pass.set_bind_group(0, &omni.uniform_bind_group, &[]);
 
         let mut last_bound = None;
         for &vis_idx in ctx.solid_order {

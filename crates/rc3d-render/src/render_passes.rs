@@ -35,6 +35,7 @@ pub(crate) struct PassContext<'a> {
     pub solid_order: &'a [usize],
     pub edge_order: &'a [usize],
     pub selected_order: &'a [usize],
+    /// Rendering order for transparent objects (passed to downstream functions, not read here).
     #[allow(dead_code)]
     pub transparent_order: &'a [usize],
     pub mesh_handles: &'a [Option<crate::gpu_resource::MeshId>],
@@ -54,6 +55,7 @@ pub(crate) struct PassContext<'a> {
     /// CSM split depths in view space: [near, split1, split2, far] (4 values)
     #[allow(dead_code)]
     pub csm_split_depths: [f32; CSM_CASCADE_COUNT],
+    /// Shadow rendering parameters: [inverse, bias, pcf, enabled]
     #[allow(dead_code)]
     pub shadow_params: [f32; 4],
     pub run_shadow_pass: bool,
