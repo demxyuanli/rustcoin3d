@@ -46,6 +46,9 @@ pub(super) fn pass_selection_fill(
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color: [1.0, 0.6, 0.0, 0.35],
+            model: dc.model_matrix.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -98,6 +101,9 @@ pub(super) fn pass_selection_edge(
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color: ctx.outline_color,
+            model: dc.model_matrix.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -193,6 +199,9 @@ pub(super) fn pass_selection_bbox(
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color,
+            model: dc.model_matrix.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         let offset = flat_pool.push_flat(&uniforms);
         if let Some(off) = offset {

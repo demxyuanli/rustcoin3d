@@ -36,7 +36,12 @@ pub struct DepthModePipelines {
     pub selection_edge: wgpu::RenderPipeline,
     /// Procedural fill for mesh / section-plane intersection (triangle mesh + plane-distance discard).
     pub section_cap_fill: wgpu::RenderPipeline,
+    /// Stencil prepass for section caps: marks cross-section interior (stencil=2)
+    /// by rendering complete (unclipped) front faces with depth NotEqual.
+    pub section_cap_stencil: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
+    /// WBOIT accumulate: PBR with MRT output (accum + revealage), additive + multiplicative blending.
+    pub wboit_accum: wgpu::RenderPipeline,
 }
 
 pub struct PipelineSet {
@@ -129,6 +134,10 @@ impl PipelineSet {
         let section_cap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Section Cap Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/section_cap.wgsl").into()),
+        });
+        let section_cap_mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Section Cap Mesh Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/section_cap_mesh.wgsl").into()),
         });
         let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Outline Shader"),
@@ -444,6 +453,7 @@ impl PipelineSet {
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
+            &section_cap_mesh_shader,
             &outline_shader,
             &line_aa_shader,
         );
@@ -458,6 +468,7 @@ impl PipelineSet {
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
+            &section_cap_mesh_shader,
             &outline_shader,
             &line_aa_shader,
         );
@@ -474,6 +485,7 @@ impl PipelineSet {
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
+            &section_cap_mesh_shader,
             &outline_shader,
             &line_aa_shader,
         );
@@ -488,6 +500,7 @@ impl PipelineSet {
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
+            &section_cap_mesh_shader,
             &outline_shader,
             &line_aa_shader,
         );
@@ -508,7 +521,7 @@ impl PipelineSet {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &flat_shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_line_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -623,7 +636,7 @@ impl PipelineSet {
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &flat_shader,
-                    entry_point: Some("fs_main"),
+                    entry_point: Some("fs_line_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),

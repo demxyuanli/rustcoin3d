@@ -67,6 +67,15 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     } else if bg.mode == 4u {
         // Image with fit mode
         return sample_image(i.uv);
+    } else if bg.mode == 6u {
+        // Sky-ground: sky above horizon (y>0.5), ground below
+        // uv.y: 0=bottom, 1=top
+        let horizon = 0.5;
+        let sky_t = smoothstep(horizon - 0.1, horizon, i.uv.y);
+        // Sky (top) fades toward horizon, ground (bottom) fades toward horizon
+        let sky = mix(bg.top_color, bg.bot_color, vec4<f32>(1.0 - i.uv.y));
+        let ground = mix(bg.bot_color, bg.top_color, vec4<f32>(i.uv.y * 2.0));
+        return mix(ground, sky, vec4<f32>(sky_t));
     }
     // Solid (mode 5 or default): top_color
     return bg.top_color;

@@ -279,6 +279,9 @@ pub fn pass_markup(
         let uniforms = crate::vertex::FlatUniforms {
             mvp: identity,
             color: [0.0; 4],
+            model: identity,
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if !projected.is_empty() {
             if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
@@ -336,9 +339,13 @@ pub fn pass_markup(
         });
         pass.set_pipeline(&renderer.gpu.pipelines.markup_lines_screen);
         let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();
+        let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
         let uniforms = crate::vertex::FlatUniforms {
             mvp,
             color: [0.0; 4],
+            model: identity,
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

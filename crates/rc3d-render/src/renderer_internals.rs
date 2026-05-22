@@ -130,6 +130,7 @@ pub(crate) struct FrameState {
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,
     pub scene_vp: Mat4,
+    pub scene_vp_inv: Mat4,
     pub scene_depth_reversed_z: bool,
     pub scene_camera_pos: Vec3,
     pub animation_time_sec: f32,

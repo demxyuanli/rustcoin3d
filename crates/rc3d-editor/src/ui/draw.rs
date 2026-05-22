@@ -440,6 +440,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::Sphere(_) => "Sphere",
         NodeData::Cone(_) => "Cone",
         NodeData::Cylinder(_) => "Cylinder",
+        NodeData::Torus(_) => "Torus",
         NodeData::IndexedFaceSet(_) => "IFS",
         NodeData::SkinnedMesh(_) => "SkinnedMesh",
         NodeData::MorphTarget(_) => "Morph",

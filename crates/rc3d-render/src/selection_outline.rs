@@ -829,6 +829,9 @@ pub(crate) fn encode_selection_outline_pass(
             let dum = FlatUniforms {
                 mvp: dc.mvp.to_cols_array_2d(),
                 color: [0.0; 4],
+                model: dc.model_matrix.to_cols_array_2d(),
+                clip_planes: [[0.0; 4]; 6],
+                clip_count: [0.0, 0.0, 0.0, 0.0],
             };
             let Some(off) = renderer.gpu.flat_pool.push_flat(&dum) else { break };
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);
@@ -868,6 +871,9 @@ pub(crate) fn encode_selection_outline_pass(
             let dum = FlatUniforms {
                 mvp: dc.mvp.to_cols_array_2d(),
                 color: [0.0; 4],
+                model: dc.model_matrix.to_cols_array_2d(),
+                clip_planes: [[0.0; 4]; 6],
+                clip_count: [0.0, 0.0, 0.0, 0.0],
             };
             let Some(off) = renderer.gpu.flat_pool.push_flat(&dum) else { break };
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);

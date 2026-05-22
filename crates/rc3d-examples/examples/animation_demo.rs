@@ -1,19 +1,30 @@
 //! Animation demo — engine-driven transform animation.
 //!
+//! Keys: B — cycle background mode (Solid/Gradient/Horizontal/Image)
+//!
 //! Usage: cargo run -p rc3d-examples --example animation_demo
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use rc3d_core::math::Vec3;
 use rc3d_engine::{ElapsedTimeEngine, EngineRegistry, InterpolateVec3Engine, SineField, SineOscillatorEngine};
 use rc3d_engine_api::background::BackgroundSettings;
-use rc3d_examples::common::run_example;
-use rc3d_render::background::BgMode;
+use rc3d_examples::common::run_example_with_hooks;
+use rc3d_render::background::{BgMode, ImageFit};
 use rc3d_scene::node_data::*;
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 fn main() {
-    run_example("Animation Demo", |engine| {
+    let bg_mode = Arc::new(AtomicU32::new(1)); // start at VerticalGradient (1)
+    let bg_key = bg_mode.clone();
+    let bg_hook = bg_mode.clone();
+
+    run_example_with_hooks("Animation Demo", |engine| {
         engine.set_background(BackgroundSettings {
             mode: BgMode::VerticalGradient,
-            clear_color: [0.02, 0.05, 0.25, 1.0],
+            top_color: [0.02, 0.10, 0.35, 1.0],
+            bot_color: [0.02, 0.02, 0.08, 1.0],
             ..Default::default()
         });
 
@@ -125,5 +136,66 @@ fn main() {
         engines.add(ElapsedTimeEngine::new(light2_id, -0.6, Vec3::new(0.0, 0.0, 1.0)));
 
         engine.world_mut().engines = Some(engines);
+
+        // Pre-render hook: apply background mode from shared state
+        let bg_hook_clone = bg_hook.clone();
+        engine.pre_render_hook = Some(Box::new(move |renderer| {
+            let m = bg_hook_clone.load(Ordering::Relaxed);
+            let mode = match m % 7 {
+                0 => BgMode::Solid,
+                1 => BgMode::VerticalGradient,
+                2 => BgMode::HorizontalGradient,
+                3 => BgMode::CenterGradient,
+                4 => BgMode::DiagonalGradient,
+                5 => BgMode::Image,
+                _ => BgMode::SkyGround,
+            };
+            let bg = rc3d_render::background::BgSettings {
+                mode,
+                image_fit: ImageFit::Stretch,
+                top_color: [0.02, 0.10, 0.35, 1.0],
+                bot_color: [0.02, 0.02, 0.08, 1.0],
+                image_path: Some("bg.png".into()),
+                cube_faces: Default::default(),
+            };
+            renderer.set_background(bg);
+        }));
+
+        // HUD overlay: show current background mode
+        let bg_hud = bg_mode.clone();
+        engine.hud_text_hook = Some(Box::new(move || {
+            let m = bg_hud.load(Ordering::Relaxed);
+            let name = match m % 7 {
+                0 => "Solid",
+                1 => "VerticalGradient",
+                2 => "HorizontalGradient",
+                3 => "CenterGradient",
+                4 => "DiagonalGradient",
+                5 => "Image (bg.png)",
+                _ => "SkyGround",
+            };
+            format!("+--- Animation Demo ------+\n| B: cycle background    |\n| Mode: {:<17} |\n+------------------------+", name)
+        }));
+
+        // B key: cycle background mode
+        engine.panel_overlay_key_hook = Some(Box::new(move |key: PhysicalKey| -> bool {
+            if let PhysicalKey::Code(KeyCode::KeyB) = key {
+                let prev = bg_key.load(Ordering::Relaxed);
+                bg_key.store(prev + 1, Ordering::Relaxed);
+                let mode = match (prev + 1) % 7 {
+                    0 => "Solid",
+                    1 => "VerticalGradient",
+                    2 => "HorizontalGradient",
+                    3 => "CenterGradient",
+                    4 => "DiagonalGradient",
+                    5 => "Image",
+                    _ => "SkyGround",
+                };
+                println!("[ANIM] Background: {mode}");
+                true
+            } else {
+                false
+            }
+        }));
     });
 }

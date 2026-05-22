@@ -12,6 +12,7 @@ pub enum BgMode {
     DiagonalGradient,
     Image,
     Solid,
+    SkyGround,
 }
 
 /// How an image background is fitted to the screen.
@@ -317,6 +318,7 @@ impl BgPass {
             BgMode::DiagonalGradient => 3u32,
             BgMode::Image => 4u32,
             BgMode::Solid => 5u32,
+            BgMode::SkyGround => 6u32,
         };
         let image_fit = match settings.image_fit {
             ImageFit::Stretch => 0u32,

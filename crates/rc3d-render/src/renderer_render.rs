@@ -4,6 +4,7 @@ use glam::{Mat4, Vec3};
 use slotmap::Key;
 use rc3d_core::DisplayMode;
 use rc3d_scene::SceneGraph;
+use rc3d_scene::AlphaMode;
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::cluster::{ClusterRenderer, ClusterSet};
 use crate::frustum::Frustum;
@@ -559,6 +560,12 @@ impl super::Renderer {
             })
         };
         let mut transparent_order: Vec<usize> = Vec::new();
+        transparent_order.extend((0..visible.len())
+            .filter(|&i| visible[i].alpha_mode != AlphaMode::Opaque
+                && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())));
+        // Remove transparent objects from solid order (avoids double-draw)
+        solid_order.retain(|&i| visible[i].alpha_mode == AlphaMode::Opaque
+            || visible[i].vertices.is_empty() && visible[i].meshlet_data.is_none());
 
         let mut meshlet_indices = std::mem::take(&mut self.frame.meshlet_indices_buf);
         meshlet_indices.clear();
@@ -1069,6 +1076,9 @@ impl super::Renderer {
         }
         let entries: Vec<(usize, crate::gpu_resource::MeshId)> =
             solid_order.iter().filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
+        if entries.is_empty() {
+            return;
+        }
         self.render_section_caps(
             encoder,
             shade_view,
@@ -1080,8 +1090,9 @@ impl super::Renderer {
         );
     }
 
-    /// Fills the open cross section with flat color by rasterizing mesh triangles and
-    /// keeping fragments within a narrow band of each cap plane (`section_cap.wgsl`).
+    /// Fills the open cross section with flat color using the mesh's back faces
+    /// with clip plane. Since cull=Front, only back faces render; the clip plane
+    /// discards fragments above the plane, leaving only the cross-section disc.
     pub fn render_section_caps(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1096,7 +1107,7 @@ impl super::Renderer {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Section cap"),
+            label: Some("Section cap fill (back faces)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
@@ -1111,35 +1122,31 @@ impl super::Renderer {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });
         pass.set_pipeline(&scene_pl.section_cap_fill);
-        const MIN_BAND: f32 = 5e-4;
+        let mut last_bound_mesh = None;
         for &(plane, cap_color) in cap_specs {
-            for &(idx, mesh_id) in entries {
-                let dc = draw_calls[idx];
-                let cap_uniforms = crate::vertex::SectionCapUniforms {
+            for &(i, mesh_id) in entries {
+                let dc = draw_calls[i];
+                let mut clip_planes = [[0.0f32; 4]; 6];
+                clip_planes[0] = plane;
+                let uniforms = crate::vertex::FlatUniforms {
                     mvp: dc.mvp.to_cols_array_2d(),
-                    model: dc.model_matrix.to_cols_array_2d(),
                     color: cap_color,
-                    plane,
-                    params: [MIN_BAND, 0.0, 0.0, 0.0],
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    clip_planes,
+                    clip_count: [1.0, 0.0, 0.0, 0.0],
                 };
-                let Some(offset) = self.gpu.section_cap_pool.push_section_cap(&cap_uniforms) else {
-                    continue;
-                };
-                pass.set_bind_group(0, self.gpu.section_cap_pool.bind_group(), &[offset]);
-                if let Some(mesh) = self.gpu.gpu_meshes.get(mesh_id) {
-                    pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                    if let Some(ref ib) = mesh.index_buffer {
-                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-                    } else {
-                        pass.draw(0..mesh.vertex_count, 0..1);
-                    }
+                if let Some(offset) = self.gpu.flat_pool.push_flat(&uniforms) {
+                    pass.set_bind_group(0, self.gpu.flat_pool.bind_group(), &[offset]);
+                    self.draw_mesh_instanced(&mut pass, mesh_id, 0, 1, &mut last_bound_mesh);
                 }
             }
         }

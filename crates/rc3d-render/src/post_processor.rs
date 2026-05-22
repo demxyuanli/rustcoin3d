@@ -53,9 +53,12 @@ pub struct PostFxPipelines {
     pub ssao_blur_bgl: wgpu::BindGroupLayout,
     pub ssao_pipeline: wgpu::RenderPipeline,
     pub ssao_blur_pipeline: wgpu::RenderPipeline,
+    /// WBOIT composite: accum/revealage bind group layout (group 1).
+    pub wboit_accum_bgl: wgpu::BindGroupLayout,
+    pub wboit_composite_pipeline: wgpu::RenderPipeline,
 }
 
-pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> PostFxPipelines {
+pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::TextureFormat, hdr_format: wgpu::TextureFormat) -> PostFxPipelines {
     let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Post tonemap ACES+FXAA"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/post_tonemap_fxaa.wgsl").into()),
@@ -428,6 +431,76 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         cache: None,
     });
 
+    // ── WBOIT Composite Pipeline ──
+    let wboit_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("WBOIT Composite"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wboit_composite.wgsl").into()),
+    });
+
+    let wboit_accum_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("WBOIT Accum BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+
+    let wboit_composite_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("WBOIT Composite PLL"),
+        bind_group_layouts: &[&wboit_accum_bgl],
+        push_constant_ranges: &[],
+    });
+
+    let wboit_composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("WBOIT Composite"),
+        layout: Some(&wboit_composite_pll),
+        vertex: wgpu::VertexState {
+            module: &wboit_composite_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &wboit_composite_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: hdr_format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
     PostFxPipelines {
         tonemap_bgl,
         tonemap_sampler,
@@ -449,6 +522,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ssao_blur_bgl,
         ssao_pipeline,
         ssao_blur_pipeline,
+        wboit_accum_bgl,
+        wboit_composite_pipeline,
     }
 }
 
@@ -477,6 +552,12 @@ pub struct PostFxTextures {
     /// Screen-space velocity (Rgba16Float) for motion blur.
     pub velocity_tex: wgpu::Texture,
     pub velocity_view: wgpu::TextureView,
+    /// WBOIT accumulation buffer (Rgba16Float, additive blending).
+    pub wboit_accum_tex: wgpu::Texture,
+    pub wboit_accum_view: wgpu::TextureView,
+    /// WBOIT revealage buffer (R8Unorm, multiplicative blending).
+    pub wboit_revealage_tex: wgpu::Texture,
+    pub wboit_revealage_view: wgpu::TextureView,
 }
 
 pub fn ensure_post_fx_textures(
@@ -582,7 +663,37 @@ pub fn ensure_post_fx_textures(
         ],
     });
 
-    PostFxTextures { hdr_tex, hdr_view, tonemap_bg, post_ldr_tex: post_ldr, post_ldr_view, blit_bg, bloom_tex, bloom_view, ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view, ssr_tex, ssr_view, taa_tex, taa_view, scratch_tex, scratch_view, velocity_tex, velocity_view }
+    // WBOIT accumulation buffer (Rgba16Float, additive blending target)
+    let wboit_accum_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("WBOIT Accum"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let wboit_accum_view = wboit_accum_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // WBOIT revealage buffer (R8Unorm, multiplicative blending target)
+    let wboit_revealage_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("WBOIT Revealage"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let wboit_revealage_view = wboit_revealage_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    PostFxTextures {
+        hdr_tex, hdr_view, tonemap_bg,
+        post_ldr_tex: post_ldr, post_ldr_view, blit_bg,
+        bloom_tex, bloom_view,
+        ssao_tex, ssao_view, ssao_blur_tex, ssao_blur_view,
+        ssr_tex, ssr_view, taa_tex, taa_view, scratch_tex, scratch_view,
+        velocity_tex, velocity_view,
+        wboit_accum_tex, wboit_accum_view, wboit_revealage_tex, wboit_revealage_view,
+    }
 }
 
 pub fn create_ssao_noise(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {

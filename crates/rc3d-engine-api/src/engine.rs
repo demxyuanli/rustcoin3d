@@ -3,6 +3,8 @@ use std::path::Path;
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::{DisplayMode, EngineResult, NodeId};
+use rc3d_actions::Action;
+use rc3d_actions::SectionPlaneAction;
 use rc3d_render::render_action::DrawCall;
 use rc3d_render::viewport::{LayoutMode, ViewportLayout};
 use rc3d_render::{AdaptiveControl, FrameStats, Renderer};
@@ -231,6 +233,14 @@ impl Engine {
         // 9. Transfer light sets from collector to renderer
         let light_sets = std::mem::take(&mut self.world.collector.light_sets);
         renderer.set_light_sets(light_sets);
+
+        // 9b. Collect section planes from scene graph
+        let mut section_action = SectionPlaneAction::new();
+        let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
+        for &root in &roots {
+            section_action.apply(&self.world.graph, root);
+        }
+        renderer.set_clip_planes(section_action.planes, section_action.cap_tints);
 
         // 10. Fallback: if traversal found no camera, apply a default projection.
         // Without this, the collector stays at IDENTITY and nothing renders.

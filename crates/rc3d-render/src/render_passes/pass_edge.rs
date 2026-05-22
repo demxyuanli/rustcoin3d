@@ -158,6 +158,9 @@ fn pass_fallback_edge(
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color: edge_color,
+            model: dc.model_matrix.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);

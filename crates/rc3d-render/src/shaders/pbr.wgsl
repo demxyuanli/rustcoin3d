@@ -246,8 +246,9 @@ fn sample_prefiltered_envmap(reflection: vec3<f32>, roughness: f32) -> vec3<f32>
     return textureSampleLevel(t_envmap, s_ibl, uv, r * 3.0).rgb;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+/// Core PBR shading logic. Shared by `fs_main` and `fs_main_wboit`.
+/// Returns (color, alpha) as a vec4.
+fn pbr_shade(in: VertexOutput) -> vec4<f32> {
     let clip_count = i32(u.clip_count.x);
     for (var i = 0; i < clip_count; i = i + 1) {
         let plane = u.clip_planes[i];
@@ -406,4 +407,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let final_alpha = select(alpha_sample, 1.0, alpha_mode == 0);
     return vec4<f32>(color, final_alpha);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return pbr_shade(in);
+}
+
+// WBOIT (Weighted Blended OIT) output: two render targets.
+// RT0 (accum):     premultiplied color * alpha * weight, alpha * weight  (additive blend)
+// RT1 (revealage): 1 - alpha  (multiplicative blend: dst *= src)
+// Weight follows McGuire & Bavoil 2012: w(z) = clamp(alpha / (1e-5 + z^3), 1e-3, 300)
+struct WboitOutput {
+    @location(0) accum: vec4<f32>,
+    @location(1) revealage: vec4<f32>,
+}
+
+@fragment
+fn fs_main_wboit(in: VertexOutput) -> WboitOutput {
+    let result = pbr_shade(in);
+    let color = result.rgb;
+    let alpha = result.a;
+
+    // Depth-based weight for better compositing
+    let clip_z = in.clip_position.z;
+    let view_z = 1.0 - clip_z; // approximate linear depth
+    let weight = clamp(alpha / (1e-5 + view_z * view_z * view_z), 1e-3, 300.0);
+
+    var out: WboitOutput;
+    out.accum = vec4<f32>(color * alpha * weight, alpha * weight);
+    out.revealage = vec4<f32>(1.0 - alpha, 1.0 - alpha, 1.0 - alpha, 1.0 - alpha);
+    return out;
 }

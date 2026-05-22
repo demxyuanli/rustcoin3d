@@ -96,6 +96,10 @@ pub struct Renderer {
     pub enable_omni_shadows: bool,
     pub enable_ldr_fxaa: bool,
     pub hdr_post_processing: bool,
+    /// Enable WBOIT (Weighted Blended Order-Independent Transparency) for
+    /// transparent objects instead of traditional back-to-front alpha blend.
+    /// Requires `hdr_post_processing` to be true (WBOIT uses Rgba16Float accum buffer).
+    pub enable_wboit: bool,
     pub global_display_mode: DisplayMode,
     /// Display mode explicitly chosen by the user (may differ from global_display_mode
     /// when a tier forces flat shading). Used to restore the user's choice when leaving
@@ -224,7 +228,9 @@ impl Renderer {
 
     /// Scene camera view-projection (`projection * view`) from the last graph traversal.
     pub fn set_scene_view_projection(&mut self, view: Mat4, projection: Mat4) {
-        self.frame.scene_vp = projection * view;
+        let vp = projection * view;
+        self.frame.scene_vp = vp;
+        self.frame.scene_vp_inv = vp.inverse();
         self.frame.scene_depth_reversed_z =
             rc3d_core::depth_reversed_z_from_projection(projection);
     }
@@ -627,7 +633,7 @@ impl Renderer {
             1,
             1,
         ));
-        let post_fx_pipelines = post_processor::create_post_fx_pipelines(&device, config.format);
+        let post_fx_pipelines = post_processor::create_post_fx_pipelines(&device, config.format, wgpu::TextureFormat::Rgba16Float);
 
         // Upscale pipeline for dynamic resolution interaction blit
         let upscale_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -870,6 +876,7 @@ impl Renderer {
             enable_omni_shadows: true,
             enable_ldr_fxaa: true,
             hdr_post_processing: false,
+            enable_wboit: false,
             global_display_mode: DisplayMode::Shaded,
             user_display_mode: DisplayMode::Shaded,
             tier_wants_shadow: true,
@@ -910,6 +917,7 @@ impl Renderer {
                 clip_planes: Vec::new(),
                 section_cap_tints: Vec::new(),
                 scene_vp: Mat4::IDENTITY,
+                scene_vp_inv: Mat4::IDENTITY,
                 scene_depth_reversed_z: false,
                 scene_camera_pos: Vec3::ZERO,
                 animation_time_sec: 0.0,

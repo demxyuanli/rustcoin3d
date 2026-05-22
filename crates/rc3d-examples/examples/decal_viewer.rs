@@ -12,7 +12,7 @@ fn main() {
     run_example("Decal Viewer", |engine| {
         engine.set_background(BackgroundSettings {
             mode: BgMode::Image,
-            image_path: Some("decal.png".into()),
+            image_path: Some("bg.png".into()),
             ..Default::default()
         });
 
@@ -40,7 +40,7 @@ fn main() {
         graph.add_child(root, NodeData::Material(MaterialNode {
             base_color: Vec3::new(0.5, 0.5, 0.5),
             roughness: 0.4,
-            albedo_texture: Some("decal.png".into()),
+            albedo_texture: Some("bg.png".into()),
             ..Default::default()
         }));
 

@@ -406,6 +406,9 @@ impl RayPickAction {
             NodeData::Cylinder(cyl) => {
                 self.pick_cylinder(node, cyl.radius, cyl.height);
             }
+            NodeData::Torus(torus) => {
+                self.pick_torus(node, torus.major_radius, torus.minor_radius);
+            }
             NodeData::IndexedFaceSet(ifs) => {
                 self.pick_indexed_face_set(node, &ifs.coord_index);
             }
@@ -725,6 +728,64 @@ impl RayPickAction {
                 }
             }
             tri_idx += 1;
+        }
+        if let Some((point, normal, tri_idx, bary)) = best_hit {
+            self.push_hit(node, point, normal, best_t, tri_idx, &bary);
+        }
+    }
+
+    fn pick_torus(&mut self, node: NodeId, major_radius: f32, minor_radius: f32) {
+        if !self.is_pickable() { return; }
+        let model = self.state.model_matrix();
+        let major_segments = 24u32;
+        let minor_segments = 12u32;
+        let mut best_t = f32::MAX;
+        let mut best_hit: Option<(Vec3, Vec3, u32, Vec3)> = None;
+        let mut tri_idx = 0u32;
+
+        for i in 0..major_segments {
+            let t0 = 2.0 * std::f32::consts::PI * i as f32 / major_segments as f32;
+            let t1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / major_segments as f32;
+            for j in 0..minor_segments {
+                let p0 = |theta: f32, phi: f32| -> Vec3 {
+                    let cos_t = theta.cos();
+                    let sin_t = theta.sin();
+                    let cos_p = phi.cos();
+                    let sin_p = phi.sin();
+                    Vec3::new(
+                        (major_radius + minor_radius * cos_p) * cos_t,
+                        minor_radius * sin_p,
+                        (major_radius + minor_radius * cos_p) * sin_t,
+                    )
+                };
+                let phi0 = 2.0 * std::f32::consts::PI * j as f32 / minor_segments as f32;
+                let phi1 = 2.0 * std::f32::consts::PI * (j + 1) as f32 / minor_segments as f32;
+                let a = model.transform_point3(p0(t0, phi0));
+                let b = model.transform_point3(p0(t1, phi0));
+                let c = model.transform_point3(p0(t1, phi1));
+                let d = model.transform_point3(p0(t0, phi1));
+
+                if let Some((t, bary)) = self.ray.intersect_triangle(a, b, d) {
+                    if t > 0.001 && t < best_t {
+                        best_t = t;
+                        let point = self.ray.origin + self.ray.direction * t;
+                        let cross = (b - a).cross(d - a);
+                        let n = rc3d_core::utils::math::safe_normalize(cross, Vec3::Y);
+                        best_hit = Some((point, n, tri_idx, bary));
+                    }
+                }
+                tri_idx += 1;
+                if let Some((t, bary)) = self.ray.intersect_triangle(b, c, d) {
+                    if t > 0.001 && t < best_t {
+                        best_t = t;
+                        let point = self.ray.origin + self.ray.direction * t;
+                        let cross = (c - b).cross(d - b);
+                        let n = rc3d_core::utils::math::safe_normalize(cross, Vec3::Y);
+                        best_hit = Some((point, n, tri_idx, bary));
+                    }
+                }
+                tri_idx += 1;
+            }
         }
         if let Some((point, normal, tri_idx, bary)) = best_hit {
             self.push_hit(node, point, normal, best_t, tri_idx, &bary);

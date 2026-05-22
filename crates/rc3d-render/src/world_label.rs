@@ -525,6 +525,9 @@ pub fn draw_world_labels(
         let uniforms = FlatUniforms {
             mvp: mvp.to_cols_array_2d(),
             color: cmd.color,
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         let Some(offset) = flat_pool.push_flat(&uniforms) else {
             continue;

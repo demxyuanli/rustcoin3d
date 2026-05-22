@@ -71,6 +71,8 @@ pub fn parallel_traverse_into_cache(
 }
 
 /// Convert RenderCollector output to a TraversalChunk for parallel collection.
+/// Note: texture IDs are set to `u16::MAX` because the parallel path cannot
+/// mutate the texture table; interning must happen on the calling thread.
 fn collector_to_chunk(
     collector: &super::render_action::RenderCollector,
     _texture_table: &TexturePathTable,
@@ -78,43 +80,10 @@ fn collector_to_chunk(
     let mut chunk = TraversalChunk::default();
 
     for dc in &collector.draw_calls {
-        let mut flags = crate::flat_draw_cache::DrawFlags::empty();
-        if !dc.edge_positions.is_empty() {
-            flags |= crate::flat_draw_cache::DrawFlags::HAS_EDGES;
-        }
-        if dc.is_overlay {
-            flags |= crate::flat_draw_cache::DrawFlags::OVERLAY;
-        }
-        if dc.selected {
-            flags |= crate::flat_draw_cache::DrawFlags::SELECTED;
-        }
-        if dc.alpha_mode != rc3d_scene::AlphaMode::Opaque {
-            flags |= crate::flat_draw_cache::DrawFlags::TRANSPARENT;
-        }
-        if dc.depth_reversed_z {
-            flags |= crate::flat_draw_cache::DrawFlags::DEPTH_REVERSED;
-        }
-        if dc.projection_orthographic {
-            flags |= crate::flat_draw_cache::DrawFlags::ORTHOGRAPHIC;
-        }
-
-        chunk.gpu_data.push(crate::flat_draw_cache::GpuDrawData {
-            model_matrix: dc.model_matrix.to_cols_array_2d(),
-            material_id: 0,
-            light_set_id: 0,
-            vertex_offset: 0,
-            vertex_count: dc.vertices.len() as u32,
-            index_offset: 0,
-            index_count: dc.indices.as_ref().map_or(0, |i| i.len() as u32),
-            draw_flags: flags.bits(),
-            instance_count: 1,
-            _pad: 0,
-        });
-
-        chunk.metadata.push(crate::flat_draw_cache::CachedDrawMetadata {
-            mesh_hash: dc.mesh_hash.unwrap_or(0),
-            ..Default::default()
-        });
+        // Texture IDs deferred to post-merge interning on the calling thread
+        let (gpu, meta) = crate::traversal::draw_call_to_cache_entries(dc, [u16::MAX; 5]);
+        chunk.gpu_data.push(gpu);
+        chunk.metadata.push(meta);
     }
 
     chunk.effects.decals.extend(
@@ -139,22 +108,7 @@ fn collector_to_chunk(
 }
 
 fn count_all_nodes(graph: &SceneGraph) -> usize {
-    graph
-        .roots()
-        .iter()
-        .map(|&r| count_subtree(graph, r))
-        .sum()
-}
-
-fn count_subtree(graph: &SceneGraph, node: rc3d_core::NodeId) -> usize {
-    let Some(entry) = graph.get(node) else {
-        return 0;
-    };
-    1 + entry
-        .children
-        .iter()
-        .map(|&c| count_subtree(graph, c))
-        .sum::<usize>()
+    crate::traversal::count_all_nodes(graph)
 }
 
 /// Parallel upload of GpuDrawData from FlatDrawCache into a staging buffer.

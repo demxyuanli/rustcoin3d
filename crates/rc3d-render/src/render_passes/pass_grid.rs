@@ -145,6 +145,9 @@ pub fn pass_grid(
         let uniforms = FlatUniforms {
             mvp,
             color: [0.25, 0.25, 0.25, 0.35],
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -157,6 +160,9 @@ pub fn pass_grid(
         let uniforms = FlatUniforms {
             mvp,
             color: [0.35, 0.35, 0.35, 0.55],
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -169,6 +175,9 @@ pub fn pass_grid(
         let uniforms = FlatUniforms {
             mvp,
             color: [0.9, 0.2, 0.2, 0.8],
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -181,6 +190,9 @@ pub fn pass_grid(
         let uniforms = FlatUniforms {
             mvp,
             color: [0.2, 0.3, 0.9, 0.8],
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);

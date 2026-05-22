@@ -36,6 +36,9 @@ pub mod pipeline_cache;
 pub mod pipelines;
 pub mod post_processor;
 pub mod render_action;
+pub mod shape_cache;
+pub mod light_packing;
+pub mod traversal;
 pub mod render_graph;
 pub mod render_passes;
 pub mod renderer;
@@ -80,6 +83,10 @@ pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
 pub use render_action::{
     apply_world_camera, DrawCall, RenderCollector, SkinnedMeshDrawPayload,
+};
+pub use shape_cache::{
+    set_feature_crease_angle, ShapeKey, CachedShapeData, clamp_edge_positions,
+    feature_crease_angle, MAX_EDGE_POSITIONS, MESHLET_TRIANGLE_THRESHOLD,
 };
 pub use renderer::{
     AdaptiveControl, BatchAnalysis, FrameDiagnostics, FrameStats, MemoryBudget, NodeTypeDrawStat,

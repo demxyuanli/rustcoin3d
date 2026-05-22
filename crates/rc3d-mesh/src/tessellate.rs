@@ -246,3 +246,43 @@ pub fn tessellate_cylinder(radius: f32, height: f32, segments: u32) -> TriangleM
 
     TriangleMesh::from_indexed_with_texcoords(&positions, &indices, &texcoords)
 }
+
+/// Torus: major_radius = distance from center to tube center, minor_radius = tube radius.
+pub fn tessellate_torus(major_radius: f32, minor_radius: f32, major_segments: u32, minor_segments: u32) -> TriangleMesh {
+    if major_segments < 3 || minor_segments < 3 {
+        return TriangleMesh::from_tris(&[]);
+    }
+    let mut positions = Vec::new();
+    let mut texcoords = Vec::new();
+    let mut indices = Vec::new();
+
+    for i in 0..major_segments {
+        let theta = 2.0 * std::f32::consts::PI * i as f32 / major_segments as f32;
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+        for j in 0..minor_segments {
+            let phi = 2.0 * std::f32::consts::PI * j as f32 / minor_segments as f32;
+            let cos_p = phi.cos();
+            let sin_p = phi.sin();
+            let x = (major_radius + minor_radius * cos_p) * cos_t;
+            let y = minor_radius * sin_p;
+            let z = (major_radius + minor_radius * cos_p) * sin_t;
+            positions.push(Vec3::new(x, y, z));
+            texcoords.push([i as f32 / major_segments as f32, j as f32 / minor_segments as f32]);
+        }
+    }
+
+    for i in 0..major_segments {
+        let i_next = (i + 1) % major_segments;
+        for j in 0..minor_segments {
+            let j_next = (j + 1) % minor_segments;
+            let a = i * minor_segments + j;
+            let b = i_next * minor_segments + j;
+            let c = i_next * minor_segments + j_next;
+            let d = i * minor_segments + j_next;
+            indices.extend_from_slice(&[a, b, d, b, c, d]);
+        }
+    }
+
+    TriangleMesh::from_indexed_with_texcoords(&positions, &indices, &texcoords)
+}

@@ -275,6 +275,24 @@ impl Default for CylinderNode {
     }
 }
 
+/// Shape: torus (donut).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TorusNode {
+    /// Distance from the center of the torus to the center of the tube.
+    pub major_radius: f32,
+    /// Radius of the tube.
+    pub minor_radius: f32,
+}
+
+impl Default for TorusNode {
+    fn default() -> Self {
+        Self {
+            major_radius: 1.0,
+            minor_radius: 0.25,
+        }
+    }
+}
+
 /// Shape: arbitrary triangle mesh from vertex/index arrays.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct IndexedFaceSetNode {
@@ -1147,6 +1165,8 @@ pub enum NodeData {
     Sphere(SphereNode),
     Cone(ConeNode),
     Cylinder(CylinderNode),
+    /// Shape: torus (donut).
+    Torus(TorusNode),
     IndexedFaceSet(IndexedFaceSetNode),
     IndexedLineSet(IndexedLineSetNode),
     SkinnedMesh(SkinnedMeshNode),
@@ -1215,6 +1235,7 @@ impl Clone for NodeData {
             NodeData::Sphere(v) => NodeData::Sphere(v.clone()),
             NodeData::Cone(v) => NodeData::Cone(v.clone()),
             NodeData::Cylinder(v) => NodeData::Cylinder(v.clone()),
+            NodeData::Torus(v) => NodeData::Torus(v.clone()),
             NodeData::IndexedFaceSet(v) => NodeData::IndexedFaceSet(v.clone()),
             NodeData::IndexedLineSet(v) => NodeData::IndexedLineSet(v.clone()),
             NodeData::SkinnedMesh(v) => NodeData::SkinnedMesh(v.clone()),
@@ -1323,6 +1344,8 @@ impl NodeData {
             NodeData::SectionPlane(_) => vec![
                 FieldDescriptor { name: "plane", field_index: 0 },
                 FieldDescriptor { name: "enabled", field_index: 1 },
+                FieldDescriptor { name: "cap_color", field_index: 2 },
+                FieldDescriptor { name: "cap_enabled", field_index: 3 },
             ],
             NodeData::Lod(_) => vec![
                 FieldDescriptor { name: "current_level", field_index: 0 },
@@ -1383,6 +1406,7 @@ impl NodeData {
             | NodeData::Sphere(_)
             | NodeData::Cone(_)
             | NodeData::Cylinder(_)
+            | NodeData::Torus(_)
             | NodeData::IndexedFaceSet(_)
             | NodeData::SkinnedMesh(_)
             | NodeData::MorphTarget(_)
@@ -1408,6 +1432,7 @@ impl NodeData {
             NodeData::Sphere(_) => "Sphere",
             NodeData::Cone(_) => "Cone",
             NodeData::Cylinder(_) => "Cylinder",
+            NodeData::Torus(_) => "Torus",
             NodeData::IndexedFaceSet(_) => "IndexedFaceSet",
             NodeData::IndexedLineSet(_) => "IndexedLineSet",
             NodeData::SkinnedMesh(_) => "SkinnedMesh",
@@ -1466,6 +1491,7 @@ impl Serialize for NodeData {
             NodeData::Sphere(v) => s.serialize_newtype_variant("NodeData", 9, "Sphere", v),
             NodeData::Cone(v) => s.serialize_newtype_variant("NodeData", 10, "Cone", v),
             NodeData::Cylinder(v) => s.serialize_newtype_variant("NodeData", 11, "Cylinder", v),
+            NodeData::Torus(v) => s.serialize_newtype_variant("NodeData", 50, "Torus", v),
             NodeData::IndexedFaceSet(v) => s.serialize_newtype_variant("NodeData", 12, "IndexedFaceSet", v),
             NodeData::IndexedLineSet(v) => s.serialize_newtype_variant("NodeData", 34, "IndexedLineSet", v),
             NodeData::SkinnedMesh(v) => s.serialize_newtype_variant("NodeData", 13, "SkinnedMesh", v),
@@ -1528,6 +1554,7 @@ impl<'de> Deserialize<'de> for NodeData {
             Sphere(SphereNode),
             Cone(ConeNode),
             Cylinder(CylinderNode),
+            Torus(TorusNode),
             IndexedFaceSet(IndexedFaceSetNode),
             IndexedLineSet(IndexedLineSetNode),
             SkinnedMesh(SkinnedMeshNode),
@@ -1581,6 +1608,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Sphere(v) => Ok(NodeData::Sphere(v)),
             NodeDataHelper::Cone(v) => Ok(NodeData::Cone(v)),
             NodeDataHelper::Cylinder(v) => Ok(NodeData::Cylinder(v)),
+            NodeDataHelper::Torus(v) => Ok(NodeData::Torus(v)),
             NodeDataHelper::IndexedFaceSet(v) => Ok(NodeData::IndexedFaceSet(v)),
             NodeDataHelper::IndexedLineSet(v) => Ok(NodeData::IndexedLineSet(v)),
             NodeDataHelper::SkinnedMesh(v) => Ok(NodeData::SkinnedMesh(v)),
@@ -1677,6 +1705,8 @@ mod tests {
         let names: Vec<&str> = d.iter().map(|fd| fd.name).collect();
         assert!(names.contains(&"plane"));
         assert!(names.contains(&"enabled"));
+        assert!(names.contains(&"cap_color"));
+        assert!(names.contains(&"cap_enabled"));
     }
 
     #[test]
@@ -1703,6 +1733,7 @@ mod tests {
         assert!(NodeData::Group(GroupNode).field_descriptors().is_empty());
         assert!(NodeData::Cube(CubeNode::default()).field_descriptors().is_empty());
         assert!(NodeData::Cylinder(CylinderNode::default()).field_descriptors().is_empty());
+        assert!(NodeData::Torus(TorusNode::default()).field_descriptors().is_empty());
         assert!(NodeData::IndexedFaceSet(IndexedFaceSetNode::default())
             .field_descriptors()
             .is_empty());
@@ -1733,6 +1764,7 @@ mod tests {
             "DirectionalLight"
         );
         assert_eq!(NodeData::SectionPlane(SectionPlaneNode::default()).type_name(), "SectionPlane");
+        assert_eq!(NodeData::Torus(TorusNode::default()).type_name(), "Torus");
         assert_eq!(NodeData::Markup(MarkupNode::default()).type_name(), "Markup");
         assert_eq!(
             NodeData::Measurement(MeasurementNode::default()).type_name(),

@@ -14,19 +14,23 @@ mod pass_edge;
 pub(crate) mod pass_effects;
 mod pass_grid;
 pub(crate) mod pass_markup;
+mod meshlet_cull;
 mod pass_post;
 mod pass_selection;
 mod pass_shadow;
 mod pass_solid;
+mod pass_transparent;
 pub(crate) mod pass_text;
 mod pass_viewport;
-mod pass_wireframe;
+mod ss_edge;
+pub(crate) mod pass_wireframe;
 
 pub(crate) mod draw_opaque;
 
 #[cfg(test)]
 mod pass_markup_tests;
 use draw_opaque::draw_opaque_triangle_batches;
+pub(crate) use meshlet_cull::submit_meshlet_cull;
 
 static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
 
@@ -81,68 +85,6 @@ pub(crate) enum FramePresentation<'a> {
         width_px: u32,
         height_px: u32,
     },
-}
-
-/// Run meshlet cull compute passes in the given encoder.
-/// Uses the same encoder as subsequent render passes so wgpu inserts
-/// implicit barriers between compute (STORAGE write) and render (INDIRECT/INDEX read).
-fn submit_meshlet_cull(
-    renderer: &mut crate::renderer::Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    ctx: &PassContext<'_>,
-    hzb_enabled: bool,
-    hzb_dims: (u32, u32),
-    mip_max: u32,
-    hzb_need_max: bool,
-    hzb_need_min: bool,
-) {
-    let Some(cluster_renderer) = renderer.gpu.cluster_renderer.as_ref() else {
-        return;
-    };
-    let Some(hzb) = renderer.gpu.hzb.as_ref() else {
-        return;
-    };
-
-    let max_bind: &wgpu::TextureView = if hzb_need_max {
-        &hzb.max_pyramid.full_view
-    } else {
-        &hzb.min_pyramid.full_view
-    };
-    let min_bind: &wgpu::TextureView = if hzb_need_min {
-        &hzb.min_pyramid.full_view
-    } else {
-        &hzb.max_pyramid.full_view
-    };
-
-    for &vis_idx in ctx.meshlet_indices {
-        let dc = ctx.visible[vis_idx];
-        let Some(md) = dc.meshlet_data.as_ref() else {
-            continue;
-        };
-        let ptr = std::sync::Arc::as_ptr(md) as u64;
-        if let Some(cluster_set) = renderer.gpu.assets.cluster_get(&ptr) {
-            let model_inv = dc.model_matrix.inverse();
-            let cam_model = model_inv.transform_point3(Vec3::from(ctx.camera_pos));
-            cluster_renderer.cull_and_compact(
-                &renderer.device,
-                &renderer.queue,
-                encoder,
-                cluster_set,
-                dc.mvp.to_cols_array_2d(),
-                [cam_model.x, cam_model.y, cam_model.z],
-                1,
-                0,
-                false,
-                max_bind,
-                min_bind,
-                hzb_dims,
-                mip_max,
-                hzb_enabled,
-                dc.depth_reversed_z,
-                dc.projection_orthographic,
-            );
-        }
-    }
 }
 
 pub(super) fn execute_passes(
@@ -491,6 +433,53 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_solid);
 
+    // ── Transparent pass: alpha-blended draw calls ──
+    if !ctx.transparent_order.is_empty() {
+        if renderer.enable_wboit && renderer.hdr_post_processing {
+            // WBOIT path: accumulate into MRT buffers, then composite onto scene.
+            // Clone views upfront to avoid borrowing renderer.gpu.post_fx while
+            // passing renderer mutably to the pass functions.
+            let wboit_views = renderer.gpu.post_fx.as_ref().map(|fx| {
+                (fx.wboit_accum_view.clone(), fx.wboit_revealage_view.clone())
+            });
+            if let Some((accum_view, revealage_view)) = wboit_views {
+                let ti_transparent = renderer.gpu_timer.begin(&mut encoder, "WBOIT Accumulate");
+                pass_transparent::pass_transparent_wboit(
+                    renderer,
+                    &mut encoder,
+                    &accum_view,
+                    &revealage_view,
+                    &depth_view,
+                    ctx,
+                    &scene_pl,
+                );
+                renderer.gpu_timer.end(&mut encoder, ti_transparent);
+
+                let ti_composite = renderer.gpu_timer.begin(&mut encoder, "WBOIT Composite");
+                pass_transparent::pass_wboit_composite(
+                    renderer,
+                    &mut encoder,
+                    shade_view,
+                    &accum_view,
+                    &revealage_view,
+                );
+                renderer.gpu_timer.end(&mut encoder, ti_composite);
+            }
+        } else {
+            // Traditional back-to-front painter's algorithm
+            let ti_transparent = renderer.gpu_timer.begin(&mut encoder, "Transparent");
+            pass_transparent::pass_transparent(
+                renderer,
+                &mut encoder,
+                shade_view,
+                &depth_view,
+                ctx,
+                &scene_pl,
+            );
+            renderer.gpu_timer.end(&mut encoder, ti_transparent);
+        }
+    }
+
     let ti_effects = renderer.gpu_timer.begin(&mut encoder, "Effects");
     // ── Effect passes (Decal, Volume, PointCloud) ──
     if !ctx.effect_commands.is_empty() {
@@ -599,67 +588,35 @@ pub(super) fn execute_passes(
     }
 
     // Screen-space edge detection: replaces geometry edges during interaction
-    let ss_edge_active = renderer.screen_space_edges
-        && renderer.interaction_active
-        && renderer.gpu.ss_edge_pipeline.is_some();
-    if ss_edge_active {
-        if let (Some(pl), Some(bgl), Some(uniform)) = (
-            renderer.gpu.ss_edge_pipeline.as_ref(),
-            renderer.gpu.ss_edge_bgl.as_ref(),
-            renderer.gpu.ss_edge_uniform.as_ref(),
-        ) {
-            let ec = renderer.feature_edge_color;
-            let tw = ew.max(1) as f32;
-            let th = eh.max(1) as f32;
-            // WGSL Uniforms struct: texel_size(vec2), threshold(f32), _pad, edge_color(vec3)
-            let locals: [f32; 8] = [
-                1.0 / tw, 1.0 / th,  // texel_size: vec2<f32>  offset 0
-                renderer.ss_edge_threshold,  // threshold: f32    offset 8
-                0.0,                          // _pad             offset 12
-                ec[0], ec[1], ec[2],          // edge_color(vec3) offset 16
-                0.0,                          // struct pad       offset 28
-            ];
-            renderer.queue.write_buffer(uniform, 0, bytemuck::bytes_of(&locals));
-            let bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("SS Edge BG"),
-                layout: bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&depth_read_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(
-                            renderer.gpu.ss_edge_sampler.as_ref().unwrap(),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uniform.as_entire_binding(),
-                    },
-                ],
-            });
-            {
-                let mut edge_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("SS Edge Detection"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                edge_pass.set_pipeline(pl);
-                edge_pass.set_bind_group(0, &bg, &[]);
-                edge_pass.draw(0..3, 0..1);
+    {
+        let ss_resources = if renderer.screen_space_edges && renderer.interaction_active {
+            let gpu = &renderer.gpu;
+            match (
+                gpu.ss_edge_pipeline.as_ref(),
+                gpu.ss_edge_bgl.as_ref(),
+                gpu.ss_edge_uniform.as_ref(),
+                gpu.ss_edge_sampler.as_ref(),
+            ) {
+                (Some(pl), Some(bgl), Some(ub), Some(samp)) => Some(ss_edge::SsEdgeResources {
+                    pipeline: pl,
+                    bind_group_layout: bgl,
+                    uniform_buf: ub,
+                    sampler: samp,
+                }),
+                _ => None,
             }
-        }
+        } else {
+            None
+        };
+        let ss_params = ss_edge::SsEdgeParams {
+            edge_color: renderer.feature_edge_color,
+            threshold: renderer.ss_edge_threshold,
+        };
+        ss_edge::encode_ss_edge_pass(
+            &renderer.device, &renderer.queue,
+            ss_resources.as_ref(), &ss_params,
+            &mut encoder, view, &depth_read_view, ew, eh,
+        );
     }
 
     if defer_line_overlays {
@@ -959,6 +916,9 @@ pub(super) fn execute_passes(
                 let uniforms = FlatUniforms {
                     mvp: screen_mvp,
                     color: [0.4, 0.4, 0.4, 1.0],
+                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    clip_planes: [[0.0; 4]; 6],
+                    clip_count: [0.0, 0.0, 0.0, 0.0],
                 };
                 if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
                     for chunk in geom.split_lines.chunks(2) {
@@ -980,6 +940,9 @@ pub(super) fn execute_passes(
                 let uniforms = FlatUniforms {
                     mvp: screen_mvp,
                     color: [1.0, 0.85, 0.1, 1.0],
+                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    clip_planes: [[0.0; 4]; 6],
+                    clip_count: [0.0, 0.0, 0.0, 0.0],
                 };
                 if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
                     for chunk in geom.active_lines.chunks(2) {

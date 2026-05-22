@@ -166,6 +166,12 @@ pub struct ShadowDrawUniforms {
 pub struct FlatUniforms {
     pub mvp: [[f32; 4]; 4],
     pub color: [f32; 4],
+    /// Model matrix (for world-space operations like section cap clip planes).
+    pub model: [[f32; 4]; 4],
+    /// Clip planes for section cap (up to 6 planes).
+    pub clip_planes: [[f32; 4]; 6],
+    /// x = clip plane count, yzw unused.
+    pub clip_count: [f32; 4],
 }
 
 /// Per-vertex data for expanded (AA-capable) line segments.
@@ -203,12 +209,11 @@ pub struct LineUniforms {
     pub line_params: [f32; 4],
 }
 
-/// Uniforms for procedural section-cap fill (plane-distance discard in fragment shader).
+/// Uniforms for procedural section-cap fill (full-screen triangle + ray-plane intersection).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SectionCapUniforms {
-    pub mvp: [[f32; 4]; 4],
-    pub model: [[f32; 4]; 4],
+    pub clip_to_world: [[f32; 4]; 4],
     pub color: [f32; 4],
     pub plane: [f32; 4],
     /// x = minimum world-space half-thickness; yzw unused.
