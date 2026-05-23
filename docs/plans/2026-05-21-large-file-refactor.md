@@ -177,8 +177,12 @@ wc -l crates/rc3d-render/src/*.rs
   - [x] Task 3: Traversal 模块 (358 lines) - ✅ COMPLETED
 - [x] Phase 2: render_passes.rs 拆分
   - [x] Task 4: Meshlet Cull 模块 (68 lines) - ✅ COMPLETED
-  - [x] Task 5: Viewport 渲染逻辑 - 🔄 IN PROGRESS (渐进式提取)
+  - [x] Task 5: Viewport 渲染逻辑 - ✅ COMPLETED
     - [x] Screen-space edge detection (87 lines) - ✅ COMPLETED
+    - [x] HUD overlay 提取 (68 lines) - ✅ COMPLETED
+    - [x] HDR 后处理管线 (231 lines) - ✅ COMPLETED
+    - [x] FrameStats 构建 + 日志 - ✅ COMPLETED
+    - [x] Task I: Surface acquire 共享逻辑 (pass_shared::acquire_surface) - ✅ COMPLETED
 - [x] Phase 3: 最终验证
   - [x] Task 6: 完整测试套件验证 - ✅ COMPLETED
 
@@ -186,12 +190,15 @@ wc -l crates/rc3d-render/src/*.rs
 
 | 文件 | 原始行数 | 当前行数 | 变化 |
 |------|----------|----------|------|
-| render_action.rs | 2034 | 1661 | -373 |
-| render_passes.rs | 1323 | 1203 | -120 |
+| render_action.rs | 2034 | 1574 | -460 (-23%) |
+| render_passes.rs | 1323 | ~990 | ~-333 (-25%) |
 | shape_cache.rs | - | 90 | +90 (新增) |
-| light_packing.rs | - | 39 | +39 (新增) |
+| light_packing.rs | - | 84 | +84 (新增, 含 collect_lights) |
 | meshlet_cull.rs | - | 68 | +68 (新增) |
 | traversal.rs | - | 358 | +358 (新增) |
 | ss_edge.rs | - | 87 | +87 (新增) |
+| pass_hud.rs | - | 68 | +68 (新增) |
+| pass_post.rs | 216 | 447 | +231 (encode_post_processing) |
+| pass_shared.rs | - | 52 | +52 (新增, acquire_surface) |
 
-**总计减少**: render_action.rs + render_passes.rs 减少约 493 行
+**总计减少**: render_action.rs + render_passes.rs 减少约 793 行 (-30%)

@@ -322,3 +322,75 @@ impl ClusterLightCuller {
         &self.cull_bgl // Reuse; the actual light_grid_bgl is on resources
     }
 }
+
+/// Collect visible point/spot lights from draw-call light sets and dispatch cluster light culling.
+pub fn dispatch_cluster_light_cull(
+    renderer: &mut crate::renderer::Renderer,
+    encoder: &mut wgpu::CommandEncoder,
+    visible: &[&crate::render_action::DrawCall],
+    light_sets: &crate::light_set::LightSetTable,
+    camera_inv_proj: glam::Mat4,
+    ew: u32,
+    eh: u32,
+) {
+    let Some(culler) = renderer.gpu.cluster_light_culler.as_ref() else { return };
+    let Some(resources) = renderer.gpu.cluster_lights.as_ref() else { return };
+
+    let mut point_lights: Vec<GpuPointLight> = Vec::new();
+    let mut spot_lights: Vec<GpuSpotLight> = Vec::new();
+
+    let mut seen_light_sets: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for dc in visible.iter() {
+        if !seen_light_sets.insert(dc.light_set_id) {
+            continue;
+        }
+        let lights = light_sets.get(dc.light_set_id);
+        let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = *lights;
+        for i in 0..(light_count as usize).min(crate::vertex::MAX_LIGHTS) {
+            let lt = light_types[i][0];
+            let pos = light_positions[i];
+            let col = light_colors[i];
+            let intensity = light_colors[i][3];
+
+            if (lt - 1.0).abs() < 0.5 {
+                if point_lights.len() < 256 {
+                    point_lights.push(GpuPointLight {
+                        position: [pos[0], pos[1], pos[2]],
+                        radius: pos[3].max(1.0),
+                        color: [col[0], col[1], col[2]],
+                        intensity,
+                    });
+                }
+            } else if (lt - 3.0).abs() < 0.5 {
+                let dir = light_dirs[i];
+                let sp = spot_params[i];
+                if spot_lights.len() < 256 {
+                    spot_lights.push(GpuSpotLight {
+                        position: [pos[0], pos[1], pos[2]],
+                        direction: [dir[0], dir[1], dir[2]],
+                        radius: pos[3].max(1.0),
+                        cos_inner: sp[0],
+                        cos_outer: sp[1],
+                        color: [col[0], col[1], col[2]],
+                        intensity,
+                        _pad: 0.0,
+                    });
+                }
+            }
+        }
+    }
+
+    if !point_lights.is_empty() || !spot_lights.is_empty() {
+        culler.cull_lights(
+            &renderer.device,
+            &renderer.queue,
+            encoder,
+            resources,
+            camera_inv_proj,
+            ew, eh,
+            0.1, 1000.0,
+            &point_lights,
+            &spot_lights,
+        );
+    }
+}

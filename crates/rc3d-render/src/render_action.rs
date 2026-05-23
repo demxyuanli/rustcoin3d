@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::material_library::MaterialLibrary;
-use crate::vertex::{Vertex, MAX_LIGHTS};
+use crate::vertex::Vertex;
 
 // Re-export shape_cache items for backwards compatibility via crate::render_action::
 pub use crate::shape_cache::{
@@ -17,7 +17,7 @@ pub use crate::shape_cache::{
 };
 
 // Re-export light_packing items
-pub use crate::light_packing::{hash_light_params, PackedLights};
+pub use crate::light_packing::{hash_light_params, collect_lights, PackedLights};
 
 // Re-export traversal items
 pub use crate::traversal::{
@@ -1151,8 +1151,12 @@ impl RenderCollector {
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
-        let aabb = Some(local_aabb.transform(model));
-        let packed = self.collect_lights();
+        let aabb = if local_aabb.min.x <= local_aabb.max.x {
+            Some(local_aabb.transform(model))
+        } else {
+            None
+        };
+        let packed = collect_lights(self.state.lights());
         let light_key = {
             let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = packed;
             hash_light_params(light_dirs, light_colors, light_types, light_positions, spot_params, light_count)
@@ -1233,90 +1237,28 @@ impl RenderCollector {
         node_display_mode: Option<DisplayMode>,
         node_type_label: &str,
     ) {
-        let model = self.state.model_matrix();
-        let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
-        let mat = self.state.material();
-        let packed = self.collect_lights();
-        let light_key = {
-            let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = packed;
-            hash_light_params(light_dirs, light_colors, light_types, light_positions, spot_params, light_count)
-        };
-
-        let aabb = if vertices.is_empty() {
-            None
+        let local_aabb = if vertices.is_empty() {
+            rc3d_core::Aabb::empty()
         } else {
-            let first = model.transform_point3(Vec3::from_array(vertices[0].position));
+            let first = Vec3::from_array(vertices[0].position);
             let mut aabb = rc3d_core::Aabb::from_point(first);
             for v in &vertices[1..] {
-                let p = model.transform_point3(Vec3::from_array(v.position));
-                aabb = aabb.union(&rc3d_core::Aabb::from_point(p));
+                aabb = aabb.union(&rc3d_core::Aabb::from_point(Vec3::from_array(v.position)));
             }
-            Some(aabb)
+            aabb
         };
 
-        self.draw_calls.push(DrawCall {
-            vertices: Arc::new(vertices),
-            is_overlay: self.inside_annotation,
-            indices: indices.map(Arc::new),
-            edge_positions: Arc::new(edge_feature),
-            wireframe_edge_positions: Arc::new(edge_wireframe),
-            mvp,
-            model_matrix: model,
-            camera_pos: self.camera_pos,
-            light_set_id: self.light_sets.intern(light_key, packed),
-            light_key,
-            diffuse_color: mat.diffuse,
-            ambient_color: mat.ambient,
-            specular_color: mat.specular,
-            shininess: mat.shininess,
-            base_color: mat.base_color,
-            metallic: mat.metallic,
-            roughness: mat.roughness,
-            anisotropic: mat.anisotropic,
-            opacity: mat.opacity,
-            albedo_path: mat
-                .albedo_texture
-                .as_ref()
-                .map(|s| Arc::from(s.as_str())),
-            normal_path: mat
-                .normal_texture
-                .as_ref()
-                .map(|s| Arc::from(s.as_str())),
-            emissive_color: mat.emissive_color,
-            emissive_path: mat
-                .emissive_texture
-                .as_ref()
-                .map(|s| Arc::from(s.as_str())),
-            metallic_roughness_path: mat
-                .metallic_roughness_texture
-                .as_ref()
-                .map(|s| Arc::from(s.as_str())),
-            occlusion_path: mat
-                .occlusion_texture
-                .as_ref()
-                .map(|s| Arc::from(s.as_str())),
-            alpha_mode: mat.alpha_mode,
-            alpha_cutoff: mat.alpha_cutoff,
-            double_sided: mat.double_sided,
-            aabb,
-            display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
+        self.emit_draw_call_with_cached_aabb(
+            Arc::new(vertices),
+            indices.map(Arc::new),
+            Arc::new(edge_feature),
+            Arc::new(edge_wireframe),
+            local_aabb,
+            None,
             selected,
-            overlay_color: None,
-            mesh_hash: None,
-            meshlet_data: None,
-            projection_orthographic: self.projection_orthographic,
-            depth_reversed_z: rc3d_core::depth_reversed_z_from_projection(
-                self.state.projection_matrix(),
-            ),
-            node_type_label: Arc::from(node_type_label),
-            instance_transforms: None,
-            morph_weights: self.state.morph_targets().map(|mt| mt.weights.clone()).unwrap_or_default(),
-            morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
-            skinning: self.skinning_payload_for_draw(),
-        });
-        if !self.cache_ptr.is_null() {
-            self.emit_to_cache(self.draw_calls.last().unwrap());
-        }
+            node_display_mode,
+            node_type_label,
+        );
     }
 
     fn skinning_payload_for_draw(&self) -> Option<Arc<SkinnedMeshDrawPayload>> {
@@ -1327,46 +1269,6 @@ impl RenderCollector {
                 clip: sm.clip.clone(),
             })
         })
-    }
-
-    fn collect_lights(&self) -> PackedLights {
-        let mut dirs = [[0.0f32; 4]; MAX_LIGHTS];
-        let mut colors = [[0.0f32; 4]; MAX_LIGHTS];
-        let mut types = [[0.0f32; 4]; MAX_LIGHTS];
-        let mut positions = [[0.0f32; 4]; MAX_LIGHTS];
-        let mut spot_params = [[0.0f32; 4]; MAX_LIGHTS];
-        let mut count = 0u32;
-        let mut warned = false;
-        let total_lights = self.state.lights().len();
-        for light in self.state.lights() {
-            if (count as usize) < MAX_LIGHTS {
-                let idx = count as usize;
-                dirs[idx] = [light.direction.x, light.direction.y, light.direction.z, 0.0];
-                let c = light.color * light.intensity;
-                colors[idx] = [c.x, c.y, c.z, 1.0];
-                positions[idx] = [light.location.x, light.location.y, light.location.z, 1.0];
-                types[idx][0] = match light.light_type {
-                    LightType::Directional => 0.0,
-                    LightType::Point => 1.0,
-                    LightType::Spot => 2.0,
-                };
-                spot_params[idx] = [light.cut_off_angle.cos(), light.drop_off_rate, 0.0, 0.0];
-                count += 1;
-            } else {
-                warned = true;
-                break;
-            }
-        }
-        if warned {
-            log::warn!("MAX_LIGHTS ({}) exceeded; {} lights truncated", MAX_LIGHTS, total_lights.saturating_sub(MAX_LIGHTS));
-        }
-        if count == 0 {
-            dirs[0] = [0.0, 0.0, -1.0, 0.0];
-            colors[0] = [1.0, 1.0, 1.0, 1.0];
-            types[0][0] = 0.0;
-            count = 1;
-        }
-        (dirs, colors, types, positions, spot_params, count)
     }
 }
 

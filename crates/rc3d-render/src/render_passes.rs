@@ -1,14 +1,11 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
 use crate::render_graph::{declaration_order_is_valid, RenderGraph};
-use crate::viewport::LayoutMode;
-use crate::vertex::{FlatUniforms, CSM_CASCADE_COUNT};
+use crate::vertex::CSM_CASCADE_COUNT;
 use crate::FrameStats;
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 use rc3d_core::DisplayMode;
 use std::sync::OnceLock;
-use wgpu::util::DeviceExt;
-use bytemuck;
 
 mod pass_edge;
 pub(crate) mod pass_effects;
@@ -24,6 +21,8 @@ pub(crate) mod pass_text;
 mod pass_viewport;
 mod ss_edge;
 pub(crate) mod pass_wireframe;
+mod pass_hud;
+mod pass_shared;
 
 pub(crate) mod draw_opaque;
 
@@ -108,38 +107,18 @@ pub(super) fn execute_passes(
         }
     });
 
-    let mut acquired_swapchain: Option<(wgpu::SurfaceTexture, wgpu::TextureView)> = None;
-
     let t_surface_start = std::time::Instant::now();
-    let (eff_width, eff_height, scene_tex_raw): (u32, u32, *const wgpu::Texture) = match &presentation {
-        FramePresentation::Swapchain => match renderer.surface.get_current_texture() {
-            Ok(output) => {
-                let tex_ptr = std::ptr::from_ref(&output.texture);
-                let v = output
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                acquired_swapchain = Some((output, v));
-                (renderer.config.width, renderer.config.height, tex_ptr)
-            }
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                renderer.surface.configure(&renderer.device, &renderer.config);
-                return FrameStats::default();
-            }
-            Err(_) => return FrameStats::default(),
-        },
-        FramePresentation::OffscreenSurface {
-            output_texture,
-            width_px,
-            height_px,
-            ..
-        } => (*width_px, *height_px, std::ptr::from_ref(output_texture)),
-    };
+    let ((scene_tex_raw, eff_width, eff_height), mut acquired_swapchain, _w, _h) = pass_shared::acquire_surface(
+        renderer,
+        &presentation,
+        |tex_ptr, w, h| (tex_ptr, w, h),
+    );
 
-    let view: &wgpu::TextureView = match acquired_swapchain.as_ref() {
+    let view: &wgpu::TextureView = match &acquired_swapchain {
         Some((_s, vw)) => vw,
         None => match &presentation {
             FramePresentation::OffscreenSurface { output_view, .. } => output_view,
-            FramePresentation::Swapchain => unreachable!(),
+            FramePresentation::Swapchain => return FrameStats::default(),
         },
     };
 
@@ -337,71 +316,15 @@ pub(super) fn execute_passes(
     }
 
     if solid_mode && renderer.enable_cluster_lights {
-        if let (Some(culler), Some(resources)) =
-            (renderer.gpu.cluster_light_culler.as_ref(), renderer.gpu.cluster_lights.as_ref())
-        {
-            use crate::cluster_lighting::{GpuPointLight, GpuSpotLight};
-
-            let mut point_lights: Vec<GpuPointLight> = Vec::new();
-            let mut spot_lights: Vec<GpuSpotLight> = Vec::new();
-
-            let mut seen_light_sets: std::collections::HashSet<u32> = std::collections::HashSet::new();
-            for dc in ctx.visible.iter() {
-                if !seen_light_sets.insert(dc.light_set_id) {
-                    continue; // already processed this light set
-                }
-                let lights = ctx.light_sets.get(dc.light_set_id);
-                let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = *lights;
-                for i in 0..(light_count as usize).min(crate::vertex::MAX_LIGHTS) {
-                    let lt = light_types[i][0];
-                    let pos = light_positions[i];
-                    let col = light_colors[i];
-                    let intensity = light_colors[i][3];
-
-                    if (lt - 1.0).abs() < 0.5 {
-                        if point_lights.len() < 256 {
-                            point_lights.push(GpuPointLight {
-                                position: [pos[0], pos[1], pos[2]],
-                                radius: pos[3].max(1.0),
-                                color: [col[0], col[1], col[2]],
-                                intensity,
-                            });
-                        }
-                    } else if (lt - 3.0).abs() < 0.5 {
-                        let dir = light_dirs[i];
-                        let sp = spot_params[i];
-                        if spot_lights.len() < 256 {
-                            spot_lights.push(GpuSpotLight {
-                                position: [pos[0], pos[1], pos[2]],
-                                direction: [dir[0], dir[1], dir[2]],
-                                radius: pos[3].max(1.0),
-                                cos_inner: sp[0],
-                                cos_outer: sp[1],
-                                color: [col[0], col[1], col[2]],
-                                intensity,
-                                _pad: 0.0,
-                            });
-                        }
-                    }
-                }
-            }
-
-            if !point_lights.is_empty() || !spot_lights.is_empty() {
-                let w = ew;
-                let h = eh;
-                culler.cull_lights(
-                    &renderer.device,
-                    &renderer.queue,
-                    &mut encoder,
-                    resources,
-                    ctx.camera_inv_proj,
-                    w, h,
-                    0.1, 1000.0,
-                    &point_lights,
-                    &spot_lights,
-                );
-            }
-        }
+        crate::cluster_lighting::dispatch_cluster_light_cull(
+            renderer,
+            &mut encoder,
+            ctx.visible,
+            ctx.light_sets,
+            ctx.camera_inv_proj,
+            ew,
+            eh,
+        );
     }
 
     let ti_solid = renderer.gpu_timer.begin(&mut encoder, "Solid+Outline");
@@ -641,222 +564,15 @@ pub(super) fn execute_passes(
 
     let ti_post = renderer.gpu_timer.begin(&mut encoder, "PostProcess");
     if renderer.hdr_post_processing {
-        #[cfg(feature = "profiler")]
-        let _span_post = tracy_client::span!("post");
-        if let Some(ref fx) = renderer.gpu.post_fx {
-            let pl = &renderer.gpu.post_fx_pipelines;
-            let w = ew;
-            let h = eh;
-            let proj = ctx.camera_proj.to_cols_array_2d();
-            let inv_proj = ctx.camera_inv_proj.to_cols_array_2d();
-
-            // ── Ping-pong buffers: avoid read-write conflict on same texture ──
-            // hdr_is_src: true → rendered image is in hdr_view, scratch is free
-            //             false → rendered image is in scratch_view, hdr is free
-            let mut hdr_is_src = true;
-            let hdr: &wgpu::TextureView = &fx.hdr_view;
-            let alt: &wgpu::TextureView = &fx.scratch_view;
-
-            // ── X-Ray (depth edge detection) ──
-            if renderer.xray_mode {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP XRay");
-                let xray_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("X-Ray BG"),
-                    layout: &pl.xray_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(hdr) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pl.ssao_sampler) },
-                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(alt) },
-                    ],
-                });
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("X-Ray"), timestamp_writes: None,
-                });
-                pass.set_pipeline(&pl.xray_pipeline);
-                pass.set_bind_group(0, &xray_bg, &[]);
-                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-                drop(pass);
-                hdr_is_src = false; // x-ray wrote to alt; alt is now current
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── SSR (screen-space reflections) ──
-            if renderer.enable_ssr {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSR");
-                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref ssr) = renderer.gpu.ssr_pass {
-                    if let Some(ref hzb) = renderer.gpu.hzb {
-                        ssr.trace(
-                            &renderer.device, &renderer.queue, &mut encoder,
-                            src, &depth_read_view,
-                            &hzb.max_pyramid.full_view, dst,
-                            w, h,
-                            ctx.camera_inv_proj, Mat4::IDENTITY,
-                        );
-                        hdr_is_src = !hdr_is_src;
-                    }
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Volumetric Fog (reads depth only, writes to dst) ──
-            if renderer.enable_volumetric_fog {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP VolFog");
-                let (_src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref fog) = renderer.gpu.volumetric_fog {
-                    fog.compute(
-                        &renderer.device, &renderer.queue, &mut encoder,
-                        &depth_read_view, dst, w, h,
-                        ctx.camera_inv_proj,
-                        Vec3::from(ctx.camera_pos),
-                        Vec3::new(0.5, -0.8, 0.3),
-                        Vec3::new(1.0, 0.9, 0.7),
-                        Vec3::new(0.6, 0.7, 0.8),
-                        0.02, 0.5, 100.0, 32,
-                    );
-                    hdr_is_src = !hdr_is_src;
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Velocity buffer (for motion blur + TAA) ──
-            if renderer.enable_motion_blur || renderer.enable_taa {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP Velocity");
-                let inv_vp = (ctx.scene_vp).inverse();
-                let vp_prev = ctx.prev_vp;
-                // VelocityParams uniform: mat4x4 + mat4x4 + vec2 + vec2 = 144 bytes
-                let mut vel_data: Vec<u8> = Vec::with_capacity(144);
-                for row in &inv_vp.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
-                for row in &vp_prev.to_cols_array_2d() { vel_data.extend_from_slice(bytemuck::bytes_of(row)); }
-                vel_data.extend_from_slice(bytemuck::bytes_of(&[0.0f32; 4])); // _pad0 + _pad1
-                // Use pre-allocated velocity buffer instead of creating new one each frame
-                if let Some(ref vel_buf) = renderer.gpu.velocity_buffer {
-                    renderer.queue.write_buffer(vel_buf, 0, &vel_data);
-                }
-                let vel_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Velocity BG"),
-                    layout: &pl.velocity_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&pl.ssao_sampler) },
-                        wgpu::BindGroupEntry { binding: 2, resource: renderer.gpu.velocity_buffer.as_ref().unwrap().as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&fx.velocity_view) },
-                    ],
-                });
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Velocity"), timestamp_writes: None,
-                });
-                pass.set_pipeline(&pl.velocity_pipeline);
-                pass.set_bind_group(0, &vel_bg, &[]);
-                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-                drop(pass);
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Motion Blur ──
-            if renderer.enable_motion_blur {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP MotionBlur");
-                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref mb) = renderer.gpu.motion_blur {
-                    mb.apply(
-                        &renderer.device, &renderer.queue, &mut encoder,
-                        src, &fx.velocity_view, &depth_read_view,
-                        dst, w, h, 16, 0.25,
-                    );
-                    hdr_is_src = !hdr_is_src;
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── DOF ──
-            if renderer.enable_dof {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP DOF");
-                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref dof) = renderer.gpu.dof_pass {
-                    dof.apply(
-                        &renderer.device, &renderer.queue, &mut encoder,
-                        src, &depth_read_view, dst,
-                        w, h, renderer.dof_focus_distance, renderer.dof_aperture,
-                    );
-                    hdr_is_src = !hdr_is_src;
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Color Grading ──
-            if renderer.enable_color_grading {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP ColorGrading");
-                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref cg) = renderer.gpu.color_grading {
-                    cg.apply(
-                        &renderer.device, &renderer.queue, &mut encoder,
-                        src, dst, w, h, 1.0,
-                    );
-                    hdr_is_src = !hdr_is_src;
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Ensure HDR has the current accumulated image for Bloom/SSAO ──
-            // Bloom reads from hdr_view; SSAO reads from depth only.
-            // If the accumulated image is in alt, copy it back to hdr for bloom+tonemap.
-            if !hdr_is_src {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP PingPongBlit");
-                pass_post::pass_copy_texture(
-                    &renderer.device, &mut encoder, pl,
-                    alt, hdr, w, h,
-                );
-                hdr_is_src = true;
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // Bloom prefilter (compute dispatch: read HDR, write half-res bloom)
-            let ti = renderer.gpu_timer.begin(&mut encoder, "PP Bloom");
-            pass_post::pass_bloom_prefilter(&renderer.device, &mut encoder, pl, fx);
-            renderer.gpu_timer.end(&mut encoder, ti);
-            // SSAO (read depth, write AO) + blur
-            let ti = renderer.gpu_timer.begin(&mut encoder, "PP SSAO");
-            pass_post::pass_ssao(&renderer.device, &mut encoder, pl, fx,
-                &depth_read_view, &renderer.gpu.ssao_noise_view, &proj, &inv_proj);
-            // SSAO blur (read AO + depth, write blurred AO)
-            pass_post::pass_ssao_blur(&renderer.device, &mut encoder, pl, fx, &depth_read_view);
-            renderer.gpu_timer.end(&mut encoder, ti);
-
-            // ── TAA (temporal anti-aliasing) ──
-            if renderer.enable_taa {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP TAA");
-                let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
-                if let Some(ref mut taa) = renderer.gpu.taa_pass {
-                    taa.ensure_history(&renderer.device, w, h);
-                    taa.resolve(
-                        &renderer.device, &renderer.queue, &mut encoder,
-                        src, &fx.velocity_view, &depth_read_view,
-                        dst,
-                        0.05, 1.0,
-                    );
-                    hdr_is_src = !hdr_is_src;
-                }
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // ── Final: ensure hdr_view has the accumulated result for tonemap ──
-            if !hdr_is_src {
-                let ti = renderer.gpu_timer.begin(&mut encoder, "PP FinalBlit");
-                pass_post::pass_copy_texture(
-                    &renderer.device, &mut encoder, pl,
-                    alt, hdr, w, h,
-                );
-                renderer.gpu_timer.end(&mut encoder, ti);
-            }
-
-            // Tonemap + FXAA + Bloom + SSAO
-            let ti = renderer.gpu_timer.begin(&mut encoder, "PP Tonemap");
-            pass_post::pass_tonemap_hdr_to_post_ldr(&mut encoder, pl, fx, ctx.bg_color);
-            // Blit to swapchain
-            pass_post::pass_blit_post_ldr_to_swapchain(&mut encoder, pl, fx, view, ctx.bg_color);
-            renderer.gpu_timer.end(&mut encoder, ti);
-        }
+        pass_post::encode_post_processing(
+            renderer,
+            &mut encoder,
+            &depth_read_view,
+            view,
+            ew,
+            eh,
+            &ctx,
+        );
     }
     renderer.gpu_timer.end(&mut encoder, ti_post);
 
@@ -883,84 +599,13 @@ pub(super) fn execute_passes(
     }
 
     // Viewport border overlay
-    {
-        let geom = pass_viewport::ViewportBorderGeometry::build(
-            &renderer.frame.viewport_layout,
-            ew,
-            eh,
-        );
-        let has_splits = !geom.split_lines.is_empty();
-        let has_active = !geom.active_lines.is_empty();
-        if has_splits || has_active {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Viewport Borders"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&renderer.gpu.pipelines.viewport_border_lines);
-            let wpx = ew as f32;
-            let hpx = eh as f32;
-            // `border_lines` uses window pixel coords (origin top-left, +y down).
-            let screen_mvp = Mat4::orthographic_rh_gl(0.0, wpx, hpx, 0.0, -1.0, 1.0).to_cols_array_2d();
-            // Split borders
-            if has_splits {
-                let uniforms = FlatUniforms {
-                    mvp: screen_mvp,
-                    color: [0.4, 0.4, 0.4, 1.0],
-                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    clip_planes: [[0.0; 4]; 6],
-                    clip_count: [0.0, 0.0, 0.0, 0.0],
-                };
-                if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
-                    for chunk in geom.split_lines.chunks(2) {
-                        if chunk.len() < 2 { break; }
-                        let verts = [chunk[0], chunk[1]];
-                        let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("split border vb"),
-                            contents: bytemuck::cast_slice(&verts),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
-                        pass.set_vertex_buffer(0, vb.slice(..));
-                        pass.draw(0..2, 0..1);
-                    }
-                }
-            }
-            // Active viewport highlight (hidden for single full-window viewport — no editor benefit).
-            if has_active && renderer.frame.viewport_layout.layout_mode != LayoutMode::Single {
-                let uniforms = FlatUniforms {
-                    mvp: screen_mvp,
-                    color: [1.0, 0.85, 0.1, 1.0],
-                    model: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                    clip_planes: [[0.0; 4]; 6],
-                    clip_count: [0.0, 0.0, 0.0, 0.0],
-                };
-                if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
-                    for chunk in geom.active_lines.chunks(2) {
-                        if chunk.len() < 2 { break; }
-                        let verts = [chunk[0], chunk[1]];
-                        let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("active border vb"),
-                            contents: bytemuck::cast_slice(&verts),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                        pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
-                        pass.set_vertex_buffer(0, vb.slice(..));
-                        pass.draw(0..2, 0..1);
-                    }
-                }
-            }
-        }
-    }
+    pass_viewport::encode_viewport_borders(
+        renderer,
+        &mut encoder,
+        view,
+        ew,
+        eh,
+    );
 
     // Markup overlay
     #[cfg(feature = "profiler")]
@@ -979,50 +624,13 @@ pub(super) fn execute_passes(
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
-    if renderer.hud_enabled {
-        renderer.prepare_hud_overlay_for_render();
-        if let Some(hud) = renderer.gpu.hud.as_ref() {
-            if hud.has_plane_annotation_glyphs() {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Annotation Text Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                hud.render_plane_annotations(&mut pass, ctx.depth_reversed_z);
-            }
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("HUD Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            hud.render_hud_chrome(&mut pass);
-        }
-    }
+    pass_hud::encode_hud_overlay(
+        renderer,
+        &mut encoder,
+        view,
+        &depth_view,
+        ctx.depth_reversed_z,
+    );
     if let Some(cb) = &mut post_swapchain_overlay {
         cb(&mut encoder, view);
     }
@@ -1061,46 +669,15 @@ pub(super) fn execute_passes(
         }
     }
 
-    let total_visible_triangles: u64 = ctx.visible
-        .iter()
-        .map(|dc| {
-            if let Some(md) = dc.meshlet_data.as_ref() {
-                md.total_triangles as u64
-            } else if let Some(indices) = dc.indices.as_ref() {
-                (indices.len() / 3) as u64
-            } else {
-                (dc.vertices.len() / 3) as u64
-            }
-        })
-        .sum();
-    let stats = FrameStats {
-        visible_triangles: total_visible_triangles,
-        visible_draw_calls: ctx.visible.len(),
-        culled_draw_calls: draw_calls.len().saturating_sub(ctx.visible.len()),
-        gpu_pass_times_us: None,
-        diagnostics: None,
-        frame_time_ms: renderer.cpu_span.total_ms(),
-        cpu_sections: renderer.cpu_span.spans().to_vec(),
-        gpu_sections: gpu_sections_data,
-    };
+    let stats = build_frame_stats(
+        ctx.visible,
+        draw_calls.len(),
+        gpu_sections_data,
+        renderer.cpu_span.total_ms(),
+        renderer.cpu_span.spans().to_vec(),
+    );
 
-    // Periodic per-pass GPU timing report (every 10 frames)
-    if renderer.frame.frame_counter % 10 == 0 && !stats.gpu_sections.is_empty() {
-        let parts: Vec<String> = stats.gpu_sections.iter()
-            .map(|(label, us)| format!("{}={:.0}us", label, us))
-            .collect();
-        let cpu_parts: Vec<String> = stats.cpu_sections.iter()
-            .map(|(label, ms)| format!("{}={:.2}ms", label, ms))
-            .collect();
-        log::debug!(
-            "GPU: {} | CPU: {} | frame={:.2}ms draws={} tris={}",
-            parts.join(" "),
-            cpu_parts.join(" "),
-            stats.frame_time_ms,
-            stats.visible_draw_calls,
-            stats.visible_triangles,
-        );
-    }
+    log_frame_stats(&stats, renderer.frame.frame_counter);
 
     let t_total = t_entry.elapsed().as_secs_f64() * 1000.0;
     let t_surface = t_surface_start.elapsed().as_secs_f64() * 1000.0;
@@ -1114,6 +691,59 @@ pub(super) fn execute_passes(
     stats
 }
 
+/// Build frame statistics from rendering results.
+fn build_frame_stats(
+    visible: &[&DrawCall],
+    total_draw_calls: usize,
+    gpu_sections: Vec<(&'static str, f64)>,
+    frame_time_ms: f64,
+    cpu_sections: Vec<(&'static str, f64)>,
+) -> FrameStats {
+    let total_visible_triangles: u64 = visible
+        .iter()
+        .map(|dc| {
+            if let Some(md) = dc.meshlet_data.as_ref() {
+                md.total_triangles as u64
+            } else if let Some(indices) = dc.indices.as_ref() {
+                (indices.len() / 3) as u64
+            } else {
+                (dc.vertices.len() / 3) as u64
+            }
+        })
+        .sum();
+    FrameStats {
+        visible_triangles: total_visible_triangles,
+        visible_draw_calls: visible.len(),
+        culled_draw_calls: total_draw_calls.saturating_sub(visible.len()),
+        gpu_pass_times_us: None,
+        diagnostics: None,
+        frame_time_ms,
+        cpu_sections,
+        gpu_sections,
+    }
+}
+
+/// Periodic per-pass GPU/CPU timing report (every 10 frames).
+fn log_frame_stats(stats: &FrameStats, frame_counter: u64) {
+    if frame_counter % 10 != 0 || stats.gpu_sections.is_empty() {
+        return;
+    }
+    let parts: Vec<String> = stats.gpu_sections.iter()
+        .map(|(label, us)| format!("{}={:.0}us", label, us))
+        .collect();
+    let cpu_parts: Vec<String> = stats.cpu_sections.iter()
+        .map(|(label, ms)| format!("{}={:.2}ms", label, ms))
+        .collect();
+    log::debug!(
+        "GPU: {} | CPU: {} | frame={:.2}ms draws={} tris={}",
+        parts.join(" "),
+        cpu_parts.join(" "),
+        stats.frame_time_ms,
+        stats.visible_draw_calls,
+        stats.visible_triangles,
+    );
+}
+
 /// Render a frame with only overlay elements (markup, HUD) — no 3D geometry.
 /// Used when draw_calls is empty but markup vertices exist.
 pub(super) fn render_overlay_only_frame(
@@ -1124,35 +754,17 @@ pub(super) fn render_overlay_only_frame(
     effect_commands: &pass_effects::EffectCommands,
 ) -> FrameStats {
     let t_entry = std::time::Instant::now();
-    let mut acquired_swapchain: Option<(wgpu::SurfaceTexture, wgpu::TextureView)> = None;
+    let (_tex_ptr, mut acquired_swapchain, eff_width, eff_height) = pass_shared::acquire_surface(
+        renderer,
+        &presentation,
+        |_tex_ptr, w, h| (w, h),
+    );
 
-    let (eff_width, eff_height) = match &presentation {
-        FramePresentation::Swapchain => match renderer.surface.get_current_texture() {
-            Ok(output) => {
-                let v = output
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                acquired_swapchain = Some((output, v));
-                (renderer.config.width, renderer.config.height)
-            }
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                renderer.surface.configure(&renderer.device, &renderer.config);
-                return FrameStats::default();
-            }
-            Err(_) => return FrameStats::default(),
-        },
-        FramePresentation::OffscreenSurface {
-            width_px,
-            height_px,
-            ..
-        } => (*width_px, *height_px),
-    };
-
-    let view: &wgpu::TextureView = match acquired_swapchain.as_ref() {
+    let view: &wgpu::TextureView = match &acquired_swapchain {
         Some((_s, vw)) => vw,
         None => match &presentation {
             FramePresentation::OffscreenSurface { output_view, .. } => output_view,
-            FramePresentation::Swapchain => unreachable!(),
+            FramePresentation::Swapchain => return FrameStats::default(),
         },
     };
 
@@ -1218,49 +830,14 @@ pub(super) fn render_overlay_only_frame(
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
-    if renderer.hud_enabled {
-        renderer.prepare_hud_overlay_for_render();
-        if let (Some(hud), Some(depth_view)) = (renderer.gpu.hud.as_ref(), depth_view.as_ref()) {
-            if hud.has_plane_annotation_glyphs() {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Annotation Text Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                hud.render_plane_annotations(&mut pass, depth_reversed_z);
-            }
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("HUD Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            hud.render_hud_chrome(&mut pass);
-        }
+    if let Some(depth_view) = depth_view.as_ref() {
+        pass_hud::encode_hud_overlay(
+            renderer,
+            &mut encoder,
+            view,
+            depth_view,
+            depth_reversed_z,
+        );
     }
 
     if let Some(cb) = post_swapchain_overlay {

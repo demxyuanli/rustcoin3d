@@ -17,6 +17,16 @@ pub fn f32x3_to_bits(v: [f32; 3]) -> [u32; 3] {
     [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()]
 }
 
+/// Quantized hash key for vertex deduplication.
+/// Rounds coordinates to 1e-5 precision before hashing, so nearly-equal
+/// vertices (e.g. from different edge samplings that meet at the same point)
+/// map to the same key.
+#[inline]
+pub fn f32x3_quantized_bits(v: [f32; 3]) -> [u32; 3] {
+    let q = |x: f32| (x * 1e5).round().to_bits();
+    [q(v[0]), q(v[1]), q(v[2])]
+}
+
 /// Convert a `[f32; 4]` to `[u32; 4]` for use as a hash/comparison key.
 #[inline]
 pub fn f32x4_to_bits(v: [f32; 4]) -> [u32; 4] {
