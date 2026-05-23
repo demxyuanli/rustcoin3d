@@ -225,12 +225,21 @@ pub struct PanelPreset {
 }
 
 pub fn preset_for_import_viewer_panel() -> PanelPreset {
+    let state = RenderFeaturePanelState {
+        channel_a_active: false,
+        channel_b_active: false,
+        channel_c_active: false,
+        channel_a_weight: 0.0,
+        channel_b_weight: 0.0,
+        channel_c_weight: 0.0,
+        ..Default::default()
+    };
     PanelPreset {
         config: PanelConfig {
             title: "Import Viewer Render Feature Panel".to_string(),
             sections: PanelSections::default(),
         },
-        state: RenderFeaturePanelState::default(),
+        state,
     }
 }
 

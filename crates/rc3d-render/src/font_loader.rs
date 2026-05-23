@@ -76,6 +76,17 @@ fn font_search_paths() -> Vec<PathBuf> {
             }
         }
     }
+    // Project-bundled font directory (search relative to working dir)
+    let assets_fonts = PathBuf::from("assets/fonts");
+    if assets_fonts.is_dir() {
+        for name in ["label.ttf", "Roboto-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"]
+        {
+            let p = assets_fonts.join(name);
+            if p.is_file() {
+                paths.push(p);
+            }
+        }
+    }
     paths.extend(platform_font_candidates());
     paths
 }

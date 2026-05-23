@@ -29,11 +29,12 @@ pub fn extract_face_trim(
     face: &topology::StepFace,
     entities: &EntityIndex,
 ) -> Option<FaceTrim> {
+    let surface_id = face.surface_id?;
     let mut trim = FaceTrim::default();
     for bloop in &face.bounds {
         let mut loop_pts = Vec::new();
         for edge in &bloop.edges {
-            if let Some(mut uv_pts) = resolve_edge_pcurve(edge.curve_id, entities) {
+            if let Some(mut uv_pts) = resolve_edge_pcurve(edge.curve_id, surface_id, entities) {
                 // If edge is reversed in this loop, reverse the point order
                 if edge.reversed {
                     uv_pts.reverse();
@@ -67,9 +68,12 @@ pub fn extract_face_trim(
 }
 
 /// Resolve an edge curve ID through SURFACE_CURVE → PCURVE to UV points.
-fn resolve_edge_pcurve(edge_curve_id: u64, entities: &EntityIndex) -> Option<Vec<UVPoint>> {
+/// `surface_id` is the face's surface, used to pick the correct pcurve
+/// when multiple pcurves exist (one per adjacent surface).
+fn resolve_edge_pcurve(edge_curve_id: u64, surface_id: u64, entities: &EntityIndex) -> Option<Vec<UVPoint>> {
     let record = entities.get(&edge_curve_id)?;
-    if record.name != "EDGE_CURVE" && record.name != "SURFACE_CURVE" {
+    let valid_names = ["EDGE_CURVE", "SURFACE_CURVE", "SEAM_CURVE"];
+    if !valid_names.contains(&record.name.as_str()) {
         return None;
     }
 
@@ -82,13 +86,70 @@ fn resolve_edge_pcurve(edge_curve_id: u64, entities: &EntityIndex) -> Option<Vec
         }
         cg_record
     } else {
+        // SEAM_CURVE and SURFACE_CURVE have the same param structure:
+        // (name, #curve_3d, pcurve_list, master_rep)
         record
     };
 
-    // SURFACE_CURVE: (name, #curve_3d, #curve_1, #curve_2, #basis_surface, master_rep)
-    // curve_1 is the preferred pcurve
-    let pcurve_id = nth_ref(&sc_record.params, 2)?;
-    resolve_pcurve(pcurve_id, entities)
+    // SURFACE_CURVE: params[2] = pcurve list, each PCURVE has basis_surface at params[1].
+    // Select the pcurve whose basis_surface matches our face's surface_id.
+    resolve_matching_pcurve(&sc_record.params, 2, surface_id, entities)
+}
+
+/// From a param list at `list_index`, find the pcurve whose basis_surface matches `surface_id`.
+/// Handles both single ref and list-of-refs.
+fn resolve_matching_pcurve(
+    params: &StepValue,
+    list_index: usize,
+    surface_id: u64,
+    entities: &EntityIndex,
+) -> Option<Vec<UVPoint>> {
+    // Try single ref
+    if let Some(single_id) = nth_ref(params, list_index) {
+        if let Some(pts) = resolve_pcurve_for_surface(single_id, surface_id, entities) {
+            return Some(pts);
+        }
+        return None;
+    }
+    // Try list of refs — pick the one matching the surface
+    if let Some(pcurve_list) = params.nth_param(list_index).and_then(|v| v.as_list()) {
+        // First pass: find exact surface match (OCCT behavior)
+        for item in pcurve_list {
+            if let Some(pid) = item.as_ref_id() {
+                if let Some(pts) = resolve_pcurve_for_surface(pid, surface_id, entities) {
+                    return Some(pts);
+                }
+            }
+        }
+        // Fallback: use first valid pcurve (when no exact match)
+        for item in pcurve_list {
+            if let Some(pid) = item.as_ref_id() {
+                if let Some(pts) = resolve_pcurve(pid, entities) {
+                    return Some(pts);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a pcurve only if its basis_surface matches the expected surface_id.
+fn resolve_pcurve_for_surface(
+    pcurve_id: u64,
+    surface_id: u64,
+    entities: &EntityIndex,
+) -> Option<Vec<UVPoint>> {
+    let record = entities.get(&pcurve_id)?;
+    if record.name != "PCURVE" && record.name != "DEFINITIONAL_REPRESENTATION" {
+        return None;
+    }
+    // PCURVE: (name, #basis_surface, #reference_to_curve)
+    let basis_surface = nth_ref(&record.params, 1)?;
+    if basis_surface == surface_id {
+        resolve_pcurve(pcurve_id, entities)
+    } else {
+        None
+    }
 }
 
 /// Resolve a PCURVE entity to UV points.
@@ -108,6 +169,15 @@ fn resolve_pcurve(pcurve_id: u64, entities: &EntityIndex) -> Option<Vec<UVPoint>
 fn resolve_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<Vec<UVPoint>> {
     let record = entities.get(&curve_id)?;
     match record.name.as_str() {
+        "DEFINITIONAL_REPRESENTATION" => {
+            // DEFINITIONAL_REPRESENTATION('', (#item1, ...), #context)
+            // Unwrap and recurse into the first item
+            let items = record.params.nth_param(1)?.as_list()?;
+            if let Some(first_id) = items.first().and_then(|v| v.as_ref_id()) {
+                return resolve_2d_curve(first_id, entities);
+            }
+            None
+        }
         "LINE" => {
             // 2D LINE: (name, #pnt, #dir) where pnt and dir are 2D
             let pt = resolve_cartesian_2d(nth_ref(&record.params, 1)?, entities)?;

@@ -22,6 +22,8 @@ pub enum EntityType {
     BSplineSurfaceWithKnots,
     SurfaceOfLinearExtrusion,
     SurfaceOfRevolution,
+    OffsetSurface,
+    BoundedSurface,
     // Topology
     ClosedShell,
     OpenShell,
@@ -104,6 +106,8 @@ impl EntityType {
             "B_SPLINE_SURFACE_WITH_KNOTS" => Self::BSplineSurfaceWithKnots,
             "SURFACE_OF_LINEAR_EXTRUSION" => Self::SurfaceOfLinearExtrusion,
             "SURFACE_OF_REVOLUTION" => Self::SurfaceOfRevolution,
+            "OFFSET_SURFACE" => Self::OffsetSurface,
+            "BOUNDED_SURFACE" => Self::BoundedSurface,
             "CLOSED_SHELL" => Self::ClosedShell,
             "OPEN_SHELL" => Self::OpenShell,
             "SHELL" => Self::Shell,

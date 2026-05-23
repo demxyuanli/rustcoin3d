@@ -26,6 +26,15 @@ pub fn sample_curve(
         "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" => {
             sample_bspline(&record.params, entities, tolerance)
         }
+        "SURFACE_CURVE" => {
+            // SURFACE_CURVE('', #curve_3d, (#pcurve1, #pcurve2), .PCURVE_S1.)
+            // Resolve to the underlying 3D curve and recurse
+            if let Some(geom_curve_id) = nth_ref(&record.params, 1) {
+                sample_curve(geom_curve_id, entities, start, end, tolerance)
+            } else {
+                vec![start, end]
+            }
+        }
         _ => vec![start, end],
     }
 }
@@ -196,8 +205,8 @@ fn eval_revolution(
 
     let n_curve = curve_pts.len();
     let n_angle = samples_u;
-    let mut grid: Vec<Vec<Vec3>> = Vec::with_capacity(n_angle);
-    for i in 0..n_angle {
+    let mut grid: Vec<Vec<Vec3>> = Vec::with_capacity(n_angle + 1);
+    for i in 0..=n_angle {
         let angle = (i as f32) * 2.0 * std::f32::consts::PI / n_angle as f32;
         let mut row = Vec::with_capacity(n_curve);
         for pt in &curve_pts {
@@ -205,6 +214,10 @@ fn eval_revolution(
             let rel = *pt - origin;
             let rotated = rotate_around_axis(rel, axis, angle) + origin;
             row.push(rotated);
+        }
+        if i == n_angle {
+            // Duplicate first row so grid_to_mesh can seam the last quad ring
+            row = grid[0].clone();
         }
         grid.push(row);
     }
@@ -246,20 +259,66 @@ fn sample_bspline(
     // NOT nested coordinate lists as previously assumed.
     let ctrl_pts = resolve_bspline_ctrl_pts(params, 2, entities);
     let knots = nth_list_reals(params, 7);
+    let multiplicities = nth_list_ints(params, 6);
 
-    if ctrl_pts.is_empty() || knots.len() < degree + 2 {
+    if ctrl_pts.is_empty() || knots.is_empty() {
         return vec![];
+    }
+
+    // Build the full knot vector from knot values and multiplicities
+    // For PIECEWISE_BEZIER_KNOTS, all interior knots have multiplicity = degree
+    let mut knot_vec: Vec<f32> = Vec::new();
+
+    if !multiplicities.is_empty() && !knots.is_empty() {
+        for (i, &mult) in multiplicities.iter().enumerate() {
+            if i < knots.len() {
+                let k = knots[i].as_real().unwrap_or(0.0) as f32;
+                for _ in 0..mult {
+                    knot_vec.push(k);
+                }
+            }
+        }
+    }
+
+    // For PIECEWISE_BEZIER_KNOTS, we need enough knots
+    // If knot_vec is too short, expand it properly
+    if knot_vec.len() < ctrl_pts.len() + degree + 1 {
+        // Expand knots for piecewise bezier: the knot values define segments
+        // Each segment corresponds to one bezier curve
+        let mut expanded: Vec<f32> = Vec::new();
+        for (i, k) in knots.iter().enumerate() {
+            let kval = k.as_real().unwrap_or(i as f64) as f32;
+            let mult = if i < multiplicities.len() { multiplicities[i] as usize } else { degree };
+            for _ in 0..mult {
+                expanded.push(kval);
+            }
+        }
+        // Ensure we have enough knots by interpolating
+        if expanded.len() < ctrl_pts.len() + degree + 1 {
+            let min_k = *expanded.first().unwrap_or(&0.0);
+            let max_k = *expanded.last().unwrap_or(&1.0);
+            let needed = ctrl_pts.len() + degree + 1 - expanded.len();
+            for i in 0..needed {
+                let t = (i + 1) as f32 / (needed + 1) as f32;
+                expanded.push(min_k + (max_k - min_k) * t);
+            }
+        }
+        knot_vec = expanded;
     }
 
     let pts: Vec<[f32; 4]> = ctrl_pts.iter().map(|p| [p.x, p.y, p.z, 1.0]).collect();
 
-    let knot_vec: Vec<f32> = knots.iter().map(|v| v.as_real().unwrap_or(0.0) as f32).collect();
     let n_pts = (pts.len() * 8).max(16);
     let mut result = Vec::with_capacity(n_pts);
-    let u_min = knot_vec[degree];
-    let u_max = knot_vec[knot_vec.len() - degree - 1];
+
+    // Use valid knot range for evaluation
+    let knot_min_idx = degree.min(knot_vec.len().saturating_sub(1));
+    let knot_max_idx = (knot_vec.len() - degree - 1).min(knot_vec.len().saturating_sub(1));
+    let actual_u_min = knot_vec.get(knot_min_idx).copied().unwrap_or(0.0);
+    let actual_u_max = knot_vec.get(knot_max_idx).copied().unwrap_or(1.0);
+
     for i in 0..=n_pts {
-        let t = u_min + (u_max - u_min) * (i as f32) / (n_pts as f32);
+        let t = actual_u_min + (actual_u_max - actual_u_min) * (i as f32) / (n_pts as f32);
         let pt = eval_bspline_curve(&pts, degree, &knot_vec, t);
         result.push(Vec3::new(pt[0], pt[1], pt[2]));
     }
@@ -343,7 +402,7 @@ pub fn bspline_bases(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(
 
 // ── Helpers ─────────────────────────────────────────────────
 
-fn nth_ref(params: &StepValue, index: usize) -> Option<u64> {
+pub fn nth_ref(params: &StepValue, index: usize) -> Option<u64> {
     params.nth_param(index)?.as_ref_id()
 }
 
@@ -364,9 +423,16 @@ pub fn nth_int(params: &StepValue, index: usize) -> Option<i64> {
     }
 }
 
-fn nth_list_reals(params: &StepValue, index: usize) -> Vec<StepValue> {
+pub fn nth_list_reals(params: &StepValue, index: usize) -> Vec<StepValue> {
     match params.nth_param(index) {
         Some(StepValue::List(v)) => v.clone(),
+        _ => vec![],
+    }
+}
+
+pub fn nth_list_ints(params: &StepValue, index: usize) -> Vec<i64> {
+    match params.nth_param(index) {
+        Some(StepValue::List(v)) => v.iter().filter_map(|p| p.as_int()).collect(),
         _ => vec![],
     }
 }

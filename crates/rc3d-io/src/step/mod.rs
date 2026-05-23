@@ -30,26 +30,16 @@ pub enum StepError {
 }
 
 pub fn parse_step_file(path: &Path) -> Result<SceneGraph, StepError> {
-    // Use streaming parser for large files to reduce memory usage
-    let exchange = parser::parse_step_from_file(path)
-        .map_err(|e| StepError::Parse(e))?;
-
-    let shells = topology::collect_shells(&exchange.entities);
-    if shells.is_empty() {
-        return Err(StepError::NoGeometry);
-    }
-
-    let transforms = assembly::extract_shell_transforms(&exchange.entities);
-    let styles = assembly::extract_shell_styles(&exchange.entities);
-    eprintln!(
-        "[STEP] {} shells, {} transforms, {} styles",
-        shells.len(),
-        transforms.len(),
-        styles.len()
-    );
-
-    let graph = build_hierarchical_scene(&shells, &transforms, &styles, &exchange.entities)?;
-    Ok(graph)
+    // Read entire file (reliable for STEP files up to ~500MB)
+    let bytes = std::fs::read(path)?;
+    let text = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("STEP file is not valid UTF-8, replacing invalid bytes");
+            String::from_utf8_lossy(e.as_bytes()).into_owned()
+        }
+    };
+    parse_step(&text)
 }
 
 pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
@@ -210,5 +200,45 @@ mod integration_tests {
         );
         assert!(mesh_count > 0, "should have at least one mesh");
         assert!(total_verts > 100, "should have substantial vertices");
+    }
+
+    #[test]
+    fn test_shape_step_loads() {
+        // Test that Shape.step (a vase defined by surface of revolution) loads correctly
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test_data/Shape.step"));
+        if !path.exists() {
+            eprintln!("Skipping test: {} not found", path.display());
+            return;
+        }
+        let graph = parse_step_file(path).expect("should parse Shape.step");
+        // Count nodes with geometry by traversing from roots
+        let mut mesh_count = 0;
+        let mut total_verts = 0;
+        let mut total_indices = 0;
+        let mut stack: Vec<NodeId> = graph.roots().to_vec();
+        while let Some(id) = stack.pop() {
+            if let Some(entry) = graph.get(id) {
+                match &entry.data {
+                    NodeData::IndexedFaceSet(ifs) => {
+                        mesh_count += 1;
+                        total_indices += ifs.coord_index.len();
+                    }
+                    NodeData::Coordinate3(coord) => {
+                        total_verts += coord.point.len();
+                    }
+                    _ => {}
+                }
+                stack.extend(entry.children.iter().copied());
+            }
+        }
+        eprintln!(
+            "Shape.step: {} meshes, {} vertices, {} indices",
+            mesh_count, total_verts, total_indices
+        );
+        // Shape.step defines a vase using surface of revolution
+        // It should produce a closed mesh with proper revolution
+        assert!(mesh_count > 0, "should have at least one mesh");
+        assert!(total_verts > 1000, "vase should have substantial vertices, got {}", total_verts);
+        assert!(total_indices > 5000, "vase should have substantial triangles, got {}", total_indices);
     }
 }

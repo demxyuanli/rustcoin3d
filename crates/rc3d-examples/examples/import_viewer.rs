@@ -207,6 +207,7 @@ fn main() {
     }
 
     let mut cursor_pos: Option<(f32, f32)> = None;
+    let mut cursor_prev: (f64, f64) = (0.0, 0.0);
     let mut window_size: (u32, u32) = (800, 600);
 
     let _ = event_loop.run(move |event, elwt| match event {
@@ -221,18 +222,44 @@ fn main() {
                 engine.resize(size.width, size.height);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                let left_orbit = engine.on_pick.is_none();
+                if engine.controller.dispatch_window_event(
+                    &event,
+                    cursor_prev,
+                    left_orbit,
+                ) {
+                    window.request_redraw();
+                }
                 cursor_pos = Some((position.x as f32, position.y as f32));
+                cursor_prev = (position.x, position.y);
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => {
+            WindowEvent::MouseInput { state: _, .. } => {
+                // Handle panel mouse hook first
                 if let Some((x, y)) = cursor_pos {
                     if let Some(ref mut hook) = engine.panel_overlay_mouse_hook {
                         if hook(x, y, window_size.0, window_size.1) {
                             window.request_redraw();
                         }
                     }
+                }
+                // Also dispatch to camera controller for orbit/pan
+                let left_orbit = engine.on_pick.is_none();
+                if engine.controller.dispatch_window_event(
+                    &event,
+                    cursor_prev,
+                    left_orbit,
+                ) {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { .. } => {
+                let left_orbit = engine.on_pick.is_none();
+                if engine.controller.dispatch_window_event(
+                    &event,
+                    cursor_prev,
+                    left_orbit,
+                ) {
+                    window.request_redraw();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
