@@ -2,12 +2,14 @@ pub mod fbx;
 pub mod gltf;
 pub mod iv;
 pub mod obj;
+pub mod step;
 pub mod stl;
 
 pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
 pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
+pub use step::{parse_step, parse_step_file, StepError};
 pub use stl::{parse_stl, parse_stl_file, StlError};
 
 use std::path::Path;
@@ -27,6 +29,8 @@ pub enum ImportError {
     Gltf(#[from] GltfError),
     #[error("FBX error: {0}")]
     Fbx(#[from] FbxError),
+    #[error("STEP error: {0}")]
+    Step(#[from] StepError),
     #[error("Unknown format: {0}")]
     UnknownFormat(String),
 }
@@ -53,6 +57,9 @@ pub fn import_file(path: &Path) -> Result<SceneGraph, ImportError> {
         }
         "fbx" => {
             Ok(parse_fbx_file(path)?)
+        }
+        "step" | "stp" => {
+            Ok(parse_step_file(path)?)
         }
         _ => Err(ImportError::UnknownFormat(ext)),
     }
