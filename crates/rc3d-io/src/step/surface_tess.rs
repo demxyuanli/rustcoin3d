@@ -80,15 +80,18 @@ fn build_nurbs_from_bspline_surface(
 ) -> Option<NurbsSurface> {
     let params = &entity.params;
 
-    // Merged subsuper params for B_SPLINE_SURFACE_WITH_KNOTS:
-    // [0] degree_u, [1] degree_v, [2] control_points_list,
-    // [3] form, [4] u_closed, [5] v_closed, [6] self_intersect,
-    // [7] u_multiplicities, [8] v_multiplicities, [9] u_knots, [10] v_knots, [11] knot_spec
-    let degree_u = geom::nth_int(params, 0)? as usize;
-    let degree_v = geom::nth_int(params, 1)? as usize;
+    // Handle two param layouts from merge_subsuper_params:
+    // Simple (12 params): [0]=deg_u(int), [1]=deg_v(int), [2]=ctrl_pts(list),
+    //   [3-6]=form/enums, [7]=u_mult, [8]=v_mult, [9]=u_knots, [10]=v_knots, [11]=knot_spec
+    // With leading omitted (13 params): [0]=omitted, [1]=deg_u, [2]=deg_v,
+    //   [3]=ctrl_pts, [4-7]=form/enums, [8]=u_mult, [9]=v_mult,
+    //   [10]=u_knots, [11]=v_knots, [12]=knot_spec
+    let off: usize = if geom::nth_int(params, 0).is_some() { 0 } else { 1 };
+    let degree_u = geom::nth_int(params, off)? as usize;
+    let degree_v = geom::nth_int(params, off + 1)? as usize;
 
     // Resolve control points from nested list of references
-    let cp_list = params.nth_param(2)?.as_list()?;
+    let cp_list = params.nth_param(off + 2)?.as_list()?;
     let mut control_points = Vec::with_capacity(cp_list.len());
     for row_val in cp_list {
         let row_refs = row_val.as_list()?;
@@ -105,10 +108,11 @@ fn build_nurbs_from_bspline_surface(
         return None;
     }
 
-    let u_multiplicities = geom::nth_list_ints(params, 7);
-    let v_multiplicities = geom::nth_list_ints(params, 8);
-    let u_knot_vals = geom::nth_list_reals(params, 9);
-    let v_knot_vals = geom::nth_list_reals(params, 10);
+    let mult_base = off + 7;
+    let u_multiplicities = geom::nth_list_ints(params, mult_base);
+    let v_multiplicities = geom::nth_list_ints(params, mult_base + 1);
+    let u_knot_vals = geom::nth_list_reals(params, mult_base + 2);
+    let v_knot_vals = geom::nth_list_reals(params, mult_base + 3);
 
     let knots_u = build_knot_vector_from_multiplicities(
         &u_multiplicities, &u_knot_vals, degree_u, control_points.len(),
@@ -410,16 +414,27 @@ pub fn tessellate_curved_face(
         }
         EntityType::BSplineSurface | EntityType::BSplineSurfaceWithKnots => {
             let nurbs = build_nurbs_from_bspline_surface(surface, entities)?;
-            let u_min = nurbs.knots_u[nurbs.degree_u];
-            let u_max = nurbs.knots_u[nurbs.knots_u.len().saturating_sub(nurbs.degree_u + 1)];
-            let v_min = nurbs.knots_v[nurbs.degree_v];
-            let v_max = nurbs.knots_v[nurbs.knots_v.len().saturating_sub(nurbs.degree_v + 1)];
-            if let Some(tr) = trim {
-                tessellate_trimmed_via_uv(tr, &nurbs, surface_id, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max)
+            let nurbs_u_min = nurbs.knots_u[nurbs.degree_u];
+            let nurbs_u_max = nurbs.knots_u[nurbs.knots_u.len().saturating_sub(nurbs.degree_u + 1)];
+            let nurbs_v_min = nurbs.knots_v[nurbs.degree_v];
+            let nurbs_v_max = nurbs.knots_v[nurbs.knots_v.len().saturating_sub(nurbs.degree_v + 1)];
+            // When trim is available, restrict sampling to the trim polygon
+            // bounding box to avoid wasting grid points far outside the
+            // trimmed region (e.g. NURBS domain 81×81 but trim only covers 15×1).
+            let (u_min, u_max, v_min, v_max) = if let Some(tr) = trim {
+                if let Some(bounds) = compute_uv_bounds(tr) {
+                    (bounds.0.max(nurbs_u_min).min(nurbs_u_max),
+                     bounds.1.max(nurbs_u_min).min(nurbs_u_max),
+                     bounds.2.max(nurbs_v_min).min(nurbs_v_max),
+                     bounds.3.max(nurbs_v_min).min(nurbs_v_max))
+                } else {
+                    (nurbs_u_min, nurbs_u_max, nurbs_v_min, nurbs_v_max)
+                }
             } else {
-                let n = estimate_sample_count(&nurbs, surface.entity_type, u_min, u_max, v_min, v_max);
-                Some(sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max))
-            }
+                (nurbs_u_min, nurbs_u_max, nurbs_v_min, nurbs_v_max)
+            };
+            let n = estimate_sample_count(&nurbs, surface.entity_type, u_min, u_max, v_min, v_max);
+            Some(sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max))
         }
         EntityType::OffsetSurface => {
             // OFFSET_SURFACE('', #base_surface, offset_distance, same_sense)
@@ -692,10 +707,10 @@ fn tessellate_trimmed_via_uv(
     entities: &EntityIndex,
     entity_type: EntityType,
     same_sense: bool,
-    _u_min: f32,
-    _u_max: f32,
-    _v_min: f32,
-    _v_max: f32,
+    u_min: f32,
+    u_max: f32,
+    v_min: f32,
+    v_max: f32,
 ) -> Option<MeshResult> {
     let surface = entities.get(&surface_id)?;
     let info = extract_surface_info(surface, entities);
@@ -778,7 +793,10 @@ fn tessellate_trimmed_via_uv(
     let mut remap: Vec<i32> = vec![-1; all_uv_pts.len()];
 
     for (i, &(u, v)) in all_uv_pts.iter().enumerate() {
-        let (u_nurbs, v_nurbs) = map_uv_to_nurbs(entity_type, u, v);
+        // Clamp UV to valid NURBS parameter range to prevent extrapolation artifacts
+        let u_clamped = u.clamp(u_min, u_max);
+        let v_clamped = v.clamp(v_min, v_max);
+        let (u_nurbs, v_nurbs) = map_uv_to_nurbs(entity_type, u_clamped, v_clamped);
         let mut pt = nurbs.evaluate(u_nurbs, v_nurbs);
         let mut n = match entity_type {
             EntityType::Plane => Vec3::Z,
@@ -815,26 +833,6 @@ fn tessellate_trimmed_via_uv(
         if a >= 0 && b >= 0 && c >= 0 {
             indices.extend_from_slice(&[a, b, c, -1]);
         }
-    }
-
-    if entity_type == EntityType::Plane {
-        let min_x = vertices.iter().map(|v| v.x).fold(f32::INFINITY, f32::min);
-        let max_x = vertices.iter().map(|v| v.x).fold(f32::NEG_INFINITY, f32::max);
-        let min_y = vertices.iter().map(|v| v.y).fold(f32::INFINITY, f32::min);
-        let max_y = vertices.iter().map(|v| v.y).fold(f32::NEG_INFINITY, f32::max);
-        eprintln!("[uv_earcut PLANE id={}] bbox xy=({:.1},{:.1})-({:.1},{:.1}) z={:.1} verts={} tris={}",
-            surface_id, min_x, min_y, max_x, max_y, vertices[0].z,
-            vertices.len(), indices.len() / 4);
-    }
-    // Check ALL faces for outlier vertices
-    let outliers: Vec<_> = vertices.iter().filter(|v| {
-        v.x.is_nan() || v.y.is_nan() || v.z.is_nan()
-        || v.x.abs() > 200.0 || v.y.abs() > 200.0 || v.z.abs() > 200.0
-    }).collect();
-    if !outliers.is_empty() {
-        eprintln!("[uv_earcut id={} type={:?}] {} outlier vertices! first=({:.2},{:.2},{:.2})",
-            surface_id, entity_type, outliers.len(),
-            outliers[0].x, outliers[0].y, outliers[0].z);
     }
 
     Some(MeshResult { vertices, indices, normals })
