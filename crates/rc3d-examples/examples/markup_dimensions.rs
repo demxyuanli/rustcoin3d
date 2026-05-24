@@ -6,7 +6,7 @@ use rc3d_core::math::Vec3;
 use rc3d_engine::{EngineRegistry, InterpolateVec3Engine};
 use rc3d_engine_api::CameraController;
 use rc3d_examples::common::run_example;
-use rc3d_scene::annotation::{AnnotationLabelMode, AnnotationStyle};
+use rc3d_scene::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 use rc3d_scene::node_data::*;
 
 fn main() {
@@ -70,6 +70,28 @@ fn main() {
                         color: [1.0, 0.6, 0.0, 1.0],
                     },
                 ],
+                visible: true,
+            }),
+        );
+
+        // Node-bound annotation: follows the animated cube
+        graph.add_child(
+            cube_tf,
+            NodeData::AnnotationSet(AnnotationSetNode {
+                style: AnnotationStyle {
+                    unit_suffix: " mm".into(),
+                    ..AnnotationStyle::default()
+                },
+                elements: vec![AnnotationElement::Dimension {
+                    start: AnnotationPoint::on_node(cube_tf, [hw, 0.0, hw]),
+                    end: AnnotationPoint::on_node(cube_tf, [hw, 0.0, -hw]),
+                    offset_dir: [1.0, 0.0, 0.0],
+                    extension_len: 0.2,
+                    arrow_size: 0.12,
+                    label: String::new(),
+                    label_mode: AnnotationLabelMode::Auto,
+                    color: [1.0, 0.8, 0.0, 1.0],
+                }],
                 visible: true,
             }),
         );
