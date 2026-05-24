@@ -21,11 +21,14 @@ pub mod topo;
 pub mod refine;
 
 use std::path::Path;
+use std::collections::HashMap;
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{
     Coordinate3Node, IndexedFaceSetNode, IndexedLineSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
 };
+use crate::step::tree::{AssemblyTree, ProductMetadata};
+use crate::step::header::HeaderInfo;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
@@ -37,6 +40,31 @@ pub enum StepError {
     NoGeometry,
     #[error("Validation failed: {0}")]
     Validation(String),
+}
+
+/// Full STEP import result with metadata and assembly tree.
+pub struct StepImportResult {
+    pub graph: SceneGraph,
+    pub assembly_tree: Option<AssemblyTree>,
+    pub metadata: HashMap<u64, ProductMetadata>,
+    pub header: Option<HeaderInfo>,
+}
+
+/// Parse STEP text with full metadata extraction.
+pub fn parse_step_full(input: &str) -> Result<StepImportResult, StepError> {
+    let exchange = parser::parse_exchange(input)
+        .map_err(|e| StepError::Parse(e))?;
+    let header = exchange.header.clone();
+    let metadata = tree::extract_all_metadata(&exchange.entities);
+    let assembly_tree = assembly::build_assembly_tree(&exchange.entities);
+    let graph = parse_step(input)?;
+
+    Ok(StepImportResult {
+        graph,
+        assembly_tree: Some(assembly_tree),
+        metadata,
+        header,
+    })
 }
 
 /// Write a SceneGraph to a STEP file (Part 21 ASCII).

@@ -1,5 +1,6 @@
 //! Assembly tree: preserves product hierarchy from STEP assemblies.
 
+use std::collections::HashMap;
 use rc3d_core::math::Mat4;
 
 /// A node in the assembly tree.
@@ -58,6 +59,48 @@ impl AssemblyTree {
         });
         result
     }
+}
+
+/// Product-level metadata extracted from STEP entities.
+#[derive(Debug, Clone, Default)]
+pub struct ProductMetadata {
+    pub name: String,
+    pub description: String,
+    pub formation_id: String,
+    pub shape_name: String,
+}
+
+use crate::step::parser::EntityIndex;
+
+/// Extract metadata for all products in the entity index.
+pub fn extract_all_metadata(entities: &EntityIndex) -> HashMap<u64, ProductMetadata> {
+    let mut metadata = HashMap::new();
+
+    for (&eid, record) in entities.iter() {
+        if record.name == "PRODUCT" {
+            let name = record.params.nth_param(1)
+                .and_then(|v| match v {
+                    crate::step::value::StepValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            let description = record.params.nth_param(2)
+                .and_then(|v| match v {
+                    crate::step::value::StepValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            metadata.insert(eid, ProductMetadata {
+                name,
+                description,
+                ..Default::default()
+            });
+        }
+    }
+
+    metadata
 }
 
 #[cfg(test)]
