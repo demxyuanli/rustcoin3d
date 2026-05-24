@@ -614,21 +614,23 @@ pub(super) fn execute_passes(
     let occlusion: Option<(Vec<f32>, u32, u32)> = renderer.frame.occlusion_data.clone();
     let depth_tex = renderer.gpu.depth_texture.as_ref().map(|t| &t.0);
     // Create capture buffer if needed
+    const ALIGN: u32 = 256; // COPY_BYTES_PER_ROW_ALIGNMENT
     let ds = 4u32;
     let dw = ew.div_ceil(ds);
     let dh = eh.div_ceil(ds);
-    if renderer.frame.occlusion_capture_buf.is_none() {
-        let size = (dw * dh * 4) as u64;
+    let row_bytes = (dw * 4).div_ceil(ALIGN) * ALIGN;
+    if renderer.frame.occlusion_capture_buf.is_none() || renderer.frame.occlusion_dims.0 != dw || renderer.frame.occlusion_dims.1 != dh {
+        let size = (row_bytes * dh) as u64;
         renderer.frame.occlusion_capture_buf = Some(renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("occlusion depth capture"),
             size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         }));
-        renderer.frame.occlusion_dims = (dw, dh);
+        renderer.frame.occlusion_dims = (dw, dh, row_bytes);
     }
     if let Some(ref buf) = renderer.frame.occlusion_capture_buf {
-        capture_depth_for_occlusion(&mut encoder, depth_tex, buf, dw, dh);
+        capture_depth_for_occlusion(&mut encoder, depth_tex, buf, dw, dh, row_bytes);
     }
     // Static frame: reuse cached projection output.
     let is_static = renderer.frame.bvh_fully_static && renderer.frame.static_frame_count >= 2;
@@ -640,7 +642,7 @@ pub(super) fn execute_passes(
             ew as f32,
             eh as f32,
             ctx.depth_reversed_z,
-            occlusion.as_ref().map(|(b, w, h)| (b.as_slice(), *w, *h)),
+            occlusion.as_ref().map(|(b, w, h)| (&b[..], *w, *h)),
         );
         renderer.frame.cached_projected_markup = projected;
         renderer.frame.cached_projected_labels = wl;
@@ -933,6 +935,7 @@ fn capture_depth_for_occlusion(
     dst_buf: &wgpu::Buffer,
     dst_w: u32,
     dst_h: u32,
+    dst_row_bytes: u32,
 ) {
     let Some(depth_tex) = depth_tex else { return };
     encoder.copy_texture_to_buffer(
@@ -946,7 +949,7 @@ fn capture_depth_for_occlusion(
             buffer: dst_buf,
             layout: wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(dst_w * 4),
+                bytes_per_row: Some(dst_row_bytes),
                 rows_per_image: Some(dst_h),
             },
         },
@@ -955,12 +958,13 @@ fn capture_depth_for_occlusion(
 }
 
 /// Try to read back occlusion depth data from a previously-submitted buffer.
-/// Returns (data, width, height) if successfully mapped.
+/// Returns (data, width, height) with dense layout (padding removed).
 pub fn try_read_occlusion_depth(
     buf: &wgpu::Buffer,
     device: &wgpu::Device,
     w: u32,
     h: u32,
+    padded_w: u32, // row stride in f32 units (including alignment padding)
 ) -> Option<(Vec<f32>, u32, u32)> {
     let (tx, rx) = std::sync::mpsc::channel();
     buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
@@ -969,7 +973,13 @@ pub fn try_read_occlusion_depth(
     device.poll(wgpu::Maintain::Wait);
     if rx.recv().ok()?.is_err() { return None; }
     let mapped = buf.slice(..).get_mapped_range();
-    let data: Vec<f32> = bytemuck::cast_slice(&mapped).to_vec();
+    let raw: &[f32] = bytemuck::cast_slice(&mapped);
+    // Densify: remove alignment padding from each row
+    let mut data = Vec::with_capacity((w * h) as usize);
+    for row in 0..h as usize {
+        let start = row * padded_w as usize;
+        data.extend_from_slice(&raw[start..start + w as usize]);
+    }
     drop(mapped);
     buf.unmap();
     Some((data, w, h))

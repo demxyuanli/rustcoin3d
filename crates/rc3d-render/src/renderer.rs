@@ -952,7 +952,7 @@ impl Renderer {
                 meshlet_indices_buf: Vec::with_capacity(256),
                 occlusion_capture_buf: None,
                 occlusion_data: None,
-                occlusion_dims: (0, 0),
+                occlusion_dims: (0, 0, 0),
             },
             // GPU internals
             gpu: GpuInternals {

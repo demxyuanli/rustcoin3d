@@ -134,7 +134,8 @@ pub(crate) struct FrameState {
     pub occlusion_capture_buf: Option<wgpu::Buffer>,
     /// Depth data from previous frame for annotation occlusion.
     pub occlusion_data: Option<(Vec<f32>, u32, u32)>,
-    pub occlusion_dims: (u32, u32),
+    /// (tex_w, tex_h, aligned_row_bytes) for the capture buffer.
+    pub occlusion_dims: (u32, u32, u32),
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,

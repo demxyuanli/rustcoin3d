@@ -974,15 +974,16 @@ impl super::Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
         // Swap occlusion depth buffer: read back the one we just captured
         if let Some(ref buf) = self.frame.occlusion_capture_buf.take() {
-            let (dw, dh) = self.frame.occlusion_dims;
-            if let Some(data) = crate::render_passes::try_read_occlusion_depth(&buf, &self.device, dw, dh) {
-                self.frame.occlusion_data = Some(data);
+            let (dw, dh, row_bytes) = self.frame.occlusion_dims;
+            let padded_w = (row_bytes / 4) as u32;
+if let Some((data, _w, _h)) = crate::render_passes::try_read_occlusion_depth(&buf, &self.device, dw, dh, padded_w) {
+                self.frame.occlusion_data = Some((data, dw, dh));
             }
         }
         // Create a new capture buffer for next frame
         if self.frame.occlusion_dims.0 > 0 {
-            let (dw, dh) = self.frame.occlusion_dims;
-            let size = (dw * dh * 4) as u64;
+            let (_dw, dh, row_bytes) = self.frame.occlusion_dims;
+            let size = (row_bytes as u64) * (dh as u64);
             if size > 0 {
                 let new_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("occlusion depth capture"),
