@@ -13,7 +13,7 @@ use rc3d_scene::annotation::{
 };
 use rc3d_scene::node_data::AnnotationElement;
 
-use super::projection::{annotation_plane_normal, leader_label_local_3d, project_point_ndc};
+use super::projection::{leader_label_local_3d, project_point_ndc};
 
 /// Per-frame context for world label height (screen-pixel floor).
 struct LabelCtx<'a> {
@@ -361,23 +361,6 @@ fn draw_leader(
     }
 }
 
-fn element_midpoint_world(element: &AnnotationElement, model: glam::Mat4) -> glam::Vec3 {
-    let pts: &[[f32; 3]] = match element {
-        AnnotationElement::Dimension { start, end, .. } => &[start.coords(), end.coords()],
-        AnnotationElement::AngleDimension { center, .. } => &[center.coords()],
-        AnnotationElement::RadialDimension { center, .. } => &[center.coords()],
-        AnnotationElement::DiameterDimension { center, .. } => &[center.coords()],
-        AnnotationElement::Leader { anchor, .. } => &[anchor.coords()],
-        AnnotationElement::Callout { anchor, .. } => &[anchor.coords()],
-        AnnotationElement::Datum { position, .. } => &[position.coords()],
-    };
-    let mut sum = glam::Vec3::ZERO;
-    for p in pts {
-        sum += model.transform_point3(glam::Vec3::from(*p));
-    }
-    sum / pts.len() as f32
-}
-
 /// Collect all key point coordinates for an annotation element.
 fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
     match element {
@@ -420,7 +403,6 @@ pub(super) fn project_annotation_elements(
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
-    camera_pos: glam::Vec3,
     labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
@@ -430,16 +412,12 @@ pub(super) fn project_annotation_elements(
         let style = &pa.style;
 
         // --- visibility culling ---
+        // Back-face culling skipped: annotation plane normal depends on arbitrary
+        // point ordering (start/end, offset sign). NDC culling alone is sufficient.
         let mut visibility = AnnotationVisibility::default();
-        if let Some(plane_n) = annotation_plane_normal(&pa.element) {
-            let world_n = model.transform_vector3(plane_n);
-            let midpoint = element_midpoint_world(&pa.element, model);
-            let to_camera = camera_pos - midpoint;
-            visibility.back_facing = world_n.dot(to_camera) < 0.0;
-        }
         visibility.outside_ndc =
             !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z);
-        if visibility.back_facing || visibility.outside_ndc {
+        if visibility.outside_ndc {
             continue;
         }
         // --- end culling ---
