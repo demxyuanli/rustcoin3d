@@ -22,6 +22,8 @@ pub fn sample_curve(
         "LINE" => sample_line(&record.params, entities, start, end),
         "CIRCLE" => sample_circle(&record.params, entities, start, end, tolerance),
         "ELLIPSE" => sample_ellipse(&record.params, entities, start, end, tolerance),
+        "HYPERBOLA" => sample_hyperbola(&record.params, entities),
+        "PARABOLA" => sample_parabola(&record.params, entities),
         "POLYLINE" => sample_polyline(&record.params, entities),
         "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" | "RATIONAL_B_SPLINE_CURVE" => {
             sample_bspline(&record.params, entities, tolerance)
@@ -184,6 +186,53 @@ fn sample_polyline(
     // POLYLINE args: (name, (#pnt1, #pnt2, ...))
     let pt_ids = nth_list_refs(params, 1).unwrap_or_default();
     pt_ids.iter().filter_map(|&id| topology::resolve_point(id, entities)).collect()
+}
+
+fn sample_hyperbola(
+    params: &StepValue,
+    entities: &EntityIndex,
+) -> Vec<Vec3> {
+    // HYPERBOLA: (name, #position, semi_axis, semi_imag_axis)
+    let pos_id = nth_ref(params, 1);
+    let a = nth_real(params, 2).unwrap_or(1.0) as f32;
+    let b = nth_real(params, 3).unwrap_or(1.0) as f32;
+    let (origin, x_axis, z_axis) = pos_id
+        .and_then(|id| topology::resolve_placement(id, entities))
+        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+    let y_axis = z_axis.cross(x_axis).normalize();
+
+    let n = 64;
+    let mut pts = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        let t_val = -3.0 + 6.0 * (i as f32 / n as f32);
+        let x = a * t_val.cosh();
+        let y = b * t_val.sinh();
+        pts.push(origin + x_axis * x + y_axis * y);
+    }
+    pts
+}
+
+fn sample_parabola(
+    params: &StepValue,
+    entities: &EntityIndex,
+) -> Vec<Vec3> {
+    // PARABOLA: (name, #position, focal_dist)
+    let pos_id = nth_ref(params, 1);
+    let f = nth_real(params, 2).unwrap_or(1.0) as f32;
+    let (origin, x_axis, z_axis) = pos_id
+        .and_then(|id| topology::resolve_placement(id, entities))
+        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+    let y_axis = z_axis.cross(x_axis).normalize();
+
+    let n = 64;
+    let mut pts = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        let t_val = -5.0 + 10.0 * (i as f32 / n as f32);
+        let x = t_val;
+        let y = t_val * t_val / (4.0 * f);
+        pts.push(origin + x_axis * x + y_axis * y);
+    }
+    pts
 }
 
 /// Evaluate a surface entity into a grid of 3D points (rows × cols).
