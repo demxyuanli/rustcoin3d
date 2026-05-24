@@ -18,6 +18,15 @@ impl EffectCommands {
     }
 }
 
+/// Visibility flags computed per-annotation during projection.
+#[derive(Clone, Debug, Default)]
+pub struct AnnotationVisibility {
+    pub back_facing: bool,
+    pub outside_ndc: bool,
+    /// Deferred: occlusion check (Phase 1.5)
+    pub occluded: bool,
+}
+
 /// A 3D annotation element collected during scene traversal, with its world-space transform.
 /// Projection to screen coordinates happens in the render pass.
 #[derive(Clone, Debug)]
@@ -25,6 +34,7 @@ pub struct ProjectedAnnotation {
     pub element: AnnotationElement,
     pub model_matrix: Mat4,
     pub style: AnnotationStyle,
+    pub visibility: AnnotationVisibility,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +166,7 @@ fn collect_effect_recursive(
                         element,
                         model_matrix: el_model,
                         style: ann.style.clone(),
+                        visibility: AnnotationVisibility::default(),
                     });
                 }
             }

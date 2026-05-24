@@ -93,3 +93,39 @@ mod tests {
         assert!((p[2] - (-0.75)).abs() < 1e-6);
     }
 }
+
+use rc3d_scene::node_data::AnnotationElement;
+
+/// Compute the annotation-plane normal in model-local space.
+/// Returns `None` for types without a well-defined plane (Leader, Callout).
+pub(crate) fn annotation_plane_normal(element: &AnnotationElement) -> Option<glam::Vec3> {
+    match element {
+        AnnotationElement::Dimension { start, end, offset_dir, .. } => {
+            let s = glam::Vec3::from(start.coords());
+            let e = glam::Vec3::from(end.coords());
+            let off = glam::Vec3::from(*offset_dir);
+            let n = (e - s).cross(off);
+            if n.length_squared() > 1e-8 { Some(n.normalize()) } else { None }
+        }
+        AnnotationElement::AngleDimension { center, arm1, arm2, .. } => {
+            let c = glam::Vec3::from(center.coords());
+            let a1 = glam::Vec3::from(arm1.coords());
+            let a2 = glam::Vec3::from(arm2.coords());
+            let n = (a1 - c).cross(a2 - c);
+            if n.length_squared() > 1e-8 { Some(n.normalize()) } else { None }
+        }
+        AnnotationElement::RadialDimension { center, perimeter, .. } => {
+            let d = glam::Vec3::from(perimeter.coords()) - glam::Vec3::from(center.coords());
+            if d.length_squared() > 1e-8 { Some(d.normalize()) } else { None }
+        }
+        AnnotationElement::DiameterDimension { center, p1, p2, .. } => {
+            let c = glam::Vec3::from(center.coords());
+            let a = glam::Vec3::from(p1.coords());
+            let b = glam::Vec3::from(p2.coords());
+            let n = (a - c).cross(b - c);
+            if n.length_squared() > 1e-8 { Some(n.normalize()) } else { None }
+        }
+        AnnotationElement::Datum { .. } => Some(glam::Vec3::Z),
+        AnnotationElement::Leader { .. } | AnnotationElement::Callout { .. } => None,
+    }
+}

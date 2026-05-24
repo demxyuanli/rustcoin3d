@@ -553,6 +553,7 @@ impl RenderCollector {
                                 element,
                                 model_matrix: el_model,
                                 style: ann.style.clone(),
+                                visibility: crate::render_passes::pass_effects::AnnotationVisibility::default(),
                             },
                         );
                     }

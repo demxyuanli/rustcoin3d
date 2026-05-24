@@ -4,7 +4,7 @@
 mod collect;
 mod render;
 
-pub use collect::{DecalDrawCommand, EffectCommands, PointCloudDrawCommand, ProjectedAnnotation, VolumeDrawCommand, collect_effect_nodes};
+pub use collect::{AnnotationVisibility, DecalDrawCommand, EffectCommands, PointCloudDrawCommand, ProjectedAnnotation, VolumeDrawCommand, collect_effect_nodes};
 pub use render::{DecalPass, PointCloudPass, VolumePass};
 
 #[cfg(test)]
