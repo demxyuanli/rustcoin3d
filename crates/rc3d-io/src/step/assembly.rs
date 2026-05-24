@@ -5,6 +5,7 @@ use rc3d_core::math::{Mat4, Vec3};
 use super::entity_types::EntityType;
 use super::parser::EntityIndex;
 use super::value::StepValue;
+use super::geom;
 use super::topology;
 
 /// RGBA color extracted from STYLED_ITEM.
@@ -77,6 +78,14 @@ fn resolve_item_to_shell(item_id: u64, entities: &EntityIndex) -> u64 {
         match record.entity_type {
             EntityType::ClosedShell | EntityType::OpenShell | EntityType::Shell => {
                 return item_id;
+            }
+            EntityType::OrientedClosedShell | EntityType::OrientedOpenShell => {
+                if let Some(inner) = record.params.nth_param(3)
+                    .and_then(|v| v.as_ref_id())
+                    .or_else(|| record.params.nth_param(1).and_then(|v| v.as_ref_id()))
+                {
+                    return inner;
+                }
             }
             _ => {}
         }
@@ -160,7 +169,7 @@ fn extract_color_from_colour(colour_id: u64, entities: &EntityIndex, info: &mut 
             .and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
         let b = record.params.nth_param(3)
             .and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
-        info.diffuse = Vec3::new(r as f32, g as f32, b as f32);
+        info.diffuse = Vec3::new(r, g, b);
     }
 }
 
@@ -221,8 +230,8 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
     for (&entity_id, record) in entities.iter() {
         // SHAPE_REPRESENTATION_RELATIONSHIP: links axis SR to geometry ABREP
         if record.name == "SHAPE_REPRESENTATION_RELATIONSHIP" {
-            let rep1 = nth_ref(&record.params, 2);
-            let rep2 = nth_ref(&record.params, 3);
+            let rep1 = geom::nth_ref(&record.params, 2);
+            let rep2 = geom::nth_ref(&record.params, 3);
             if let (Some(r1), Some(r2)) = (rep1, rep2) {
                 let target = entities.get(&r2).map(|r| r.entity_type).unwrap_or(EntityType::Unknown);
                 if target == EntityType::AdvancedBrepShapeRepresentation {
@@ -235,8 +244,8 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
         }
         match record.entity_type {
             EntityType::ItemDefinedTransformation => {
-                let placement_id = nth_ref(&record.params, 2);
-                let pd_id = nth_ref(&record.params, 3);
+                let placement_id = geom::nth_ref(&record.params, 2);
+                let pd_id = geom::nth_ref(&record.params, 3);
                 if let (Some(pid), Some(pdid)) = (placement_id, pd_id) {
                     if let Some(xform) = resolve_placement_transform(pid, entities) {
                         graph.idt_transforms.insert(pdid, xform);
@@ -244,11 +253,11 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
                 }
             }
             EntityType::NextAssemblyUsageOccurrence => {
-                let relating = nth_ref(&record.params, 3)
-                    .or_else(|| nth_ref(&record.params, 1));
-                let related = nth_ref(&record.params, 4)
-                    .or_else(|| nth_ref(&record.params, 2));
-                let ap203_xform = nth_ref(&record.params, 4)
+                let relating = geom::nth_ref(&record.params, 3)
+                    .or_else(|| geom::nth_ref(&record.params, 1));
+                let related = geom::nth_ref(&record.params, 4)
+                    .or_else(|| geom::nth_ref(&record.params, 2));
+                let ap203_xform = geom::nth_ref(&record.params, 4)
                     .and_then(|tid| resolve_placement_transform(tid, entities));
                 if let (Some(parent), Some(child)) = (relating, related) {
                     let xform = graph.idt_transforms.get(&child).cloned()
@@ -260,8 +269,8 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
             }
             EntityType::ProductDefinitionShape => {
                 // PDS: AP242 (name,$,#product_def); AP203 (name,#product_def,desc)
-                let pd_id = nth_ref(&record.params, 2)
-                    .or_else(|| nth_ref(&record.params, 1));
+                let pd_id = geom::nth_ref(&record.params, 2)
+                    .or_else(|| geom::nth_ref(&record.params, 1));
                 if let Some(pid) = pd_id {
                     // Map product_def_id → PDS entity_id for SDR lookup
                     graph.prod_to_pds.insert(pid, entity_id);
@@ -269,8 +278,8 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
             }
             EntityType::ShapeDefinitionRepresentation => {
                 // SDR: (#pds_entity, #shape_repr) — params[0] references PDS entity
-                let pds_entity = nth_ref(&record.params, 0);
-                let shape_repr = nth_ref(&record.params, 1);
+                let pds_entity = geom::nth_ref(&record.params, 0);
+                let shape_repr = geom::nth_ref(&record.params, 1);
                 if let (Some(pds), Some(sr)) = (pds_entity, shape_repr) {
                     graph.pds_to_shape.insert(pds, sr);
                 }
@@ -365,14 +374,14 @@ fn resolve_placement_transform(placement_id: u64, entities: &EntityIndex) -> Opt
     let record = entities.get(&placement_id)?;
     match record.entity_type {
         EntityType::Axis2Placement3D => {
-            let origin_id = nth_ref(&record.params, 1)?;
-            let axis_id = nth_ref(&record.params, 2)?;
-            let refdir_id = nth_ref(&record.params, 3);
+            let origin_id = geom::nth_ref(&record.params, 1)?;
+            let axis_id = geom::nth_ref(&record.params, 2)?;
+            let refdir_id = geom::nth_ref(&record.params, 3);
             let origin = topology::resolve_point(origin_id, entities)?;
-            let axis = topology::resolve_direction_public(axis_id, entities)
+            let axis = topology::resolve_direction(axis_id, entities)
                 .unwrap_or(Vec3::Z);
             let ref_dir = refdir_id
-                .and_then(|id| topology::resolve_direction_public(id, entities))
+                .and_then(|id| topology::resolve_direction(id, entities))
                 .unwrap_or(Vec3::X);
             Some(AssemblyTransform::from_placement(origin, ref_dir, axis))
         }
@@ -380,28 +389,12 @@ fn resolve_placement_transform(placement_id: u64, entities: &EntityIndex) -> Opt
     }
 }
 
-#[allow(dead_code)]
-fn find_shapes_for_definition(definition_id: u64, entities: &EntityIndex) -> Vec<u64> {
-    for (_, record) in entities.iter() {
-        if record.entity_type == EntityType::ShapeDefinitionRepresentation {
-            let def = nth_ref(&record.params, 0);
-            let rep_id = nth_ref(&record.params, 1);
-            if def == Some(definition_id) {
-                if let Some(rid) = rep_id {
-                    return vec![rid];
-                }
-            }
-        }
-    }
-    vec![]
-}
-
 fn find_shells_in_representation(rep_id: u64, entities: &EntityIndex) -> Vec<u64> {
     let record = match entities.get(&rep_id) {
         Some(r) => r,
         None => return vec![],
     };
-    let items = nth_list(params_nth(&record.params, 1));
+    let items = nth_list(record.params.nth_param(1));
     let mut shells = Vec::new();
     for item in &items {
         if let Some(id) = item.as_ref_id() {
@@ -412,6 +405,14 @@ fn find_shells_in_representation(rep_id: u64, entities: &EntityIndex) -> Vec<u64
                     }
                     EntityType::ClosedShell | EntityType::OpenShell | EntityType::Shell => {
                         shells.push(id);
+                    }
+                    EntityType::OrientedClosedShell | EntityType::OrientedOpenShell => {
+                        if let Some(inner) = r.params.nth_param(3)
+                            .and_then(|v| v.as_ref_id())
+                            .or_else(|| r.params.nth_param(1).and_then(|v| v.as_ref_id()))
+                        {
+                            shells.push(inner);
+                        }
                     }
                     _ => {}
                 }
@@ -427,30 +428,196 @@ fn extract_shells_from_brep(brep_id: u64, entities: &EntityIndex) -> Vec<u64> {
         None => return vec![],
     };
     if record.entity_type == EntityType::ShellBasedSurfaceModel {
-        return nth_list(params_nth(&record.params, 1))
+        return nth_list(record.params.nth_param(1))
             .iter().filter_map(|v| v.as_ref_id()).collect();
     }
     if record.entity_type == EntityType::ManifoldSolidBrep {
-        return nth_ref(&record.params, 1).into_iter().collect();
+        return geom::nth_ref(&record.params, 1).into_iter().collect();
     }
     vec![]
 }
 
-// ── Helpers ─────────────────────────────────────────────────
+/// Build the full assembly tree (preserves hierarchy, not just flattened transforms).
+pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree {
+    use super::tree::{AssemblyNode, AssemblyTree};
+    let mut nodes = Vec::new();
+    let mut pd_to_node: HashMap<u64, usize> = HashMap::new();
 
-fn nth_ref(params: &StepValue, index: usize) -> Option<u64> {
-    params.nth_param(index)?.as_ref_id()
+    // Pass 1: collect PRODUCT entities as tree nodes
+    for (&eid, record) in entities.iter() {
+        if record.entity_type == EntityType::Product {
+            let name = record.params.nth_param(1)
+                .and_then(|v| match v {
+                    StepValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| format!("#{}", eid));
+
+            let description = record.params.nth_param(2)
+                .and_then(|v| match v {
+                    StepValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+
+            let idx = nodes.len();
+            pd_to_node.insert(eid, idx);
+            nodes.push(AssemblyNode {
+                name,
+                description,
+                transform: Mat4::IDENTITY,
+                children: Vec::new(),
+                shells: Vec::new(),
+                product_id: eid,
+            });
+        }
+    }
+
+    // Pass 2: build parent-child links from NAUO
+    for (_, record) in entities.iter() {
+        if record.entity_type == EntityType::NextAssemblyUsageOccurrence {
+            let relating = geom::nth_ref(&record.params, 3)
+                .or_else(|| geom::nth_ref(&record.params, 1));
+            let related = geom::nth_ref(&record.params, 4)
+                .or_else(|| geom::nth_ref(&record.params, 2));
+
+            if let (Some(parent), Some(child)) = (relating, related) {
+                // Resolve through PRODUCT_DEFINITION -> PRODUCT_DEFINITION_FORMATION -> PRODUCT
+                let parent_prod = resolve_pd_to_product(parent, entities);
+                let child_prod = resolve_pd_to_product(child, entities);
+
+                if let (Some(pi), Some(ci)) = (
+                    parent_prod.and_then(|p| pd_to_node.get(&p)),
+                    child_prod.and_then(|c| pd_to_node.get(&c)),
+                ) {
+                    if !nodes[*pi].children.contains(ci) && *pi != *ci {
+                        nodes[*pi].children.push(*ci);
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 3: attach shell IDs via the transform map
+    let shell_xforms = extract_shell_transforms(entities);
+    // Walk each product node and find shells owned through
+    // ProductDefinitionShape -> ShapeDefinitionRepresentation -> ShapeRepresentation
+    let mut pd_to_pds: HashMap<u64, u64> = HashMap::new();
+    let mut pds_to_sr: HashMap<u64, u64> = HashMap::new();
+
+    for (&eid, record) in entities.iter() {
+        if record.entity_type == EntityType::ProductDefinitionShape {
+            let pd_id = geom::nth_ref(&record.params, 2)
+                .or_else(|| geom::nth_ref(&record.params, 1));
+            if let Some(pid) = pd_id {
+                pd_to_pds.insert(pid, eid);
+            }
+        }
+        if record.entity_type == EntityType::ShapeDefinitionRepresentation {
+            let pds_entity = geom::nth_ref(&record.params, 0);
+            let shape_repr = geom::nth_ref(&record.params, 1);
+            if let (Some(pds), Some(sr)) = (pds_entity, shape_repr) {
+                pds_to_sr.insert(pds, sr);
+            }
+        }
+    }
+
+    // Map product_definition -> shape_representation
+    let mut sr_to_shells: HashMap<u64, Vec<u64>> = HashMap::new();
+    for (_, record) in entities.iter() {
+        if record.entity_type == EntityType::ProductDefinition {
+            let formation_ref = record.params.nth_param(2)
+                .and_then(|v| v.as_ref_id());
+            if let Some(fid) = formation_ref {
+                if let Some(&pds_id) = pd_to_pds.get(&fid) {
+                    if let Some(&sr_id) = pds_to_sr.get(&pds_id) {
+                        let shells = find_shells_in_representation(sr_id, entities);
+                        if !shells.is_empty() {
+                            sr_to_shells.insert(sr_id, shells);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Attach shells to product nodes
+    for (_, record) in entities.iter() {
+        if record.entity_type == EntityType::ProductDefinition {
+            let formation_ref = record.params.nth_param(2)
+                .and_then(|v| v.as_ref_id());
+            if let Some(fid) = formation_ref {
+                if let (Some(&pds_id), Some(prod_id)) = (
+                    pd_to_pds.get(&fid),
+                    resolve_pd_to_product_by_formation(fid, entities),
+                ) {
+                    if let (Some(&sr_id), Some(&node_idx)) = (
+                        pds_to_sr.get(&pds_id),
+                        pd_to_node.get(&prod_id),
+                    ) {
+                        if let Some(shells) = sr_to_shells.get(&sr_id) {
+                            nodes[node_idx].shells.extend(shells);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also attach shells from shell_xforms for any nodes that didn't get shells via the chain
+    for (&shell_id, xform) in &shell_xforms {
+        if let Some(root) = pd_to_node.values().next() {
+            let node = &mut nodes[*root];
+            if node.shells.is_empty() {
+                node.shells.push(shell_id);
+                node.transform = xform.matrix;
+            }
+        }
+    }
+
+    let root_index = nodes.iter().position(|n| !n.children.is_empty() || !n.shells.is_empty())
+        .unwrap_or(0);
+
+    AssemblyTree { nodes, root_index }
 }
+
+/// Resolve a PRODUCT_DEFINITION ID to its PRODUCT ID.
+fn resolve_pd_to_product(pd_id: u64, entities: &EntityIndex) -> Option<u64> {
+    for (_, record) in entities.iter() {
+        if record.entity_type == EntityType::ProductDefinition {
+            // PRODUCT_DEFINITION(id, description, formation_ref)
+            let id = geom::nth_ref(&record.params, 0)?;
+            if id == pd_id {
+                let formation_id = geom::nth_ref(&record.params, 2)?;
+                return resolve_pd_to_product_by_formation(formation_id, entities);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_pd_to_product_by_formation(formation_id: u64, entities: &EntityIndex) -> Option<u64> {
+    for (_, record) in entities.iter() {
+        if record.entity_type == EntityType::ProductDefinitionFormation {
+            let id = geom::nth_ref(&record.params, 0)
+                .or_else(|| record.params.nth_param(0).and_then(|v| v.as_ref_id()))?;
+            if id == formation_id {
+                // PRODUCT_DEFINITION_FORMATION(id, description, product_ref)
+                return geom::nth_ref(&record.params, 2)
+                    .or_else(|| geom::nth_ref(&record.params, 3));
+            }
+        }
+    }
+    None
+}
+
+// ── Helpers ─────────────────────────────────────────────────
 
 fn nth_list(val: Option<&StepValue>) -> Vec<StepValue> {
     match val {
         Some(StepValue::List(v)) => v.clone(),
         _ => vec![],
     }
-}
-
-fn params_nth(params: &StepValue, index: usize) -> Option<&StepValue> {
-    params.nth_param(index)
 }
 
 // ── Tests ──────────────────────────────────────────────────────
