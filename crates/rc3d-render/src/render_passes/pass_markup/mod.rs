@@ -239,6 +239,7 @@ pub fn pass_markup(
         surface_w as f32,
         surface_h as f32,
         depth_reversed_z,
+        renderer.frame.scene_camera_pos,
         &mut world_labels,
     );
     let legacy = &renderer.frame.markup_vertices;

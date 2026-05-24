@@ -1,4 +1,4 @@
-use crate::render_passes::pass_effects::ProjectedAnnotation;
+use crate::render_passes::pass_effects::{AnnotationVisibility, ProjectedAnnotation};
 use crate::vertex::MarkupVertex;
 use crate::world_label::{
     angle_dimension_label_basis, extent_label_basis, leader_label_basis,
@@ -13,7 +13,7 @@ use rc3d_scene::annotation::{
 };
 use rc3d_scene::node_data::AnnotationElement;
 
-use super::projection::{leader_label_local_3d, project_point_ndc};
+use super::projection::{annotation_plane_normal, leader_label_local_3d, project_point_ndc};
 
 /// Per-frame context for world label height (screen-pixel floor).
 struct LabelCtx<'a> {
@@ -361,6 +361,41 @@ fn draw_leader(
     }
 }
 
+fn element_midpoint_world(element: &AnnotationElement, model: glam::Mat4) -> glam::Vec3 {
+    let pts: &[[f32; 3]] = match element {
+        AnnotationElement::Dimension { start, end, .. } => &[start.coords(), end.coords()],
+        AnnotationElement::AngleDimension { center, .. } => &[center.coords()],
+        AnnotationElement::RadialDimension { center, .. } => &[center.coords()],
+        AnnotationElement::DiameterDimension { center, .. } => &[center.coords()],
+        AnnotationElement::Leader { anchor, .. } => &[anchor.coords()],
+        AnnotationElement::Callout { anchor, .. } => &[anchor.coords()],
+        AnnotationElement::Datum { position, .. } => &[position.coords()],
+    };
+    let mut sum = glam::Vec3::ZERO;
+    for p in pts {
+        sum += model.transform_point3(glam::Vec3::from(*p));
+    }
+    sum / pts.len() as f32
+}
+
+fn element_anchor_ndc(
+    element: &AnnotationElement,
+    model: glam::Mat4,
+    scene_vp: glam::Mat4,
+    depth_reversed_z: bool,
+) -> Option<[f32; 3]> {
+    let anchor = match element {
+        AnnotationElement::Dimension { start, .. } => start.coords(),
+        AnnotationElement::AngleDimension { center, .. } => center.coords(),
+        AnnotationElement::RadialDimension { center, .. } => center.coords(),
+        AnnotationElement::DiameterDimension { center, .. } => center.coords(),
+        AnnotationElement::Leader { anchor, .. } => anchor.coords(),
+        AnnotationElement::Callout { anchor, .. } => anchor.coords(),
+        AnnotationElement::Datum { position, .. } => position.coords(),
+    };
+    project_point_ndc(glam::Vec3::from(anchor), model, scene_vp, depth_reversed_z)
+}
+
 /// Project 3D annotation elements to overlay lines and world-space labels.
 pub(super) fn project_annotation_elements(
     elements: &[ProjectedAnnotation],
@@ -368,6 +403,7 @@ pub(super) fn project_annotation_elements(
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
+    camera_pos: glam::Vec3,
     labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
@@ -375,6 +411,22 @@ pub(super) fn project_annotation_elements(
     for pa in elements {
         let model = pa.model_matrix;
         let style = &pa.style;
+
+        // --- visibility culling ---
+        let mut visibility = AnnotationVisibility::default();
+        if let Some(plane_n) = annotation_plane_normal(&pa.element) {
+            let world_n = model.transform_vector3(plane_n);
+            let midpoint = element_midpoint_world(&pa.element, model);
+            let to_camera = camera_pos - midpoint;
+            visibility.back_facing = world_n.dot(to_camera) < 0.0;
+        }
+        visibility.outside_ndc =
+            element_anchor_ndc(&pa.element, model, scene_vp, depth_reversed_z).is_none();
+        if visibility.back_facing || visibility.outside_ndc {
+            continue;
+        }
+        // --- end culling ---
+
         let proj_ndc = |p: &[f32; 3]| {
             project_point_ndc(
                 Vec3::new(p[0], p[1], p[2]),
