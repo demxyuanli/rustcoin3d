@@ -65,6 +65,14 @@ pub fn parse_step_file(path: &Path) -> Result<SceneGraph, StepError> {
 }
 
 pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
+    parse_step_with_options(input, false)
+}
+
+pub fn parse_step_with_shared_topology(input: &str) -> Result<SceneGraph, StepError> {
+    parse_step_with_options(input, true)
+}
+
+fn parse_step_with_options(input: &str, use_shared_topology: bool) -> Result<SceneGraph, StepError> {
     let exchange = parser::parse_exchange(input)
         .map_err(|e| StepError::Parse(e))?;
 
@@ -99,13 +107,24 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
         styles.len()
     );
 
-    let mut graph = build_hierarchical_scene(&shells, &transforms, &styles, &exchange.entities)?;
+    if use_shared_topology {
+        let topo_result = topo::build::build_shared_topology(&shells, &exchange.entities);
+        log::info!(
+            "[STEP] Shared topology: {} unique vertices, {} unique edges across {} shells",
+            topo_result.vertices.len(), topo_result.edges.len(), topo_result.shells.len(),
+        );
+        build_hierarchical_scene_from_topo(
+            &topo_result, &transforms, &styles, &exchange.entities
+        )
+    } else {
+        let mut graph = build_hierarchical_scene(&shells, &transforms, &styles, &exchange.entities)?;
 
-    // Add STEP original edge curves as lines
-    let edge_count = build_step_edges_overlay(&mut graph, &shells, &exchange.entities);
-    eprintln!("[STEP] {} edge curves rendered", edge_count);
+        // Add STEP original edge curves as lines
+        let edge_count = build_step_edges_overlay(&mut graph, &shells, &exchange.entities);
+        eprintln!("[STEP] {} edge curves rendered", edge_count);
 
-    Ok(graph)
+        Ok(graph)
+    }
 }
 
 /// Extract unique edge curves from shells and add them as IndexedLineSet geometry.
@@ -178,6 +197,104 @@ fn build_step_edges_overlay(
     );
 
     edge_keys.len()
+}
+
+fn build_hierarchical_scene_from_topo(
+    topo: &topo::build::TopoBuildResult,
+    _transforms: &assembly::ShellTransformMap,
+    _styles: &assembly::ShellStyleMap,
+    entities: &parser::EntityIndex,
+) -> Result<SceneGraph, StepError> {
+    let mut graph = SceneGraph::new();
+    let root = graph.add_root(NodeData::Separator(SeparatorNode));
+
+    let default_material = MaterialNode {
+        diffuse_color: Vec3::new(0.9, 0.9, 0.9),
+        ambient_color: Vec3::new(0.35, 0.35, 0.35),
+        specular_color: Vec3::new(0.0, 0.0, 0.0),
+        shininess: 0.0,
+        base_color: Vec3::new(0.94, 0.94, 0.94),
+        metallic: 0.0,
+        roughness: 0.35,
+        opacity: 1.0,
+        ..Default::default()
+    };
+    graph.add_child(
+        root,
+        NodeData::Material(MaterialNode::from_diffuse(default_material.diffuse_color)),
+    );
+
+    let mut any_geometry = false;
+
+    for (_si, topo_shell) in topo.shells.iter().enumerate() {
+        // Convert TopoShell back to flat faces for tessellation
+        let flat_faces: Vec<topology::StepFace> = topo_shell.faces.iter().map(|face| {
+            let mut bounds = Vec::new();
+            for loop_i in std::iter::once(&face.outer_loop).chain(face.inner_loops.iter()) {
+                let edges: Vec<topology::StepEdge> = loop_i.edges.iter().map(|&(edge_id, reversed)| {
+                    let te = topo.edges.get(edge_id).unwrap();
+                    let start = topo.vertices.get(te.start).map(|v| v.position)
+                        .unwrap_or(Vec3::ZERO);
+                    let end = topo.vertices.get(te.end).map(|v| v.position)
+                        .unwrap_or(Vec3::ZERO);
+                    topology::StepEdge {
+                        start,
+                        end,
+                        curve_id: te.curve_entity_id,
+                        curve_type: "LINE".into(),
+                        reversed: if te.sense == topo::EdgeSense::Forward { reversed } else { !reversed },
+                        tolerance: te.tolerance,
+                    }
+                }).collect();
+                if !edges.is_empty() {
+                    bounds.push(topology::StepLoop { edges });
+                }
+            }
+            topology::StepFace {
+                bounds,
+                surface_id: face.surface_entity_id,
+                same_sense: face.same_sense,
+            }
+        }).collect();
+
+        let mesh = tessellate::tessellate_faces(&flat_faces, entities);
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            continue;
+        }
+        any_geometry = true;
+
+        let component = graph.add_child(root, NodeData::Separator(SeparatorNode));
+
+        let shell_material = MaterialNode {
+            diffuse_color: Vec3::new(0.9, 0.9, 0.9),
+            base_color: Vec3::new(0.94, 0.94, 0.94),
+            roughness: 0.35,
+            opacity: 1.0,
+            ..Default::default()
+        };
+        graph.add_child(component, NodeData::Material(shell_material));
+
+        graph.add_child(
+            component,
+            NodeData::Coordinate3(Coordinate3Node { point: mesh.vertices }),
+        );
+        if !mesh.normals.is_empty() {
+            graph.add_child(
+                component,
+                NodeData::Normal(NormalNode::from_vectors(mesh.normals)),
+            );
+        }
+        graph.add_child(
+            component,
+            NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index: mesh.indices }),
+        );
+    }
+
+    if !any_geometry {
+        return Err(StepError::NoGeometry);
+    }
+
+    Ok(graph)
 }
 
 fn build_hierarchical_scene(
