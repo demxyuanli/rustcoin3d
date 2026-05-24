@@ -914,6 +914,8 @@ impl Renderer {
             frame: FrameState {
                 markup_vertices: Vec::new(),
                 annotation_world_labels: Vec::new(),
+                cached_projected_markup: Vec::new(),
+                cached_projected_labels: Vec::new(),
                 clip_planes: Vec::new(),
                 section_cap_tints: Vec::new(),
                 scene_vp: Mat4::IDENTITY,

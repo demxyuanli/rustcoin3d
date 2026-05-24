@@ -610,6 +610,23 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
+    // Static frame: reuse cached projection output.
+    let is_static = renderer.frame.bvh_fully_static && renderer.frame.static_frame_count >= 2;
+    if !is_static {
+        let (projected, wl) = pass_markup::compute_projected_markup(
+            renderer,
+            ctx.effect_commands,
+            ctx.scene_vp,
+            ew as f32,
+            eh as f32,
+            ctx.depth_reversed_z,
+        );
+        renderer.frame.cached_projected_markup = projected;
+        renderer.frame.cached_projected_labels = wl;
+    }
+    // Take cached fields to avoid borrow conflict with pass_markup's &mut renderer.
+    let cache_markup = std::mem::take(&mut renderer.frame.cached_projected_markup);
+    let cache_labels = std::mem::take(&mut renderer.frame.cached_projected_labels);
     pass_markup::pass_markup(
         renderer,
         &mut encoder,
@@ -619,8 +636,11 @@ pub(super) fn execute_passes(
         eh,
         ctx.scene_vp,
         ctx.depth_reversed_z,
-        ctx.effect_commands,
+        &cache_markup,
+        &cache_labels,
     );
+    renderer.frame.cached_projected_markup = cache_markup;
+    renderer.frame.cached_projected_labels = cache_labels;
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 
@@ -816,6 +836,23 @@ pub(super) fn render_overlay_only_frame(
         .as_ref()
         .map(|(_, v, _)| v.clone());
 
+    // Static frame: reuse cached projection output.
+    let is_static = renderer.frame.bvh_fully_static && renderer.frame.static_frame_count >= 2;
+    if !is_static {
+        let (projected, wl) = pass_markup::compute_projected_markup(
+            renderer,
+            effect_commands,
+            scene_vp,
+            ew as f32,
+            eh as f32,
+            depth_reversed_z,
+        );
+        renderer.frame.cached_projected_markup = projected;
+        renderer.frame.cached_projected_labels = wl;
+    }
+    // Take cached fields to avoid borrow conflict with pass_markup's &mut renderer.
+    let cache_markup = std::mem::take(&mut renderer.frame.cached_projected_markup);
+    let cache_labels = std::mem::take(&mut renderer.frame.cached_projected_labels);
     pass_markup::pass_markup(
         renderer,
         &mut encoder,
@@ -825,8 +862,11 @@ pub(super) fn render_overlay_only_frame(
         eh,
         scene_vp,
         depth_reversed_z,
-        effect_commands,
+        &cache_markup,
+        &cache_labels,
     );
+    renderer.frame.cached_projected_markup = cache_markup;
+    renderer.frame.cached_projected_labels = cache_labels;
     renderer.gpu.flat_pool.flush(&renderer.queue);
     renderer.gpu.line_pool.flush(&renderer.queue);
 

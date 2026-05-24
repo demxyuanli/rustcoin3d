@@ -219,6 +219,29 @@ fn push_element_vertices(el: &MarkupElement, out: &mut Vec<MarkupVertex>) {
     }
 }
 
+/// Compute projected render data for annotations (CPU side, can be cached).
+/// Returns (projected_markup_vertices, world_labels) for the GPU pass.
+pub fn compute_projected_markup(
+    renderer: &mut crate::renderer::Renderer,
+    effect_commands: &EffectCommands,
+    scene_vp: glam::Mat4,
+    surface_w: f32,
+    surface_h: f32,
+    depth_reversed_z: bool,
+) -> (Vec<MarkupVertex>, Vec<crate::world_label::WorldLabelCommand>) {
+    let mut world_labels = std::mem::take(&mut renderer.frame.annotation_world_labels);
+    let projected = project_annotation_elements(
+        &effect_commands.annotation_elements,
+        scene_vp,
+        surface_w,
+        surface_h,
+        depth_reversed_z,
+        renderer.frame.scene_camera_pos,
+        &mut world_labels,
+    );
+    (projected, world_labels)
+}
+
 /// Render markup lines; 3D annotations depth-test against the scene depth buffer.
 pub fn pass_markup(
     renderer: &mut crate::renderer::Renderer,
@@ -229,19 +252,10 @@ pub fn pass_markup(
     surface_h: u32,
     scene_vp: glam::Mat4,
     depth_reversed_z: bool,
-    effect_commands: &EffectCommands,
+    projected: &[MarkupVertex],
+    world_labels: &[crate::world_label::WorldLabelCommand],
 ) {
     // ── Combine 2D screen-space markup + projected 3D annotations ──
-    let mut world_labels = std::mem::take(&mut renderer.frame.annotation_world_labels);
-    let projected = project_annotation_elements(
-        &effect_commands.annotation_elements,
-        scene_vp,
-        surface_w as f32,
-        surface_h as f32,
-        depth_reversed_z,
-        renderer.frame.scene_camera_pos,
-        &mut world_labels,
-    );
     let legacy = &renderer.frame.markup_vertices;
     if projected.is_empty() && legacy.is_empty() && world_labels.is_empty() {
         return;
@@ -288,7 +302,7 @@ pub fn pass_markup(
             if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
                 let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("annotation markup vb"),
-                    contents: bytemuck::cast_slice(&projected),
+                    contents: bytemuck::cast_slice(projected),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
                 pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -309,7 +323,7 @@ pub fn pass_markup(
                 flat_pool,
                 pipelines,
                 &mut pass,
-                &world_labels,
+                world_labels,
                 scene_vp,
                 surface_w as f32,
                 surface_h as f32,

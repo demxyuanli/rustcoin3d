@@ -126,6 +126,10 @@ pub(crate) struct FrameState {
     pub markup_vertices: Vec<MarkupVertex>,
     /// World-space annotation labels drawn in `pass_markup`.
     pub annotation_world_labels: Vec<crate::world_label::WorldLabelCommand>,
+    /// Cached projected markup vertices (for static-frame fast path).
+    pub cached_projected_markup: Vec<crate::vertex::MarkupVertex>,
+    /// Cached world labels (for static-frame fast path).
+    pub cached_projected_labels: Vec<crate::world_label::WorldLabelCommand>,
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,
