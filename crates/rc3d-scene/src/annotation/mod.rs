@@ -21,3 +21,5 @@ pub use resolve::{
     node_world_matrix, prepare_annotation_for_render, resolve_element, resolve_point,
 };
 pub use types::*;
+
+pub use crate::node_data::{GdtSymbol, GdtMaterialCondition, DatumTargetType};

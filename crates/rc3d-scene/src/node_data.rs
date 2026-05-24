@@ -995,6 +995,73 @@ pub struct MarkupNode {
 
 pub use crate::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 
+/// GD&T geometric characteristic symbol.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GdtSymbol {
+    /// — Straightness
+    Straightness,
+    /// ⌓ Flatness
+    Flatness,
+    /// ○ Circularity
+    Circularity,
+    /// ⌭ Cylindricity
+    Cylindricity,
+    /// ⌒ Profile of a line
+    ProfileOfLine,
+    /// ⌓ Profile of a surface (closed)
+    ProfileOfSurface,
+    /// ∠ Angularity
+    Angularity,
+    /// ⊥ Perpendicularity
+    Perpendicularity,
+    /// ∥ Parallelism
+    Parallelism,
+    /// ⌖ Position
+    Position,
+    /// ◎ Concentricity
+    Concentricity,
+    /// ⌯ Symmetry
+    Symmetry,
+    /// ↗ Circular runout
+    CircularRunout,
+    /// ↗ Total runout (double arrow)
+    TotalRunout,
+}
+
+impl Default for GdtSymbol {
+    fn default() -> Self {
+        Self::Flatness
+    }
+}
+
+/// GD&T material condition modifier.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GdtMaterialCondition {
+    /// Ⓜ Maximum material condition
+    MaximumMaterial,
+    /// Ⓛ Least material condition
+    LeastMaterial,
+    /// Ⓢ Regardless of feature size
+    RegardlessOfFeature,
+}
+
+/// Datum target type indicator.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatumTargetType {
+    /// Crosshair with circle
+    Point,
+    /// Line with circles at ends
+    Line,
+    /// Hatched rectangle
+    Area,
+}
+
+impl Default for DatumTargetType {
+    fn default() -> Self {
+        Self::Point
+    }
+}
+
 /// A 3D annotation element positioned in world space.
 /// Projected to screen coordinates each frame using the camera VP matrix.
 ///
@@ -1074,6 +1141,67 @@ pub enum AnnotationElement {
     Datum {
         position: AnnotationPoint,
         size: f32,
+        color: [f32; 4],
+    },
+    /// GD&T feature control frame (e.g. ⌓ 0.05 A)
+    GdtFeatureControlFrame {
+        /// Geometric characteristic symbol (e.g. "flatness", "position").
+        symbol: GdtSymbol,
+        /// Tolerance value (e.g. 0.05).
+        tolerance: f32,
+        /// Optional diameter modifier prefix Ø.
+        diameter: bool,
+        /// Primary datum reference.
+        datum_primary: Option<String>,
+        /// Secondary datum reference.
+        datum_secondary: Option<String>,
+        /// Material condition modifier.
+        material_condition: Option<GdtMaterialCondition>,
+        /// Position in set-local space (top-left of the frame).
+        position: AnnotationPoint,
+        /// Direction of the leader line from frame to feature (None = no leader).
+        leader_target: Option<AnnotationPoint>,
+        /// Display color.
+        color: [f32; 4],
+    },
+    /// Datum target: point/line/area marker with label (e.g. A1, B2).
+    GdtDatumTarget {
+        position: AnnotationPoint,
+        /// Target label (e.g. "A1").
+        label: String,
+        /// Target type indicator.
+        target_type: DatumTargetType,
+        size: f32,
+        color: [f32; 4],
+    },
+    /// Chamfer dimension (C X 45° format).
+    ChamferDimension {
+        /// Chamfer start point.
+        start: AnnotationPoint,
+        /// Chamfer end point.
+        end: AnnotationPoint,
+        /// Offset direction for the dimension line.
+        offset_dir: [f32; 3],
+        extension_len: f32,
+        arrow_size: f32,
+        label: String,
+        label_mode: AnnotationLabelMode,
+        color: [f32; 4],
+    },
+    /// Ordinate (baseline) dimension: single jogged leader to a datum plane.
+    OrdinateDimension {
+        /// Feature point to dimension.
+        feature: AnnotationPoint,
+        /// Datum plane origin.
+        datum: AnnotationPoint,
+        /// Direction of the coordinate axis (should be axis-aligned).
+        axis_dir: [f32; 3],
+        /// Jog position (distance from feature along axis).
+        jog_length: f32,
+        /// Offset perpendicular to axis for the leader.
+        offset: f32,
+        label: String,
+        label_mode: AnnotationLabelMode,
         color: [f32; 4],
     },
 }

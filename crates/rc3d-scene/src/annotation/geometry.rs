@@ -216,3 +216,41 @@ pub fn datum_cross_points(position: [f32; 3], size: f32) -> [([f32; 3], [f32; 3]
     let sw = pos - d2;
     [(to_arr(nw), to_arr(se)), (to_arr(ne), to_arr(sw))]
 }
+
+/// Key points for a GD&T feature control frame (position, four corners for box outline).
+pub fn gdt_fcf_key_points(position: [f32; 3], leader_target: Option<[f32; 3]>) -> Vec<[f32; 3]> {
+    let mut pts = vec![position];
+    if let Some(lt) = leader_target {
+        pts.push(lt);
+    }
+    pts
+}
+
+/// Key points for a GD&T datum target (position center point).
+pub fn gdt_datum_target_key_points(position: [f32; 3]) -> Vec<[f32; 3]> {
+    vec![position]
+}
+
+/// Key points for a chamfer dimension (start, end, offset midpoint).
+pub fn chamfer_dimension_key_points(
+    start: [f32; 3],
+    end: [f32; 3],
+    offset_dir: [f32; 3],
+) -> Vec<[f32; 3]> {
+    let mid = to_arr(v3(start) + (v3(end) - v3(start)) * 0.5 + v3(offset_dir));
+    vec![start, end, mid]
+}
+
+/// Key points for an ordinate dimension (feature, datum, jog corner).
+pub fn ordinate_dimension_key_points(
+    feature: [f32; 3],
+    datum: [f32; 3],
+    axis_dir: [f32; 3],
+    jog_length: f32,
+    offset: f32,
+) -> Vec<[f32; 3]> {
+    let axis = normalize_or(v3(axis_dir), Vec3::X);
+    let perp = normalize_or(axis.cross(Vec3::Y), Vec3::Z);
+    let jog_corner = v3(feature) + axis * jog_length + perp * offset;
+    vec![feature, datum, to_arr(jog_corner)]
+}

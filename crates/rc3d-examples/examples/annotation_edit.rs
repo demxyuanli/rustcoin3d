@@ -334,6 +334,30 @@ fn element_handles(elem: &AnnotationElement) -> Vec<(&'static str, [f32; 3])> {
         AnnotationElement::Datum { position, .. } => vec![
             ("position", position.coords()),
         ],
+        AnnotationElement::GdtFeatureControlFrame { position, leader_target, .. } => {
+            let mut h = vec![("position", position.coords())];
+            if let Some(lt) = leader_target {
+                h.push(("leader", lt.coords()));
+            }
+            h
+        }
+        AnnotationElement::GdtDatumTarget { position, .. } => vec![
+            ("position", position.coords()),
+        ],
+        AnnotationElement::ChamferDimension { start, end, offset_dir, .. } => vec![
+            ("start", start.coords()),
+            ("end", end.coords()),
+            ("offset_mid", {
+                let s = Vec3::from(start.coords());
+                let e = Vec3::from(end.coords());
+                let off = Vec3::from(*offset_dir);
+                ((s + e) * 0.5 + off).into()
+            }),
+        ],
+        AnnotationElement::OrdinateDimension { feature, datum, .. } => vec![
+            ("feature", feature.coords()),
+            ("datum", datum.coords()),
+        ],
     };
     // Add "all" handle at average of all points for overall drag
     if !handles.is_empty() {
@@ -567,6 +591,23 @@ fn update_element_point(
                 AnnotationElement::Datum { ref mut position, .. } => {
                     *position = AnnotationPoint::local((Vec3::from(position.coords()) + delta).into());
                 }
+                AnnotationElement::GdtFeatureControlFrame { ref mut position, ref mut leader_target, .. } => {
+                    *position = AnnotationPoint::local((Vec3::from(position.coords()) + delta).into());
+                    if let Some(ref mut lt) = leader_target {
+                        *lt = AnnotationPoint::local((Vec3::from(lt.coords()) + delta).into());
+                    }
+                }
+                AnnotationElement::GdtDatumTarget { ref mut position, .. } => {
+                    *position = AnnotationPoint::local((Vec3::from(position.coords()) + delta).into());
+                }
+                AnnotationElement::ChamferDimension { ref mut start, ref mut end, .. } => {
+                    *start = AnnotationPoint::local((Vec3::from(start.coords()) + delta).into());
+                    *end = AnnotationPoint::local((Vec3::from(end.coords()) + delta).into());
+                }
+                AnnotationElement::OrdinateDimension { ref mut feature, ref mut datum, .. } => {
+                    *feature = AnnotationPoint::local((Vec3::from(feature.coords()) + delta).into());
+                    *datum = AnnotationPoint::local((Vec3::from(datum.coords()) + delta).into());
+                }
             }
             return;
         }
@@ -615,6 +656,34 @@ fn update_element_point(
             }
             AnnotationElement::Datum { ref mut position, .. } => {
                 *position = AnnotationPoint::local(new_local);
+            }
+            AnnotationElement::GdtFeatureControlFrame { ref mut position, ref mut leader_target, .. } => {
+                match point_key {
+                    "position" => *position = AnnotationPoint::local(new_local),
+                    "leader" => { *leader_target = Some(AnnotationPoint::local(new_local)); }
+                    _ => {}
+                }
+            }
+            AnnotationElement::GdtDatumTarget { ref mut position, .. } => {
+                *position = AnnotationPoint::local(new_local);
+            }
+            AnnotationElement::ChamferDimension { ref mut start, ref mut end, ref mut offset_dir, .. } => {
+                let s = Vec3::from(start.coords());
+                let e = Vec3::from(end.coords());
+                match point_key {
+                    "start" => *start = AnnotationPoint::local(new_local),
+                    "end" => *end = AnnotationPoint::local(new_local),
+                    "offset_mid" => *offset_dir = (Vec3::from(new_local) - (s + e) * 0.5).into(),
+                    _ => {}
+                }
+            }
+            AnnotationElement::OrdinateDimension { ref mut feature, ref mut datum, .. } => {
+                let p = AnnotationPoint::local(new_local);
+                match point_key {
+                    "feature" => *feature = p,
+                    "datum" => *datum = p,
+                    _ => {}
+                }
             }
         }
     }

@@ -75,6 +75,12 @@ pub fn bound_node_in_element(element: &AnnotationElement) -> Option<NodeId> {
         AnnotationElement::Leader { anchor, .. } => from_point(anchor),
         AnnotationElement::Callout { anchor, .. } => from_point(anchor),
         AnnotationElement::Datum { position, .. } => from_point(position),
+        AnnotationElement::GdtFeatureControlFrame { position, leader_target, .. } => {
+            from_point(position).or(leader_target.as_ref().and_then(|lt| lt.node))
+        }
+        AnnotationElement::GdtDatumTarget { position, .. } => from_point(position),
+        AnnotationElement::ChamferDimension { start, end, .. } => start.node.or(end.node),
+        AnnotationElement::OrdinateDimension { feature, datum, .. } => feature.node.or(datum.node),
     }
 }
 
@@ -191,6 +197,78 @@ pub fn localize_element_points(element: &AnnotationElement) -> AnnotationElement
         AnnotationElement::Datum { position, size, color } => AnnotationElement::Datum {
             position: loc(position),
             size: *size,
+            color: *color,
+        },
+        AnnotationElement::GdtFeatureControlFrame {
+            symbol,
+            tolerance,
+            diameter,
+            datum_primary,
+            datum_secondary,
+            material_condition,
+            position,
+            leader_target,
+            color,
+        } => AnnotationElement::GdtFeatureControlFrame {
+            symbol: *symbol,
+            tolerance: *tolerance,
+            diameter: *diameter,
+            datum_primary: datum_primary.clone(),
+            datum_secondary: datum_secondary.clone(),
+            material_condition: *material_condition,
+            position: loc(position),
+            leader_target: leader_target.as_ref().map(|lt| loc(lt)),
+            color: *color,
+        },
+        AnnotationElement::GdtDatumTarget {
+            position,
+            label,
+            target_type,
+            size,
+            color,
+        } => AnnotationElement::GdtDatumTarget {
+            position: loc(position),
+            label: label.clone(),
+            target_type: *target_type,
+            size: *size,
+            color: *color,
+        },
+        AnnotationElement::ChamferDimension {
+            start,
+            end,
+            offset_dir,
+            extension_len,
+            arrow_size,
+            label,
+            label_mode,
+            color,
+        } => AnnotationElement::ChamferDimension {
+            start: loc(start),
+            end: loc(end),
+            offset_dir: *offset_dir,
+            extension_len: *extension_len,
+            arrow_size: *arrow_size,
+            label: label.clone(),
+            label_mode: label_mode.clone(),
+            color: *color,
+        },
+        AnnotationElement::OrdinateDimension {
+            feature,
+            datum,
+            axis_dir,
+            jog_length,
+            offset,
+            label,
+            label_mode,
+            color,
+        } => AnnotationElement::OrdinateDimension {
+            feature: loc(feature),
+            datum: loc(datum),
+            axis_dir: *axis_dir,
+            jog_length: *jog_length,
+            offset: *offset,
+            label: label.clone(),
+            label_mode: label_mode.clone(),
             color: *color,
         },
     }
@@ -337,6 +415,7 @@ pub fn resolve_element(
             size: *size,
             color: *color,
         },
+        _ => element.clone(),
     }
 }
 

@@ -11,7 +11,7 @@ use rc3d_scene::annotation::{
     resolve_angle_label, resolve_diameter_label, resolve_length_label, resolve_radius_label,
     AnnotationLabelMode, AnnotationStyle,
 };
-use rc3d_scene::node_data::AnnotationElement;
+use rc3d_scene::node_data::{AnnotationElement, DatumTargetType, GdtMaterialCondition, GdtSymbol};
 
 use super::projection::{leader_label_local_3d, project_point_ndc};
 
@@ -361,6 +361,66 @@ fn draw_leader(
     }
 }
 
+fn gdt_symbol_text(sym: GdtSymbol) -> &'static str {
+    match sym {
+        GdtSymbol::Straightness => "\u{2014}",
+        GdtSymbol::Flatness => "\u{230F}",
+        GdtSymbol::Circularity => "\u{25CB}",
+        GdtSymbol::Cylindricity => "\u{232D}",
+        GdtSymbol::ProfileOfLine => "\u{2312}",
+        GdtSymbol::ProfileOfSurface => "\u{2313}",
+        GdtSymbol::Angularity => "\u{2220}",
+        GdtSymbol::Perpendicularity => "\u{22A5}",
+        GdtSymbol::Parallelism => "\u{2225}",
+        GdtSymbol::Position => "\u{2316}",
+        GdtSymbol::Concentricity => "\u{25CE}",
+        GdtSymbol::Symmetry => "\u{232F}",
+        GdtSymbol::CircularRunout => "R",
+        GdtSymbol::TotalRunout => "TR",
+    }
+}
+
+fn gdt_mc_text(mc: GdtMaterialCondition) -> &'static str {
+    match mc {
+        GdtMaterialCondition::MaximumMaterial => "\u{24C2}",
+        GdtMaterialCondition::LeastMaterial => "\u{24C1}",
+        GdtMaterialCondition::RegardlessOfFeature => "\u{24C8}",
+    }
+}
+
+/// Draw a wireframe rectangle with a vertical compartment divider for FCF / datum area.
+fn draw_fcf_frame(
+    out: &mut Vec<MarkupVertex>,
+    proj: &impl Fn(&[f32; 3]) -> Option<[f32; 3]>,
+    center: [f32; 3],
+    half_w: f32,
+    half_h: f32,
+    color: [f32; 4],
+) {
+    let corners = [
+        [center[0] - half_w, center[1] - half_h, center[2]], // BL
+        [center[0] + half_w, center[1] - half_h, center[2]], // BR
+        [center[0] + half_w, center[1] + half_h, center[2]], // TR
+        [center[0] - half_w, center[1] + half_h, center[2]], // TL
+    ];
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        push_segment_3d(out, proj, corners[i], corners[j], color);
+    }
+    // Vertical divider between symbol and tolerance compartments
+    let div_start = [
+        center[0] - half_w * 0.3,
+        center[1] - half_h,
+        center[2],
+    ];
+    let div_end = [
+        center[0] - half_w * 0.3,
+        center[1] + half_h,
+        center[2],
+    ];
+    push_segment_3d(out, proj, div_start, div_end, color);
+}
+
 /// Collect all key point coordinates for an annotation element.
 fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
     match element {
@@ -381,6 +441,22 @@ fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
         AnnotationElement::Leader { anchor, .. } => vec![anchor.coords()],
         AnnotationElement::Callout { anchor, .. } => vec![anchor.coords()],
         AnnotationElement::Datum { position, .. } => vec![position.coords()],
+        AnnotationElement::GdtFeatureControlFrame { position, leader_target, .. } => {
+            let mut pts = vec![position.coords()];
+            if let Some(lt) = leader_target {
+                pts.push(lt.coords());
+            }
+            pts
+        }
+        AnnotationElement::GdtDatumTarget { position, .. } => vec![position.coords()],
+        AnnotationElement::ChamferDimension { start, end, offset_dir, .. } => {
+            let s = glam::Vec3::from(start.coords());
+            let e = glam::Vec3::from(end.coords());
+            vec![start.coords(), end.coords(), ((s + e) * 0.5 + glam::Vec3::from(*offset_dir)).into()]
+        }
+        AnnotationElement::OrdinateDimension { feature, datum, .. } => {
+            vec![feature.coords(), datum.coords()]
+        }
     }
 }
 
@@ -626,6 +702,236 @@ pub(super) fn project_annotation_elements(
                 for (a, b) in datum_cross_points(position.coords(), *size) {
                     push_segment_3d(&mut out, &proj_ndc, a, b, color);
                 }
+            }
+            AnnotationElement::GdtFeatureControlFrame {
+                symbol,
+                tolerance,
+                diameter,
+                datum_primary,
+                datum_secondary,
+                material_condition,
+                position,
+                leader_target,
+                color,
+            } => {
+                let frame_pos = position.coords();
+
+                // Build text: e.g. "⌓ Ø0.05 Ⓜ A B"
+                let sym_str = gdt_symbol_text(*symbol);
+                let mut fcf_text = if *diameter {
+                    format!("{} Ø{:.2}", sym_str, tolerance)
+                } else {
+                    format!("{} {:.2}", sym_str, tolerance)
+                };
+                if let Some(ref mc) = material_condition {
+                    fcf_text.push_str(&format!(" {}", gdt_mc_text(*mc)));
+                }
+                if let Some(ref d1) = datum_primary {
+                    fcf_text.push_str(&format!(" {}", d1));
+                }
+                if let Some(ref d2) = datum_secondary {
+                    fcf_text.push_str(&format!(" {}", d2));
+                }
+
+                // Leader line from frame to feature
+                if let Some(ref target) = leader_target {
+                    push_segment_3d(&mut out, &proj_ndc, frame_pos, target.coords(), *color);
+                }
+
+                // Frame box around the text
+                let frame_hw: f32 = 0.15;
+                let frame_hh: f32 = 0.1;
+                draw_fcf_frame(&mut out, &proj_ndc, frame_pos, frame_hw, frame_hh, *color);
+
+                push_world_label(
+                    labels,
+                    &ctx,
+                    style,
+                    style.extension_len,
+                    fcf_text,
+                    frame_pos,
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    *color,
+                );
+            }
+            AnnotationElement::GdtDatumTarget {
+                position,
+                label,
+                target_type,
+                size,
+                color,
+            } => {
+                let pos = position.coords();
+                match target_type {
+                    DatumTargetType::Point => {
+                        let r = *size * 0.5;
+                        push_circle_3d(&mut out, &proj_ndc, pos, r, *color, 16);
+                        // Cross within circle
+                        push_segment_3d(
+                            &mut out,
+                            &proj_ndc,
+                            [pos[0] - r, pos[1], pos[2]],
+                            [pos[0] + r, pos[1], pos[2]],
+                            *color,
+                        );
+                        push_segment_3d(
+                            &mut out,
+                            &proj_ndc,
+                            [pos[0], pos[1] - r, pos[2]],
+                            [pos[0], pos[1] + r, pos[2]],
+                            *color,
+                        );
+                    }
+                    DatumTargetType::Line => {
+                        push_segment_3d(
+                            &mut out,
+                            &proj_ndc,
+                            [pos[0] - *size, pos[1], pos[2]],
+                            [pos[0] + *size, pos[1], pos[2]],
+                            *color,
+                        );
+                        push_circle_3d(
+                            &mut out,
+                            &proj_ndc,
+                            [pos[0] - *size, pos[1], pos[2]],
+                            *size * 0.1,
+                            *color,
+                            8,
+                        );
+                        push_circle_3d(
+                            &mut out,
+                            &proj_ndc,
+                            [pos[0] + *size, pos[1], pos[2]],
+                            *size * 0.1,
+                            *color,
+                            8,
+                        );
+                    }
+                    DatumTargetType::Area => {
+                        let r = *size * 0.5;
+                        // Hatched rectangle
+                        draw_fcf_frame(&mut out, &proj_ndc, pos, r, r, *color);
+                        // Diagonal hatch lines
+                        for i in 0..4 {
+                            let off = (i as f32 - 1.5) * r * 0.5;
+                            push_segment_3d(
+                                &mut out,
+                                &proj_ndc,
+                                [pos[0] - r + off, pos[1] - r, pos[2]],
+                                [pos[0] + r + off, pos[1] + r, pos[2]],
+                                *color,
+                            );
+                        }
+                    }
+                }
+                push_world_label(
+                    labels,
+                    &ctx,
+                    style,
+                    style.extension_len,
+                    label.clone(),
+                    pos,
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    *color,
+                );
+            }
+            AnnotationElement::ChamferDimension {
+                start,
+                end,
+                offset_dir,
+                extension_len,
+                arrow_size,
+                label,
+                label_mode,
+                color,
+            } => {
+                let eff = style.merge_with_element(Some(*extension_len), Some(*arrow_size));
+                let formatted_label = if label.is_empty() {
+                    "C".to_string()
+                } else {
+                    format!("C{}", label)
+                };
+                draw_linear_dimension(
+                    &mut out,
+                    labels,
+                    &proj_ndc,
+                    &ctx,
+                    start.coords(),
+                    end.coords(),
+                    *offset_dir,
+                    eff.extension_len,
+                    eff.arrow_size,
+                    &formatted_label,
+                    label_mode,
+                    *color,
+                    &eff,
+                );
+            }
+            AnnotationElement::OrdinateDimension {
+                feature,
+                datum,
+                axis_dir,
+                jog_length,
+                offset,
+                label,
+                label_mode,
+                color,
+            } => {
+                let f = feature.coords();
+                let d = datum.coords();
+                let axis = Vec3::from(*axis_dir);
+                let perp = if axis.x.abs() > 0.5 {
+                    Vec3::new(0.0, offset.signum(), 0.0)
+                } else {
+                    Vec3::new(offset.signum(), 0.0, 0.0)
+                };
+                let jog_start = [
+                    d[0] + axis.x * *jog_length,
+                    d[1] + axis.y * *jog_length,
+                    d[2] + axis.z * *jog_length,
+                ];
+                let jog_mid = [
+                    jog_start[0] + perp.x,
+                    jog_start[1] + perp.y,
+                    jog_start[2] + perp.z,
+                ];
+                let label_pt = [
+                    jog_mid[0] + axis.x * 0.1,
+                    jog_mid[1] + axis.y * 0.1,
+                    jog_mid[2] + axis.z * 0.1,
+                ];
+
+                // Jogged leader
+                push_segment_3d(&mut out, &proj_ndc, f, jog_start, *color);
+                push_segment_3d(&mut out, &proj_ndc, jog_start, jog_mid, *color);
+                // Short horizontal extension at label
+                push_segment_3d(
+                    &mut out,
+                    &proj_ndc,
+                    jog_mid,
+                    [
+                        jog_mid[0] + axis.x * 0.3,
+                        jog_mid[1] + axis.y * 0.3,
+                        jog_mid[2] + axis.z * 0.3,
+                    ],
+                    *color,
+                );
+
+                let dist = distance_3d(f, d);
+                let text = resolve_length_label(label, label_mode, dist, style);
+                push_world_label(
+                    labels,
+                    &ctx,
+                    style,
+                    style.extension_len,
+                    text,
+                    label_pt,
+                    axis.into(),
+                    [perp.y, -perp.x, 0.0],
+                    *color,
+                );
             }
         }
     }
