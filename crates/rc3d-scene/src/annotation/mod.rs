@@ -22,4 +22,6 @@ pub use resolve::{
 };
 pub use types::*;
 
-pub use crate::node_data::{GdtSymbol, GdtMaterialCondition, DatumTargetType};
+pub use crate::node_data::{
+    GdtSymbol, GdtMaterialCondition, DatumTargetType, WeldType,
+};

@@ -254,3 +254,29 @@ pub fn ordinate_dimension_key_points(
     let jog_corner = v3(feature) + axis * jog_length + perp * offset;
     vec![feature, datum, to_arr(jog_corner)]
 }
+
+/// Key points for a surface finish annotation (position only).
+pub fn surface_finish_key_points(
+    position: [f32; 3],
+    _direction: [f32; 3],
+) -> Vec<[f32; 3]> {
+    vec![position]
+}
+
+/// Key points for a weld symbol annotation (position only).
+pub fn weld_symbol_key_points(
+    position: [f32; 3],
+    _arrow_dir: [f32; 3],
+) -> Vec<[f32; 3]> {
+    vec![position]
+}
+
+/// Key points for a datum identifier triangle (position + apex).
+pub fn datum_identifier_key_points(
+    position: [f32; 3],
+    size: f32,
+) -> Vec<[f32; 3]> {
+    let p = v3(position);
+    let apex = p + Vec3::new(0.0, size, 0.0);
+    vec![position, to_arr(apex)]
+}

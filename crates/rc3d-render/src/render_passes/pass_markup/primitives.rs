@@ -5,6 +5,7 @@ use crate::world_label::{
     linear_dimension_label_basis, normalize3, resolve_label_height_world, WorldLabelCommand,
 };
 use glam::Vec3;
+use glyphon::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use rc3d_scene::annotation::{
     angle_dimension_label_point, angle_dimension_lines, angle_degrees, datum_cross_points,
     diameter_dimension_points, distance_3d, linear_dimension_points, radial_dimension_points,
@@ -132,6 +133,53 @@ fn push_world_label(
         screen_height_px: style.font_size,
         color,
     });
+}
+
+/// Measure text width in world-space units given font size in screen pixels.
+/// Returns (world_width, world_height) or None if measurement fails.
+fn measure_text_world(
+    text: &str,
+    font_size: f32,
+    font_system: &mut FontSystem,
+    label_attrs: Attrs<'_>,
+    at: [f32; 3],
+    up_axis: [f32; 3],
+    model: glam::Mat4,
+    scene_vp: glam::Mat4,
+    screen_w: f32,
+    screen_h: f32,
+    depth_reversed_z: bool,
+    extension_len: f32,
+    label_height_factor: f32,
+) -> Option<(f32, f32)> {
+    let mut buffer = Buffer::new(font_system, Metrics::new(font_size, 1.0));
+    buffer.set_text(font_system, text, label_attrs, Shaping::Advanced);
+    buffer.shape_until_scroll(font_system, false);
+
+    let max_line_w = buffer
+        .layout_runs()
+        .map(|run| run.line_w)
+        .fold(0.0f32, |a, b| if a > b { a } else { b });
+
+    if max_line_w <= 0.0 {
+        return None;
+    }
+
+    let world_h = resolve_label_height_world(
+        extension_len,
+        label_height_factor,
+        font_size,
+        at,
+        up_axis,
+        model,
+        scene_vp,
+        screen_w,
+        screen_h,
+        depth_reversed_z,
+    );
+    let world_w = world_h * (max_line_w / font_size);
+
+    Some((world_w, world_h))
 }
 
 fn draw_linear_dimension(
@@ -457,6 +505,9 @@ fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
         AnnotationElement::OrdinateDimension { feature, datum, .. } => {
             vec![feature.coords(), datum.coords()]
         }
+        AnnotationElement::SurfaceFinish { position, .. } => vec![position.coords()],
+        AnnotationElement::WeldSymbol { position, .. } => vec![position.coords()],
+        AnnotationElement::DatumIdentifier { position, .. } => vec![position.coords()],
     }
 }
 
@@ -517,6 +568,7 @@ pub(super) fn project_annotation_elements(
     screen_h: f32,
     depth_reversed_z: bool,
     occlusion: Option<(&[f32], u32, u32)>, // (depth_buf, buf_w, buf_h)
+    mut font_system: Option<(&mut FontSystem, Attrs<'_>)>,
     labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
@@ -738,11 +790,49 @@ pub(super) fn project_annotation_elements(
                     push_segment_3d(&mut out, &proj_ndc, frame_pos, target.coords(), *color);
                 }
 
-                // Frame box: size proportional to text content and font size
-                let char_count = fcf_text.chars().count().max(1) as f32;
-                let frame_hw: f32 = style.font_size * char_count * 0.012;
-                let frame_hh: f32 = style.font_size * 0.018;
-                draw_fcf_frame(&mut out, &proj_ndc, frame_pos, frame_hw, frame_hh, *color);
+                // Frame sizing: try precise text measurement first, fallback to heuristic.
+                let mut sized = false;
+                if let Some((fs, attrs)) = font_system.as_mut() {
+                    if let Some((text_w, text_h)) = measure_text_world(
+                        &fcf_text,
+                        style.font_size,
+                        fs,
+                        *attrs,
+                        frame_pos,
+                        [0.0, 1.0, 0.0],
+                        ctx.model,
+                        ctx.scene_vp,
+                        ctx.screen_w,
+                        ctx.screen_h,
+                        ctx.depth_reversed_z,
+                        style.extension_len,
+                        style.label_height_factor,
+                    ) {
+                        let frame_hh = text_h * 0.55;
+                        let frame_hw = text_w * 0.5 + text_h * 0.25;
+                        draw_fcf_frame(&mut out, &proj_ndc, frame_pos, frame_hw, frame_hh, *color);
+                        sized = true;
+                    }
+                }
+                if !sized {
+                    // Fallback: heuristic sizing from character count
+                    let font_h_world = resolve_label_height_world(
+                        style.extension_len,
+                        style.label_height_factor,
+                        style.font_size,
+                        frame_pos,
+                        [0.0, 1.0, 0.0], // vertical axis
+                        ctx.model,
+                        ctx.scene_vp,
+                        ctx.screen_w,
+                        ctx.screen_h,
+                        ctx.depth_reversed_z,
+                    );
+                    let char_count = fcf_text.chars().count().max(1) as f32;
+                    let frame_hh = font_h_world * 0.6;
+                    let frame_hw = font_h_world * char_count * 0.3 + font_h_world * 0.3;
+                    draw_fcf_frame(&mut out, &proj_ndc, frame_pos, frame_hw, frame_hh, *color);
+                }
 
                 push_world_label(
                     labels,
@@ -934,6 +1024,10 @@ pub(super) fn project_annotation_elements(
                     *color,
                 );
             }
+            // New annotation types -- rendering to be added later
+            AnnotationElement::SurfaceFinish { .. } => {}
+            AnnotationElement::WeldSymbol { .. } => {}
+            AnnotationElement::DatumIdentifier { .. } => {}
         }
     }
 

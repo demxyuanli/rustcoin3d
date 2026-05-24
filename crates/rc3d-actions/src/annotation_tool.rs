@@ -281,6 +281,9 @@ fn element_handles(elem: &AnnotationElement) -> Vec<(&'static str, [f32; 3])> {
         AnnotationElement::Leader { anchor, .. } => vec![("anchor", anchor.coords())],
         AnnotationElement::Callout { anchor, .. } => vec![("anchor", anchor.coords())],
         AnnotationElement::Datum { position, .. } => vec![("position", position.coords())],
+        AnnotationElement::SurfaceFinish { position, .. } => vec![("position", position.coords())],
+        AnnotationElement::WeldSymbol { position, .. } => vec![("position", position.coords())],
+        AnnotationElement::DatumIdentifier { position, .. } => vec![("position", position.coords())],
     };
     if !handles.is_empty() {
         let sum: [f32; 3] = handles.iter().fold([0.0; 3], |acc, (_, p)| {
@@ -327,6 +330,9 @@ fn element_plane_normal(elem: &AnnotationElement) -> Option<Vec3> {
             if n.length_squared() > 1e-8 { Some(n.normalize()) } else { None }
         }
         AnnotationElement::Datum { .. } | AnnotationElement::GdtDatumTarget { .. } => Some(Vec3::Z),
+        AnnotationElement::SurfaceFinish { .. }
+        | AnnotationElement::WeldSymbol { .. }
+        | AnnotationElement::DatumIdentifier { .. } => Some(Vec3::Z),
         _ => None,
     }
 }
@@ -396,6 +402,11 @@ fn apply_point_update(
         AnnotationElement::Leader { anchor, .. } => { *anchor = AnnotationPoint::local(new_local); }
         AnnotationElement::Callout { anchor, .. } => { *anchor = AnnotationPoint::local(new_local); }
         AnnotationElement::Datum { position, .. } => { *position = AnnotationPoint::local(new_local); }
+        AnnotationElement::SurfaceFinish { position, .. }
+        | AnnotationElement::WeldSymbol { position, .. }
+        | AnnotationElement::DatumIdentifier { position, .. } => {
+            *position = AnnotationPoint::local(new_local);
+        }
     }
 }
 
@@ -413,6 +424,9 @@ fn shift_all_points(elem: &mut AnnotationElement, delta: Vec3) {
         AnnotationElement::Leader { anchor, .. } => { shift(anchor); }
         AnnotationElement::Callout { anchor, .. } => { shift(anchor); }
         AnnotationElement::Datum { position, .. } => { shift(position); }
+        AnnotationElement::SurfaceFinish { position, .. } => { shift(position); }
+        AnnotationElement::WeldSymbol { position, .. } => { shift(position); }
+        AnnotationElement::DatumIdentifier { position, .. } => { shift(position); }
     }
 }
 

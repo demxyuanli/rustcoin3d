@@ -1062,6 +1062,26 @@ impl Default for DatumTargetType {
     }
 }
 
+/// Welding symbol type (ISO 2553 / AWS A2.4).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum WeldType {
+    Fillet,           // triangle
+    SquareGroove,     // vertical lines
+    VGroove,          // V
+    BevelGroove,      // single bevel
+    UGroove,          // U
+    JGroove,          // J
+    Plug,             // square
+    Spot,             // filled circle
+    Seam,             // open circles
+}
+
+impl Default for WeldType {
+    fn default() -> Self {
+        Self::Fillet
+    }
+}
+
 /// A 3D annotation element positioned in world space.
 /// Projected to screen coordinates each frame using the camera VP matrix.
 ///
@@ -1202,6 +1222,52 @@ pub enum AnnotationElement {
         offset: f32,
         label: String,
         label_mode: AnnotationLabelMode,
+        color: [f32; 4],
+    },
+    /// Surface finish / roughness annotation (ISO 1302).
+    /// e.g. Ra 3.2 with a check mark symbol.
+    SurfaceFinish {
+        /// Ra value in micrometers (e.g. 3.2).
+        ra_value: f32,
+        /// Optional additional text (e.g. machining method).
+        note: Option<String>,
+        /// Anchor point on the surface.
+        position: AnnotationPoint,
+        /// Direction the leader points (from annotation to surface).
+        direction: [f32; 3],
+        /// Display color.
+        color: [f32; 4],
+    },
+    /// Welding symbol annotation (ISO 2553 / AWS A2.4).
+    WeldSymbol {
+        /// Weld type (fillet, groove, plug, etc.).
+        weld_type: WeldType,
+        /// Weld size (e.g. leg length for fillet).
+        size: Option<f32>,
+        /// Weld length.
+        length: Option<f32>,
+        /// Field or shop weld.
+        field_weld: bool,
+        /// Arrow side text.
+        arrow_side_text: Option<String>,
+        /// Other side text.
+        other_side_text: Option<String>,
+        /// Arrow anchor point on the joint.
+        position: AnnotationPoint,
+        /// Direction the arrow points.
+        arrow_dir: [f32; 3],
+        color: [f32; 4],
+    },
+    /// Datum identifier triangle (ISO 5459) -- filled or open triangle with letter.
+    DatumIdentifier {
+        /// Datum letter (e.g. "A").
+        label: String,
+        /// Triangle base center position.
+        position: AnnotationPoint,
+        /// Triangle size.
+        size: f32,
+        /// Whether the triangle is filled.
+        filled: bool,
         color: [f32; 4],
     },
 }
