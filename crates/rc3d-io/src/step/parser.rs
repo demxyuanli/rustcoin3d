@@ -401,6 +401,7 @@ fn parse_keyword(input: &str) -> Result<(String, &str), String> {
 }
 
 /// Streaming parser: parse STEP file incrementally to reduce memory usage.
+/// Note: does not parse the HEADER section; `Exchange.header` will be `None`.
 /// Reads the file line by line, skipping HEADER, then parses DATA section entities.
 /// Properly handles multi-line entities by buffering until complete.
 pub fn parse_exchange_streaming<R: BufRead>(

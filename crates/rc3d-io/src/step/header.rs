@@ -38,12 +38,18 @@ pub fn parse_header(input: &str) -> Option<(HeaderInfo, &str)> {
         let trimmed = remaining.trim_start();
         if trimmed.is_empty() { break; }
         pos = header_text.len() - trimmed.len();
-        let (keyword, after_kw) = parse_keyword(&header_text[pos..])?;
+        let (keyword, after_kw) = match parse_keyword(&header_text[pos..]) {
+            Some(v) => v,
+            None => { log::warn!("[STEP header] malformed keyword at offset {}", pos); break; }
+        };
         let after_trim = after_kw.trim_start();
         pos = header_text.len() - after_trim.len();
 
         if !after_trim.starts_with('(') { break; }
-        let (args_str, after_args) = extract_paren_content(&header_text[pos + 1..])?;
+        let (args_str, after_args) = match extract_paren_content(&header_text[pos + 1..]) {
+            Some(v) => v,
+            None => { log::warn!("[STEP header] unmatched paren in {}", keyword); break; }
+        };
         pos = header_text.len() - after_args.len();
         let after_trim2 = after_args.trim_start();
         if after_trim2.starts_with(';') {
@@ -97,16 +103,22 @@ fn parse_string_list(input: &str) -> Vec<String> {
     let mut rest = input.trim();
     while !rest.is_empty() && (rest.starts_with('\'') || rest.starts_with('(')) {
         if rest.starts_with('\'') {
-            let (s, after) = parse_single_quoted_string(&rest[1..])
-                .unwrap_or((String::new(), ""));
-            result.push(s);
-            rest = after.trim_start();
+            match parse_single_quoted_string(&rest[1..]) {
+                Some((s, after)) => { result.push(s); rest = after.trim_start(); }
+                None => {
+                    log::warn!("[STEP header] unterminated string in list '{}'...", &rest[..rest.len().min(30)]);
+                    break;
+                }
+            }
         } else {
             // Nested list element: ('content'), ...
-            let (inner, after) = extract_paren_content(&rest[1..])
-                .unwrap_or(("", ""));
-            result.extend(parse_string_list(inner));
-            rest = after.trim_start();
+            match extract_paren_content(&rest[1..]) {
+                Some((inner, after)) => { result.extend(parse_string_list(inner)); rest = after.trim_start(); }
+                None => {
+                    log::warn!("[STEP header] unmatched paren in list '{}'...", &rest[..rest.len().min(30)]);
+                    break;
+                }
+            }
         }
         if rest.starts_with(',') {
             rest = rest[1..].trim_start();
