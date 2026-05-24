@@ -361,51 +361,6 @@ fn draw_leader(
     }
 }
 
-/// Back-face test: returns true when the annotation should be hidden from this camera position.
-/// Uses offset direction (where available) as the intended viewing side, avoiding the ambiguity
-/// of plane normals that depend on arbitrary point ordering.
-fn is_back_facing(
-    element: &AnnotationElement,
-    model: glam::Mat4,
-    camera_pos: glam::Vec3,
-    midpoint: glam::Vec3,
-) -> bool {
-    let to_cam = camera_pos - midpoint;
-    match element {
-        AnnotationElement::Dimension { offset_dir, .. } => {
-            // offset_dir points from geometry toward the annotation — that's the "front"
-            let world_offset = model.transform_vector3(glam::Vec3::from(*offset_dir));
-            world_offset.dot(to_cam) < 0.0
-        }
-        AnnotationElement::AngleDimension { center, arm1, arm2, .. } => {
-            let c = glam::Vec3::from(center.coords());
-            let a1 = glam::Vec3::from(arm1.coords());
-            let a2 = glam::Vec3::from(arm2.coords());
-            let n = (a1 - c).cross(a2 - c);
-            if n.length_squared() < 1e-8 { return false; }
-            let world_n = model.transform_vector3(n);
-            // Angle plane can face either direction; only cull when edge-on
-            world_n.normalize().dot(to_cam.normalize()).abs() > 0.98
-        }
-        AnnotationElement::RadialDimension { center, perimeter, .. } => {
-            // Direction from center to perimeter is the viewing direction
-            let world_dir = model.transform_vector3(
-                glam::Vec3::from(perimeter.coords()) - glam::Vec3::from(center.coords())
-            );
-            world_dir.dot(to_cam) < 0.0
-        }
-        AnnotationElement::DiameterDimension { center, p1, p2, .. } => {
-            let c = glam::Vec3::from(center.coords());
-            let n = (glam::Vec3::from(p1.coords()) - c).cross(glam::Vec3::from(p2.coords()) - c);
-            if n.length_squared() < 1e-8 { return false; }
-            let world_n = model.transform_vector3(n);
-            world_n.normalize().dot(to_cam.normalize()).abs() > 0.98
-        }
-        // Leader, Callout, Datum: no well-defined plane, always visible
-        _ => false,
-    }
-}
-
 /// Collect all key point coordinates for an annotation element.
 fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
     match element {
@@ -448,7 +403,6 @@ pub(super) fn project_annotation_elements(
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
-    camera_pos: glam::Vec3,
     labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
@@ -461,19 +415,10 @@ pub(super) fn project_annotation_elements(
         // Back-face culling skipped: annotation plane normal depends on arbitrary
         // point ordering (start/end, offset sign). NDC culling alone is sufficient.
         // --- visibility culling ---
-        // Back-face: use offset direction or geometry-based normal per element type
-        let pts = element_key_points(&pa.element);
-        let world_mid = {
-            let mut sum = glam::Vec3::ZERO;
-            for p in &pts { sum += model.transform_point3(glam::Vec3::from(*p)); }
-            sum / pts.len() as f32
-        };
-
         let mut visibility = AnnotationVisibility::default();
-        visibility.back_facing = is_back_facing(&pa.element, model, camera_pos, world_mid);
         visibility.outside_ndc =
             !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z);
-        if visibility.back_facing || visibility.outside_ndc {
+        if visibility.outside_ndc {
             continue;
         }
         // --- end culling ---
