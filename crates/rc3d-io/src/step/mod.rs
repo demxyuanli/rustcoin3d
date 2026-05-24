@@ -14,6 +14,7 @@ pub mod write;
 pub mod validate;
 pub mod xml;
 pub mod bool;
+pub mod curve;
 pub mod header;
 pub mod topo;
 

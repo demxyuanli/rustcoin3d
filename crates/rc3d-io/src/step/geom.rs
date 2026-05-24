@@ -20,20 +20,54 @@ pub fn sample_curve(
     };
     match record.name.as_str() {
         "LINE" => sample_line(&record.params, entities, start, end),
-        "CIRCLE" => sample_circle(&record.params, entities, start, end),
-        "ELLIPSE" => sample_ellipse(&record.params, entities, start, end),
+        "CIRCLE" => sample_circle(&record.params, entities, start, end, tolerance),
+        "ELLIPSE" => sample_ellipse(&record.params, entities, start, end, tolerance),
         "POLYLINE" => sample_polyline(&record.params, entities),
-        "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" => {
+        "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" | "RATIONAL_B_SPLINE_CURVE" => {
             sample_bspline(&record.params, entities, tolerance)
         }
-        "SURFACE_CURVE" => {
-            // SURFACE_CURVE('', #curve_3d, (#pcurve1, #pcurve2), .PCURVE_S1.)
-            // Resolve to the underlying 3D curve and recurse
+        "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+            // surface-bounded curve wrappers: unwrap to the underlying 3D curve
+            // SURFACE_CURVE/SEAM_CURVE/INTERSECTION_CURVE('', #curve_3d, pcurves, sense)
             if let Some(geom_curve_id) = nth_ref(&record.params, 1) {
                 sample_curve(geom_curve_id, entities, start, end, tolerance)
             } else {
                 vec![start, end]
             }
+        }
+        "TRIMMED_CURVE" => {
+            // TRIMMED_CURVE('', #basis_curve, (trim1), (trim2), .T., .CARTESIAN.)
+            // Unwrap to the underlying curve for sampling
+            if let Some(inner_id) = nth_ref(&record.params, 1) {
+                sample_curve(inner_id, entities, start, end, tolerance)
+            } else {
+                vec![start, end]
+            }
+        }
+        "OFFSET_CURVE_3D" => {
+            // OFFSET_CURVE_3D('', #basis_curve, #ref_direction, distance, .F.)
+            // Unwrap to the underlying curve (ignore offset for sampling)
+            if let Some(inner_id) = nth_ref(&record.params, 1) {
+                sample_curve(inner_id, entities, start, end, tolerance)
+            } else {
+                vec![start, end]
+            }
+        }
+        "COMPOSITE_CURVE" => {
+            // COMPOSITE_CURVE('', (#seg1, #seg2, ...), .F.)
+            // Each segment is a COMPOSITE_CURVE_SEGMENT('', .CONTINUOUS., .T., #parent_curve)
+            let seg_ids = nth_list_refs(&record.params, 1).unwrap_or_default();
+            let mut all_pts = Vec::new();
+            for seg_id in seg_ids {
+                if let Some(seg) = entities.get(&seg_id) {
+                    // params: [0]=name, [1]=transition, [2]=same_sense, [3]=#parent_curve
+                    if let Some(parent_id) = nth_ref(&seg.params, 3) {
+                        let seg_pts = sample_curve(parent_id, entities, start, end, tolerance);
+                        all_pts.extend(seg_pts);
+                    }
+                }
+            }
+            if all_pts.is_empty() { vec![start, end] } else { all_pts }
         }
         _ => vec![start, end],
     }
@@ -51,7 +85,7 @@ fn sample_line(
     if let (Some(pid), Some(did)) = (pnt_id, dir_id) {
         if let Some(p) = topology::resolve_point(pid, entities) {
             // DIRECTION entities must be resolved via resolve_direction, not resolve_point
-            let dir = topology::resolve_direction_public(did, entities)
+            let dir = topology::resolve_direction(did, entities)
                 .unwrap_or_else(|| {
                     // Fallback: try as VECTOR or other direction-like entity
                     resolve_direction_fallback(did, entities)
@@ -64,13 +98,25 @@ fn sample_line(
 }
 
 /// Fallback direction resolution for VECTOR and other direction-like entities.
+/// Compute adaptive sample count using chordal tolerance.
+/// For arc length `L`, radius `R`, and chordal tolerance `ε`:
+///   n = max(2, min(128, ceil(L / sqrt(8 * ε * R))))
+fn chordal_sample_count(arc_length: f32, radius: f32, tolerance: f32) -> usize {
+    if radius < 1e-6 || tolerance < 1e-10 {
+        return 4;
+    }
+    let step = (8.0 * tolerance * radius).sqrt();
+    let n = (arc_length / step.max(1e-6)).ceil() as usize;
+    n.max(4).min(128)
+}
+
 fn resolve_direction_fallback(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
     let record = entities.get(&dir_id)?;
     match record.name.as_str() {
         "VECTOR" => {
             // VECTOR: (name, #direction, magnitude)
             let inner_dir_id = nth_ref(&record.params, 1)?;
-            topology::resolve_direction_public(inner_dir_id, entities)
+            topology::resolve_direction(inner_dir_id, entities)
         }
         _ => None,
     }
@@ -81,6 +127,7 @@ fn sample_circle(
     entities: &EntityIndex,
     _start: Vec3,
     _end: Vec3,
+    tolerance: f32,
 ) -> Vec<Vec3> {
     // CIRCLE args: (name, #position, radius)
     let pos_id = nth_ref(params, 1);
@@ -89,11 +136,12 @@ fn sample_circle(
         .and_then(|id| topology::resolve_placement(id, entities))
         .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
 
-    let n = (radius.abs() * 2.0 * PI / 0.1).max(8.0).min(64.0) as usize;
+    let circumference = radius.abs() * 2.0 * PI;
+    let n = chordal_sample_count(circumference, radius.abs(), tolerance);
     let mut points = Vec::with_capacity(n + 1);
+    let y_axis = z_axis.cross(x_axis).normalize();
     for i in 0..=n {
         let angle = (i as f32) * 2.0 * PI / (n as f32);
-        let y_axis = z_axis.cross(x_axis).normalize();
         let pt = origin + x_axis * (radius * angle.cos()) + y_axis * (radius * angle.sin());
         points.push(pt);
     }
@@ -105,6 +153,7 @@ fn sample_ellipse(
     entities: &EntityIndex,
     _start: Vec3,
     _end: Vec3,
+    tolerance: f32,
 ) -> Vec<Vec3> {
     // ELLIPSE args: (name, #position, semi_axis_1, semi_axis_2)
     let pos_id = nth_ref(params, 1);
@@ -114,11 +163,14 @@ fn sample_ellipse(
         .and_then(|id| topology::resolve_placement(id, entities))
         .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
 
-    let n = ((a.abs() + b.abs()) * PI / 0.1).max(8.0).min(64.0) as usize;
+    // Ramanujan approximation for ellipse circumference
+    let circ = PI * (3.0 * (a.abs() + b.abs())
+        - ((3.0 * a.abs() + b.abs()) * (a.abs() + 3.0 * b.abs())).sqrt());
+    let n = chordal_sample_count(circ, a.abs().max(b.abs()), tolerance);
     let mut points = Vec::with_capacity(n + 1);
+    let y_axis = z_axis.cross(x_axis).normalize();
     for i in 0..=n {
         let angle = (i as f32) * 2.0 * PI / (n as f32);
-        let y_axis = z_axis.cross(x_axis).normalize();
         let pt = origin + x_axis * (a * angle.cos()) + y_axis * (b * angle.sin());
         points.push(pt);
     }
@@ -306,7 +358,17 @@ fn sample_bspline(
         knot_vec = expanded;
     }
 
-    let pts: Vec<[f32; 4]> = ctrl_pts.iter().map(|p| [p.x, p.y, p.z, 1.0]).collect();
+    // Ensure knot vector is sorted (expansion may append interpolated values out of order).
+    // Use stable sort to preserve multiplicity ordering for identical knot values.
+    knot_vec.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Extract rational weights — scan all params for a List of reals matching ctrl_pts count.
+    // RATIONAL_B_SPLINE_CURVE entity has its weight list merged after the knot spec params.
+    let weights: Vec<f32> = find_weights_list(params, ctrl_pts.len())
+        .unwrap_or_else(|| vec![1.0; ctrl_pts.len()]);
+    let pts: Vec<[f32; 4]> = ctrl_pts.iter().enumerate()
+        .map(|(i, p)| [p.x, p.y, p.z, weights.get(i).copied().unwrap_or(1.0)])
+        .collect();
 
     let n_pts = (pts.len() * 8).max(16);
     let mut result = Vec::with_capacity(n_pts);
@@ -327,7 +389,7 @@ fn sample_bspline(
 
 /// Resolve B-spline control points from a parameter that contains
 /// a list of entity references (e.g. (#10, #20, #30, ...)).
-fn resolve_bspline_ctrl_pts(
+pub fn resolve_bspline_ctrl_pts(
     params: &StepValue,
     index: usize,
     entities: &EntityIndex,
@@ -365,6 +427,34 @@ fn eval_bspline_curve(ctrl: &[[f32; 4]], degree: usize, knots: &[f32], t: f32) -
     pt
 }
 
+/// Scan all params for a List of real values matching the expected count.
+/// Used to extract rational B-spline weights that are appended after knot_spec.
+pub fn find_weights_list(params: &StepValue, expected_count: usize) -> Option<Vec<f32>> {
+    let list = params.as_list()?;
+    // Distinguish non-rational B-splines (only knots list at index 7)
+    // from rational B-splines (knots at 7 + weights at 9).
+    // Count ALL List-of-Reals in params. If there are 2+,
+    // the last one is the weights (and it must match expected_count).
+    // If only 1, it's the knots of a non-rational curve → return None.
+    let real_lists: Vec<&Vec<StepValue>> = list.iter()
+        .filter_map(|v| {
+            if let StepValue::List(inner) = v {
+                if inner.iter().all(|x| matches!(x, StepValue::Real(_))) {
+                    return Some(inner);
+                }
+            }
+            None
+        })
+        .collect();
+    if real_lists.len() >= 2 {
+        let candidate = real_lists.last().unwrap();
+        if candidate.len() == expected_count {
+            return Some(candidate.iter().map(|v| v.as_real().unwrap() as f32).collect());
+        }
+    }
+    None
+}
+
 pub fn find_span(degree: usize, knots: &[f32], t: f32) -> usize {
     let n = knots.len() - degree - 1;
     if t >= knots[n] { return n - 1; }
@@ -374,30 +464,41 @@ pub fn find_span(degree: usize, knots: &[f32], t: f32) -> usize {
     degree
 }
 
+/// Max B-spline degree supported for stack-allocated basis computation.
+const MAX_DEGREE: usize = 20;
+
 pub fn bspline_bases(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
-    let mut n = vec![vec![0.0f32; degree + 1]; degree + 1];
-    n[0][0] = 1.0;
+    assert!(degree <= MAX_DEGREE, "B-spline degree {} exceeds MAX_DEGREE", degree);
+    // Stack-allocated flat triangular array: n[j*(MAX_DEGREE+1) + i]
+    let stride = MAX_DEGREE + 1;
+    let mut n = [0.0f32; (MAX_DEGREE + 1) * (MAX_DEGREE + 1)];
+    n[0] = 1.0; // n[0][0]
     for j in 1..=degree {
+        let row_j = j * stride;
+        let row_prev = (j - 1) * stride;
         for i in 0..=j {
-            // Left term: needs i >= 1 (for n[j-1][i-1]) and span + i >= j (for knots index)
             let left = if i >= 1 && span + i >= j {
-                let idx_lo = span + i - j; // >= 0 because span + i >= j
+                let idx_lo = span + i - j;
                 if idx_lo + j < knots.len() {
                     let denom = knots[idx_lo + j] - knots[idx_lo];
-                    if denom > 1e-10 { (t - knots[idx_lo]) / denom * n[j-1][i-1] } else { 0.0 }
+                    if denom > 1e-10 {
+                        (t - knots[idx_lo]) / denom * n[row_prev + i - 1]
+                    } else { 0.0 }
                 } else { 0.0 }
             } else { 0.0 };
-            // Right term: needs i < j (for n[j-1][i]) and span + i + 1 >= j (for knots index)
             let right = if i < j && span + i + 1 >= j && span + i + 1 < knots.len() {
-                let idx_lo = span + i + 1 - j; // >= 0 because span + i + 1 >= j
+                let idx_lo = span + i + 1 - j;
                 let denom = knots[idx_lo + j] - knots[idx_lo];
-                if denom > 1e-10 { (knots[idx_lo + j] - t) / denom * n[j-1][i] } else { 0.0 }
+                if denom > 1e-10 {
+                    (knots[idx_lo + j] - t) / denom * n[row_prev + i]
+                } else { 0.0 }
             } else { 0.0 };
-            n[j][i] = left + right;
+            n[row_j + i] = left + right;
         }
     }
+    let row_deg = degree * stride;
     let start = span.saturating_sub(degree);
-    (0..=degree).map(|i| (start + i, n[degree][i])).collect()
+    (0..=degree).map(|i| (start + i, n[row_deg + i])).collect()
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -406,7 +507,7 @@ pub fn nth_ref(params: &StepValue, index: usize) -> Option<u64> {
     params.nth_param(index)?.as_ref_id()
 }
 
-fn nth_list_refs(params: &StepValue, index: usize) -> Option<Vec<u64>> {
+pub fn nth_list_refs(params: &StepValue, index: usize) -> Option<Vec<u64>> {
     params.nth_param(index)?.as_list()
         .map(|v| v.iter().filter_map(|p| p.as_ref_id()).collect())
 }
@@ -438,15 +539,6 @@ pub fn nth_list_ints(params: &StepValue, index: usize) -> Vec<i64> {
 }
 
 #[allow(dead_code)]
-fn nth_list_of_lists(params: &StepValue, index: usize) -> Vec<Vec<StepValue>> {
-    match params.nth_param(index) {
-        Some(StepValue::List(outer)) => outer.iter()
-            .map(|v| match v { StepValue::List(inner) => inner.clone(), _ => vec![] })
-            .collect(),
-        _ => vec![],
-    }
-}
-
 // ── Tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -525,5 +617,86 @@ mod tests {
         assert!(!grid[0].is_empty());
         // Revolution of a radius-2 line around Z should produce cylindrical-like grid
         assert!(grid.len() >= 16);
+    }
+
+    #[test]
+    fn test_trimmed_curve_unwrap() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = DIRECTION('', (1.0, 0.0, 0.0));
+#10 = LINE('', #1, #2);
+#20 = TRIMMED_CURVE('', #10, (0.0, 1.0), (0.0, 1.0), .T., .CARTESIAN.);\
+",
+        );
+        // TRIMMED_CURVE unwraps to the inner LINE — should produce start + direction
+        let pts = sample_curve(20, &entities, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 0.1);
+        assert_eq!(pts.len(), 2, "trimmed line should produce 2 points");
+        assert!((pts[0] - Vec3::ZERO).length() < 1e-4);
+        // LINE: pnt=(0,0,0) + dir=(1,0,0) = (1,0,0)
+        assert!((pts[1] - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn test_composite_curve_segments() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = DIRECTION('', (1.0, 0.0, 0.0));
+#10 = LINE('', #1, #2);
+#11 = LINE('', #1, #2);
+#20 = COMPOSITE_CURVE_SEGMENT('', .CONTINUOUS., .T., #10);
+#21 = COMPOSITE_CURVE_SEGMENT('', .CONTINUOUS., .T., #11);
+#30 = COMPOSITE_CURVE('', (#20, #21), .F.);\
+",
+        );
+        let pts = sample_curve(30, &entities, Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0), 0.1);
+        assert!(pts.len() >= 3, "composite curve should sample points from both segments");
+    }
+
+    #[test]
+    fn test_bspline_knot_vector_sorted() {
+        // B-spline with only 2 distinct knots but degree=3 → needs expansion.
+        // Verifies the expanded knot vector is sorted for correct de Boor evaluation.
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (1.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (2.0, 0.0, 0.0));
+#4 = CARTESIAN_POINT('', (3.0, 0.0, 0.0));
+#10 = B_SPLINE_CURVE_WITH_KNOTS('', 3, (#1, #2, #3, #4), .UNSPECIFIED., .F., .F., (1, 1), (0.0, 1.0), .UNSPECIFIED.);\
+",
+        );
+        // Should not panic and should produce sorted evaluation
+        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0), 0.1);
+        assert!(!pts.is_empty(), "should produce points even with expanded knot vector");
+        // Points should be monotonically increasing in x (knots are sorted)
+        for w in pts.windows(2) {
+            assert!(w[1].x >= w[0].x - 1e-5, "points should be monotonic in x with sorted knots");
+        }
+    }
+
+    #[test]
+    fn test_rational_bspline_curve_weights() {
+        // A degree-1 B-spline with control points (0,0,0) and (2,0,0),
+        // multiplicities [2,2] → knot vector [0,0,1,1], rational weights [1.0, 0.5].
+        // With all weights 1.0, midpoint = (1.0, 0, 0).
+        // With weight 0.5 on pt2, the rational midpoint shifts toward pt1.
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (2.0, 0.0, 0.0));
+#10 = RATIONAL_B_SPLINE_CURVE('', 1, (#1, #2), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .UNSPECIFIED., (1.0, 0.5));\
+",
+        );
+        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0), 0.1);
+        // With rational weights [1.0, 0.5], midpoint should be closer to pt1.
+        // At t=0.5: w1*B1 = 1.0*0.5=0.5, w2*B2 = 0.5*0.5=0.25
+        // x = (0*0.5 + 2*0.25)/(0.5+0.25) = 0.5/0.75 ≈ 0.667
+        if pts.len() >= 2 {
+            let midpoint = &pts[pts.len() / 2];
+            assert!((midpoint.x - 0.667).abs() < 0.1,
+                "rational midpoint x={:.3} should be ≈0.667 (weighted toward pt1), not 1.0", midpoint.x);
+        }
     }
 }
