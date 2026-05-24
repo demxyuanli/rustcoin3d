@@ -153,7 +153,9 @@ mod tests {
     }
 }
 
-/// Annotation labels: keep baseline semantics but rotate the quad to face the camera.
+/// Annotation labels: lie on the annotation plane, readable from most viewing angles.
+/// Falls back to camera-facing billboard only when the plane is nearly edge-on
+/// (within ~8° of camera direction, where text would be unreadably thin).
 pub fn readable_label_basis(
     at: Vec3,
     camera_pos: Vec3,
@@ -169,6 +171,18 @@ pub fn readable_label_basis(
     }
     to_cam = to_cam.normalize();
 
+    // Prefer annotation-plane alignment. Only fall back to billboard when
+    // the plane normal is nearly parallel to the camera direction (edge-on).
+    let plane_n = preferred_tangent.cross(preferred_bitangent);
+    let edge_on = plane_n.length_squared() > 1e-8
+        && plane_n.normalize().dot(to_cam).abs() > 0.99;
+    if !edge_on {
+        let tangent = normalize3(preferred_tangent.into(), [1.0, 0.0, 0.0]);
+        let bitangent = normalize3(preferred_bitangent.into(), [0.0, 1.0, 0.0]);
+        return (tangent, bitangent);
+    }
+
+    // Edge-on fallback: camera-facing billboard
     let mut display_b =
         preferred_bitangent - to_cam * preferred_bitangent.dot(to_cam);
     if display_b.length_squared() < 1e-8 {
