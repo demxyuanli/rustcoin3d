@@ -384,6 +384,21 @@ fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
     }
 }
 
+/// Get the first key point's NDC (for depth sampling).
+fn element_any_ndc_point(
+    element: &AnnotationElement,
+    model: glam::Mat4,
+    scene_vp: glam::Mat4,
+    depth_reversed_z: bool,
+) -> Option<[f32; 3]> {
+    for p in element_key_points(element) {
+        if let Some(ndc) = project_point_ndc(glam::Vec3::from(p), model, scene_vp, depth_reversed_z) {
+            return Some(ndc);
+        }
+    }
+    None
+}
+
 /// Check if any key point of the element is within NDC bounds.
 fn element_any_point_visible(
     element: &AnnotationElement,
@@ -396,6 +411,28 @@ fn element_any_point_visible(
     })
 }
 
+/// Check if a point at NDC `p` is occluded by sampling the depth buffer.
+/// Returns true if the depth buffer has a closer value than `p.z`.
+fn is_ndc_occluded(
+    p: [f32; 3],
+    depth_buf: &[f32],
+    buf_w: u32,
+    buf_h: u32,
+    depth_reversed_z: bool,
+) -> bool {
+    let px = ((p[0] * 0.5 + 0.5) * buf_w as f32) as i32;
+    let py = ((0.5 - p[1] * 0.5) * buf_h as f32) as i32;
+    if px < 0 || py < 0 { return false; }
+    let (px, py) = (px as u32, py as u32);
+    if px >= buf_w || py >= buf_h { return false; }
+    let sampled = depth_buf[(py * buf_w + px) as usize];
+    if depth_reversed_z {
+        sampled < p[2] // reversed: closer = larger z
+    } else {
+        sampled > p[2] // normal: closer = smaller z
+    }
+}
+
 /// Project 3D annotation elements to overlay lines and world-space labels.
 pub(super) fn project_annotation_elements(
     elements: &[ProjectedAnnotation],
@@ -403,6 +440,7 @@ pub(super) fn project_annotation_elements(
     screen_w: f32,
     screen_h: f32,
     depth_reversed_z: bool,
+    occlusion: Option<(&[f32], u32, u32)>, // (depth_buf, buf_w, buf_h)
     labels: &mut Vec<WorldLabelCommand>,
 ) -> Vec<MarkupVertex> {
     let mut out = Vec::new();
@@ -418,7 +456,13 @@ pub(super) fn project_annotation_elements(
         let mut visibility = AnnotationVisibility::default();
         visibility.outside_ndc =
             !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z);
-        if visibility.outside_ndc {
+        // Occlusion: sample depth buffer at anchor NDC
+        if let Some((depth_buf, buf_w, buf_h)) = occlusion {
+            if let Some(anchor_ndc) = element_any_ndc_point(&pa.element, model, scene_vp, depth_reversed_z) {
+                visibility.occluded = is_ndc_occluded(anchor_ndc, depth_buf, buf_w, buf_h, depth_reversed_z);
+            }
+        }
+        if visibility.outside_ndc || visibility.occluded {
             continue;
         }
         // --- end culling ---

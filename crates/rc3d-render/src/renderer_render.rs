@@ -972,6 +972,27 @@ impl super::Renderer {
             hook(&mut encoder, &swapchain_view);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Swap occlusion depth buffer: read back the one we just captured
+        if let Some(ref buf) = self.frame.occlusion_capture_buf.take() {
+            let (dw, dh) = self.frame.occlusion_dims;
+            if let Some(data) = crate::render_passes::try_read_occlusion_depth(&buf, &self.device, dw, dh) {
+                self.frame.occlusion_data = Some(data);
+            }
+        }
+        // Create a new capture buffer for next frame
+        if self.frame.occlusion_dims.0 > 0 {
+            let (dw, dh) = self.frame.occlusion_dims;
+            let size = (dw * dh * 4) as u64;
+            if size > 0 {
+                let new_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("occlusion depth capture"),
+                    size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                self.frame.occlusion_capture_buf = Some(new_buf);
+            }
+        }
         swapchain_frame.present();
 
         stats

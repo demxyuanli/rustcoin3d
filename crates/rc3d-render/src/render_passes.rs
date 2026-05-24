@@ -610,6 +610,26 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
+    // Read depth from previous frame, capture depth for next frame.
+    let occlusion: Option<(Vec<f32>, u32, u32)> = renderer.frame.occlusion_data.clone();
+    let depth_tex = renderer.gpu.depth_texture.as_ref().map(|t| &t.0);
+    // Create capture buffer if needed
+    let ds = 4u32;
+    let dw = ew.div_ceil(ds);
+    let dh = eh.div_ceil(ds);
+    if renderer.frame.occlusion_capture_buf.is_none() {
+        let size = (dw * dh * 4) as u64;
+        renderer.frame.occlusion_capture_buf = Some(renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("occlusion depth capture"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }));
+        renderer.frame.occlusion_dims = (dw, dh);
+    }
+    if let Some(ref buf) = renderer.frame.occlusion_capture_buf {
+        capture_depth_for_occlusion(&mut encoder, depth_tex, buf, dw, dh);
+    }
     // Static frame: reuse cached projection output.
     let is_static = renderer.frame.bvh_fully_static && renderer.frame.static_frame_count >= 2;
     if !is_static {
@@ -620,6 +640,7 @@ pub(super) fn execute_passes(
             ew as f32,
             eh as f32,
             ctx.depth_reversed_z,
+            occlusion.as_ref().map(|(b, w, h)| (b.as_slice(), *w, *h)),
         );
         renderer.frame.cached_projected_markup = projected;
         renderer.frame.cached_projected_labels = wl;
@@ -823,6 +844,7 @@ pub(super) fn render_overlay_only_frame(
     }
 
     // Markup overlay — use traversal VP when geometry pass is skipped (no draw calls).
+    let occlusion: Option<(Vec<f32>, u32, u32)> = renderer.frame.occlusion_data.clone();
     let scene_vp = renderer.frame.scene_vp;
     let depth_reversed_z = renderer
         .frame
@@ -846,6 +868,7 @@ pub(super) fn render_overlay_only_frame(
             ew as f32,
             eh as f32,
             depth_reversed_z,
+            occlusion.as_ref().map(|(d, w, h)| (&d[..], *w, *h)),
         );
         renderer.frame.cached_projected_markup = projected;
         renderer.frame.cached_projected_labels = wl;
@@ -900,4 +923,54 @@ pub(super) fn render_overlay_only_frame(
         gpu_sections: Vec::new(),
         ..FrameStats::default()
     }
+}
+
+/// Copy depth buffer to a staging buffer. The data will be read back
+/// next frame (after GPU submission) when `try_read_occlusion_depth` is called.
+fn capture_depth_for_occlusion(
+    encoder: &mut wgpu::CommandEncoder,
+    depth_tex: Option<&wgpu::Texture>,
+    dst_buf: &wgpu::Buffer,
+    dst_w: u32,
+    dst_h: u32,
+) {
+    let Some(depth_tex) = depth_tex else { return };
+    encoder.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture {
+            texture: depth_tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::DepthOnly,
+        },
+        wgpu::ImageCopyBuffer {
+            buffer: dst_buf,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(dst_w * 4),
+                rows_per_image: Some(dst_h),
+            },
+        },
+        wgpu::Extent3d { width: dst_w, height: dst_h, depth_or_array_layers: 1 },
+    );
+}
+
+/// Try to read back occlusion depth data from a previously-submitted buffer.
+/// Returns (data, width, height) if successfully mapped.
+pub fn try_read_occlusion_depth(
+    buf: &wgpu::Buffer,
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+) -> Option<(Vec<f32>, u32, u32)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device.poll(wgpu::Maintain::Wait);
+    if rx.recv().ok()?.is_err() { return None; }
+    let mapped = buf.slice(..).get_mapped_range();
+    let data: Vec<f32> = bytemuck::cast_slice(&mapped).to_vec();
+    drop(mapped);
+    buf.unmap();
+    Some((data, w, h))
 }

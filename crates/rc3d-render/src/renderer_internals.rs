@@ -130,6 +130,11 @@ pub(crate) struct FrameState {
     pub cached_projected_markup: Vec<crate::vertex::MarkupVertex>,
     /// Cached world labels (for static-frame fast path).
     pub cached_projected_labels: Vec<crate::world_label::WorldLabelCommand>,
+    /// GPU→CPU depth capture buffer (filled one frame, read the next).
+    pub occlusion_capture_buf: Option<wgpu::Buffer>,
+    /// Depth data from previous frame for annotation occlusion.
+    pub occlusion_data: Option<(Vec<f32>, u32, u32)>,
+    pub occlusion_dims: (u32, u32),
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
     pub section_cap_tints: Vec<Option<[f32; 4]>>,

@@ -950,6 +950,9 @@ impl Renderer {
                 transparent_order_buf: Vec::with_capacity(128),
                 light_hashes_buf: Vec::with_capacity(1024),
                 meshlet_indices_buf: Vec::with_capacity(256),
+                occlusion_capture_buf: None,
+                occlusion_data: None,
+                occlusion_dims: (0, 0),
             },
             // GPU internals
             gpu: GpuInternals {
