@@ -10,13 +10,17 @@ pub mod pcurve;
 pub mod tessellate;
 pub mod assembly;
 pub mod nurbs;
+pub mod write;
+pub mod validate;
+pub mod xml;
+pub mod bool;
+pub mod header;
 
 use std::path::Path;
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{
-    Coordinate3Node, IndexedFaceSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
+    Coordinate3Node, IndexedFaceSetNode, IndexedLineSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +31,23 @@ pub enum StepError {
     Parse(String),
     #[error("No geometry found in STEP file")]
     NoGeometry,
+    #[error("Validation failed: {0}")]
+    Validation(String),
+}
+
+/// Write a SceneGraph to a STEP file (Part 21 ASCII).
+pub fn write_step_file(path: &Path, graph: &SceneGraph) -> Result<(), StepError> {
+    let text = write::write_step_from_graph(graph)
+        .map_err(|e| StepError::Validation(e))?;
+    std::fs::write(path, &text)?;
+    Ok(())
+}
+
+/// Write EntityIndex to a STEP file (cleaned pass-through).
+pub fn write_step_entities_file(path: &Path, entities: &parser::EntityIndex) -> Result<(), StepError> {
+    let text = write::write_step_from_entities(entities);
+    std::fs::write(path, &text)?;
+    Ok(())
 }
 
 pub fn parse_step_file(path: &Path) -> Result<SceneGraph, StepError> {
@@ -46,8 +67,25 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let exchange = parser::parse_exchange(input)
         .map_err(|e| StepError::Parse(e))?;
 
+    // Run validation and log issues
+    let report = validate::validate(&exchange.entities);
+    let entity_count = exchange.entities.len();
+    log::info!(
+        "[STEP] {} entities, {} shells, {} faces, {} points",
+        entity_count,
+        report.topology_info.shells,
+        report.topology_info.faces,
+        report.topology_info.points,
+    );
+    for w in &report.warnings {
+        log::warn!("[STEP] validation: {}", w);
+    }
+
     let shells = topology::collect_shells(&exchange.entities);
     if shells.is_empty() {
+        if !report.errors.is_empty() {
+            return Err(StepError::Validation(report.errors.join("; ")));
+        }
         return Err(StepError::NoGeometry);
     }
 
@@ -60,8 +98,85 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
         styles.len()
     );
 
-    let graph = build_hierarchical_scene(&shells, &transforms, &styles, &exchange.entities)?;
+    let mut graph = build_hierarchical_scene(&shells, &transforms, &styles, &exchange.entities)?;
+
+    // Add STEP original edge curves as lines
+    let edge_count = build_step_edges_overlay(&mut graph, &shells, &exchange.entities);
+    eprintln!("[STEP] {} edge curves rendered", edge_count);
+
     Ok(graph)
+}
+
+/// Extract unique edge curves from shells and add them as IndexedLineSet geometry.
+/// Renders the original B-rep edges (not tessellated triangle edges).
+fn build_step_edges_overlay(
+    graph: &mut SceneGraph,
+    shells: &[topology::StepShell],
+    entities: &parser::EntityIndex,
+) -> usize {
+    use std::collections::HashSet;
+    let mut edge_keys: HashSet<(u32, u32, u32, u32, u32, u32)> = HashSet::new();
+    let mut all_pts: Vec<Vec3> = Vec::new();
+    let mut all_indices: Vec<i32> = Vec::new();
+
+    for shell in shells {
+        for face in &shell.faces {
+            for bloop in &face.bounds {
+                for edge in &bloop.edges {
+                    let sk = rc3d_core::utils::hash::f32x3_quantized_bits([
+                        edge.start.x, edge.start.y, edge.start.z,
+                    ]);
+                    let ek = rc3d_core::utils::hash::f32x3_quantized_bits([
+                        edge.end.x, edge.end.y, edge.end.z,
+                    ]);
+                    let key = (sk[0], sk[1], sk[2], ek[0], ek[1], ek[2]);
+                    if !edge_keys.insert(key) { continue; }
+
+                    // Sample the edge curve
+                    let pts = geom::sample_curve(
+                        edge.curve_id, entities, edge.start, edge.end, edge.tolerance.max(0.05),
+                    );
+                    if pts.len() < 2 { continue; }
+
+                    let base = all_pts.len() as i32;
+                    for pt in &pts {
+                        all_pts.push(*pt);
+                        all_indices.push(base + (all_pts.len() as i32 - base - 1));
+                    }
+                    all_indices.push(-1); // sentinel
+                }
+            }
+        }
+    }
+
+    if all_pts.is_empty() { return 0; }
+
+    let root = graph.add_root(NodeData::Separator(SeparatorNode));
+    // Material must come before geometry (Coin3D traversal order)
+    graph.add_child(
+        root,
+        NodeData::Material(MaterialNode {
+            diffuse_color: Vec3::new(0.6, 0.6, 0.6),
+            base_color: Vec3::new(0.6, 0.6, 0.6),
+            emissive_color: Vec3::new(0.8, 0.8, 0.8),
+            roughness: 1.0,
+            metallic: 0.0,
+            opacity: 1.0,
+            ..Default::default()
+        }),
+    );
+    graph.add_child(root, NodeData::Coordinate3(Coordinate3Node {
+        point: all_pts,
+    }));
+    graph.add_child(
+        root,
+        NodeData::IndexedLineSet(IndexedLineSetNode {
+            coord_index: all_indices,
+            line_width: 2.0,
+        }),
+    );
+
+    edge_keys.len()
 }
 
 fn build_hierarchical_scene(
@@ -155,9 +270,6 @@ fn build_hierarchical_scene(
         pmi::pmi_render::attach_pmi_to_scene(&mut graph, root, &pmi_data);
     }
 
-    if let Some(root_entry) = graph.get_mut(root) {
-        root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
-    }
     Ok(graph)
 }
 

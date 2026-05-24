@@ -16,6 +16,7 @@ pub type EntityIndex = HashMap<u64, EntityRecord>;
 
 #[derive(Debug)]
 pub struct Exchange {
+    pub header: Option<super::header::HeaderInfo>,
     pub entities: EntityIndex,
 }
 
@@ -27,7 +28,15 @@ pub fn parse_exchange(input: &str) -> Result<Exchange, String> {
     }
     let rest = &input["ISO-10303-21;".len()..];
 
-    // Skip HEADER section
+    // Parse HEADER section (between ISO-10303-21 and DATA)
+    let data_pos = rest.find("DATA;");
+    let header = if let Some(dp) = data_pos {
+        let header_region = &rest[..dp];
+        super::header::parse_header(header_region)
+            .map(|(h, _)| h)
+    } else {
+        None
+    };
     let rest = skip_until(rest, "DATA;").ok_or("DATA section not found")?;
     let rest = &rest["DATA;".len()..];
 
@@ -40,7 +49,7 @@ pub fn parse_exchange(input: &str) -> Result<Exchange, String> {
         record.entity_type = EntityType::from_name(&record.name);
     }
 
-    Ok(Exchange { entities })
+    Ok(Exchange { header, entities })
 }
 
 fn skip_until<'a>(input: &'a str, marker: &str) -> Option<&'a str> {
@@ -141,12 +150,16 @@ fn extract_subsuper_entity<'a>(
 ) -> Result<(u64, String, StepValue, &'a str), String> {
     // Priority-ordered type list: prefer geometry types over meta wrappers.
     const PRIORITY_TYPES: &[&str] = &[
-        "B_SPLINE_CURVE_WITH_KNOTS", "B_SPLINE_CURVE",
-        "B_SPLINE_SURFACE_WITH_KNOTS", "B_SPLINE_SURFACE",
+        "B_SPLINE_CURVE_WITH_KNOTS", "B_SPLINE_CURVE", "RATIONAL_B_SPLINE_CURVE",
+        "B_SPLINE_SURFACE_WITH_KNOTS", "B_SPLINE_SURFACE", "RATIONAL_B_SPLINE_SURFACE",
         "LINE", "CIRCLE", "ELLIPSE", "POLYLINE",
+        "TRIMMED_CURVE", "COMPOSITE_CURVE", "SEAM_CURVE", "INTERSECTION_CURVE",
+        "OFFSET_CURVE_3D",
         "PLANE", "CYLINDRICAL_SURFACE", "CONICAL_SURFACE",
         "SPHERICAL_SURFACE", "TOROIDAL_SURFACE",
         "SURFACE_OF_LINEAR_EXTRUSION", "SURFACE_OF_REVOLUTION",
+        "RECTANGULAR_TRIMMED_SURFACE",
+        "CURVE_BOUNDED_SURFACE",
         "FACE_SURFACE", "ADVANCED_FACE", "FACE_OUTER_BOUND", "FACE_BOUND",
         "CLOSED_SHELL", "OPEN_SHELL", "SHELL",
         "EDGE_CURVE", "ORIENTED_EDGE", "EDGE_LOOP",
@@ -194,9 +207,9 @@ fn extract_subsuper_entity<'a>(
 
 /// Merge parameter texts from pairs[0..=best_idx] into a single comma-separated list.
 /// Skips empty/trivial params (e.g. `()`, `''`, `*`, `$`).
-fn merge_subsuper_params(pairs: &[(String, String)], best_idx: usize) -> String {
+fn merge_subsuper_params(pairs: &[(String, String)], _best_idx: usize) -> String {
     let mut parts = Vec::new();
-    for i in 0..=best_idx {
+    for i in 0..pairs.len() {
         let pd = &pairs[i].1;
         let trimmed = pd.trim();
         if !trimmed.is_empty() && trimmed != "''" && trimmed != "*" && trimmed != "$" {
@@ -389,26 +402,39 @@ fn parse_keyword(input: &str) -> Result<(String, &str), String> {
 
 /// Streaming parser: parse STEP file incrementally to reduce memory usage.
 /// Reads the file line by line, skipping HEADER, then parses DATA section entities.
-/// Returns an iterator-like result: (EntityIndex, Option<error>).
-/// For very large files, call this in a loop: each call parses one entity.
+/// Properly handles multi-line entities by buffering until complete.
 pub fn parse_exchange_streaming<R: BufRead>(
     reader: &mut R,
 ) -> Result<Exchange, String> {
     let mut entities = EntityIndex::new();
-    let mut buffer = String::new();
+    let mut line_buf = String::new();
+    let mut entity_buf = String::new();
     let mut in_data = false;
-    let mut paren_depth = 0usize;
+    let mut paren_depth: i32 = 0;
+    let mut line_num: u64 = 0;
+    let mut current_entity_id: u64 = 0;
 
     loop {
-        buffer.clear();
-        match reader.read_line(&mut buffer) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
-            Err(e) => return Err(format!("read error: {}", e)),
+        line_buf.clear();
+        let bytes_read = reader.read_line(&mut line_buf)
+            .map_err(|e| format!("read error at line {}: {}", line_num, e))?;
+        line_num += 1;
+
+        // EOF
+        if bytes_read == 0 {
+            // If we have an incomplete entity buffered, try to parse it
+            if paren_depth > 0 && !entity_buf.is_empty() {
+                log::warn!(
+                    "EOF reached with incomplete entity (depth={}), skipping entity #{}",
+                    paren_depth, current_entity_id
+                );
+            }
+            break;
         }
 
-        let line = buffer.trim();
+        let line = line_buf.trim();
 
+        // Look for DATA section start
         if !in_data {
             if line.contains("DATA;") {
                 in_data = true;
@@ -418,28 +444,101 @@ pub fn parse_exchange_streaming<R: BufRead>(
 
         // End of DATA section
         if line.starts_with("ENDSEC;") || line.starts_with("END-ISO") {
+            // Flush any buffered entity
+            if paren_depth > 0 && !entity_buf.is_empty() {
+                match parse_entity(&entity_buf) {
+                    Ok((eid, ename, eparams, _)) => {
+                        entities.insert(eid, EntityRecord {
+                            name: ename,
+                            params: eparams,
+                            entity_type: EntityType::Unknown,
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!("STEP stream: failed to parse buffered entity: {}", e);
+                    }
+                }
+            }
             break;
         }
 
         // Skip comments
         if line.starts_with("/*") {
+            // Multi-line comment support
+            if !line.contains("*/") {
+                // Skip until comment ends
+                loop {
+                    line_buf.clear();
+                    match reader.read_line(&mut line_buf) {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {}
+                        Err(e) => return Err(format!("read error: {}", e)),
+                    }
+                    line_num += 1;
+                    if line_buf.contains("*/") {
+                        break;
+                    }
+                }
+            }
             continue;
         }
 
-        // Try to parse entity from this line (may be incomplete)
-        let line_clone = line.to_string();
-        match parse_entity_incremental(&line_clone, &mut paren_depth) {
-            Ok(Some((eid, ename, eparams))) => {
-                entities.insert(eid, EntityRecord { name: ename, params: eparams, entity_type: EntityType::Unknown });
-                paren_depth = 0;
+        // Track parenthesis depth
+        for c in line.chars() {
+            match c {
+                '(' => paren_depth += 1,
+                ')' => paren_depth -= 1,
+                _ => {}
             }
-            Ok(None) => {
-                // Incomplete entity, need more lines (simplified: skip for now)
-                continue;
+        }
+
+        // Append to entity buffer (preserve newlines for subsuper multi-line format)
+        if !entity_buf.is_empty() {
+            entity_buf.push('\n');
+        }
+        entity_buf.push_str(line);
+
+        // Check if entity is complete (depth back to 0 and ends with semicolon)
+        if paren_depth == 0 && line.ends_with(';') {
+            // Try to parse the complete entity
+            match parse_entity(&entity_buf) {
+                Ok((eid, ename, eparams, _)) => {
+                    current_entity_id = eid;
+                    log::debug!("Parsed entity #{} = {}", eid, ename);
+                    entities.insert(eid, EntityRecord {
+                        name: ename,
+                        params: eparams,
+                        entity_type: EntityType::Unknown,
+                    });
+                }
+                Err(e) => {
+                    log::warn!("STEP stream parse error at line {}: {}", line_num, e);
+                    // Try to recover by finding the next entity start
+                    if let Some(next_hash) = entity_buf[1..].find("#") {
+                        let remaining = &entity_buf[next_hash..];
+                        entity_buf = remaining.to_string();
+                        paren_depth = 0;
+                        // Attempt to continue parsing from remaining content
+                        match parse_entity(&entity_buf) {
+                            Ok((eid, ename, eparams, _)) => {
+                                entities.insert(eid, EntityRecord {
+                                    name: ename,
+                                    params: eparams,
+                                    entity_type: EntityType::Unknown,
+                                });
+                                entity_buf.clear();
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                log::warn!("STEP stream parse error, skipping: {}", e);
-            }
+            entity_buf.clear();
+        } else if paren_depth < 0 {
+            // Unmatched closing paren - try to recover
+            log::warn!("STEP stream: unmatched ')' at line {}, recovering", line_num);
+            paren_depth = 0;
+            entity_buf.clear();
         }
     }
 
@@ -448,29 +547,15 @@ pub fn parse_exchange_streaming<R: BufRead>(
         record.entity_type = EntityType::from_name(&record.name);
     }
 
-    Ok(Exchange { entities })
-}
-
-/// Try to parse a complete entity from a single line.
-/// Returns Ok(Some((id, name, params))) if successful, Ok(None) if incomplete.
-fn parse_entity_incremental(input: &str, _depth: &mut usize) -> Result<Option<(u64, String, StepValue)>, String> {
-    // Simplified: delegate to existing parse_entity if line looks complete
-    if !input.starts_with('#') {
-        return Ok(None);
-    }
-    // Use existing parse_entity by converting to &str (requires full entity in one line)
-    // For multi-line entities, we'd need a buffer (simplified version omits this)
-    match parse_entity(input) {
-        Ok((eid, ename, eparams, _)) => Ok(Some((eid, ename, eparams))),
-        Err(_) => Ok(None), // Incomplete, skip
-    }
+    log::info!("STEP streaming parse complete: {} entities", entities.len());
+    Ok(Exchange { header: None, entities })
 }
 
 /// Parse a STEP file from disk using streaming I/O (reduces memory vs. read_to_string).
 /// For very large files (>100MB), prefer this over `parse_step`.
 pub fn parse_step_from_file(path: &Path) -> Result<Exchange, String> {
     let file = File::open(path).map_err(|e| format!("cannot open {}: {}", path.display(), e))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB read buffer
     parse_exchange_streaming(&mut reader)
 }
 
