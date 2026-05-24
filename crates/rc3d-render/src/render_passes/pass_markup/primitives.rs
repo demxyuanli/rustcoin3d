@@ -554,9 +554,9 @@ fn is_ndc_occluded(
     if px >= buf_w || py >= buf_h { return false; }
     let sampled = depth_buf[(py * buf_w + px) as usize];
     if depth_reversed_z {
-        sampled < p[2] // reversed: closer = larger z
+        sampled > p[2] // reversed: closer = larger z
     } else {
-        sampled > p[2] // normal: closer = smaller z
+        sampled < p[2] // normal: closer = smaller z
     }
 }
 
