@@ -15,6 +15,7 @@ pub mod validate;
 pub mod xml;
 pub mod bool;
 pub mod header;
+pub mod topo;
 
 use std::path::Path;
 use rc3d_core::math::{Mat4, Vec3};
