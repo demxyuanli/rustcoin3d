@@ -231,6 +231,8 @@ pub fn compute_projected_markup(
     occlusion: Option<(&[f32], u32, u32)>,
 ) -> (Vec<MarkupVertex>, Vec<crate::world_label::WorldLabelCommand>) {
     let mut world_labels = std::mem::take(&mut renderer.frame.annotation_world_labels);
+    let attrs = renderer.gpu.world_label_font.label_attrs();
+    let font_sys = &mut renderer.gpu.world_label_font.font_system;
     let projected = project_annotation_elements(
         &effect_commands.annotation_elements,
         scene_vp,
@@ -238,6 +240,7 @@ pub fn compute_projected_markup(
         surface_h,
         depth_reversed_z,
         occlusion,
+        Some((font_sys, attrs)),
         &mut world_labels,
     );
     (projected, world_labels)
