@@ -236,6 +236,7 @@ pub fn compute_projected_markup(
         surface_w,
         surface_h,
         depth_reversed_z,
+        renderer.frame.scene_camera_pos,
         &mut world_labels,
     );
     (projected, world_labels)
