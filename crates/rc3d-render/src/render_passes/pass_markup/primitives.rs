@@ -511,19 +511,18 @@ fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
     }
 }
 
-/// Get the first key point's NDC (for depth sampling).
+/// Get the most representative key point's NDC (for depth sampling).
+/// Uses the point farthest from the geometry surface (last in key_points order,
+/// which is the offset/pushed-out point for dimensions).
 fn element_any_ndc_point(
     element: &AnnotationElement,
     model: glam::Mat4,
     scene_vp: glam::Mat4,
     depth_reversed_z: bool,
 ) -> Option<[f32; 3]> {
-    for p in element_key_points(element) {
-        if let Some(ndc) = project_point_ndc(glam::Vec3::from(p), model, scene_vp, depth_reversed_z) {
-            return Some(ndc);
-        }
-    }
-    None
+    element_key_points(element).into_iter().rev().find_map(|p| {
+        project_point_ndc(glam::Vec3::from(p), model, scene_vp, depth_reversed_z)
+    })
 }
 
 /// Check if any key point of the element is within NDC bounds.

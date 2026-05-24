@@ -38,6 +38,8 @@ pub struct AnnotationTool {
     camera_vp: Mat4,
     /// World-space position of the dragged point at drag start
     drag_anchor: Option<Vec3>,
+    /// Pending undo command (old_element set at drag start, new_element at drag end)
+    pending_cmd: Option<(NodeId, usize, AnnotationElement)>,
 }
 
 impl AnnotationTool {
@@ -50,6 +52,7 @@ impl AnnotationTool {
             win_h: 1,
             camera_vp: Mat4::IDENTITY,
             drag_anchor: None,
+            pending_cmd: None,
         }
     }
 
@@ -77,11 +80,9 @@ impl AnnotationTool {
     ) -> bool {
         self.cursor = cursor;
         if let Some(handle) = pick_annotation_handle(graph, self.camera_vp, cursor, self.win_w, self.win_h) {
-            // Save current state for undo
-            if let Some(snap_cmd) = snapshot_command(graph, handle.set_id, handle.elem_idx) {
-                self.history.execute(Box::new(snap_cmd), &mut SceneGraph::new()); // dummy execute, real state already saved
-            }
-            // Save anchor for relative drag
+            // Save pre-drag state for undo (new_element captured at on_mouse_up)
+            self.pending_cmd = snapshot_old(graph, handle.set_id, handle.elem_idx)
+                .map(|old| (handle.set_id, handle.elem_idx, old));
             self.drag_anchor = element_point_world(graph, handle.set_id, handle.elem_idx, handle.point_key);
             self.active_drag = Some(handle);
             true
@@ -136,7 +137,16 @@ impl AnnotationTool {
         apply_point_update(graph, handle.set_id, handle.elem_idx, handle.point_key, new_local);
     }
 
-    pub fn on_mouse_up(&mut self) {
+    pub fn on_mouse_up(&mut self, graph: &SceneGraph) {
+        // Capture post-drag state and push to history
+        if let Some((set_id, elem_idx, old_element)) = self.pending_cmd.take() {
+            if let Some(new_element) = snapshot_new(graph, set_id, elem_idx) {
+                self.history.execute(
+                    Box::new(AnnotationPointCommand { set_id, elem_idx, old_element, new_element }),
+                    &mut SceneGraph::new(), // real state already updated in-place
+                );
+            }
+        }
         self.active_drag = None;
         self.drag_anchor = None;
     }
@@ -329,11 +339,13 @@ fn element_plane_normal(elem: &AnnotationElement) -> Option<Vec3> {
             let n = d.cross(a);
             if n.length_squared() > 1e-8 { Some(n.normalize()) } else { None }
         }
-        AnnotationElement::Datum { .. } | AnnotationElement::GdtDatumTarget { .. } => Some(Vec3::Z),
-        AnnotationElement::SurfaceFinish { .. }
+        AnnotationElement::Datum { .. }
+        | AnnotationElement::GdtFeatureControlFrame { .. }
+        | AnnotationElement::GdtDatumTarget { .. }
+        | AnnotationElement::SurfaceFinish { .. }
         | AnnotationElement::WeldSymbol { .. }
         | AnnotationElement::DatumIdentifier { .. } => Some(Vec3::Z),
-        _ => None,
+        AnnotationElement::Leader { .. } | AnnotationElement::Callout { .. } => None,
     }
 }
 
@@ -461,14 +473,14 @@ fn apply_element(graph: &mut SceneGraph, set_id: NodeId, elem_idx: usize, elemen
     }
 }
 
-fn snapshot_command(graph: &SceneGraph, set_id: NodeId, elem_idx: usize) -> Option<AnnotationPointCommand> {
+fn snapshot_old(graph: &SceneGraph, set_id: NodeId, elem_idx: usize) -> Option<AnnotationElement> {
     let entry = graph.get(set_id)?;
     let NodeData::AnnotationSet(ann) = &entry.data else { return None; };
-    let old = ann.elements.get(elem_idx)?.clone();
-    Some(AnnotationPointCommand {
-        set_id,
-        elem_idx,
-        old_element: old.clone(),
-        new_element: old,
-    })
+    ann.elements.get(elem_idx).cloned()
+}
+
+fn snapshot_new(graph: &SceneGraph, set_id: NodeId, elem_idx: usize) -> Option<AnnotationElement> {
+    let entry = graph.get(set_id)?;
+    let NodeData::AnnotationSet(ann) = &entry.data else { return None; };
+    ann.elements.get(elem_idx).cloned()
 }

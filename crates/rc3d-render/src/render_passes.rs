@@ -845,8 +845,8 @@ pub(super) fn render_overlay_only_frame(
         });
     }
 
-    // Markup overlay — use traversal VP when geometry pass is skipped (no draw calls).
-    let occlusion: Option<(Vec<f32>, u32, u32)> = renderer.frame.occlusion_data.clone();
+    // Markup overlay — skip occlusion when geometry pass is skipped (no depth data).
+    let occlusion: Option<(Vec<f32>, u32, u32)> = None;
     let scene_vp = renderer.frame.scene_vp;
     let depth_reversed_z = renderer
         .frame
