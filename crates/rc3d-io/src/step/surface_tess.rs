@@ -121,7 +121,10 @@ fn build_nurbs_from_bspline_surface(
         &v_multiplicities, &v_knot_vals, degree_v, control_points[0].len(),
     );
 
-    let weights = vec![vec![1.0f32; control_points[0].len()]; control_points.len()];
+    // Extract rational weights — scan for a 2D list of reals matching control point dimensions.
+    // RATIONAL_B_SPLINE_SURFACE appends weight lists after knot_spec in the merged params.
+    let weights = find_surface_weights(params, control_points.len(), control_points[0].len())
+        .unwrap_or_else(|| vec![vec![1.0f32; control_points[0].len()]; control_points.len()]);
 
     Some(NurbsSurface {
         degree_u,
@@ -161,8 +164,37 @@ fn build_knot_vector_from_multiplicities(
             let t = (i + 1) as f32 / (extra + 1) as f32;
             knots.push(min_k + (max_k - min_k) * t);
         }
+        // Sort after expansion — interpolated values may be out of order
+        knots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     }
     knots
+}
+
+/// Scan params for a 2D weights list matching NURBS control point dimensions.
+/// Used to extract rational B-spline surface weights appended after knot_spec.
+fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Option<Vec<Vec<f32>>> {
+    let list = params.as_list()?;
+    // Scan from end — weights are always the last meaningful 2D param.
+    for val in list.iter().rev() {
+        if let StepValue::List(inner) = val {
+            if inner.len() == rows
+                && inner.iter().all(|v| {
+                    v.as_list().map_or(false, |l| {
+                        l.len() == cols && l.iter().all(|r| matches!(r, StepValue::Real(_)))
+                    })
+                })
+            {
+                return Some(
+                    inner.iter()
+                        .map(|v| v.as_list().unwrap().iter()
+                            .map(|r| r.as_real().unwrap() as f32)
+                            .collect())
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
 }
 
 /// Build a NurbsSurface from a STEP analytic surface entity.
@@ -207,7 +239,7 @@ fn build_nurbs_from_surface(
 }
 
 /// Map external UV parameters (in surface natural domain) to NurbsSurface [0,1] domain.
-fn map_uv_to_nurbs(entity_type: EntityType, u: f32, v: f32) -> (f32, f32) {
+pub fn map_uv_to_nurbs(entity_type: EntityType, u: f32, v: f32) -> (f32, f32) {
     let two_pi = 2.0f32 * std::f32::consts::PI;
     match entity_type {
         EntityType::CylindricalSurface | EntityType::ConicalSurface => {
@@ -400,7 +432,8 @@ pub fn tessellate_curved_face(
             }
         }
         EntityType::SurfaceOfLinearExtrusion | EntityType::SurfaceOfRevolution => {
-            geom::evaluate_surface(surface_id, entities, DEFAULT_SAMPLES, DEFAULT_SAMPLES)
+            let n = estimate_extrusion_revolution_samples(surface, entities, surface.entity_type);
+            geom::evaluate_surface(surface_id, entities, n, n)
                 .map(|grid| {
                     let mut mesh = grid_to_mesh(&grid);
                     // Apply same_sense: if false, reverse normals
@@ -475,8 +508,118 @@ pub fn tessellate_curved_face(
             };
             tessellate_curved_face(&inner_face, entities, trim)
         }
+        EntityType::CurveBoundedSurface => {
+            // CURVE_BOUNDED_SURFACE('', #basis_surface, #boundary, .F.)
+            // Unwrap to the underlying basis surface
+            let base_id = geom::nth_ref(&surface.params, 1)?;
+            let base_face = StepFace {
+                bounds: face.bounds.clone(),
+                surface_id: Some(base_id),
+                same_sense: face.same_sense,
+            };
+            tessellate_curved_face(&base_face, entities, trim)
+        }
+        EntityType::RectangularTrimmedSurface => {
+            // RECTANGULAR_TRIMMED_SURFACE('', #basis_surface, u1, u2, v1, v2)
+            let base_id = geom::nth_ref(&surface.params, 1)?;
+            let u1 = geom::nth_real(&surface.params, 2).unwrap_or(0.0) as f32;
+            let u2 = geom::nth_real(&surface.params, 3).unwrap_or(1.0) as f32;
+            let v1 = geom::nth_real(&surface.params, 4).unwrap_or(0.0) as f32;
+            let v2 = geom::nth_real(&surface.params, 5).unwrap_or(1.0) as f32;
+            let base_face = StepFace {
+                bounds: face.bounds.clone(),
+                surface_id: Some(base_id),
+                same_sense: face.same_sense,
+            };
+            // Constrain tessellation to the trimmed UV domain
+            let base_surface = entities.get(&base_id)?;
+            match base_surface.entity_type {
+                EntityType::Plane
+                | EntityType::CylindricalSurface
+                | EntityType::ConicalSurface
+                | EntityType::SphericalSurface
+                | EntityType::ToroidalSurface => {
+                    let nurbs = build_nurbs_from_surface(base_surface, u1, u2, v1, v2)?;
+                    let n = estimate_sample_count(&nurbs, base_surface.entity_type, u1, u2, v1, v2);
+                    Some(sample_grid_nurbs(n, base_id, trim, &nurbs, entities, base_surface.entity_type, face.same_sense, u1, u2, v1, v2))
+                }
+                _ => {
+                    // For other surface types, fall back to the standard path with UV bounds
+                    tessellate_curved_face(&base_face, entities, trim)
+                }
+            }
+        }
         _ => None,
     }
+}
+
+/// Estimate adaptive sample count for extrusion or revolution surfaces
+/// based on the generatrix curve arc length and the sweep extent.
+fn estimate_extrusion_revolution_samples(
+    surface: &super::parser::EntityRecord,
+    entities: &EntityIndex,
+    entity_type: EntityType,
+) -> usize {
+    let curve_id = match geom::nth_ref(&surface.params, 1) {
+        Some(id) => id,
+        None => return DEFAULT_SAMPLES,
+    };
+
+    // Sample the generatrix curve to estimate arc length (use same tolerance
+    // as eval_extrusion/eval_revolution for consistent grid sizing)
+    const ESTIMATION_TOL: f32 = 0.1;
+    let curve_pts = geom::sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, ESTIMATION_TOL);
+    let arc_length: f32 = curve_pts.windows(2)
+        .map(|w| (w[1] - w[0]).length())
+        .sum();
+
+    // For revolution, the circumference at average radius determines angular samples.
+    // For extrusion, the direction magnitude determines sweep samples.
+    let sweep_samples = if entity_type == EntityType::SurfaceOfRevolution {
+        // Resolve the actual rotation axis from AXIS2_PLACEMENT_3D / AXIS1_PLACEMENT
+        let axis_id = geom::nth_ref(&surface.params, 2);
+        let (axis_origin, axis_dir) = axis_id
+            .and_then(|id| topology::resolve_placement(id, entities))
+            .map(|(origin, _x, z)| (origin, z))
+            .unwrap_or((Vec3::ZERO, Vec3::Z));
+        let axis = axis_dir.normalize();
+        // Compute perpendicular distance from each curve point to the rotation axis
+        let avg_r: f32 = curve_pts.iter()
+            .map(|p| {
+                let rel = *p - axis_origin;
+                (rel - axis * rel.dot(axis)).length()
+            })
+            .sum::<f32>() / curve_pts.len().max(1) as f32;
+        let circumference = 2.0 * std::f32::consts::PI * avg_r.max(0.1);
+        (circumference / 2.0).clamp(16.0, 96.0) as usize
+    } else {
+        // Extrusion: look at the direction magnitude
+        let dir_id = geom::nth_ref(&surface.params, 2);
+        if let Some(did) = dir_id {
+            if let Some(dir_rec) = entities.get(&did) {
+                let mag = dir_rec.params.nth_param(1)
+                    .and_then(|v| v.as_list())
+                    .map(|coords| {
+                        let x = coords.get(0).and_then(|v| v.as_real()).unwrap_or(0.0) as f32;
+                        let y = coords.get(1).and_then(|v| v.as_real()).unwrap_or(0.0) as f32;
+                        let z = coords.get(2).and_then(|v| v.as_real()).unwrap_or(0.0) as f32;
+                        (x * x + y * y + z * z).sqrt()
+                    })
+                    .unwrap_or(10.0);
+                (mag / 0.5).clamp(8.0, 64.0) as usize
+            } else {
+                DEFAULT_SAMPLES / 2
+            }
+        } else {
+            DEFAULT_SAMPLES / 2
+        }
+    };
+
+    // Curve direction samples: proportional to arc length at estimation tolerance
+    let curve_samples = ((arc_length / ESTIMATION_TOL).clamp(8.0, 64.0) as usize).max(4);
+
+    // Use the max of both directions, clamped
+    curve_samples.max(sweep_samples).min(96)
 }
 
 /// Estimate sample count from surface curvature using a coarse probe grid.
@@ -915,7 +1058,7 @@ fn face_normal_at_point(
                 if record.name == "AXIS1_PLACEMENT" {
                     // AXIS1_PLACEMENT('', location, direction)
                     let direction_id = geom::nth_ref(&record.params, 2)?;
-                    topology::resolve_direction_public(direction_id, entities)?
+                    topology::resolve_direction(direction_id, entities)?
                 } else {
                     // AXIS2_PLACEMENT_3D - use resolve_placement
                     let (_, _, z) = topology::resolve_placement(axis_entity_id, entities)?;
@@ -1197,5 +1340,42 @@ mod tests {
         }
 
         // Normals can be vertical at top/bottom of minor circle — no strict directional check
+    }
+
+    #[test]
+    fn test_rectangular_trimmed_surface_unwrap() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = DIRECTION('', (0.0, 0.0, 1.0));
+#3 = DIRECTION('', (1.0, 0.0, 0.0));
+#4 = AXIS2_PLACEMENT_3D('', #1, #2, #3);
+#5 = PLANE('', #4);
+#6 = RECTANGULAR_TRIMMED_SURFACE('', #5, 0.0, 10.0, 0.0, 10.0);
+#7 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#8 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#9 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#10 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#11 = EDGE_CURVE('', #7, #8, #20, .T.);
+#12 = EDGE_CURVE('', #8, #9, #20, .T.);
+#13 = EDGE_CURVE('', #9, #10, #20, .T.);
+#14 = EDGE_CURVE('', #10, #7, #20, .T.);
+#15 = EDGE_LOOP('', (#11, #12, #13, #14));
+#16 = FACE_OUTER_BOUND('', #15, .T.);
+#17 = ADVANCED_FACE('', (#16), #6, .T.);
+#18 = CLOSED_SHELL('', (#17));
+#20 = LINE('', #7, #8);
+",
+        );
+        let faces = topology::collect_shell_faces(&entities);
+        assert_eq!(faces.len(), 1);
+        let face = &faces[0];
+        let mesh = tessellate_curved_face(face, &entities, None).unwrap();
+        assert!(!mesh.vertices.is_empty(), "RECTANGULAR_TRIMMED_SURFACE wrapping PLANE should produce vertices");
+        assert!(!mesh.indices.is_empty(), "should produce indices");
+        // Vertices should stay on Z=0 plane
+        for v in &mesh.vertices {
+            assert!(v.z.abs() < 1e-3, "vertex {:?} should lie on Z=0 plane", v);
+        }
     }
 }
