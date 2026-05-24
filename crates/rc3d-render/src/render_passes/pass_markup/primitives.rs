@@ -378,22 +378,39 @@ fn element_midpoint_world(element: &AnnotationElement, model: glam::Mat4) -> gla
     sum / pts.len() as f32
 }
 
-fn element_anchor_ndc(
+/// Collect all key point coordinates for an annotation element.
+fn element_key_points(element: &AnnotationElement) -> Vec<[f32; 3]> {
+    match element {
+        AnnotationElement::Dimension { start, end, offset_dir, .. } => {
+            let s = glam::Vec3::from(start.coords());
+            let e = glam::Vec3::from(end.coords());
+            vec![start.coords(), end.coords(), ((s + e) * 0.5 + glam::Vec3::from(*offset_dir)).into()]
+        }
+        AnnotationElement::AngleDimension { center, arm1, arm2, .. } => {
+            vec![center.coords(), arm1.coords(), arm2.coords()]
+        }
+        AnnotationElement::RadialDimension { center, perimeter, .. } => {
+            vec![center.coords(), perimeter.coords()]
+        }
+        AnnotationElement::DiameterDimension { center, p1, p2, .. } => {
+            vec![center.coords(), p1.coords(), p2.coords()]
+        }
+        AnnotationElement::Leader { anchor, .. } => vec![anchor.coords()],
+        AnnotationElement::Callout { anchor, .. } => vec![anchor.coords()],
+        AnnotationElement::Datum { position, .. } => vec![position.coords()],
+    }
+}
+
+/// Check if any key point of the element is within NDC bounds.
+fn element_any_point_visible(
     element: &AnnotationElement,
     model: glam::Mat4,
     scene_vp: glam::Mat4,
     depth_reversed_z: bool,
-) -> Option<[f32; 3]> {
-    let anchor = match element {
-        AnnotationElement::Dimension { start, .. } => start.coords(),
-        AnnotationElement::AngleDimension { center, .. } => center.coords(),
-        AnnotationElement::RadialDimension { center, .. } => center.coords(),
-        AnnotationElement::DiameterDimension { center, .. } => center.coords(),
-        AnnotationElement::Leader { anchor, .. } => anchor.coords(),
-        AnnotationElement::Callout { anchor, .. } => anchor.coords(),
-        AnnotationElement::Datum { position, .. } => position.coords(),
-    };
-    project_point_ndc(glam::Vec3::from(anchor), model, scene_vp, depth_reversed_z)
+) -> bool {
+    element_key_points(element).iter().any(|p| {
+        project_point_ndc(glam::Vec3::from(*p), model, scene_vp, depth_reversed_z).is_some()
+    })
 }
 
 /// Project 3D annotation elements to overlay lines and world-space labels.
@@ -421,7 +438,7 @@ pub(super) fn project_annotation_elements(
             visibility.back_facing = world_n.dot(to_camera) < 0.0;
         }
         visibility.outside_ndc =
-            element_anchor_ndc(&pa.element, model, scene_vp, depth_reversed_z).is_none();
+            !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z);
         if visibility.back_facing || visibility.outside_ndc {
             continue;
         }
