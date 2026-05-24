@@ -10,12 +10,14 @@ pub mod intersection_detection;
 pub mod ray_pick;
 pub mod scene_path;
 pub mod section_plane;
+pub mod annotation_tool;
 pub mod markup_tool;
 pub mod measurement;
 pub mod state;
 pub mod undo;
 
 pub use action::{Action, ActionKind, apply_to_all_roots, par_apply_to_all_roots};
+pub use annotation_tool::AnnotationTool;
 pub use event::{Event, EventContext};
 pub use light_subsystem::LightSubsystem;
 pub use element::*;
