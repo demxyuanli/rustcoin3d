@@ -738,9 +738,10 @@ pub(super) fn project_annotation_elements(
                     push_segment_3d(&mut out, &proj_ndc, frame_pos, target.coords(), *color);
                 }
 
-                // Frame box around the text
-                let frame_hw: f32 = 0.15;
-                let frame_hh: f32 = 0.1;
+                // Frame box: size proportional to text content and font size
+                let char_count = fcf_text.chars().count().max(1) as f32;
+                let frame_hw: f32 = style.font_size * char_count * 0.012;
+                let frame_hh: f32 = style.font_size * 0.018;
                 draw_fcf_frame(&mut out, &proj_ndc, frame_pos, frame_hw, frame_hh, *color);
 
                 push_world_label(
