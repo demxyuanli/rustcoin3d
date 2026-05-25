@@ -744,9 +744,30 @@ impl SurfaceGeom {
         best
     }
 
-    /// Find the closest (u, v) ∈ [0, 1]² to the given 3D point.
+    /// Sample a curve and find the parameter t ∈ [0,1] closest to a target 3D point.
+    fn find_closest_t_on_curve(curve: &CurveGeom, target: Vec3) -> f32 {
+    let n = 64;
+    let mut best_t = 0.0f32;
+    let mut best_dist = f32::MAX;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let d = (curve.d0(t) - target).length_squared();
+        if d < best_dist { best_dist = d; best_t = t; }
+    }
+    // Local refinement
+    for _ in 0..4 {
+        let step = 1.0 / (n as f32 * 2.0);
+        for &dt in &[-step, step] {
+            let t = (best_t + dt).clamp(0.0, 1.0);
+            let d = (curve.d0(t) - target).length_squared();
+            if d < best_dist { best_dist = d; best_t = t; }
+        }
+    }
+    best_t
+}
+
     /// Returns `None` for surfaces requiring numerical optimization
-    /// (torus, B-spline, extrusion, revolution, offset).
+    /// (torus, B-spline, extrusion, offset).
     pub fn project(&self, point: Vec3) -> Option<(f32, f32)> {
         match self {
             SurfaceGeom::Plane { origin, normal, u_dir } => {
@@ -798,10 +819,32 @@ impl SurfaceGeom {
                 };
                 Some((u, v))
             }
+            SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+                let axis = axis_dir.normalize();
+                let rel = point - *axis_origin;
+                // Project onto axis to get the radial component
+                let along = rel.dot(axis);
+                let radial = rel - axis * along;
+                let r = radial.length();
+                if r < 1e-10 { return Some((0.5, 0.0)); }
+                // Angle around axis
+                let (x_dir, y_dir) = build_ortho_axes(axis);
+                let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+                let v = if u_raw < 0.0 {
+                    u_raw / std::f32::consts::TAU + 1.0
+                } else {
+                    u_raw / std::f32::consts::TAU
+                };
+                // Unrotate the point to find where it lies on the generatrix
+                let angle = v * std::f32::consts::TAU;
+                let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
+                // Find closest point on generatrix
+                let u = Self::find_closest_t_on_curve(generatrix, unrotated);
+                Some((u, v))
+            }
             SurfaceGeom::Torus { .. }
             | SurfaceGeom::BSpline(_)
             | SurfaceGeom::Extrusion { .. }
-            | SurfaceGeom::Revolution { .. }
             | SurfaceGeom::Offset { .. } => None,
         }
     }
@@ -1229,7 +1272,13 @@ mod tests {
             axis_origin: Vec3::ZERO,
             axis_dir: Vec3::Z,
         };
-        assert!(rev.project(Vec3::new(4.0, 0.0, 0.0)).is_none());
+        let proj = rev.project(Vec3::new(4.0, 0.0, 0.0));
+        assert!(proj.is_some(), "revolution project should now work");
+        let (u, v) = proj.unwrap();
+        // The circle of radius 1 revolved around Z at distance 4 gives a torus-like shape
+        // projection should give valid UV
+        assert!((0.0..=1.0).contains(&u));
+        assert!((0.0..=1.0).contains(&v));
     }
 
     #[test]

@@ -98,12 +98,15 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                     // Build the PCURVE for this face
                     let pcurve = if let Some(sid) = face_data.surface_id {
                         build_pcurve_for_face(edge_data.curve_id, sid, entities)
+                            .or_else(|| build_synthetic_pcurve(&curve, &surface))
                             .unwrap_or_else(|| CurveGeom::Line {
-                                origin: Vec3::ZERO,
-                                direction: Vec3::X,
+                                origin: Vec3::ZERO, direction: Vec3::X,
                             })
                     } else {
-                        CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X }
+                        build_synthetic_pcurve(&curve, &surface)
+                            .unwrap_or_else(|| CurveGeom::Line {
+                                origin: Vec3::ZERO, direction: Vec3::X,
+                            })
                     };
 
                     // Find or create vertices
@@ -715,6 +718,26 @@ fn resolve_placement_2d(place_id: u64, entities: &EntityIndex) -> Option<(f32, f
 fn nth_list_f64(params: &StepValue, index: usize) -> Option<Vec<f64>> {
     params.nth_param(index)?.as_list()
         .map(|list| list.iter().filter_map(|v| v.as_real()).collect())
+}
+
+/// Build a synthetic PCURVE by sampling the 3D curve and projecting
+/// each point onto the surface's UV domain. Used when no PCURVE entity
+/// exists in the STEP file (common for procedural surfaces like
+/// SURFACE_OF_REVOLUTION).
+fn build_synthetic_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Option<CurveGeom> {
+    let n = 32;
+    let mut uv_points = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let p3 = curve.d0(t);
+        if let Some((u, v)) = surface.project(p3) {
+            uv_points.push(Vec3::new(u, v, 0.0));
+        } else {
+            return None; // surface.project not supported → can't build synthetic PCURVE
+        }
+    }
+    if uv_points.len() < 2 { return None; }
+    Some(CurveGeom::Polyline { points: uv_points })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
