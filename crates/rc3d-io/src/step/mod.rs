@@ -21,6 +21,7 @@ pub mod topo;
 pub mod refine;
 pub mod lod;
 pub mod fillet;
+pub mod brep;
 
 use std::path::Path;
 use std::collections::HashMap;
