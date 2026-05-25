@@ -10,6 +10,8 @@ use super::tessellate::MeshResult;
 use super::geom;
 use super::nurbs::NurbsSurface;
 use super::value::StepValue;
+use super::refine;
+use super::pcurve;
 use earcutr;
 
 const DEFAULT_SAMPLES: usize = 48;
@@ -399,6 +401,24 @@ fn compute_uv_bounds_from_trim(
     }
 }
 
+/// Apply mesh refinement for non-planar surfaces after initial tessellation.
+fn maybe_refine_nurbs(
+    mesh: MeshResult,
+    nurbs: &NurbsSurface,
+    entity_type: EntityType,
+    u_min: f32, u_max: f32, v_min: f32, v_max: f32,
+) -> MeshResult {
+    if entity_type == EntityType::Plane {
+        return mesh;
+    }
+    let config = refine::RefineConfig::default();
+    let (refined_v, refined_i, refined_n) = refine::refine_mesh(
+        &mesh.vertices, &mesh.indices, &mesh.normals,
+        nurbs, entity_type, u_min, u_max, v_min, v_max, &config,
+    );
+    MeshResult { vertices: refined_v, indices: refined_i, normals: refined_n }
+}
+
 /// Tessellate a curved face using UV sampling.
 /// Returns None if the surface type is unsupported or has no surface_id.
 pub fn tessellate_curved_face(
@@ -423,12 +443,21 @@ pub fn tessellate_curved_face(
                     .unwrap_or_else(|| compute_uv_bounds_from_trim(None, surface.entity_type))
             };
             let nurbs = build_nurbs_from_surface(surface, u_min, u_max, v_min, v_max)?;
+            // Prefer exact trim curves; fall back to polygon trim
+            let exact_trims = pcurve::extract_exact_face_trim(face, entities);
+            let use_exact = exact_trims.is_some() && trim.is_some();
             if let Some(tr) = trim {
-                // Use UV-space earcut for exact trim boundary
-                tessellate_trimmed_via_uv(tr, &nurbs, surface_id, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max)
+                let mesh = if use_exact {
+                    tessellate_trimmed_via_exact(exact_trims.as_ref().unwrap(), &nurbs, surface_id, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max)
+                        .or_else(|| tessellate_trimmed_via_uv(tr, &nurbs, surface_id, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max))
+                } else {
+                    tessellate_trimmed_via_uv(tr, &nurbs, surface_id, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max)
+                };
+                mesh.map(|m| maybe_refine_nurbs(m, &nurbs, surface.entity_type, u_min, u_max, v_min, v_max))
             } else {
                 let n = estimate_sample_count(&nurbs, surface.entity_type, u_min, u_max, v_min, v_max);
-                Some(sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max))
+                let mesh = sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max);
+                Some(maybe_refine_nurbs(mesh, &nurbs, surface.entity_type, u_min, u_max, v_min, v_max))
             }
         }
         EntityType::SurfaceOfLinearExtrusion | EntityType::SurfaceOfRevolution => {
@@ -467,7 +496,8 @@ pub fn tessellate_curved_face(
                 (nurbs_u_min, nurbs_u_max, nurbs_v_min, nurbs_v_max)
             };
             let n = estimate_sample_count(&nurbs, surface.entity_type, u_min, u_max, v_min, v_max);
-            Some(sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max))
+            let mesh = sample_grid_nurbs(n, surface_id, trim, &nurbs, entities, surface.entity_type, face.same_sense, u_min, u_max, v_min, v_max);
+            Some(maybe_refine_nurbs(mesh, &nurbs, surface.entity_type, u_min, u_max, v_min, v_max))
         }
         EntityType::OffsetSurface => {
             // OFFSET_SURFACE('', #base_surface, offset_distance, same_sense)
@@ -974,6 +1004,164 @@ fn tessellate_trimmed_via_uv(
         let b = remap[tri[1]];
         let c = remap[tri[2]];
         if a >= 0 && b >= 0 && c >= 0 {
+            indices.extend_from_slice(&[a, b, c, -1]);
+        }
+    }
+
+    Some(MeshResult { vertices, indices, normals })
+}
+
+/// Tessellate using exact trim curves (2D geometry → adaptive UV sampling → earcut).
+fn tessellate_trimmed_via_exact(
+    trim: &pcurve::ExactFaceTrim,
+    nurbs: &NurbsSurface,
+    surface_id: u64,
+    entities: &EntityIndex,
+    entity_type: EntityType,
+    same_sense: bool,
+    u_min: f32,
+    u_max: f32,
+    v_min: f32,
+    v_max: f32,
+) -> Option<MeshResult> {
+    let surface = entities.get(&surface_id)?;
+    let info = extract_surface_info(surface, entities);
+
+    // Step 1: Adaptively sample exact trim curves into UV polygon
+    let mut flat_uv: Vec<f64> = Vec::new();
+    let mut hole_indices: Vec<usize> = Vec::new();
+    let mut all_uv_pts: Vec<(f32, f32)> = Vec::new();
+
+    for (li, trim_loop) in trim.loops.iter().enumerate() {
+        if li > 0 {
+            hole_indices.push(all_uv_pts.len());
+        }
+        for curve in &trim_loop.curves {
+            let n = match curve {
+                pcurve::ExactTrimCurve2D::Line { .. } => 2,
+                pcurve::ExactTrimCurve2D::Circle { radius, .. } => {
+                    (radius.abs() * 6.28 / 0.1).max(12.0).min(128.0) as usize
+                }
+                pcurve::ExactTrimCurve2D::Ellipse { .. } => 32,
+                pcurve::ExactTrimCurve2D::BSpline { control_points, .. } => {
+                    (control_points.len() * 4).max(16).min(256)
+                }
+            };
+            for j in 0..=n {
+                let t = j as f32 / n.max(1) as f32;
+                let uv = curve.evaluate(t);
+                flat_uv.push(uv.u as f64);
+                flat_uv.push(uv.v as f64);
+                all_uv_pts.push((uv.u, uv.v));
+            }
+        }
+    }
+
+    if all_uv_pts.len() < 3 {
+        return None;
+    }
+
+    // Step 2: Earcut triangulation in UV space
+    let tri_indices = match earcutr::earcut(&flat_uv, &hole_indices, 2) {
+        Ok(indices) => indices,
+        Err(_) => return None,
+    };
+
+    // Step 3: Optional interior refinement for curved surfaces
+    let subdivisions: usize = match entity_type {
+        EntityType::Plane => 0,
+        EntityType::BSplineSurface | EntityType::BSplineSurfaceWithKnots => 1,
+        _ => 0,
+    };
+
+    let mut final_uv_pts = all_uv_pts.clone();
+    let mut all_triangles: Vec<[usize; 3]> = Vec::new();
+
+    if subdivisions == 0 {
+        for chunk in tri_indices.chunks(3) {
+            if chunk.len() == 3 {
+                all_triangles.push([chunk[0], chunk[1], chunk[2]]);
+            }
+        }
+    } else {
+        for chunk in tri_indices.chunks(3) {
+            if chunk.len() != 3 { continue; }
+            let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
+            let (u0, v0) = all_uv_pts[i0];
+            let (u1, v1) = all_uv_pts[i1];
+            let (u2, v2) = all_uv_pts[i2];
+            let ic = final_uv_pts.len();
+            final_uv_pts.push(((u0 + u1 + u2) / 3.0, (v0 + v1 + v2) / 3.0));
+            all_triangles.push([i0, i1, ic]);
+            all_triangles.push([i1, i2, ic]);
+            all_triangles.push([i2, i0, ic]);
+        }
+    }
+
+    // Step 4: Evaluate NURBS at each UV point → 3D
+    let mut vertices: Vec<Vec3> = Vec::with_capacity(final_uv_pts.len());
+    let mut normals: Vec<Vec3> = Vec::with_capacity(final_uv_pts.len());
+    let mut pos_map: HashMap<[u32; 3], i32> = HashMap::new();
+    let mut remap: Vec<i32> = vec![-1; final_uv_pts.len()];
+
+    let cone_tan_a = if entity_type == EntityType::ConicalSurface {
+        surface.params.nth_param(3).and_then(|v| v.as_real()).unwrap_or(0.7854) as f32
+    } else { 0.0 };
+
+    for (i, &(u, v)) in final_uv_pts.iter().enumerate() {
+        let uc = u.clamp(u_min, u_max);
+        let vc = v.clamp(v_min, v_max);
+        let (un, vn) = map_uv_to_nurbs(entity_type, uc, vc);
+        let mut pt = nurbs.evaluate(un, vn);
+        let mut n = match entity_type {
+            EntityType::Plane => Vec3::Z,
+            EntityType::CylindricalSurface => {
+                let r = (pt.x * pt.x + pt.y * pt.y).sqrt();
+                if r > 1e-6 { Vec3::new(pt.x / r, pt.y / r, 0.0) } else { Vec3::Z }
+            }
+            EntityType::ConicalSurface => {
+                let r = (pt.x * pt.x + pt.y * pt.y).sqrt();
+                if r > 1e-6 {
+                    let d = (1.0 + cone_tan_a * cone_tan_a).sqrt();
+                    Vec3::new(pt.x / r / d, pt.y / r / d, -cone_tan_a / d)
+                } else { Vec3::Z }
+            }
+            EntityType::SphericalSurface => {
+                let r = pt.length();
+                if r > 1e-6 { pt / r } else { Vec3::Z }
+            }
+            EntityType::ToroidalSurface => {
+                let r_xy = (pt.x * pt.x + pt.y * pt.y).sqrt();
+                if r_xy > 1e-6 {
+                    let major_r = surface.params.nth_param(2).and_then(|v| v.as_real()).unwrap_or(1.0) as f32;
+                    Vec3::new(pt.x - (major_r / r_xy) * pt.x, pt.y - (major_r / r_xy) * pt.y, pt.z).normalize()
+                } else { Vec3::Z }
+            }
+            _ => nurbs.normal(un, vn),
+        };
+
+        if !same_sense { n = -n; }
+        if let Some(ref si) = info {
+            pt = si.origin + si.x_axis * pt.x + si.y_axis * pt.y + si.z_axis * pt.z;
+            n = (si.x_axis * n.x + si.y_axis * n.y + si.z_axis * n.z).normalize();
+        }
+
+        let hash = rc3d_core::utils::hash::f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+        let idx = *pos_map.entry(hash).or_insert_with(|| {
+            let i = vertices.len() as i32;
+            vertices.push(pt);
+            normals.push(n);
+            i
+        });
+        remap[i] = idx;
+    }
+
+    let mut indices = Vec::new();
+    for tri in &all_triangles {
+        let a = remap[tri[0]];
+        let b = remap[tri[1]];
+        let c = remap[tri[2]];
+        if a >= 0 && b >= 0 && c >= 0 && a != b && b != c && a != c {
             indices.extend_from_slice(&[a, b, c, -1]);
         }
     }
