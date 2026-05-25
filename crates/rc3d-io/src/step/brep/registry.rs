@@ -7,6 +7,7 @@ use rc3d_core::utils::hash::f32x3_quantized_bits;
 use super::topo::*;
 use super::geom::CurveGeom;
 
+#[derive(Debug)]
 pub struct BRepRegistry {
     pub vertices: SlotMap<VertexKey, BRepVertex>,
     pub edges: SlotMap<EdgeKey, BRepEdge>,
