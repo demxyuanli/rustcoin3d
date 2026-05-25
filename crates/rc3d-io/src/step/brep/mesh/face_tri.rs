@@ -7,7 +7,7 @@ use rc3d_core::math::Vec3;
 use rc3d_core::utils::hash::f32x3_quantized_bits;
 use crate::step::brep::topo::{EdgeKey, FaceKey};
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::tessellate::MeshResult;
+use crate::step::mesh_result::MeshResult;
 use super::edge_disc::EdgePolygon;
 
 /// Triangulate a face's UV domain with edge polygons as constraints.

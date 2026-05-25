@@ -9,16 +9,15 @@ pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
 pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
-pub use step::{parse_step, parse_step_file, parse_step_with_shared_topology, parse_step_full, StepImportResult, write_step_file, write_step_entities_file, StepError};
+pub use step::{parse_step, parse_step_file, write_step_file, write_step_entities_file, StepError};
 pub use step::write::{write_step_from_entities, write_step_from_graph};
 pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};
 pub use step::xml::{write_xml_step, parse_xml_step};
 pub use step::bool::{BoolOp, boolean as step_boolean};
-pub use step::topo;
+pub use step::brep;
 pub use step::tree::{AssemblyTree, AssemblyNode, ProductMetadata};
 pub use step::header::HeaderInfo;
 pub use step::lod;
-pub use step::refine;
 pub use stl::{parse_stl, parse_stl_file, StlError};
 
 use std::path::Path;
@@ -68,10 +67,7 @@ pub fn import_file(path: &Path) -> Result<SceneGraph, ImportError> {
             Ok(parse_fbx_file(path)?)
         }
         "step" | "stp" => {
-            // Use shared-topology path for improved watertight meshes
-            let bytes = std::fs::read(path)?;
-            let text = String::from_utf8_lossy(&bytes);
-            Ok(parse_step_with_shared_topology(&text)?)
+            Ok(parse_step_file(path)?)
         }
         _ => Err(ImportError::UnknownFormat(ext)),
     }

@@ -1,7 +1,7 @@
 //! Delaunay edge-flip mesh optimization. T2.7
 
 use rc3d_core::math::Vec3;
-use crate::step::tessellate::MeshResult;
+use crate::step::mesh_result::MeshResult;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]

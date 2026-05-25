@@ -23,6 +23,7 @@ pub struct StepEdge {
     pub curve_id: u64,
     pub curve_type: String,
     pub reversed: bool,
+    pub tolerance: f32,
 }
 
 /// A shell with its entity ID and extracted faces.
@@ -30,6 +31,24 @@ pub struct StepEdge {
 pub struct StepShell {
     pub id: u64,
     pub faces: Vec<StepFace>,
+}
+
+/// Extract global distance tolerance from UNCERTAINTY_MEASURE_WITH_UNIT entities.
+pub fn global_tolerance(entities: &EntityIndex) -> f32 {
+    for (_id, record) in entities.iter() {
+        if record.name == "UNCERTAINTY_MEASURE_WITH_UNIT" {
+            if let Some(typed) = record.params.nth_param(0) {
+                if let StepValue::Typed(tag, inner) = typed {
+                    if tag == "LENGTH_MEASURE" {
+                        if let StepValue::Real(v) = inner.as_ref() {
+                            return (*v as f32).clamp(1e-5, 0.01);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    1e-4
 }
 
 /// Collect all Shell entities and extract their faces, keeping shells separate.
@@ -177,6 +196,7 @@ fn resolve_edge_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
 
 fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
     let record = entities.get(&loop_id)?;
+    let tol = global_tolerance(entities);
     let pt_ids = nth_list_refs(&record.params, 1)?;
     let points: Vec<Vec3> = pt_ids.iter()
         .filter_map(|&id| resolve_point(id, entities))
@@ -194,6 +214,7 @@ fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
             curve_id: 0,
             curve_type: "LINE".into(),
             reversed: false,
+            tolerance: tol,
         });
     }
     Some(StepLoop { edges })
@@ -216,6 +237,7 @@ fn resolve_edge(edge_id: u64, entities: &EntityIndex) -> Option<StepEdge> {
 
 fn resolve_edge_curve(edge_id: u64, entities: &EntityIndex, reversed: bool) -> Option<StepEdge> {
     let record = entities.get(&edge_id)?;
+    let tol = global_tolerance(entities);
     // EDGE_CURVE args: (name, #start, #end, #curve, same_sense)
     let start_id = nth_ref(&record.params, 1)?;
     let end_id = nth_ref(&record.params, 2)?;
@@ -230,7 +252,7 @@ fn resolve_edge_curve(edge_id: u64, entities: &EntityIndex, reversed: bool) -> O
 
     let (start, end) = if reversed { (end_raw, start_raw) } else { (start_raw, end_raw) };
 
-    Some(StepEdge { start, end, curve_id, curve_type, reversed: false })
+    Some(StepEdge { start, end, curve_id, curve_type, reversed: false, tolerance: tol })
 }
 
 pub fn resolve_point(point_id: u64, entities: &EntityIndex) -> Option<Vec3> {
@@ -280,7 +302,7 @@ pub fn resolve_placement(point_id: u64, entities: &EntityIndex) -> Option<(Vec3,
     Some((origin, x, z))
 }
 
-fn resolve_direction(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+pub fn resolve_direction(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
     let record = entities.get(&dir_id)?;
     if record.name != "DIRECTION" { return None; }
     let coords = nth_list_params(&record.params, 1)?;

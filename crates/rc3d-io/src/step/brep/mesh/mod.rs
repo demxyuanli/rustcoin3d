@@ -6,7 +6,7 @@ pub mod optimize;
 use std::collections::HashMap;
 use super::topo::{ShellKey, EdgeKey};
 use super::registry::BRepRegistry;
-use crate::step::tessellate::MeshResult;
+use crate::step::mesh_result::MeshResult;
 use edge_disc::{EdgeDiscConfig, EdgePolygon, discretize_all_edges};
 use face_tri::triangulate_face;
 use refiner::{RefineConfig, refine_mesh};

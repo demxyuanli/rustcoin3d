@@ -2,7 +2,7 @@
 
 use rc3d_core::math::Vec3;
 use crate::step::brep::geom::SurfaceGeom;
-use crate::step::tessellate::MeshResult;
+use crate::step::mesh_result::MeshResult;
 
 #[derive(Debug, Clone)]
 pub struct RefineConfig {
