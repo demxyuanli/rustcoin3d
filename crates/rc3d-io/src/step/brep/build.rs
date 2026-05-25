@@ -47,17 +47,14 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
 
         for face_data in &shell.faces {
             // ── Pass 1: Build the surface ──────────────────
-            let (surface, surface_is_fallback) = if let Some(sid) = face_data.surface_id {
-                match build_surface(sid, entities) {
-                    Some(s) => (s, false),
-                    None => {
-                        let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
-                        eprintln!("[BRep] WARNING: build_surface failed for #{} ({}), falling back to Plane", sid, surf_name);
-                        (SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }, true)
-                    }
-                }
+            let surface = if let Some(sid) = face_data.surface_id {
+                build_surface(sid, entities).unwrap_or_else(|| {
+                    let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
+                    eprintln!("[BRep] WARNING: build_surface failed for #{} ({}), falling back to Plane", sid, surf_name);
+                    SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
+                })
             } else {
-                (SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }, false)
+                SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
             };
 
             // ── Create placeholder face first (to get a FaceKey for PCURVE registration) ──
@@ -86,21 +83,22 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                         });
 
                     // Build the PCURVE for this face.
-                    // If the surface was a fallback Plane (build_surface failed), skip
-                    // real PCURVE lookup — its UV space doesn't match the original surface.
-                    let pcurve = if face_data.surface_id.is_some() && !surface_is_fallback {
-                        let real_pcurve = build_pcurve_for_face(edge_data.curve_id, face_data.surface_id.unwrap(), entities);
-                        real_pcurve
-                            .or_else(|| build_synthetic_pcurve(&curve, &surface))
-                            .unwrap_or_else(|| CurveGeom::Line {
-                                origin: Vec3::ZERO, direction: Vec3::X,
-                            })
-                    } else {
-                        build_synthetic_pcurve(&curve, &surface)
-                            .unwrap_or_else(|| CurveGeom::Line {
-                                origin: Vec3::ZERO, direction: Vec3::X,
-                            })
-                    };
+                    // Always prefer synthetic PCURVE (3D curve → surface.project() → UV polylines).
+                    // STEP PCURVE data is often wrong/absent for procedural surfaces and even
+                    // analytic surfaces can have mismatched UV parameterizations across faces.
+                    // Plane.project() and similar are exact — synthetic PCURVEs are reliable.
+                    let pcurve = build_synthetic_pcurve(&curve, &surface)
+                        .or_else(|| {
+                            // Fallback: try STEP PCURVE data if synthetic failed
+                            if let Some(sid) = face_data.surface_id {
+                                build_pcurve_for_face(edge_data.curve_id, sid, entities)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| CurveGeom::Line {
+                            origin: Vec3::ZERO, direction: Vec3::X,
+                        });
 
                     // Find or create vertices
                     let v_start = reg.find_or_add_vertex(edge_data.start, tol);
@@ -397,6 +395,23 @@ fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Option<
     None
 }
 
+/// Resolve a VECTOR entity to its full 3D vector (direction × magnitude).
+fn resolve_vector_magnitude(vec_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+    let record = entities.get(&vec_id)?;
+    match record.name.as_str() {
+        "VECTOR" => {
+            let dir_id = geom::nth_ref(&record.params, 1)?;
+            let dir = topology::resolve_direction(dir_id, entities)?;
+            let mag = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            Some(dir * mag)
+        }
+        "DIRECTION" => {
+            topology::resolve_direction(vec_id, entities)
+        }
+        _ => topology::resolve_direction(vec_id, entities),
+    }
+}
+
 // ── Curve building ────────────────────────────────────────────────
 
 /// Build a 3D CurveGeom from a STEP curve entity.
@@ -407,7 +422,8 @@ fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let pnt_id = geom::nth_ref(&record.params, 1)?;
             let dir_id = geom::nth_ref(&record.params, 2)?;
             let origin = topology::resolve_point(pnt_id, entities)?;
-            let direction = topology::resolve_direction(dir_id, entities).unwrap_or(Vec3::X);
+            // Resolve the full VECTOR (direction × magnitude), not just the unit direction.
+            let direction = resolve_vector_magnitude(dir_id, entities).unwrap_or(Vec3::X);
             Some(CurveGeom::Line { origin, direction })
         }
         "CIRCLE" => {
@@ -712,25 +728,30 @@ fn nth_list_f64(params: &StepValue, index: usize) -> Option<Vec<f64>> {
 }
 
 /// Build a synthetic PCURVE by sampling the 3D curve and projecting
-/// each point onto the surface's UV domain. Used when no PCURVE entity
-/// exists in the STEP file (common for procedural surfaces like
-/// SURFACE_OF_REVOLUTION).
+/// each point onto the surface's UV domain.
 fn build_synthetic_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Option<CurveGeom> {
     let n = 32;
     let mut uv_points = Vec::with_capacity(n + 1);
+    let mut proj_failures = 0usize;
     for i in 0..=n {
         let t = i as f32 / n as f32;
         let p3 = curve.d0(t);
-        if let Some((u, v)) = surface.project(p3) {
-            uv_points.push(Vec3::new(u, v, 0.0));
-        } else {
-            return None; // surface.project not supported → can't build synthetic PCURVE
+        match surface.project(p3) {
+            Some((u, v)) => uv_points.push(Vec3::new(u, v, 0.0)),
+            None => { proj_failures += 1; return None; }
         }
     }
     if uv_points.len() < 2 { return None; }
     // Guard against degenerate (all-identical) polylines from zero-length edges
     let first = uv_points[0];
-    if uv_points.iter().all(|p| (p - first).length_squared() < 1e-12) { return None; }
+    if uv_points.iter().all(|p| (p - first).length_squared() < 1e-12) {
+        eprintln!("[BRep] synthetic_pcurve: all {} points identical at ({:.3},{:.3}), 3D curve d0(0)={:?}, d0(0.5)={:?}",
+            uv_points.len(), first.x, first.y, curve.d0(0.0), curve.d0(0.5));
+        return None;
+    }
+    if proj_failures > 0 {
+        eprintln!("[BRep] synthetic_pcurve: {} projection failures out of {}", proj_failures, n + 1);
+    }
     Some(CurveGeom::Polyline { points: uv_points })
 }
 
