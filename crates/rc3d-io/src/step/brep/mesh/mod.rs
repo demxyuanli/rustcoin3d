@@ -66,6 +66,23 @@ pub fn mesh_brep_shell(
             let mut face_mesh = face_mesh;
             optimize_mesh(&mut face_mesh, &config.optimize);
 
+            // Diagnostic: report face mesh stats
+            let face = reg.faces.get(face_key).unwrap();
+            let edge_count: usize = reg.wires.get(face.outer_wire)
+                .map(|w| w.edges.len()).unwrap_or(0);
+            let tri_count = face_mesh.indices.len() / 4;
+            let vs = &face_mesh.vertices;
+            let (min_x, max_x, min_y, max_y, min_z, max_z) = if vs.is_empty() {
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            } else {
+                let (mut mnx, mut mxx, mut mny, mut mxy, mut mnz, mut mxz) =
+                    (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                for v in vs { mnx=mnx.min(v.x); mxx=mxx.max(v.x); mny=mny.min(v.y); mxy=mxy.max(v.y); mnz=mnz.min(v.z); mxz=mxz.max(v.z); }
+                (mnx, mxx, mny, mxy, mnz, mxz)
+            };
+            eprintln!("[BRep mesh] face {:?}: {} edges → {} tris, {} verts, bbox=[{:.2}..{:.2}, {:.2}..{:.2}, {:.2}..{:.2}]",
+                face_key, edge_count, tri_count, vs.len(), min_x, max_x, min_y, max_y, min_z, max_z);
+
             // Merge into global mesh (with vertex offset)
             all_vertices.extend(face_mesh.vertices);
             all_normals.extend(face_mesh.normals);

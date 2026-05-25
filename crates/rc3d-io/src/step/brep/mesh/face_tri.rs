@@ -90,6 +90,13 @@ pub fn triangulate_face(
     // (CDT constraints would be ideal but complex boundary polygons from
     // real STEP files frequently trigger spade's intersection check.)
 
+    // ── Diagnostic: boundary and triangulation stats ────────
+    let uv_min = uv_points.iter().fold((f64::MAX,f64::MAX), |(mu,mv),&(u,v)| (mu.min(u), mv.min(v)));
+    let uv_max = uv_points.iter().fold((f64::MIN,f64::MIN), |(mu,mv),&(u,v)| (mu.max(u), mv.max(v)));
+    eprintln!("[BRep face] {} boundary pts, chain_len={}, uv_range=[{:.3}..{:.3}, {:.3}..{:.3}]",
+        uv_points.len(), boundary_chain.len(),
+        uv_min.0, uv_max.0, uv_min.1, uv_max.1);
+
     // ── Extract triangles from CDT ──────────────────────────────
     let mut vertices: Vec<Vec3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
