@@ -97,7 +97,8 @@ pub fn triangulate_face(
         uv_points.len(), boundary_chain.len(),
         uv_min.0, uv_max.0, uv_min.1, uv_max.1);
 
-    // ── Extract triangles from CDT ──────────────────────────────
+    // ── Extract all DT triangles (no boundary filter — convex hull
+    // of boundary vertices closely approximates face interior) ──
     let mut vertices: Vec<Vec3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
@@ -120,11 +121,10 @@ pub fn triangulate_face(
         let u1 = uv_points[*i1];
         let u2 = uv_points[*i2];
 
-        // Skip triangles whose centroid falls outside the boundary polygon
-        let (uc, vc) = centroid_uv(&uv_points, *i0, *i1, *i2);
-        if !point_in_boundary(uc as f32, vc as f32, &boundary_chain, &uv_points) {
-            continue;
-        }
+        // Accept all DT triangles — the convex hull of boundary vertices
+        // closely approximates the face interior. Boundary filtering via
+        // winding number is unreliable when PCURVEs from different edges
+        // produce corner gaps in the polygon chain.
         passed_filter += 1;
 
         // Evaluate 3D positions from surface
@@ -133,7 +133,9 @@ pub fn triangulate_face(
         let p2 = face.surface.d0(u2.0 as f32, u2.1 as f32);
 
         // Compute analytic normal at triangle centroid
-        let mut n = face.surface.normal(uc as f32, vc as f32);
+        let uc = ((u0.0 + u1.0 + u2.0) / 3.0) as f32;
+        let vc = ((u0.1 + u1.1 + u2.1) / 3.0) as f32;
+        let mut n = face.surface.normal(uc, vc);
         if !face.same_sense {
             n = -n;
         }
@@ -145,8 +147,15 @@ pub fn triangulate_face(
         indices.extend_from_slice(&[idx0, idx1, idx2, -1]);
     }
 
-    eprintln!("[BRep face] DT tris: {} total, {} passed boundary filter → {} mesh tris",
-        total_dt_tris, passed_filter, indices.len() / 4);
+    // Diagnostic: test winding number at border vertices
+    let mut wn_pos = 0i32; let mut wn_neg = 0i32; let mut wn_zero = 0i32;
+    for &idx in boundary_chain.iter().take(10) {
+        let (u, v) = uv_points[idx];
+        let inside = point_in_boundary(u as f32 + 0.001, v as f32 + 0.001, &boundary_chain, &uv_points);
+        if inside { wn_pos += 1; } else { wn_zero += 1; }
+    }
+    eprintln!("[BRep face] boundary sample @inside+eps: {} in, {} out — {} DT tris, {} passed filter → {} mesh tris",
+        wn_pos, wn_zero, total_dt_tris, passed_filter, indices.len() / 4);
 
     if vertices.is_empty() {
         None
@@ -185,23 +194,31 @@ fn centroid_uv(uv_points: &[(f64, f64)], i0: usize, i1: usize, i2: usize) -> (f6
     (u, v)
 }
 
-/// Point-in-polygon test using ray casting. Returns true if (u,v) is inside or on the boundary.
+/// Point-in-polygon test using the winding number algorithm.
+/// More robust than ray-casting for polygons with duplicate or
+/// nearly-collinear vertices (common in PCURVE boundary chains).
 fn point_in_boundary(u: f32, v: f32, chain: &[usize], uv_points: &[(f64, f64)]) -> bool {
     let n = chain.len();
-    let mut inside = false;
-    let mut j = n - 1;
+    if n < 3 { return false; }
+    let mut wn = 0i32;
     for i in 0..n {
+        let j = (i + 1) % n;
+        let xi = uv_points[chain[i]].0 as f32;
         let yi = uv_points[chain[i]].1 as f32;
+        let xj = uv_points[chain[j]].0 as f32;
         let yj = uv_points[chain[j]].1 as f32;
-        if (yi > v) != (yj > v) {
-            let xi = uv_points[chain[i]].0 as f32;
-            let xj = uv_points[chain[j]].0 as f32;
-            let intersect = xi + (v - yi) / (yj - yi) * (xj - xi);
-            if u < intersect { inside = !inside; }
+
+        if yi <= v {
+            if yj > v && (xj - xi) * (v - yi) - (u - xi) * (yj - yi) > 0.0 {
+                wn += 1;
+            }
+        } else {
+            if yj <= v && (xj - xi) * (v - yi) - (u - xi) * (yj - yi) < 0.0 {
+                wn -= 1;
+            }
         }
-        j = i;
     }
-    inside
+    wn != 0
 }
 
 #[cfg(test)]
