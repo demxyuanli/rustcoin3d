@@ -19,6 +19,7 @@ pub mod curve;
 pub mod header;
 pub mod topo;
 pub mod refine;
+pub mod lod;
 
 use std::path::Path;
 use std::collections::HashMap;
