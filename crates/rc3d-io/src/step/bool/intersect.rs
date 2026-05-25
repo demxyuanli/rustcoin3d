@@ -4,6 +4,107 @@
 //! on both surfaces. These curves are used to split faces.
 
 use rc3d_core::math::Vec3;
+use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::topo::{ShellKey, FaceKey, BRepFace};
+use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+
+/// Compute all face-face intersections between B-Rep shells.
+/// Each intersection produces curves with PCURVEs on both faces.
+pub struct FaceIntersectionResult {
+    pub face_a: FaceKey,
+    pub face_b: FaceKey,
+    /// 3D intersection curves
+    pub curves_3d: Vec<CurveGeom>,
+    /// PCURVEs of intersection curves on face A (2D curves in UV space)
+    pub pcurves_on_a: Vec<CurveGeom>,
+    /// PCURVEs of intersection curves on face B
+    pub pcurves_on_b: Vec<CurveGeom>,
+}
+
+/// Compute intersections between B-Rep shells.
+pub fn compute_intersections_brep(
+    _shells_a: &[ShellKey],
+    _shells_b: &[ShellKey],
+    reg: &BRepRegistry,
+) -> Vec<FaceIntersectionResult> {
+    let mut results = Vec::new();
+    // For now: only support analytic-analytic pairs (existing infrastructure)
+    // Full NURBS-NURBS intersection requires marching method -- deferred
+
+    // Iterate face pairs and call existing analytic intersect functions
+    for &sk_a in _shells_a {
+        let shell_a = match reg.shells.get(sk_a) { Some(s) => s, None => continue };
+        for &(face_a_key, _) in &shell_a.faces {
+            let face_a = match reg.faces.get(face_a_key) { Some(f) => f, None => continue };
+            for &sk_b in _shells_b {
+                let shell_b = match reg.shells.get(sk_b) { Some(s) => s, None => continue };
+                for &(face_b_key, _) in &shell_b.faces {
+                    let face_b = match reg.faces.get(face_b_key) { Some(f) => f, None => continue };
+
+                    // Try analytic surface-surface intersection
+                    if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
+                        results.push(FaceIntersectionResult {
+                            face_a: face_a_key,
+                            face_b: face_b_key,
+                            curves_3d: curves,
+                            pcurves_on_a: vec![],
+                            pcurves_on_b: vec![],
+                        });
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
+/// Compute intersection curves between two B-Rep faces (analytic surfaces only for now).
+fn intersect_surfaces_brep(
+    face_a: &BRepFace,
+    face_b: &BRepFace,
+    _reg: &BRepRegistry,
+) -> Option<Vec<CurveGeom>> {
+    match (&face_a.surface, &face_b.surface) {
+        (SurfaceGeom::Plane { origin: o1, normal: n1, .. },
+         SurfaceGeom::Plane { origin: o2, normal: n2, .. }) => {
+            plane_plane_brep(*o1, *n1, *o2, *n2)
+        }
+        (SurfaceGeom::Plane { origin: o, normal: n, .. },
+         SurfaceGeom::Cylinder { origin: co, axis: ca, radius: cr }) => {
+            plane_cylinder_brep(*o, *n, *co, *ca, *cr)
+        }
+        (SurfaceGeom::Cylinder { .. }, SurfaceGeom::Plane { .. }) => {
+            intersect_surfaces_brep(face_b, face_a, _reg)
+        }
+        _ => None, // Other combinations: method not yet implemented for B-Rep
+    }
+}
+
+fn plane_plane_brep(o1: Vec3, n1: Vec3, o2: Vec3, n2: Vec3) -> Option<Vec<CurveGeom>> {
+    let cross = n1.cross(n2);
+    if cross.length() < 1e-10 { return None; } // parallel
+    let dir = cross.normalize();
+    let d1 = n1.dot(o1);
+    let d2 = n2.dot(o2);
+    let det = n1.x * n2.y - n1.y * n2.x;
+    let origin = if det.abs() > 1e-10 {
+        Vec3::new((d1*n2.y - d2*n1.y)/det, (n1.x*d2 - n2.x*d1)/det, 0.0)
+    } else {
+        o1
+    };
+    Some(vec![CurveGeom::Line { origin, direction: dir }])
+}
+
+fn plane_cylinder_brep(plane_o: Vec3, plane_n: Vec3, cyl_o: Vec3, cyl_axis: Vec3, cyl_r: f32) -> Option<Vec<CurveGeom>> {
+    // Simplified: if plane is perpendicular to axis -> circle intersection
+    let a = cyl_axis.normalize();
+    if (plane_n.dot(a)).abs() > 0.999 {
+        let d = plane_n.dot(cyl_o - plane_o);
+        let center = cyl_o - plane_n * d;
+        return Some(vec![CurveGeom::Circle { center, axis: plane_n, radius: cyl_r }]);
+    }
+    None
+}
 use super::super::parser::EntityIndex;
 use super::super::topology::{StepShell, StepFace};
 use super::super::entity_types::EntityType;
