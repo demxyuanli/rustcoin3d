@@ -48,11 +48,14 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
         for face_data in &shell.faces {
             // ── Pass 1: Build the surface ──────────────────
             let surface = if let Some(sid) = face_data.surface_id {
-                build_surface(sid, entities).unwrap_or_else(|| SurfaceGeom::Plane {
-                    origin: Vec3::ZERO,
-                    normal: Vec3::Z,
-                    u_dir: Vec3::X,
-                })
+                match build_surface(sid, entities) {
+                    Some(s) => s,
+                    None => {
+                        let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
+                        eprintln!("[BRep] WARNING: build_surface failed for #{} ({}), falling back to Plane", sid, surf_name);
+                        SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
+                    }
+                }
             } else {
                 SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
             };
@@ -97,16 +100,24 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
 
                     // Build the PCURVE for this face
                     let pcurve = if let Some(sid) = face_data.surface_id {
-                        build_pcurve_for_face(edge_data.curve_id, sid, entities)
-                            .or_else(|| build_synthetic_pcurve(&curve, &surface))
-                            .unwrap_or_else(|| CurveGeom::Line {
-                                origin: Vec3::ZERO, direction: Vec3::X,
-                            })
+                        let real_pcurve = build_pcurve_for_face(edge_data.curve_id, sid, entities);
+                        let pcurve = real_pcurve
+                            .or_else(|| build_synthetic_pcurve(&curve, &surface));
+                        if pcurve.is_none() {
+                            eprintln!("[BRep] WARNING: no PCURVE for edge #{} on surface #{} (curve type: {:?})",
+                                edge_data.curve_id, sid, std::mem::discriminant(&surface));
+                        }
+                        pcurve.unwrap_or_else(|| CurveGeom::Line {
+                            origin: Vec3::ZERO, direction: Vec3::X,
+                        })
                     } else {
-                        build_synthetic_pcurve(&curve, &surface)
-                            .unwrap_or_else(|| CurveGeom::Line {
-                                origin: Vec3::ZERO, direction: Vec3::X,
-                            })
+                        let pcurve = build_synthetic_pcurve(&curve, &surface);
+                        if pcurve.is_none() {
+                            eprintln!("[BRep] WARNING: synthetic PCURVE failed (no surface_id)");
+                        }
+                        pcurve.unwrap_or_else(|| CurveGeom::Line {
+                            origin: Vec3::ZERO, direction: Vec3::X,
+                        })
                     };
 
                     // Find or create vertices
