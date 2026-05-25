@@ -286,47 +286,29 @@ fn build_nurbs_surface(
 ) -> Option<NurbsSurface> {
     let params = &record.params;
 
-    let param_count = params.as_list().map(|l| l.len()).unwrap_or(0);
-    eprintln!("[BRep] build_nurbs_surface: entity #{:?} '{}' param_count={}",
-        record.params.nth_param(0).and_then(|v| v.as_ref_id()), record.name, param_count);
-    let off: usize = if param_count == 12 { 0 } else { 1 };
+    // Off=0 when params[0] is the degree (integer). Off=1 when params[0]
+    // is an omitted value (from subsuper merge) and degree starts at [1].
+    // Param count alone is unreliable — extra params from trailing supertypes
+    // (e.g. REPRESENTATION_ITEM, RATIONAL weights) can make count > 12.
+    let off: usize = if geom::nth_int(params, 0).is_some() { 0 } else { 1 };
 
-    let degree_u = match geom::nth_int(params, off) {
-        Some(d) => d as usize,
-        None => { eprintln!("[BRep]   FAIL: degree_u not found at off={}", off); return None; }
-    };
-    let degree_v = match geom::nth_int(params, off + 1) {
-        Some(d) => d as usize,
-        None => { eprintln!("[BRep]   FAIL: degree_v not found at off+1={}", off+1); return None; }
-    };
+    let degree_u = geom::nth_int(params, off)? as usize;
+    let degree_v = geom::nth_int(params, off + 1)? as usize;
 
-    let cp_list = match params.nth_param(off + 2).and_then(|v| v.as_list()) {
-        Some(l) => l,
-        None => { eprintln!("[BRep]   FAIL: ctrl_pts list not found at off+2={}", off+2); return None; }
-    };
+    let cp_list = params.nth_param(off + 2)?.as_list()?;
     let mut control_points = Vec::with_capacity(cp_list.len());
-    for (row_i, row_val) in cp_list.iter().enumerate() {
-        let row_refs = match row_val.as_list() {
-            Some(l) => l,
-            None => { eprintln!("[BRep]   FAIL: row[{}] is not a list", row_i); return None; }
-        };
+    for row_val in cp_list {
+        let row_refs = row_val.as_list()?;
         let mut row_pts = Vec::with_capacity(row_refs.len());
-        for (col_i, pt_val) in row_refs.iter().enumerate() {
-            let pt_id = match pt_val.as_ref_id() {
-                Some(id) => id,
-                None => { eprintln!("[BRep]   FAIL: ctrl_pt[{},{}] is not a ref: {:?}", row_i, col_i, pt_val); return None; }
-            };
-            let pt = match topology::resolve_point(pt_id, entities) {
-                Some(p) => p,
-                None => { eprintln!("[BRep]   FAIL: cannot resolve point #{}", pt_id); return None; }
-            };
+        for pt_val in row_refs {
+            let pt_id = pt_val.as_ref_id()?;
+            let pt = topology::resolve_point(pt_id, entities)?;
             row_pts.push(pt);
         }
         control_points.push(row_pts);
     }
 
     if control_points.is_empty() || control_points[0].is_empty() {
-        eprintln!("[BRep]   FAIL: empty control points");
         return None;
     }
 
