@@ -754,14 +754,15 @@ impl SurfaceGeom {
         let d = (curve.d0(t) - target).length_squared();
         if d < best_dist { best_dist = d; best_t = t; }
     }
-    // Local refinement
-    for _ in 0..4 {
-        let step = 1.0 / (n as f32 * 2.0);
+    // Local refinement with shrinking step size
+    let mut step = 1.0 / (n as f32 * 2.0);
+    for _ in 0..5 {
         for &dt in &[-step, step] {
             let t = (best_t + dt).clamp(0.0, 1.0);
             let d = (curve.d0(t) - target).length_squared();
             if d < best_dist { best_dist = d; best_t = t; }
         }
+        step *= 0.5;
     }
     best_t
 }
@@ -1261,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_revolution_project_returns_none() {
+    fn test_revolution_project() {
         let circle = CurveGeom::Circle {
             center: Vec3::new(3.0, 0.0, 0.0),
             axis: Vec3::Y,

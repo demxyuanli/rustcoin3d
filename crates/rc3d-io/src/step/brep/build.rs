@@ -47,17 +47,17 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
 
         for face_data in &shell.faces {
             // ── Pass 1: Build the surface ──────────────────
-            let surface = if let Some(sid) = face_data.surface_id {
+            let (surface, surface_is_fallback) = if let Some(sid) = face_data.surface_id {
                 match build_surface(sid, entities) {
-                    Some(s) => s,
+                    Some(s) => (s, false),
                     None => {
                         let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
                         eprintln!("[BRep] WARNING: build_surface failed for #{} ({}), falling back to Plane", sid, surf_name);
-                        SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
+                        (SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }, true)
                     }
                 }
             } else {
-                SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
+                (SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }, false)
             };
 
             // ── Create placeholder face first (to get a FaceKey for PCURVE registration) ──
@@ -77,47 +77,29 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                 let mut loop_edges = Vec::new();
 
                 for edge_data in &bloop.edges {
-                    // Build the 3D curve
-                    let curve = build_curve(edge_data.curve_id, entities);
-                    let curve = if edge_data.curve_id != 0 && curve.is_none() {
-                        // Fallback to LINE from endpoints
-                        let dir = edge_data.end - edge_data.start;
-                        if dir.length() > 1e-10 {
-                            CurveGeom::Line { origin: edge_data.start, direction: dir }
-                        } else {
-                            CurveGeom::Line { origin: edge_data.start, direction: Vec3::X }
-                        }
-                    } else {
-                        curve.unwrap_or_else(|| {
+                    // Build the 3D curve, falling back to LINE from edge endpoints
+                    let curve = build_curve(edge_data.curve_id, entities)
+                        .unwrap_or_else(|| {
                             let dir = edge_data.end - edge_data.start;
-                            if dir.length() > 1e-10 {
-                                CurveGeom::Line { origin: edge_data.start, direction: dir }
-                            } else {
-                                CurveGeom::Line { origin: edge_data.start, direction: Vec3::X }
-                            }
-                        })
-                    };
+                            let d = if dir.length() > 1e-10 { dir } else { Vec3::X };
+                            CurveGeom::Line { origin: edge_data.start, direction: d }
+                        });
 
-                    // Build the PCURVE for this face
-                    let pcurve = if let Some(sid) = face_data.surface_id {
-                        let real_pcurve = build_pcurve_for_face(edge_data.curve_id, sid, entities);
-                        let pcurve = real_pcurve
-                            .or_else(|| build_synthetic_pcurve(&curve, &surface));
-                        if pcurve.is_none() {
-                            eprintln!("[BRep] WARNING: no PCURVE for edge #{} on surface #{} (curve type: {:?})",
-                                edge_data.curve_id, sid, std::mem::discriminant(&surface));
-                        }
-                        pcurve.unwrap_or_else(|| CurveGeom::Line {
-                            origin: Vec3::ZERO, direction: Vec3::X,
-                        })
+                    // Build the PCURVE for this face.
+                    // If the surface was a fallback Plane (build_surface failed), skip
+                    // real PCURVE lookup — its UV space doesn't match the original surface.
+                    let pcurve = if face_data.surface_id.is_some() && !surface_is_fallback {
+                        let real_pcurve = build_pcurve_for_face(edge_data.curve_id, face_data.surface_id.unwrap(), entities);
+                        real_pcurve
+                            .or_else(|| build_synthetic_pcurve(&curve, &surface))
+                            .unwrap_or_else(|| CurveGeom::Line {
+                                origin: Vec3::ZERO, direction: Vec3::X,
+                            })
                     } else {
-                        let pcurve = build_synthetic_pcurve(&curve, &surface);
-                        if pcurve.is_none() {
-                            eprintln!("[BRep] WARNING: synthetic PCURVE failed (no surface_id)");
-                        }
-                        pcurve.unwrap_or_else(|| CurveGeom::Line {
-                            origin: Vec3::ZERO, direction: Vec3::X,
-                        })
+                        build_synthetic_pcurve(&curve, &surface)
+                            .unwrap_or_else(|| CurveGeom::Line {
+                                origin: Vec3::ZERO, direction: Vec3::X,
+                            })
                     };
 
                     // Find or create vertices
@@ -748,6 +730,9 @@ fn build_synthetic_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Option<Cu
         }
     }
     if uv_points.len() < 2 { return None; }
+    // Guard against degenerate (all-identical) polylines from zero-length edges
+    let first = uv_points[0];
+    if uv_points.iter().all(|p| (p - first).length_squared() < 1e-12) { return None; }
     Some(CurveGeom::Polyline { points: uv_points })
 }
 
