@@ -25,6 +25,7 @@ pub mod fillet;
 use std::path::Path;
 use std::collections::HashMap;
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{
     Coordinate3Node, IndexedFaceSetNode, IndexedLineSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
@@ -327,6 +328,9 @@ fn build_hierarchical_scene_from_topo(
         return Err(StepError::NoGeometry);
     }
 
+    if let Some(root_entry) = graph.get_mut(root) {
+        root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
+    }
     Ok(graph)
 }
 
@@ -421,6 +425,9 @@ fn build_hierarchical_scene(
         pmi::pmi_render::attach_pmi_to_scene(&mut graph, root, &pmi_data);
     }
 
+    if let Some(root_entry) = graph.get_mut(root) {
+        root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
+    }
     Ok(graph)
 }
 

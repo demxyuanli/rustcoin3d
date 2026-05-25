@@ -88,7 +88,9 @@ fn build_nurbs_from_bspline_surface(
     // With leading omitted (13 params): [0]=omitted, [1]=deg_u, [2]=deg_v,
     //   [3]=ctrl_pts, [4-7]=form/enums, [8]=u_mult, [9]=v_mult,
     //   [10]=u_knots, [11]=v_knots, [12]=knot_spec
-    let off: usize = if geom::nth_int(params, 0).is_some() { 0 } else { 1 };
+    // Use param count as primary discriminator (more robust than checking param[0] type).
+    let param_count = params.as_list().map(|l| l.len()).unwrap_or(0);
+    let off: usize = if param_count == 12 { 0 } else { 1 };
     let degree_u = geom::nth_int(params, off)? as usize;
     let degree_v = geom::nth_int(params, off + 1)? as usize;
 
@@ -476,9 +478,9 @@ pub fn tessellate_curved_face(
         }
         EntityType::BSplineSurface | EntityType::BSplineSurfaceWithKnots => {
             let nurbs = build_nurbs_from_bspline_surface(surface, entities)?;
-            let nurbs_u_min = nurbs.knots_u[nurbs.degree_u];
+            let nurbs_u_min = *nurbs.knots_u.get(nurbs.degree_u)?;
             let nurbs_u_max = nurbs.knots_u[nurbs.knots_u.len().saturating_sub(nurbs.degree_u + 1)];
-            let nurbs_v_min = nurbs.knots_v[nurbs.degree_v];
+            let nurbs_v_min = *nurbs.knots_v.get(nurbs.degree_v)?;
             let nurbs_v_max = nurbs.knots_v[nurbs.knots_v.len().saturating_sub(nurbs.degree_v + 1)];
             // When trim is available, restrict sampling to the trim polygon
             // bounding box to avoid wasting grid points far outside the
@@ -1105,7 +1107,7 @@ fn tessellate_trimmed_via_exact(
     let mut remap: Vec<i32> = vec![-1; final_uv_pts.len()];
 
     let cone_tan_a = if entity_type == EntityType::ConicalSurface {
-        surface.params.nth_param(3).and_then(|v| v.as_real()).unwrap_or(0.7854) as f32
+        (surface.params.nth_param(3).and_then(|v| v.as_real()).unwrap_or(0.7854) as f32).tan()
     } else { 0.0 };
 
     for (i, &(u, v)) in final_uv_pts.iter().enumerate() {

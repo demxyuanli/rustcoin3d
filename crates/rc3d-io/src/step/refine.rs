@@ -1,5 +1,6 @@
 //! Incremental mesh refinement: subdivide triangles that exceed deviation tolerance.
 
+use std::cmp::Ordering;
 use rc3d_core::math::Vec3;
 use crate::step::nurbs::NurbsSurface;
 use crate::step::entity_types::EntityType;
@@ -58,11 +59,24 @@ pub fn refine_mesh(
             let v0 = verts[i0]; let v1 = verts[i1]; let v2 = verts[i2];
             let midpoint = (v0 + v1 + v2) * (1.0 / 3.0);
 
-            // Approximate deviation by evaluating NURBS at domain center
-            let u_mid = (u_min + u_max) * 0.5;
-            let v_mid = (v_min + v_max) * 0.5;
-            let (un, vn) = crate::step::surface_tess::map_uv_to_nurbs(entity_type, u_mid, v_mid);
-            let surface_pt = nurbs.evaluate(un, vn);
+            // Evaluate NURBS at multiple domain probes, pick closest to centroid.
+            // This is more robust than using a single fixed domain-center point.
+            let map_uv = crate::step::surface_tess::map_uv_to_nurbs;
+            let probes = [
+                (u_min, v_min), (u_min, v_max), (u_max, v_min), (u_max, v_max),
+                ((u_min + u_max) * 0.5, (v_min + v_max) * 0.5),
+                ((u_min + u_max) * 0.5, v_min), ((u_min + u_max) * 0.5, v_max),
+                (u_min, (v_min + v_max) * 0.5), (u_max, (v_min + v_max) * 0.5),
+            ];
+            let surface_pt = probes.iter()
+                .map(|&(pu, pv)| {
+                    let (un, vn) = map_uv(entity_type, pu, pv);
+                    nurbs.evaluate(un, vn)
+                })
+                .min_by(|a, b| {
+                    (midpoint - *a).length().partial_cmp(&(midpoint - *b).length()).unwrap_or(Ordering::Equal)
+                })
+                .unwrap_or(Vec3::Z);
             let deviation = (midpoint - surface_pt).length();
 
             if deviation > config.max_deviation {
