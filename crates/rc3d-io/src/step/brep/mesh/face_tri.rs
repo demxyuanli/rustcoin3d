@@ -102,8 +102,11 @@ pub fn triangulate_face(
     let mut normals: Vec<Vec3> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
     let mut pos_map: HashMap<[u32; 3], i32> = HashMap::new();
+    let mut total_dt_tris = 0usize;
+    let mut passed_filter = 0usize;
 
     for tri_face in cdt.inner_faces() {
+        total_dt_tris += 1;
         let vs = tri_face.vertices();
         let fv0 = vs[0].fix();
         let fv1 = vs[1].fix();
@@ -122,6 +125,7 @@ pub fn triangulate_face(
         if !point_in_boundary(uc as f32, vc as f32, &boundary_chain, &uv_points) {
             continue;
         }
+        passed_filter += 1;
 
         // Evaluate 3D positions from surface
         let p0 = face.surface.d0(u0.0 as f32, u0.1 as f32);
@@ -140,6 +144,9 @@ pub fn triangulate_face(
 
         indices.extend_from_slice(&[idx0, idx1, idx2, -1]);
     }
+
+    eprintln!("[BRep face] DT tris: {} total, {} passed boundary filter → {} mesh tris",
+        total_dt_tris, passed_filter, indices.len() / 4);
 
     if vertices.is_empty() {
         None

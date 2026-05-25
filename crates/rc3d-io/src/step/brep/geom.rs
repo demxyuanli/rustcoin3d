@@ -843,8 +843,52 @@ impl SurfaceGeom {
                 let u = Self::find_closest_t_on_curve(generatrix, unrotated);
                 Some((u, v))
             }
+            SurfaceGeom::BSpline(nurbs) => {
+                // Coarse grid search to find initial guess
+                let grid = 16;
+                let u_range = nurbs.knots_u[nurbs.degree_u];
+                let u_end = nurbs.knots_u[nurbs.knots_u.len() - nurbs.degree_u - 1];
+                let v_range = nurbs.knots_v[nurbs.degree_v];
+                let v_end = nurbs.knots_v[nurbs.knots_v.len() - nurbs.degree_v - 1];
+
+                let mut best_u = u_range;
+                let mut best_v = v_range;
+                let mut best_d2 = f32::MAX;
+
+                for i in 0..=grid {
+                    let u = u_range + (u_end - u_range) * i as f32 / grid as f32;
+                    for j in 0..=grid {
+                        let v = v_range + (v_end - v_range) * j as f32 / grid as f32;
+                        let p = nurbs.evaluate(u, v);
+                        let d2 = (p - point).length_squared();
+                        if d2 < best_d2 { best_d2 = d2; best_u = u; best_v = v; }
+                    }
+                }
+
+                // Local refinement: steepest descent on the parameter space
+                let mut u = best_u;
+                let mut v = best_v;
+                let mut step = (u_end - u_range).max(v_end - v_range) / grid as f32 * 0.5;
+                for _ in 0..8 {
+                    for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
+                        let nu = (u + du).clamp(u_range, u_end);
+                        let nv = (v + dv).clamp(v_range, v_end);
+                        let d2 = (nurbs.evaluate(nu, nv) - point).length_squared();
+                        if d2 < best_d2 { best_d2 = d2; u = nu; v = nv; }
+                    }
+                    step *= 0.5;
+                }
+
+                // Normalize UV to [0,1]
+                let u_norm = if (u_end - u_range).abs() > 1e-8 {
+                    (u - u_range) / (u_end - u_range)
+                } else { 0.5 };
+                let v_norm = if (v_end - v_range).abs() > 1e-8 {
+                    (v - v_range) / (v_end - v_range)
+                } else { 0.5 };
+                Some((u_norm, v_norm))
+            }
             SurfaceGeom::Torus { .. }
-            | SurfaceGeom::BSpline(_)
             | SurfaceGeom::Extrusion { .. }
             | SurfaceGeom::Offset { .. } => None,
         }
@@ -1313,10 +1357,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bspline_project_returns_none() {
+    fn test_bspline_project() {
         let nurbs = crate::step::nurbs::NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
         let bspline = SurfaceGeom::BSpline(nurbs);
-        assert!(bspline.project(Vec3::new(0.5, 0.5, 0.0)).is_none());
+        let proj = bspline.project(Vec3::new(0.5, 0.5, 0.0));
+        assert!(proj.is_some(), "bspline project should now work");
+        let (u, v) = proj.unwrap();
+        assert!((0.0..=1.0).contains(&u));
+        assert!((0.0..=1.0).contains(&v));
     }
 
     #[test]
