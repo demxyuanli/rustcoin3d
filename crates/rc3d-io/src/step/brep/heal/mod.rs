@@ -2,8 +2,11 @@ pub mod reorder;
 pub mod gap;
 pub mod orient;
 
-use super::topo::ShellKey;
+use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
+use reorder::reorder_wire_edges;
+use gap::close_wire_gaps;
+use orient::fix_shell_orientation;
 
 #[derive(Debug, Default)]
 pub struct HealReport {
@@ -33,6 +36,49 @@ impl Default for HealConfig {
     }
 }
 
-pub fn heal_shell(_shell: &mut super::topo::BRepShell, _reg: &mut BRepRegistry, _config: &HealConfig) -> HealReport {
-    HealReport::default() // TODO: implement after T3.x
+/// Run all healing passes on a shell.
+pub fn heal_shell(
+    shell_key: ShellKey,
+    reg: &mut BRepRegistry,
+    config: &HealConfig,
+) -> HealReport {
+    let mut report = HealReport::default();
+
+    let face_keys: Vec<(FaceKey, Orientation)> = {
+        match reg.shells.get(shell_key) {
+            Some(s) => s.faces.clone(),
+            None => return report,
+        }
+    };
+
+    for (face_key, _) in &face_keys {
+        let face = match reg.faces.get(*face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        if config.fix_reorder {
+            let wire = match reg.wires.get(face.outer_wire) {
+                Some(w) => w,
+                None => continue,
+            };
+            if let Some(reordered) = reorder_wire_edges(&wire.edges, reg) {
+                if let Some(w) = reg.wires.get_mut(face.outer_wire) {
+                    w.edges = reordered;
+                    report.reordered_wires += 1;
+                }
+            }
+        }
+
+        if config.gap_tolerance > 0.0 {
+            let closed = close_wire_gaps(face.outer_wire, reg, config.gap_tolerance);
+            report.closed_gaps += closed;
+        }
+    }
+
+    if config.fix_orientation {
+        report.flipped_faces = fix_shell_orientation(shell_key, reg);
+    }
+
+    report
 }
