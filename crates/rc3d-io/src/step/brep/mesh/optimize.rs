@@ -4,6 +4,7 @@ use rc3d_core::math::Vec3;
 use crate::step::tessellate::MeshResult;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Clone)]
 pub struct OptimizeConfig {
     pub min_angle_degrees: f32,
     pub max_iterations: usize,

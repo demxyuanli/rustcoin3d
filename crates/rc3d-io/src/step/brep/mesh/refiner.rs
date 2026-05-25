@@ -4,6 +4,7 @@ use rc3d_core::math::Vec3;
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::tessellate::MeshResult;
 
+#[derive(Debug, Clone)]
 pub struct RefineConfig {
     pub max_deflection: f32,
     pub max_iterations: usize,
