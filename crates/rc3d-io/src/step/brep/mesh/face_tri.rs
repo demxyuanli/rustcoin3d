@@ -311,7 +311,7 @@ mod tests {
         let mesh = triangulate_face(face_key, &reg, &edge_polygons).unwrap();
 
         assert!(!mesh.vertices.is_empty(), "should produce vertices");
-        assert!(mesh.indices.len() >= 12, "at least 2 triangles (4 indices each)");
+        assert!(mesh.indices.len() >= 8, "at least 2 triangles (4 indices each)");
         // All vertices should lie on z=0
         for v in &mesh.vertices {
             assert!((v.z - 0.0).abs() < 1e-4, "vertex should be on the plane z=0");

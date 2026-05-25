@@ -17,7 +17,7 @@ pub struct EdgeDiscConfig {
 
 impl Default for EdgeDiscConfig {
     fn default() -> Self {
-        Self { deflection: 0.1, angle_deflection: 0.1, min_points: 4, max_points: 256 }
+        Self { deflection: 0.1, angle_deflection: 0.1, min_points: 2, max_points: 256 }
     }
 }
 
@@ -71,8 +71,12 @@ fn sample_curve_adaptive(
 ) -> Vec<(f32, Vec3)> {
     let mut params = Vec::new();
 
-    // Seed with uniform samples
-    let n_seed = config.min_points;
+    // Seed with uniform samples. Ensure at least 3 points for closed curves
+    // (where start ≈ end — 2 points would produce identical endpoints, hiding curvature).
+    let p0 = curve.d0(t0);
+    let p1 = curve.d0(t1);
+    let is_closed = (p1 - p0).length() < 1e-6;
+    let n_seed = if is_closed { config.min_points.max(4) } else { 1 }; // 1 → 2 seed pts for lines
     for i in 0..=n_seed {
         let t = t0 + (t1 - t0) * i as f32 / n_seed as f32;
         params.push((t, curve.d0(t)));
@@ -134,9 +138,9 @@ mod tests {
         let curve = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
         let config = EdgeDiscConfig::default();
         let pts = sample_curve_adaptive(&curve, 0.0, 1.0, &config);
-        assert!(pts.len() >= 4); // min_points
+        assert!(pts.len() >= 2, "line needs at least 2 pts, got {}", pts.len()); // n_seed=1 → 2 seed pts
         // Line should not need extra refinement (no curvature)
-        assert!(pts.len() <= 8);
+        assert!(pts.len() <= 3);
     }
 
     #[test]

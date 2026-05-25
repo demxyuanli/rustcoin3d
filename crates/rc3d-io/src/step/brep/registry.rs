@@ -65,7 +65,8 @@ impl BRepRegistry {
         face: FaceKey,
         pcurve: CurveGeom,
     ) -> EdgeKey {
-        let key = (v_start, v_end);
+        // Canonicalize endpoint pair so (A,B) and (B,A) match the same shared edge.
+        let key = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
         if let Some(&ek) = self.edge_hash_index.get(&key) {
             if let Some(edge) = self.edges.get_mut(ek) {
                 edge.pcurves.insert(face, pcurve);

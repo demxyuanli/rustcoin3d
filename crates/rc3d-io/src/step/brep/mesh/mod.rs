@@ -69,7 +69,9 @@ pub fn mesh_brep_shell(
     let mut edge_boundary_idx: HashMap<(EdgeKey, usize), usize> = HashMap::new();
 
     // Insert all edge polygon 3D vertices (hash-deduped)
+    let mut total_edge_pts = 0usize;
     for (&ek, poly) in &edge_polygons {
+        total_edge_pts += poly.params_3d.len();
         for (pi, &(_t, pt)) in poly.params_3d.iter().enumerate() {
             let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
             let idx = *pos_to_idx.entry(hash).or_insert_with(|| {
@@ -81,6 +83,8 @@ pub fn mesh_brep_shell(
             edge_boundary_idx.insert((ek, pi), idx);
         }
     }
+    eprintln!("[BRep mesh] {} edge polygons, {} total edge pts → {} unique boundary verts",
+        edge_polygons.len(), total_edge_pts, global_vertices.len());
 
     // ── Phase 3: Collect face wire topology for boundary lookups ──
     // For each face, record which edge polygon points form its boundary
