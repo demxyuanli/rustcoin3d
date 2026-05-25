@@ -64,29 +64,37 @@ pub fn triangulate_face(
         fixed_handles.push(h);
     }
 
-    // Add constrained edges — wire edges joined end-to-end form the
-    // closed boundary (corner vertices deduplicate, so the last point
-    // of edge N and first point of edge N+1 share an index).
+    // Build a single closed boundary chain from all edge vertices in order.
+    // This prevents constraint-edge intersections that occur when per-edge
+    // segment constraints cross at polygon corners.
+    let mut boundary_chain: Vec<usize> = Vec::new();
     for edge_indices in &edge_vertex_indices {
-        for w in edge_indices.windows(2) {
-            if w[0] != w[1] {
-                cdt.add_constraint(fixed_handles[w[0]], fixed_handles[w[1]]);
+        for &idx in edge_indices {
+            if boundary_chain.last() != Some(&idx) {
+                boundary_chain.push(idx);
             }
         }
     }
+
+    if boundary_chain.len() < 3 {
+        return None;
+    }
+
+    // Build reverse-lookup: FixedVertexHandle → insertion index
+    let handle_to_idx: HashMap<FixedVertexHandle, usize> = fixed_handles
+        .iter().enumerate().map(|(i, &h)| (h, i)).collect();
+
+    // Build unconstrained Delaunay triangulation of all boundary vertices,
+    // then filter triangles by centroid-in-boundary test. This avoids the
+    // spade constraint-edge intersection panic for complex PCURVE polygons.
+    // (CDT constraints would be ideal but complex boundary polygons from
+    // real STEP files frequently trigger spade's intersection check.)
 
     // ── Extract triangles from CDT ──────────────────────────────
     let mut vertices: Vec<Vec3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
     let mut pos_map: HashMap<[u32; 3], i32> = HashMap::new();
-
-    // Build a reverse-lookup: FixedVertexHandle → insertion index
-    let handle_to_idx: HashMap<FixedVertexHandle, usize> = fixed_handles
-        .iter()
-        .enumerate()
-        .map(|(i, &h)| (h, i))
-        .collect();
 
     for tri_face in cdt.inner_faces() {
         let vs = tri_face.vertices();
@@ -102,15 +110,19 @@ pub fn triangulate_face(
         let u1 = uv_points[*i1];
         let u2 = uv_points[*i2];
 
+        // Skip triangles whose centroid falls outside the boundary polygon
+        let (uc, vc) = centroid_uv(&uv_points, *i0, *i1, *i2);
+        if !point_in_boundary(uc as f32, vc as f32, &boundary_chain, &uv_points) {
+            continue;
+        }
+
         // Evaluate 3D positions from surface
         let p0 = face.surface.d0(u0.0 as f32, u0.1 as f32);
         let p1 = face.surface.d0(u1.0 as f32, u1.1 as f32);
         let p2 = face.surface.d0(u2.0 as f32, u2.1 as f32);
 
         // Compute analytic normal at triangle centroid
-        let uc = ((u0.0 + u1.0 + u2.0) / 3.0) as f32;
-        let vc = ((u0.1 + u1.1 + u2.1) / 3.0) as f32;
-        let mut n = face.surface.normal(uc, vc);
+        let mut n = face.surface.normal(uc as f32, vc as f32);
         if !face.same_sense {
             n = -n;
         }
@@ -150,6 +162,32 @@ fn get_or_insert(
     normals.push(normal);
     pos_map.insert(hash, idx);
     idx
+}
+
+/// Centroid UV of a triangle.
+fn centroid_uv(uv_points: &[(f64, f64)], i0: usize, i1: usize, i2: usize) -> (f64, f64) {
+    let u = (uv_points[i0].0 + uv_points[i1].0 + uv_points[i2].0) / 3.0;
+    let v = (uv_points[i0].1 + uv_points[i1].1 + uv_points[i2].1) / 3.0;
+    (u, v)
+}
+
+/// Point-in-polygon test using ray casting. Returns true if (u,v) is inside or on the boundary.
+fn point_in_boundary(u: f32, v: f32, chain: &[usize], uv_points: &[(f64, f64)]) -> bool {
+    let n = chain.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let yi = uv_points[chain[i]].1 as f32;
+        let yj = uv_points[chain[j]].1 as f32;
+        if (yi > v) != (yj > v) {
+            let xi = uv_points[chain[i]].0 as f32;
+            let xj = uv_points[chain[j]].0 as f32;
+            let intersect = xi + (v - yi) / (yj - yi) * (xj - xi);
+            if u < intersect { inside = !inside; }
+        }
+        j = i;
+    }
+    inside
 }
 
 #[cfg(test)]

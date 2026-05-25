@@ -122,41 +122,24 @@ fn test_shared_topology_import() {
     assert!(report.topology_info.shells > 0, "should find shells");
     assert!(report.topology_info.faces > 0, "should find faces");
 
-    // Verify shared topology building
-    let shells = rc3d_io::step::topology::collect_shells(&exchange.entities);
-    let topo = rc3d_io::step::topo::build::build_shared_topology(&shells, &exchange.entities);
-    println!("  Shared topology: {} vertices, {} edges, {} shells",
-        topo.vertices.len(), topo.edges.len(), topo.shells.len());
-    assert!(topo.vertices.len() > 0, "should have unique vertices");
-    assert!(topo.edges.len() > 0, "should have unique edges");
-    assert!(topo.shells.len() > 0, "should have topo shells");
+    // Verify B-Rep pipeline
+    let brep_result = rc3d_io::step::brep::build_brep(&exchange.entities)
+        .expect("B-Rep build");
+    let reg = &brep_result.registry;
+    println!("  B-Rep: {} vertices, {} edges, {} faces, {} shells",
+        reg.vertices.len(), reg.edges.len(), reg.faces.len(), reg.shells.len());
+    assert!(reg.vertices.len() > 0, "should have vertices");
+    assert!(reg.edges.len() > 0, "should have edges");
+    assert!(!brep_result.root_solids.is_empty(), "should have solids");
 
-    // Verify tessellation from shared topology
-    for topo_shell in &topo.shells {
-        let flat_faces: Vec<rc3d_io::step::topology::StepFace> = topo_shell.faces.iter().map(|face| {
-            let mut bounds = Vec::new();
-            for loop_i in std::iter::once(&face.outer_loop).chain(face.inner_loops.iter()) {
-                let edges: Vec<rc3d_io::step::topology::StepEdge> = loop_i.edges.iter().filter_map(|&(eid, rev)| {
-                    let te = topo.edges.get(eid)?;
-                    let start = topo.vertices.get(te.start)?.position;
-                    let end = topo.vertices.get(te.end)?.position;
-                    Some(rc3d_io::step::topology::StepEdge {
-                        start, end, curve_id: te.curve_entity_id,
-                        curve_type: "LINE".into(), reversed: rev, tolerance: te.tolerance,
-                    })
-                }).collect();
-                if !edges.is_empty() { bounds.push(rc3d_io::step::topology::StepLoop { edges }); }
-            }
-            rc3d_io::step::topology::StepFace {
-                bounds, surface_id: face.surface_entity_id, same_sense: face.same_sense,
-            }
-        }).collect();
-
-        let mesh = rc3d_io::step::tessellate::tessellate_faces(&flat_faces, &exchange.entities);
-        println!("  Shell {}: {} vertices, {} indices",
-            if topo_shell.is_closed { "closed" } else { "open" },
-            mesh.vertices.len(), mesh.indices.len());
+    // Verify mesh output
+    let mesh_config = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
+    for &sk in &brep_result.root_solids {
+        let solid = reg.solids.get(sk).unwrap();
+        let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(solid.outer_shell, reg, &mesh_config);
+        println!("  Mesh: {} vertices, {} indices", mesh.vertices.len(), mesh.indices.len());
+        assert!(!mesh.vertices.is_empty(), "should produce mesh vertices");
     }
 
-    println!("  SHARED TOPOLOGY OK");
+    println!("  B-Rep PIPELINE OK");
 }
