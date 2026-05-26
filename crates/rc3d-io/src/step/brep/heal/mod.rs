@@ -9,7 +9,7 @@ pub mod small;
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
 use reorder::reorder_wire_edges;
-use gap::close_wire_gaps;
+use gap::{close_wire_gaps, close_wire_gaps_2d};
 use orient::fix_shell_orientation;
 use seam::fix_missing_seams;
 use connected::fix_connected_wire;
@@ -20,6 +20,7 @@ pub use check::{check_shell, CheckReport};
 pub struct HealReport {
     pub reordered_wires: usize,
     pub closed_gaps: usize,
+    pub closed_uv_gaps: usize,
     pub flipped_faces: usize,
     pub added_seams: usize,
     pub merged_vertices: usize,
@@ -33,6 +34,7 @@ impl HealReport {
     pub fn merge(&mut self, other: HealReport) {
         self.reordered_wires += other.reordered_wires;
         self.closed_gaps += other.closed_gaps;
+        self.closed_uv_gaps += other.closed_uv_gaps;
         self.flipped_faces += other.flipped_faces;
         self.added_seams += other.added_seams;
         self.merged_vertices += other.merged_vertices;
@@ -54,6 +56,7 @@ pub struct HealConfig {
     pub fix_small_area: bool,
     pub fix_small_edges: bool,
     pub small_edge_min_length: f32,
+    pub uv_gap_tolerance: f32,
 }
 
 impl Default for HealConfig {
@@ -68,6 +71,7 @@ impl Default for HealConfig {
             fix_small_area: true,
             fix_small_edges: true,
             small_edge_min_length: 1e-6,
+            uv_gap_tolerance: 1e-5,
         }
     }
 }
@@ -126,18 +130,18 @@ pub fn heal_shell(
     }
 
     for (face_key, _) in &face_keys {
-        let face = match reg.faces.get(*face_key) {
-            Some(f) => f,
+        let outer_wire = match reg.faces.get(*face_key) {
+            Some(f) => f.outer_wire,
             None => continue,
         };
 
         if config.fix_reorder {
-            let wire = match reg.wires.get(face.outer_wire) {
+            let wire = match reg.wires.get(outer_wire) {
                 Some(w) => w,
                 None => continue,
             };
             if let Some(reordered) = reorder_wire_edges(&wire.edges, reg) {
-                if let Some(w) = reg.wires.get_mut(face.outer_wire) {
+                if let Some(w) = reg.wires.get_mut(outer_wire) {
                     w.edges = reordered;
                     report.reordered_wires += 1;
                 }
@@ -145,8 +149,22 @@ pub fn heal_shell(
         }
 
         if config.gap_tolerance > 0.0 {
-            let closed = close_wire_gaps(face.outer_wire, reg, config.gap_tolerance);
+            let closed = close_wire_gaps(outer_wire, reg, config.gap_tolerance);
             report.closed_gaps += closed;
+        }
+
+        if config.uv_gap_tolerance > 0.0 {
+            let uv_closed = close_wire_gaps_2d(
+                outer_wire,
+                *face_key,
+                reg,
+                config.gap_tolerance,
+                config.uv_gap_tolerance,
+            );
+            if uv_closed > 0 {
+                report.closed_uv_gaps += uv_closed;
+                log::debug!("[BRep heal] FixGaps2d face {:?}: closed {} UV gap(s)", face_key, uv_closed);
+            }
         }
 
         if config.fix_missing_seams {
