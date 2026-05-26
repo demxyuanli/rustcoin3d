@@ -4,6 +4,7 @@ pub mod orient;
 pub mod seam;
 pub mod check;
 pub mod connected;
+pub mod small;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -12,6 +13,7 @@ use gap::close_wire_gaps;
 use orient::fix_shell_orientation;
 use seam::fix_missing_seams;
 use connected::fix_connected_wire;
+use small::remove_small_edges;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -21,6 +23,7 @@ pub struct HealReport {
     pub flipped_faces: usize,
     pub added_seams: usize,
     pub merged_vertices: usize,
+    pub removed_small_edges: usize,
     pub skip_face_keys: Vec<FaceKey>,
     pub check_errors: usize,
     pub check_warnings: usize,
@@ -33,6 +36,7 @@ impl HealReport {
         self.flipped_faces += other.flipped_faces;
         self.added_seams += other.added_seams;
         self.merged_vertices += other.merged_vertices;
+        self.removed_small_edges += other.removed_small_edges;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -48,6 +52,8 @@ pub struct HealConfig {
     pub fix_connected: bool,
     pub fix_vertex_tolerance: bool,
     pub fix_small_area: bool,
+    pub fix_small_edges: bool,
+    pub small_edge_min_length: f32,
 }
 
 impl Default for HealConfig {
@@ -60,6 +66,8 @@ impl Default for HealConfig {
             fix_connected: true,
             fix_vertex_tolerance: true,
             fix_small_area: true,
+            fix_small_edges: true,
+            small_edge_min_length: 1e-6,
         }
     }
 }
@@ -92,6 +100,27 @@ pub fn heal_shell(
                     "[BRep heal] FixConnected face {:?}: merged {} verts, {} already connected",
                     face_key, cr.merged_vertices, cr.already_connected
                 );
+            }
+        }
+    }
+
+    if config.fix_small_edges {
+        for (face_key, _) in &face_keys {
+            let face = match reg.faces.get(*face_key) {
+                Some(f) => f,
+                None => continue,
+            };
+            let seam_edges = face.seam_edges.clone();
+            let outer_wire = face.outer_wire;
+            if let Some(updated) = remove_small_edges(outer_wire, reg, &seam_edges, config.small_edge_min_length) {
+                let old_len = reg.wires.get(outer_wire).map(|w| w.edges.len()).unwrap_or(0);
+                if updated.len() != old_len {
+                    report.removed_small_edges += 1;
+                    log::debug!("[BRep heal] FixSmall face {:?}: removed small edges, {} remain", face_key, updated.len());
+                }
+            } else {
+                report.skip_face_keys.push(*face_key);
+                log::warn!("[BRep heal] FixSmall face {:?}: wire emptied, marking for skip", face_key);
             }
         }
     }
