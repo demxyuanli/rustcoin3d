@@ -6,6 +6,7 @@ pub mod check;
 pub mod connected;
 pub mod small;
 pub mod shifted;
+pub mod edge_curve;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -16,6 +17,7 @@ use seam::fix_missing_seams;
 use connected::fix_connected_wire;
 use small::remove_small_edges;
 use shifted::fix_shifted_pcurves;
+use edge_curve::fix_edge_curves;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -28,6 +30,7 @@ pub struct HealReport {
     pub merged_vertices: usize,
     pub removed_small_edges: usize,
     pub shifted_pcurves: usize,
+    pub adjusted_edge_curves: usize,
     pub skip_face_keys: Vec<FaceKey>,
     pub check_errors: usize,
     pub check_warnings: usize,
@@ -43,6 +46,7 @@ impl HealReport {
         self.merged_vertices += other.merged_vertices;
         self.removed_small_edges += other.removed_small_edges;
         self.shifted_pcurves += other.shifted_pcurves;
+        self.adjusted_edge_curves += other.adjusted_edge_curves;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -60,6 +64,7 @@ pub struct HealConfig {
     pub fix_small_area: bool,
     pub fix_small_edges: bool,
     pub fix_shifted: bool,
+    pub fix_edge_curves: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -76,6 +81,7 @@ impl Default for HealConfig {
             fix_small_area: true,
             fix_small_edges: true,
             fix_shifted: true,
+            fix_edge_curves: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -183,6 +189,14 @@ pub fn heal_shell(
 
         if config.fix_missing_seams {
             report.added_seams += fix_missing_seams(reg, *face_key);
+        }
+    }
+
+    if config.fix_edge_curves {
+        let adjusted = fix_edge_curves(shell_key, reg, config.gap_tolerance);
+        report.adjusted_edge_curves += adjusted;
+        if adjusted > 0 {
+            log::debug!("[BRep heal] FixEdgeCurves: adjusted {} edge(s)", adjusted);
         }
     }
 
