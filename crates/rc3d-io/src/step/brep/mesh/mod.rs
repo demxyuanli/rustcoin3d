@@ -290,11 +290,6 @@ pub fn mesh_brep_shell_with_report(
         }
     }
 
-    let deg_after_fill = cull_degenerate_tris(&mut all_indices, &global_vertices);
-    if deg_after_fill > 0 {
-        log::debug!("[BRep mesh] removed {} degenerate tris after fill", deg_after_fill);
-    }
-
     if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
         let mut tri_offset: isize = 0;
         for range in &face_ranges {
@@ -333,11 +328,6 @@ pub fn mesh_brep_shell_with_report(
             );
             tri_offset += new_tri_count as isize - range.tri_count as isize;
         }
-    }
-
-    let deg_after_refine = cull_degenerate_tris(&mut all_indices, &global_vertices);
-    if deg_after_refine > 0 {
-        log::debug!("[BRep mesh] removed {} degenerate tris after refine", deg_after_refine);
     }
 
     for n in &mut global_normals {
