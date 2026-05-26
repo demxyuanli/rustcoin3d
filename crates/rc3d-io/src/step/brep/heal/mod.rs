@@ -112,8 +112,8 @@ pub fn heal_shell(
             };
             let seam_edges = face.seam_edges.clone();
             let outer_wire = face.outer_wire;
+            let old_len = reg.wires.get(outer_wire).map(|w| w.edges.len()).unwrap_or(0);
             if let Some(updated) = remove_small_edges(outer_wire, reg, &seam_edges, config.small_edge_min_length) {
-                let old_len = reg.wires.get(outer_wire).map(|w| w.edges.len()).unwrap_or(0);
                 if updated.len() != old_len {
                     report.removed_small_edges += 1;
                     log::debug!("[BRep heal] FixSmall face {:?}: removed small edges, {} remain", face_key, updated.len());
