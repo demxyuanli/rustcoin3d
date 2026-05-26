@@ -65,8 +65,8 @@ pub fn parse_step_file(path: &Path) -> Result<SceneGraph, StepError> {
     parse_step(&text)
 }
 
-/// Parse STEP text into a SceneGraph using the B-Rep pipeline.
-/// Builds parametric B-Rep → heals → meshes with CDT + refinement + optimization.
+/// Parse STEP text into a SceneGraph using the OCC-aligned B-Rep pipeline:
+/// StepToTopoDS (build_brep) → ShapeFix (heal) → BRepMesh_IncrementalMesh (mesh_brep_shell).
 pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let exchange = parser::parse_exchange(input)
         .map_err(|e| StepError::Parse(e))?;
@@ -82,6 +82,7 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
 
     let brep_result = brep::build_brep(&exchange.entities)?;
     let mut reg = brep_result.registry;
+    let shell_transforms = assembly::extract_shell_transforms(&exchange.entities);
 
     // Heal
     let heal_config = brep::heal::HealConfig::default();
@@ -108,7 +109,14 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let mut any_geom = false;
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            let mesh = brep::mesh::mesh_brep_shell(solid.outer_shell, &reg, &mesh_config);
+            let mut mesh = brep::mesh::mesh_brep_shell(solid.outer_shell, &reg, &mesh_config);
+            if let Some(shell) = reg.shells.get(solid.outer_shell) {
+                if let Some(step_id) = shell.step_id {
+                    if let Some(xform) = shell_transforms.get(&step_id) {
+                        apply_mesh_transform(&mut mesh, xform);
+                    }
+                }
+            }
             if mesh.vertices.is_empty() || mesh.indices.is_empty() { continue; }
             any_geom = true;
 
@@ -123,8 +131,30 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
 
     if !any_geom { return Err(StepError::NoGeometry); }
 
+    brep::overlay::build_edge_curves(
+        &mut graph,
+        root,
+        &reg,
+        &brep_result.root_solids,
+        &shell_transforms,
+        &mesh_config,
+    );
+
     if let Some(root_entry) = graph.get_mut(root) {
         root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
     }
     Ok(graph)
+}
+
+fn apply_mesh_transform(mesh: &mut mesh_result::MeshResult, xform: &assembly::AssemblyTransform) {
+    for v in &mut mesh.vertices {
+        *v = xform.transform_point(*v);
+    }
+    for n in &mut mesh.normals {
+        let t = xform.matrix.transform_vector3(*n);
+        let len = t.length();
+        if len > 1e-10 {
+            *n = t * (1.0 / len);
+        }
+    }
 }
