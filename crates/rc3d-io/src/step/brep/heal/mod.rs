@@ -7,6 +7,7 @@ pub mod connected;
 pub mod small;
 pub mod shifted;
 pub mod edge_curve;
+pub mod lacking;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -18,6 +19,7 @@ use connected::fix_connected_wire;
 use small::remove_small_edges;
 use shifted::fix_shifted_pcurves;
 use edge_curve::fix_edge_curves;
+use lacking::fix_lacking_edges;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -32,6 +34,7 @@ pub struct HealReport {
     pub shifted_pcurves: usize,
     pub adjusted_edge_curves: usize,
     pub skip_face_keys: Vec<FaceKey>,
+    pub lacking_tolerance_fixes: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
 }
@@ -47,6 +50,7 @@ impl HealReport {
         self.removed_small_edges += other.removed_small_edges;
         self.shifted_pcurves += other.shifted_pcurves;
         self.adjusted_edge_curves += other.adjusted_edge_curves;
+        self.lacking_tolerance_fixes += other.lacking_tolerance_fixes;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -65,6 +69,7 @@ pub struct HealConfig {
     pub fix_small_edges: bool,
     pub fix_shifted: bool,
     pub fix_edge_curves: bool,
+    pub fix_lacking: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -82,6 +87,7 @@ impl Default for HealConfig {
             fix_small_edges: true,
             fix_shifted: true,
             fix_edge_curves: true,
+            fix_lacking: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -189,6 +195,14 @@ pub fn heal_shell(
 
         if config.fix_missing_seams {
             report.added_seams += fix_missing_seams(reg, *face_key);
+        }
+
+        if config.fix_lacking {
+            let lr = fix_lacking_edges(outer_wire, *face_key, reg, config.gap_tolerance, config.uv_gap_tolerance);
+            report.lacking_tolerance_fixes += lr.tolerance_fixes;
+            if lr.tolerance_fixes > 0 {
+                log::debug!("[BRep heal] FixLacking face {:?}: {} tolerance fix(es)", face_key, lr.tolerance_fixes);
+            }
         }
     }
 
