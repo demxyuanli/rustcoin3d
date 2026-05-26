@@ -5,6 +5,7 @@ pub mod seam;
 pub mod check;
 pub mod connected;
 pub mod small;
+pub mod shifted;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -14,6 +15,7 @@ use orient::fix_shell_orientation;
 use seam::fix_missing_seams;
 use connected::fix_connected_wire;
 use small::remove_small_edges;
+use shifted::fix_shifted_pcurves;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -25,6 +27,7 @@ pub struct HealReport {
     pub added_seams: usize,
     pub merged_vertices: usize,
     pub removed_small_edges: usize,
+    pub shifted_pcurves: usize,
     pub skip_face_keys: Vec<FaceKey>,
     pub check_errors: usize,
     pub check_warnings: usize,
@@ -39,6 +42,7 @@ impl HealReport {
         self.added_seams += other.added_seams;
         self.merged_vertices += other.merged_vertices;
         self.removed_small_edges += other.removed_small_edges;
+        self.shifted_pcurves += other.shifted_pcurves;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -55,6 +59,7 @@ pub struct HealConfig {
     pub fix_vertex_tolerance: bool,
     pub fix_small_area: bool,
     pub fix_small_edges: bool,
+    pub fix_shifted: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -70,6 +75,7 @@ impl Default for HealConfig {
             fix_vertex_tolerance: true,
             fix_small_area: true,
             fix_small_edges: true,
+            fix_shifted: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -164,6 +170,14 @@ pub fn heal_shell(
             if uv_closed > 0 {
                 report.closed_uv_gaps += uv_closed;
                 log::debug!("[BRep heal] FixGaps2d face {:?}: closed {} UV gap(s)", face_key, uv_closed);
+            }
+        }
+
+        if config.fix_shifted {
+            let sr = fix_shifted_pcurves(outer_wire, *face_key, reg);
+            report.shifted_pcurves += sr.shifts_applied;
+            if sr.shifts_applied > 0 {
+                log::debug!("[BRep heal] FixShifted face {:?}: {} pcurve shift(s) applied", face_key, sr.shifts_applied);
             }
         }
 
