@@ -18,6 +18,7 @@ pub struct HealReport {
     pub closed_gaps: usize,
     pub flipped_faces: usize,
     pub added_seams: usize,
+    pub skip_face_keys: Vec<FaceKey>,
 }
 
 impl HealReport {
@@ -26,6 +27,7 @@ impl HealReport {
         self.closed_gaps += other.closed_gaps;
         self.flipped_faces += other.flipped_faces;
         self.added_seams += other.added_seams;
+        self.skip_face_keys.extend(other.skip_face_keys);
     }
 }
 
@@ -96,6 +98,17 @@ pub fn heal_shell(
         }
     }
 
+    if config.fix_vertex_tolerance {
+        let fixed = fix_vertex_tolerance(reg);
+        if fixed > 0 {
+            log::debug!("[BRep heal] fixed vertex tolerance on {} edges", fixed);
+        }
+    }
+
+    if config.fix_small_area {
+        report.skip_face_keys = fix_small_area(shell_key, reg);
+    }
+
     if config.fix_orientation {
         report.flipped_faces = fix_shell_orientation(shell_key, reg);
     }
@@ -109,4 +122,36 @@ pub fn heal_shell(
     }
 
     report
+}
+
+fn fix_vertex_tolerance(reg: &mut BRepRegistry) -> usize {
+    let mut fixed = 0usize;
+    for (_, edge) in reg.edges.iter_mut() {
+        let v_lo = reg.vertices.get(edge.v_low).map(|v| v.position);
+        let v_hi = reg.vertices.get(edge.v_high).map(|v| v.position);
+        if let (Some(p_lo), Some(p_hi)) = (v_lo, v_hi) {
+            let curve_lo = edge.curve.d0(0.0);
+            let curve_hi = edge.curve.d0(1.0);
+            let max_gap = (curve_lo - p_lo).length().max((curve_hi - p_hi).length());
+            if max_gap > edge.tolerance {
+                edge.tolerance = max_gap * 1.01;
+                fixed += 1;
+            }
+        }
+    }
+    fixed
+}
+
+fn fix_small_area(shell_key: ShellKey, reg: &BRepRegistry) -> Vec<FaceKey> {
+    let shell = match reg.shells.get(shell_key) { Some(s) => s, None => return vec![] };
+    let mut skip = Vec::new();
+    for &(face_key, _) in &shell.faces {
+        let face = match reg.faces.get(face_key) { Some(f) => f, None => continue };
+        let wire = match reg.wires.get(face.outer_wire) { Some(w) => w, None => { skip.push(face_key); continue; } };
+        if wire.edges.is_empty() && face.seam_edges.is_empty() {
+            log::warn!("[BRep heal] face {:?} has zero area, marking for skip", face_key);
+            skip.push(face_key);
+        }
+    }
+    skip
 }

@@ -1,0 +1,218 @@
+//! Tier-2 freeform acceptance: Shape / Shape-1 / Shape-2 (T2 progress gate).
+//! Run: cargo test -p rc3d-io --test shape_corpus --release -- --test-threads=1
+
+use rc3d_core::math::Vec3;
+use rc3d_io::step::brep::build_brep;
+use rc3d_io::step::brep::heal::{heal_shell, HealConfig};
+use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
+use rc3d_io::step::brep::mesh::report::deflection_from_report;
+use rc3d_io::step::brep::{deflection_within_band, hausdorff_meshes};
+use rc3d_io::step::brep::mesh::t4_quality::DeflectionMetrics;
+use rc3d_io::step::mesh_result::MeshResult;
+use rc3d_io::step::parser;
+use rc3d_io::{parse_stl_triangles};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+struct ShapeExpect {
+    file: &'static str,
+    min_tris: usize,
+    min_verts: usize,
+    min_face_ratio: usize,
+}
+
+struct CorpusRun {
+    tris: usize,
+    verts: usize,
+    meshed: usize,
+    total_faces: usize,
+    grid_fallback_rate: f32,
+    deflection: DeflectionMetrics,
+    secs: f32,
+}
+
+fn test_data(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test_data")
+        .join(name)
+}
+
+/// Single B-Rep parse → heal → mesh path (no scene graph / edge overlay).
+fn run_corpus_brep(file: &str) -> CorpusRun {
+    let path = test_data(file);
+    assert!(path.exists(), "missing test data: {file}");
+    let start = Instant::now();
+    let text = std::fs::read_to_string(&path).expect("read step");
+    let exchange = parser::parse_exchange(&text).expect("parse");
+    let brep = build_brep(&exchange.entities).expect("brep");
+    let mut reg = brep.registry;
+    let heal_config = HealConfig::default();
+    for &sk in &brep.root_solids {
+        if let Some(solid) = reg.solids.get(sk) {
+            heal_shell(solid.outer_shell, &mut reg, &heal_config);
+        }
+    }
+    let mesh_config = BRepMeshConfig::default();
+    let mut tris = 0usize;
+    let mut verts = 0usize;
+    let mut meshed = 0usize;
+    let mut total_faces = 0usize;
+    let mut grid_fallback = 0usize;
+    let mut deflection = DeflectionMetrics::default();
+    let mut engine_mesh = MeshResult::default();
+    for &sk in &brep.root_solids {
+        if let Some(solid) = reg.solids.get(sk) {
+            let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &mesh_config, &[]);
+            total_faces += out.report.face_count;
+            grid_fallback += out.report.grid_fallback_count;
+            meshed += out.report.meshed_faces;
+            tris += out.mesh.indices.len() / 4;
+            verts += out.mesh.vertices.len();
+            engine_mesh = out.mesh;
+            deflection = deflection_from_report(&out.report);
+            try_hausdorff_vs_reference(file, &engine_mesh);
+            for fs in &out.report.faces {
+                if !fs.grid_fallback {
+                    assert!(fs.tri_count > 0, "meshed face should have triangles");
+                }
+            }
+        }
+    }
+    let rate = if total_faces > 0 {
+        grid_fallback as f32 / total_faces as f32
+    } else {
+        0.0
+    };
+    CorpusRun {
+        tris,
+        verts,
+        meshed,
+        total_faces,
+        grid_fallback_rate: rate,
+        deflection,
+        secs: start.elapsed().as_secs_f32(),
+    }
+}
+
+fn ref_stl_path(step_file: &str) -> PathBuf {
+    test_data("ref").join(format!("{step_file}.stl"))
+}
+
+fn try_hausdorff_vs_reference(step_file: &str, engine: &MeshResult) {
+    let ref_path = ref_stl_path(step_file);
+    if !ref_path.exists() {
+        return;
+    }
+    let data = std::fs::read(&ref_path).expect("read reference stl");
+    let tris = parse_stl_triangles(&data).expect("parse reference stl");
+    let mut ref_mesh = MeshResult::default();
+    for tri in tris {
+        let base = ref_mesh.vertices.len() as i32;
+        ref_mesh.vertices.push(Vec3::from(tri.vertices[0]));
+        ref_mesh.vertices.push(Vec3::from(tri.vertices[1]));
+        ref_mesh.vertices.push(Vec3::from(tri.vertices[2]));
+        ref_mesh.indices.extend_from_slice(&[base, base + 1, base + 2, -1]);
+    }
+    let h = hausdorff_meshes(engine, &ref_mesh, 512);
+    println!(
+        "  {step_file} T4 Hausdorff vs ref: sym_p95={:.4} sym_max={:.4} ({} samples)",
+        h.symmetric_p95, h.symmetric_max, h.sample_count
+    );
+}
+
+fn assert_shape(expect: &ShapeExpect, run: &CorpusRun, mesh_config: &BRepMeshConfig) {
+    println!(
+        "  {}: {} tris, {} verts, {}/{} faces meshed, grid_fallback {:.1}%, T4 p95={:.4} max={:.4}, {:.2}s",
+        expect.file,
+        run.tris,
+        run.verts,
+        run.meshed,
+        run.total_faces,
+        run.grid_fallback_rate * 100.0,
+        run.deflection.p95,
+        run.deflection.max,
+        run.secs
+    );
+    assert!(
+        run.tris >= expect.min_tris,
+        "{}: expected >= {} tris, got {}",
+        expect.file,
+        expect.min_tris,
+        run.tris
+    );
+    assert!(
+        run.verts >= expect.min_verts,
+        "{}: expected >= {} verts, got {}",
+        expect.file,
+        expect.min_verts,
+        run.verts
+    );
+    assert!(
+        run.tris >= expect.min_face_ratio,
+        "{}: boundary-only? {} tris (need >> face count)",
+        expect.file,
+        run.tris
+    );
+    assert!(
+        run.grid_fallback_rate < 0.10,
+        "{}: grid_fallback_rate {:.1}% exceeds 10% target",
+        expect.file,
+        run.grid_fallback_rate * 100.0
+    );
+    let band = mesh_config.face.deflection_interior * 2.0;
+    if !deflection_within_band(&run.deflection, mesh_config) {
+        eprintln!(
+            "[T4 warn] {} deflection p95 {:.4} max {:.4} exceeds band {:.4}",
+            expect.file, run.deflection.p95, run.deflection.max, band
+        );
+    }
+}
+
+#[test]
+fn t2_shape_bottle() {
+    println!("\n=== T2 Shape.step ===");
+    let run = run_corpus_brep("Shape.step");
+    let mesh_config = BRepMeshConfig::default();
+    assert_shape(
+        &ShapeExpect {
+            file: "Shape.step",
+            min_tris: 100,
+            min_verts: 500,
+            min_face_ratio: 50,
+        },
+        &run,
+        &mesh_config,
+    );
+}
+
+#[test]
+fn t2_shape1() {
+    println!("\n=== T2 Shape-1.step ===");
+    let run = run_corpus_brep("Shape-1.step");
+    assert_shape(
+        &ShapeExpect {
+            file: "Shape-1.step",
+            min_tris: 2000,
+            min_verts: 3000,
+            min_face_ratio: 600,
+        },
+        &run,
+        &BRepMeshConfig::default(),
+    );
+}
+
+#[test]
+fn t2_shape2() {
+    println!("\n=== T2 Shape-2.step ===");
+    let run = run_corpus_brep("Shape-2.step");
+    assert_shape(
+        &ShapeExpect {
+            file: "Shape-2.step",
+            min_tris: 5000,
+            min_verts: 8000,
+            min_face_ratio: 1000,
+        },
+        &run,
+        &BRepMeshConfig::default(),
+    );
+}

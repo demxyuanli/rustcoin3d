@@ -129,12 +129,19 @@ pub fn triangulate_uv_cdt_with_steiner(
                     (&p1, &p2, uv1, uv2),
                     (&p2, &p0, uv2, uv0),
                 ] {
+                    let edge_len = (*a - *b).length();
                     let mid_uv = ((uva.0 + uvb.0) * 0.5, (uva.1 + uvb.1) * 0.5);
                     let on_surf = face.surface.d0_native(mid_uv.0, mid_uv.1);
                     let dev = ((*a + *b) * 0.5 - on_surf).length();
                     max_chord = max_chord.max(dev);
-                    let edge_len = (*a - *b).length();
                     if dev > config.deflection_interior && edge_len > min_sz {
+                        tri_split = true;
+                    }
+                    // Angular deflection
+                    let na = face.surface.normal_native(uva.0, uva.1);
+                    let nb = face.surface.normal_native(uvb.0, uvb.1);
+                    let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
+                    if angle > config.angular_deflection && edge_len > min_sz {
                         tri_split = true;
                     }
                 }
@@ -312,6 +319,7 @@ mod tests {
             min_size_relative: 0.0,
             shell_min_size: 0.0,
             max_adapt_iterations: 4,
+            angular_deflection: std::f32::consts::PI,
         };
 
         let (tris_loose, _) = triangulate_uv_cdt_with_steiner(

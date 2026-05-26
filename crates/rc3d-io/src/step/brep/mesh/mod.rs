@@ -63,14 +63,16 @@ pub fn mesh_brep_shell(
     shell_key: ShellKey,
     reg: &BRepRegistry,
     config: &BRepMeshConfig,
+    skip_face_keys: &[FaceKey],
 ) -> MeshResult {
-    mesh_brep_shell_with_report(shell_key, reg, config).mesh
+    mesh_brep_shell_with_report(shell_key, reg, config, skip_face_keys).mesh
 }
 
 pub fn mesh_brep_shell_with_report(
     shell_key: ShellKey,
     reg: &BRepRegistry,
     config: &BRepMeshConfig,
+    skip_face_keys: &[FaceKey],
 ) -> ShellMeshOutput {
     let shell_diag = shell_bbox_diagonal(shell_key, reg);
     let mut scaled_config = config.clone();
@@ -147,6 +149,9 @@ pub fn mesh_brep_shell_with_report(
     let mut face_infos: Vec<FaceWireInfo> = Vec::new();
 
     for &(face_key, _orient) in &shell.faces {
+        if skip_face_keys.contains(&face_key) {
+            continue;
+        }
         let face = match reg.faces.get(face_key) {
             Some(f) => f,
             None => continue,
@@ -536,7 +541,7 @@ mod mesh_integration {
     #[test]
     fn mesh_brep_shell_plane_face_has_interior_tris() {
         let (reg, shell_key) = build_plane_square_shell();
-        let out = mesh_brep_shell_with_report(shell_key, &reg, &BRepMeshConfig::default());
+        let out = mesh_brep_shell_with_report(shell_key, &reg, &BRepMeshConfig::default(), &[]);
         let tri_count = out.mesh.indices.len() / 4;
         assert!(tri_count >= 2, "expected interior fill, got {tri_count} tris");
         assert!(!out.mesh.vertices.is_empty());

@@ -23,6 +23,8 @@ pub struct FaceFillConfig {
     pub shell_min_size: f32,
     /// Max deflection-driven split iterations during fill (OCC node-insertion loop).
     pub max_adapt_iterations: usize,
+    /// IMeshTools_Parameters::Angle — max angular deflection in radians for Steiner splits.
+    pub angular_deflection: f32,
 }
 
 impl Default for FaceFillConfig {
@@ -34,6 +36,7 @@ impl Default for FaceFillConfig {
             min_size_relative: 0.01,
             shell_min_size: 0.0,
             max_adapt_iterations: 8,
+            angular_deflection: 0.2,
         }
     }
 }
@@ -473,13 +476,24 @@ fn surface_fill_3d_planar(
 
                 let mut tri_split = false;
                 for (a, b) in [(&p0, &p1), (&p1, &p2), (&p2, &p0)] {
+                    let edge_len = (*a - *b).length();
                     let mid_3d = (*a + *b) * 0.5;
                     if let Some((su, sv)) = face.surface.project(mid_3d) {
                         let on_surf = face.surface.d0_native(su, sv);
                         let dev = (mid_3d - on_surf).length();
                         max_chord = max_chord.max(dev);
-                        let edge_len = (*a - *b).length();
                         if dev > config.deflection_interior && edge_len > min_sz {
+                            tri_split = true;
+                        }
+                    }
+                    // Angular deflection (project endpoints to surface for normals)
+                    if let (Some((su_a, sv_a)), Some((su_b, sv_b))) =
+                        (face.surface.project(*a), face.surface.project(*b))
+                    {
+                        let na = face.surface.normal_native(su_a, sv_a);
+                        let nb = face.surface.normal_native(su_b, sv_b);
+                        let angle = na.dot(nb).max(-1.0).min(1.0).acos();
+                        if angle > config.angular_deflection && edge_len > min_sz {
                             tri_split = true;
                         }
                     }

@@ -109,7 +109,7 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let mut any_geom = false;
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            let mut mesh = brep::mesh::mesh_brep_shell(solid.outer_shell, &reg, &mesh_config);
+            let mut mesh = brep::mesh::mesh_brep_shell(solid.outer_shell, &reg, &mesh_config, &total_heal.skip_face_keys);
             if let Some(shell) = reg.shells.get(solid.outer_shell) {
                 if let Some(step_id) = shell.step_id {
                     if let Some(xform) = shell_transforms.get(&step_id) {

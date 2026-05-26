@@ -38,8 +38,16 @@ fn load(name: &str, size_mb: f64) {
 #[test] fn t_shape() { load("Shape.step", 0.1); }
 #[test] fn t_shape1() { load("Shape-1.step", 0.3); }
 #[test] fn t_shape2() { load("Shape-2.step", 0.8); }
-#[test] fn t_bender() { load("bender assembly v54.step", 32.0); }
-#[test] fn t_end4() { load("end4.stp", 86.0); }
+#[test]
+#[ignore = "large industrial file; run manually"]
+fn t_bender() {
+    load("bender assembly v54.step", 32.0);
+}
+#[test]
+#[ignore = "large industrial file; run manually"]
+fn t_end4() {
+    load("end4.stp", 86.0);
+}
 
 /// Round-trip test: parse → write (Path B) → re-parse → compare mesh stats.
 #[test]
@@ -136,7 +144,7 @@ fn test_shared_topology_import() {
     let mesh_config = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
     for &sk in &brep_result.root_solids {
         let solid = reg.solids.get(sk).unwrap();
-        let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(solid.outer_shell, reg, &mesh_config);
+        let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(solid.outer_shell, reg, &mesh_config, &[]);
         println!("  Mesh: {} vertices, {} indices", mesh.vertices.len(), mesh.indices.len());
         assert!(!mesh.vertices.is_empty(), "should produce mesh vertices");
     }
