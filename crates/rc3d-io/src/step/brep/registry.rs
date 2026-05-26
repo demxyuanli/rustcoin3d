@@ -139,6 +139,17 @@ impl BRepRegistry {
         shared
     }
 
+    /// Get mutable access to an edge's PCurve for a specific face.
+    pub fn pcurve_mut(&mut self, ek: EdgeKey, face_key: FaceKey) -> Option<&mut CurveGeom> {
+        self.edges.get_mut(ek).and_then(|e| e.pcurves.get_mut(&face_key))
+    }
+
+    /// Replace or insert a PCurve for an (edge, face) pair.
+    /// Returns the old PCurve if one existed.
+    pub fn set_pcurve(&mut self, ek: EdgeKey, face_key: FaceKey, pcurve: CurveGeom) -> Option<CurveGeom> {
+        self.edges.get_mut(ek).and_then(|e| e.pcurves.insert(face_key, pcurve))
+    }
+
     pub fn iter_faces(&self) -> impl Iterator<Item = (FaceKey, &BRepFace)> {
         self.faces.iter()
     }
@@ -204,5 +215,70 @@ mod tests {
         assert_eq!(shared.len(), 1, "f0 and f1 share one edge");
         let not_shared = reg.find_shared_edges(f0, f2);
         assert!(not_shared.is_empty(), "f0 and f2 share no edges");
+    }
+
+    #[test]
+    fn test_set_pcurve_replace() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, line.clone());
+
+        let new_pcurve = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::X };
+        let old = reg.set_pcurve(ek, f0, new_pcurve.clone());
+        assert!(old.is_some());
+
+        let edge = reg.edges.get(ek).unwrap();
+        let pcurve = edge.pcurves.get(&f0).unwrap();
+        match pcurve {
+            CurveGeom::Line { origin, .. } => {
+                assert!((origin.x - 1.0).abs() < 1e-6, "expected new pcurve origin");
+            }
+            _ => panic!("expected Line"),
+        }
+    }
+
+    #[test]
+    fn test_pcurve_mut() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, line.clone());
+
+        let pc = reg.pcurve_mut(ek, f0).unwrap();
+        *pc = CurveGeom::Line { origin: Vec3::new(2.0, 0.0, 0.0), direction: Vec3::Y };
+        drop(pc);
+
+        let edge = reg.edges.get(ek).unwrap();
+        let updated = edge.pcurves.get(&f0).unwrap();
+        match updated {
+            CurveGeom::Line { origin, direction } => {
+                assert!((origin.x - 2.0).abs() < 1e-6);
+                assert!((direction.y - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("expected Line"),
+        }
+    }
+
+    #[test]
+    fn test_set_pcurve_new_face() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let f1 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, line.clone());
+
+        let old = reg.set_pcurve(ek, f1, line.clone());
+        assert!(old.is_none(), "f1 had no pcurve before");
+
+        let edge = reg.edges.get(ek).unwrap();
+        assert!(edge.pcurves.contains_key(&f0));
+        assert!(edge.pcurves.contains_key(&f1));
     }
 }
