@@ -46,6 +46,6 @@ pub fn close_wire_gaps(
 
 fn get_endpoint(ek: EdgeKey, reg: &BRepRegistry, is_start: bool) -> Option<Vec3> {
     let edge = reg.edges.get(ek)?;
-    let t = if is_start { 0.0 } else { 1.0 };
-    Some(edge.curve.d0(t))
+    let vk = if is_start { edge.v_low } else { edge.v_high };
+    reg.vertices.get(vk).map(|v| v.position)
 }

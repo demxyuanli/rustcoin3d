@@ -23,7 +23,7 @@ fn insert_uv(
     let Ok(h) = cdt.insert(pt) else {
         return None;
     };
-    let key = ((uv.0 * 1e6) as u64, (uv.1 * 1e6) as u64);
+    let key = ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64);
     uv_to_gi.insert(key, gi);
     handles.push(h);
     Some(h)

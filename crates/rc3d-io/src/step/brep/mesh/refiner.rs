@@ -198,10 +198,11 @@ pub fn extract_face_mesh_with_map(
     global_vertices: &[Vec3],
     global_normals: &[Vec3],
     all_indices: &[i32],
-    range: &FaceMeshRange,
+    range_start: usize,
+    range_end: usize,
 ) -> (MeshResult, HashMap<usize, usize>) {
-    let start = range.first_tri * 4;
-    let end = start + range.tri_count * 4;
+    let start = range_start;
+    let end = range_end;
     let mut vertices = Vec::new();
     let mut normals = Vec::new();
     let mut local_to_global: HashMap<usize, usize> = HashMap::new();
@@ -241,12 +242,13 @@ pub fn merge_refined_face(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
-    range: &FaceMeshRange,
+    tri_start: usize,
+    tri_end: usize,
     refined: &MeshResult,
     local_to_global: &HashMap<usize, usize>,
-) {
-    let start = range.first_tri * 4;
-    let end = start + range.tri_count * 4;
+) -> usize {
+    let start = tri_start * 4;
+    let end = tri_end * 4;
 
     let mut local_remap: HashMap<usize, i32> = HashMap::new();
     for (&local_i, &global_i) in local_to_global {
@@ -270,7 +272,9 @@ pub fn merge_refined_face(
         new_tris.extend_from_slice(&[i0, i1, i2, -1]);
     }
 
+    let new_tri_count = new_tris.len() / 4;
     all_indices.splice(start..end.min(all_indices.len()), new_tris);
+    new_tri_count
 }
 
 /// Try to get UV coordinates for a 3D point. Returns None if impossible.

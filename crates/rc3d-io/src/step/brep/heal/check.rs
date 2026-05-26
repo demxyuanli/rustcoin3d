@@ -226,13 +226,18 @@ fn segments_intersect_2d(
 ) -> bool {
     let ((ax0, ay0), (ax1, ay1)) = a;
     let ((bx0, by0), (bx1, by1)) = b;
+    // Scale epsilon to coordinate magnitude for f32 validity
+    let extent = (ax0.abs() + ax1.abs() + bx0.abs() + bx1.abs()
+        + ay0.abs() + ay1.abs() + by0.abs() + by1.abs()) / 8.0;
+    let eps = extent.max(1.0) * 1e-6;
     let d = (ax1 - ax0) * (by1 - by0) - (ay1 - ay0) * (bx1 - bx0);
-    if d.abs() < 1e-12 {
-        return false;
+    if d.abs() < eps {
+        return false; // parallel or near-parallel
     }
     let t = ((bx0 - ax0) * (by1 - by0) - (by0 - ay0) * (bx1 - bx0)) / d;
     let u = ((bx0 - ax0) * (ay1 - ay0) - (by0 - ay0) * (ax1 - ax0)) / d;
-    t > 1e-6 && t < 1.0 - 1e-6 && u > 1e-6 && u < 1.0 - 1e-6
+    let edge_eps = eps;
+    t > edge_eps && t < 1.0 - edge_eps && u > edge_eps && u < 1.0 - edge_eps
 }
 
 #[cfg(test)]

@@ -272,8 +272,8 @@ pub(super) fn build_depth_mode_pipelines(
             depth_write_enabled: false,
             depth_compare: depth_cmp_overlay,
             bias: wgpu::DepthBiasState {
-                constant: 2,
-                slope_scale: 1.0,
+                constant: 24,
+                slope_scale: 3.0,
                 clamp: 0.0,
             },
             ..depth_stencil.clone()
@@ -315,8 +315,8 @@ pub(super) fn build_depth_mode_pipelines(
             depth_write_enabled: false,
             depth_compare: depth_cmp_overlay,
             bias: wgpu::DepthBiasState {
-                constant: 2,
-                slope_scale: 1.0,
+                constant: 24,
+                slope_scale: 3.0,
                 clamp: 0.0,
             },
             ..depth_stencil.clone()

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MeshResult {
     pub vertices: Vec<Vec3>,
     pub normals: Vec<Vec3>,

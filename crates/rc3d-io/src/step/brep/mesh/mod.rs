@@ -296,16 +296,20 @@ pub fn mesh_brep_shell_with_report(
     }
 
     if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
+        let mut tri_offset: isize = 0;
         for range in &face_ranges {
             let face = match reg.faces.get(range.face_key) {
                 Some(f) => f,
                 None => continue,
             };
+            let adj_start = ((range.first_tri as isize + tri_offset) * 4) as usize;
+            let adj_end = adj_start + range.tri_count * 4;
             let (local_mesh, local_to_global) = extract_face_mesh_with_map(
                 &global_vertices,
                 &global_normals,
                 &all_indices,
-                range,
+                adj_start,
+                adj_end,
             );
             let local_boundary: std::collections::HashSet<usize> = local_to_global
                 .iter()
@@ -318,14 +322,16 @@ pub fn mesh_brep_shell_with_report(
                 &local_boundary,
                 &scaled_config.refine,
             );
-            merge_refined_face(
+            let new_tri_count = merge_refined_face(
                 &mut global_vertices,
                 &mut global_normals,
                 &mut all_indices,
-                range,
+                adj_start / 4,
+                adj_end / 4,
                 &refined,
                 &local_to_global,
             );
+            tri_offset += new_tri_count as isize - range.tri_count as isize;
         }
     }
 

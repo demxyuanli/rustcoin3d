@@ -39,6 +39,22 @@ fn main() {
         .map(|e| e.eq_ignore_ascii_case("stl"))
         .unwrap_or(false);
 
+    // Show STEP statistics for .step/.stp files
+    if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
+        if let Ok(text) = std::fs::read_to_string(&path_buf) {
+            if let Ok(exchange) = rc3d_io::step::parser::parse_exchange(&text) {
+                let report = rc3d_io::validate_step(&exchange.entities);
+                println!(
+                    "[STEP] {} entities | {} shells | {} faces | {} points",
+                    report.entity_count,
+                    report.topology_info.shells,
+                    report.topology_info.faces,
+                    report.topology_info.points,
+                );
+            }
+        }
+    }
+
     let (tx, rx) = mpsc::channel::<rc3d_core::EngineResult<SceneGraph>>();
     thread::spawn(move || {
         let r = rc3d_io::import_file(&path_buf)

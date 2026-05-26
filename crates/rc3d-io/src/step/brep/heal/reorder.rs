@@ -17,11 +17,13 @@ pub fn reorder_wire_edges(
     let mut endpoints: Vec<Option<(u64, u64)>> = vec![None; n]; // (start_hash, end_hash)
     for (i, (ek, _)) in edges.iter().enumerate() {
         if let Some(edge) = reg.edges.get(*ek) {
-            let p0 = edge.curve.d0(0.0);
-            let p1 = edge.curve.d0(1.0);
-            let h0 = quantize(p0);
-            let h1 = quantize(p1);
-            endpoints[i] = Some((h0, h1));
+            let p0 = reg.vertices.get(edge.v_low).map(|v| v.position);
+            let p1 = reg.vertices.get(edge.v_high).map(|v| v.position);
+            if let (Some(p0), Some(p1)) = (p0, p1) {
+                let h0 = quantize(p0);
+                let h1 = quantize(p1);
+                endpoints[i] = Some((h0, h1));
+            }
         }
     }
 

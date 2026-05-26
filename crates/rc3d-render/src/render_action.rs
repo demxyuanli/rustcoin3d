@@ -594,7 +594,7 @@ impl RenderCollector {
                         model_matrix: self.state.model_matrix(),
                         camera_pos: self.camera_pos,
                         aabb: Some(aabb),
-                        overlay_color: Some([0.5, 0.5, 0.5, 1.0]),
+                        overlay_color: Some(ils.color),
                         node_type_label: Arc::from("IndexedLineSet"),
                         is_overlay: self.inside_annotation,
                         ..Default::default()

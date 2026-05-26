@@ -300,10 +300,27 @@ pub struct IndexedFaceSetNode {
 }
 
 /// Shape: line segments from vertex/index arrays (Coin3D SoIndexedLineSet).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct IndexedLineSetNode {
     pub coord_index: Vec<i32>,
     pub line_width: f32,
+    /// RGBA color for the edge overlay pass.
+    #[serde(default = "default_indexed_line_color")]
+    pub color: [f32; 4],
+}
+
+fn default_indexed_line_color() -> [f32; 4] {
+    [0.5, 0.5, 0.5, 1.0]
+}
+
+impl Default for IndexedLineSetNode {
+    fn default() -> Self {
+        Self {
+            coord_index: Vec::new(),
+            line_width: 1.0,
+            color: default_indexed_line_color(),
+        }
+    }
 }
 
 /// Global environment settings (Coin3D SoEnvironment).

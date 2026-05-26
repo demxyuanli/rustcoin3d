@@ -58,6 +58,7 @@ pub struct CrossfadeRequest {
 pub struct RenderFeaturePanelState {
     pub show_model: bool,
     pub show_debug_overlay: bool,
+    pub show_brep_edges: bool,
     pub channel_a_active: bool,
     pub channel_b_active: bool,
     pub channel_c_active: bool,
@@ -78,6 +79,7 @@ impl Default for RenderFeaturePanelState {
         Self {
             show_model: true,
             show_debug_overlay: false,
+            show_brep_edges: true,
             channel_a_active: false,
             channel_b_active: true,
             channel_c_active: false,
@@ -280,6 +282,7 @@ impl eframe::App for ControlPanelApp {
                 ui.collapsing("Visibility", |ui| {
                     ui.checkbox(&mut s.show_model, "show model");
                     ui.checkbox(&mut s.show_debug_overlay, "show debug overlay");
+                    ui.checkbox(&mut s.show_brep_edges, "show B-Rep edges");
                 });
             }
 

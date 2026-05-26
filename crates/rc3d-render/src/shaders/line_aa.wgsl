@@ -33,6 +33,8 @@ fn vs_line_expanded(in: LineVertexExpandedInput) -> LineExpandedOutput {
 
     let p0_ndc = p0.xy / p0.w;
     let p1_ndc = p1.xy / p1.w;
+    let p0_z = p0.z / p0.w;
+    let p1_z = p1.z / p1.w;
 
     // Line direction in NDC
     let delta = p1_ndc - p0_ndc;
@@ -50,8 +52,10 @@ fn vs_line_expanded(in: LineVertexExpandedInput) -> LineExpandedOutput {
     let total = (half_width + aa_radius) * ndc_per_px;
 
     let offset_ndc = normal * in.side * total;
+    let ndc = p0_ndc + offset_ndc;
+    let w = p0.w;
     var out: LineExpandedOutput;
-    out.position = vec4<f32>((p0_ndc + offset_ndc) * p0.w, p0.z, p0.w);
+    out.position = vec4<f32>(ndc * w, p0_z * w, w);
     out.side = in.side;
     return out;
 }

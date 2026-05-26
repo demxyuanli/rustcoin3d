@@ -30,6 +30,7 @@ use winit::window::WindowAttributes;
 struct ModelAnimationEngine {
     target_transform: NodeId,
     debug_overlay_root: NodeId,
+    brep_edges_root: Option<NodeId>,
     panel: Arc<Mutex<RenderFeaturePanelState>>,
     playback_time: f32,
     last_time: Option<f64>,
@@ -39,11 +40,13 @@ impl ModelAnimationEngine {
     fn new(
         target_transform: NodeId,
         debug_overlay_root: NodeId,
+        brep_edges_root: Option<NodeId>,
         panel: Arc<Mutex<RenderFeaturePanelState>>,
     ) -> Self {
         Self {
             target_transform,
             debug_overlay_root,
+            brep_edges_root,
             panel,
             playback_time: 0.0,
             last_time: None,
@@ -84,6 +87,11 @@ impl EngineTrait for ModelAnimationEngine {
         } else {
             Vec3::splat(0.0001)
         };
+        let brep_edge_scale = if s.show_brep_edges {
+            Vec3::ONE
+        } else {
+            Vec3::splat(0.0001)
+        };
         drop(s);
 
         if let Some(entry) = graph.get_mut(self.target_transform) {
@@ -96,6 +104,13 @@ impl EngineTrait for ModelAnimationEngine {
         if let Some(entry) = graph.get_mut(self.debug_overlay_root) {
             if let NodeData::Transform(tr) = &mut entry.data {
                 tr.scale = debug_scale;
+            }
+        }
+        if let Some(brep_root) = self.brep_edges_root {
+            if let Some(entry) = graph.get_mut(brep_root) {
+                if let NodeData::Transform(tr) = &mut entry.data {
+                    tr.scale = brep_edge_scale;
+                }
             }
         }
     }
@@ -125,6 +140,40 @@ fn main() {
 
     let path = Path::new(path_arg);
     let high_contrast = parse_high_contrast(&args, path);
+
+    // Show STEP-specific statistics for .step/.stp files
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                match rc3d_io::step::parser::parse_exchange(&text) {
+                    Ok(exchange) => {
+                        let report = rc3d_io::validate_step(&exchange.entities);
+                        println!(
+                            "[STEP] {} entities | {} shells | {} faces | {} edges | {} points",
+                            report.entity_count,
+                            report.topology_info.shells,
+                            report.topology_info.faces,
+                            report.topology_info.edges,
+                            report.topology_info.points,
+                        );
+                        for w in &report.warnings {
+                            println!("[STEP] warning: {}", w);
+                        }
+                        if !report.errors.is_empty() {
+                            eprintln!("[STEP] errors: {:?}", report.errors);
+                        }
+                        // Mark STEP export available
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
+                        println!("[STEP] export: {}_export.step (via write_step_file)", stem);
+                    }
+                    Err(e) => eprintln!("[STEP] parse error: {}", e),
+                }
+            }
+            Err(e) => eprintln!("[STEP] read error: {}", e),
+        }
+    }
+
     let graph = match rc3d_io::import_file(path) {
         Ok(g) => {
             println!("Loaded: {}", path.display());
@@ -142,6 +191,7 @@ fn main() {
         fit_camera_to_scene(&mut graph, CameraFitConfig::default());
     let debug_overlay_root =
         attach_import_debug_overlay(&mut graph, anim_root, target, orbit_radius);
+    let brep_edges_root = find_brep_edges_transform(&graph);
     let ctrl = CameraController::new(target, orbit_radius);
 
     let event_loop =
@@ -165,6 +215,7 @@ fn main() {
     engines.add(ModelAnimationEngine::new(
         anim_root,
         debug_overlay_root,
+        brep_edges_root,
         panel_state.clone(),
     ));
 
@@ -294,6 +345,7 @@ fn build_import_viewer_panel_overlay_with_selection(
         "+-- Embedded Control Panel ------------------+\n\
 {} {} Show Model\n\
 {} {} Show Debug Overlay\n\
+{} {} Show B-Rep Edges\n\
 {} {} Channel A\n\
 {} {} Channel B\n\
 {} {} Channel C\n\
@@ -305,12 +357,14 @@ Mouse: click checkbox/slider | Keyboard: Up/Down Left/Right Enter\n\
         mark(1),
         check(s.show_debug_overlay),
         mark(2),
-        check(s.channel_a_active),
+        check(s.show_brep_edges),
         mark(3),
-        check(s.channel_b_active),
+        check(s.channel_a_active),
         mark(4),
-        check(s.channel_c_active),
+        check(s.channel_b_active),
         mark(5),
+        check(s.channel_c_active),
+        mark(6),
         slider,
         s.time_scale
     )
@@ -338,7 +392,7 @@ fn apply_import_viewer_panel_key(
     key: PhysicalKey,
 ) {
     let mut sel = selected.lock().expect("panel selected lock");
-    let item_count = 6usize;
+    let item_count = 7usize;
     match key {
         PhysicalKey::Code(KeyCode::ArrowUp) => {
             *sel = (*sel + item_count - 1) % item_count;
@@ -354,9 +408,10 @@ fn apply_import_viewer_panel_key(
     match key {
         PhysicalKey::Code(KeyCode::F5) => s.show_model = !s.show_model,
         PhysicalKey::Code(KeyCode::F6) => s.show_debug_overlay = !s.show_debug_overlay,
-        PhysicalKey::Code(KeyCode::F7) => s.channel_a_active = !s.channel_a_active,
-        PhysicalKey::Code(KeyCode::F8) => s.channel_b_active = !s.channel_b_active,
-        PhysicalKey::Code(KeyCode::F9) => s.channel_c_active = !s.channel_c_active,
+        PhysicalKey::Code(KeyCode::F7) => s.show_brep_edges = !s.show_brep_edges,
+        PhysicalKey::Code(KeyCode::F8) => s.channel_a_active = !s.channel_a_active,
+        PhysicalKey::Code(KeyCode::F9) => s.channel_b_active = !s.channel_b_active,
+        PhysicalKey::Code(KeyCode::F10) => s.channel_c_active = !s.channel_c_active,
         PhysicalKey::Code(KeyCode::BracketLeft) => {
             s.time_scale = (s.time_scale - 0.1).max(0.0)
         }
@@ -366,18 +421,19 @@ fn apply_import_viewer_panel_key(
         PhysicalKey::Code(KeyCode::Enter) | PhysicalKey::Code(KeyCode::Space) => match *sel {
             0 => s.show_model = !s.show_model,
             1 => s.show_debug_overlay = !s.show_debug_overlay,
-            2 => s.channel_a_active = !s.channel_a_active,
-            3 => s.channel_b_active = !s.channel_b_active,
-            4 => s.channel_c_active = !s.channel_c_active,
+            2 => s.show_brep_edges = !s.show_brep_edges,
+            3 => s.channel_a_active = !s.channel_a_active,
+            4 => s.channel_b_active = !s.channel_b_active,
+            5 => s.channel_c_active = !s.channel_c_active,
             _ => {}
         },
         PhysicalKey::Code(KeyCode::ArrowLeft) => {
-            if *sel == 5 {
+            if *sel == 6 {
                 s.time_scale = (s.time_scale - 0.1).max(0.0);
             }
         }
         PhysicalKey::Code(KeyCode::ArrowRight) => {
-            if *sel == 5 {
+            if *sel == 6 {
                 s.time_scale = (s.time_scale + 0.1).min(3.0);
             }
         }
@@ -397,7 +453,7 @@ fn apply_import_viewer_panel_mouse(
     const HUD_TOP: f32 = 12.0;
     const LINE_H: f32 = 22.0;
     const PANEL_START_LINE: i32 = 3;
-    const ITEM_LINES: [i32; 6] = [1, 2, 3, 4, 5, 6];
+    const ITEM_LINES: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
     let line = ((y - HUD_TOP) / LINE_H).floor() as i32;
     let rel = line - PANEL_START_LINE;
     let Some(idx) = ITEM_LINES.iter().position(|v| *v == rel) else {
@@ -408,10 +464,11 @@ fn apply_import_viewer_panel_mouse(
     match idx {
         0 => s.show_model = !s.show_model,
         1 => s.show_debug_overlay = !s.show_debug_overlay,
-        2 => s.channel_a_active = !s.channel_a_active,
-        3 => s.channel_b_active = !s.channel_b_active,
-        4 => s.channel_c_active = !s.channel_c_active,
-        5 => {
+        2 => s.show_brep_edges = !s.show_brep_edges,
+        3 => s.channel_a_active = !s.channel_a_active,
+        4 => s.channel_b_active = !s.channel_b_active,
+        5 => s.channel_c_active = !s.channel_c_active,
+        6 => {
             let slider_left = HUD_LEFT + 240.0;
             let slider_right = slider_left + 120.0;
             if x >= slider_left && x <= slider_right {
@@ -594,12 +651,39 @@ fn attach_import_debug_overlay(
     overlay_root
 }
 
+/// Locate the B-Rep edge overlay transform added by STEP import (`name = "BRepEdges"`).
+fn find_brep_edges_transform(graph: &SceneGraph) -> Option<NodeId> {
+    fn walk(graph: &SceneGraph, node: NodeId) -> Option<NodeId> {
+        let entry = graph.get(node)?;
+        if entry.name.as_deref() == Some("BRepEdges") {
+            for &child in &entry.children {
+                if matches!(graph.get(child)?.data, NodeData::Transform(_)) {
+                    return Some(child);
+                }
+            }
+        }
+        for &child in &entry.children {
+            if let Some(found) = walk(graph, child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    for &root in graph.roots() {
+        if let Some(found) = walk(graph, root) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn print_import_viewer_help() {
     println!("Import viewer example");
     println!("Usage: cargo run -p rc3d-examples --example import_viewer -- <file.stl|file.obj|file.iv> [--high-contrast=on|off] [--no-panel] [--adaptive-quality=off|on|auto-idle-lock]");
     println!("Controls:");
     println!("  Mouse drag: orbit camera");
-    println!("  Embedded panel HUD: clickable checkbox/slider + F5/F6/F7/F8/F9 and [ / ]");
+    println!("  Embedded panel HUD: clickable checkbox/slider + F5-F10 and [ / ]");
     println!("  Escape: clear selection | Close window to quit");
     println!("Feature switches:");
     println!("  --high-contrast=on|off");

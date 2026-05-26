@@ -73,6 +73,9 @@ rc3d-engine-api = { path = "crates/rc3d-engine-api" }
 rc3d-editor = { path = "crates/rc3d-editor" }
 rc3d-examples = { path = "crates/rc3d-examples" }
 
+[profile.test]
+opt-level = 1
+
 [workspace.lints.clippy]
 # Style preferences — not actionable at current scale
 too_many_arguments = "allow"

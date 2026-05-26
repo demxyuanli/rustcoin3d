@@ -432,6 +432,7 @@ impl Shape for LineSet {
         NodeData::IndexedLineSet(IndexedLineSetNode {
             coord_index,
             line_width: self.line_width,
+            ..Default::default()
         })
     }
     fn add_geometry_nodes(&self, graph: &mut SceneGraph, parent: rc3d_core::NodeId) {

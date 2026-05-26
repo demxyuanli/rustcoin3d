@@ -19,6 +19,8 @@ pub struct HealReport {
     pub flipped_faces: usize,
     pub added_seams: usize,
     pub skip_face_keys: Vec<FaceKey>,
+    pub check_errors: usize,
+    pub check_warnings: usize,
 }
 
 impl HealReport {
@@ -28,6 +30,8 @@ impl HealReport {
         self.flipped_faces += other.flipped_faces;
         self.added_seams += other.added_seams;
         self.skip_face_keys.extend(other.skip_face_keys);
+        self.check_errors += other.check_errors;
+        self.check_warnings += other.check_warnings;
     }
 }
 
@@ -114,6 +118,8 @@ pub fn heal_shell(
     }
 
     let check_report = check_shell(shell_key, reg);
+    report.check_errors = check_report.errors.len();
+    report.check_warnings = check_report.warnings.len();
     for e in &check_report.errors {
         log::warn!("[BRep check] {}", e);
     }

@@ -25,19 +25,68 @@ pub fn parse_stl_file(path: &Path) -> Result<SceneGraph, StlError> {
 }
 
 pub fn parse_stl(data: &[u8]) -> Result<SceneGraph, StlError> {
-    let triangles = if is_likely_binary(data) {
-        parse_stl_binary(data)?
-    } else {
-        let text = std::str::from_utf8(data)?;
-        parse_stl_ascii(text)?
-    };
+    let triangles = parse_stl_triangles(data)?;
     Ok(triangles_to_scene(&triangles))
 }
 
-#[allow(dead_code)]
-struct StlTriangle {
-    normal: [f32; 3],
-    vertices: [[f32; 3]; 3],
+/// Parse STL into triangle list (for T4 reference mesh comparison).
+pub fn parse_stl_triangles(data: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
+    if is_likely_binary(data) {
+        parse_stl_binary(data)
+    } else {
+        let text = std::str::from_utf8(data)?;
+        parse_stl_ascii(text)
+    }
+}
+
+/// Write engine mesh as binary STL (OCC reference export workflow).
+pub fn write_binary_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Result<(), StlError> {
+    let mut tris = Vec::new();
+    for chunk in indices.chunks(4) {
+        if chunk.len() < 3 {
+            continue;
+        }
+        let i0 = chunk[0] as usize;
+        let i1 = chunk[1] as usize;
+        let i2 = chunk[2] as usize;
+        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            continue;
+        }
+        let v0 = vertices[i0];
+        let v1 = vertices[i1];
+        let v2 = vertices[i2];
+        let n = (v1 - v0).cross(v2 - v0);
+        let normal = if n.length_squared() > 1e-20 {
+            n.normalize()
+        } else {
+            Vec3::Z
+        };
+        tris.push(StlTriangle {
+            normal: [normal.x, normal.y, normal.z],
+            vertices: [
+                [v0.x, v0.y, v0.z],
+                [v1.x, v1.y, v1.z],
+                [v2.x, v2.y, v2.z],
+            ],
+        });
+    }
+    let mut out = Vec::with_capacity(84 + tris.len() * 50);
+    out.extend_from_slice(b"rc3d-io T4 reference mesh             ");
+    out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+    for tri in &tris {
+        for f in tri.normal.iter().chain(tri.vertices[0].iter()).chain(tri.vertices[1].iter()).chain(tri.vertices[2].iter()) {
+            out.extend_from_slice(&f.to_le_bytes());
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
+    }
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
+/// Single STL triangle (binary/ASCII parse output).
+pub struct StlTriangle {
+    pub normal: [f32; 3],
+    pub vertices: [[f32; 3]; 3],
 }
 
 fn is_likely_binary(data: &[u8]) -> bool {

@@ -16,6 +16,19 @@ fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
     (x_dir, y_dir)
 }
 
+/// Orthonormal (u, v) tangent basis for a plane; `u_dir` is projected onto the plane.
+pub(crate) fn plane_tangent_basis(normal: Vec3, u_dir: Vec3) -> (Vec3, Vec3) {
+    let n = normal.normalize();
+    let mut u = u_dir - n * u_dir.dot(n);
+    if u.length_squared() < 1e-20 {
+        u = build_ortho_axes(n).0;
+    } else {
+        u = u.normalize();
+    }
+    let v = n.cross(u);
+    (u, v)
+}
+
 /// Compute d0, d1, d2 for a (possibly rational) B-spline at parameter t.
 /// Uses the Cox-de Boor recurrence for basis functions and their derivatives.
 fn bspline_d012(
@@ -276,7 +289,35 @@ pub enum CurveGeom {
     Polyline { points: Vec<Vec3> },
 }
 
+/// Map edge parameter t in [0,1] to the basis curve parameter used by `d0`/`d1`.
+fn trimmed_edge_to_basis(basis: &CurveGeom, t_min: f32, t_max: f32, t: f32) -> (f32, f32) {
+    let span = (t_max - t_min).max(1e-12);
+    let t_mapped = t_min + t * span;
+    match basis {
+        CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => {
+            (t_mapped / std::f32::consts::TAU, span / std::f32::consts::TAU)
+        }
+        _ => (t_mapped, span),
+    }
+}
+
 impl CurveGeom {
+    /// Native parameter interval for curve evaluation (STEP knot domain when applicable).
+    pub fn native_param_range(&self) -> (f32, f32) {
+        match self {
+            CurveGeom::Trimmed { t_min, t_max, .. } => (*t_min, *t_max),
+            CurveGeom::BSpline { degree, control_points, knots, .. } => {
+                let n = control_points.len();
+                if knots.len() >= n + degree + 1 {
+                    (knots[*degree], knots[n])
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+            _ => (0.0, 1.0),
+        }
+    }
+
     /// Evaluate position at parameter t ∈ [0, 1].
     pub fn d0(&self, t: f32) -> Vec3 {
         match self {
@@ -299,8 +340,8 @@ impl CurveGeom {
             }
 
             CurveGeom::Trimmed { basis, t_min, t_max } => {
-                let t_mapped = *t_min + t * (*t_max - *t_min);
-                basis.d0(t_mapped)
+                let (t_eval, _) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
+                basis.d0(t_eval)
             }
 
             CurveGeom::Composite { segments } => {
@@ -354,8 +395,8 @@ impl CurveGeom {
             }
 
             CurveGeom::Trimmed { basis, t_min, t_max } => {
-                let t_mapped = *t_min + t * (*t_max - *t_min);
-                basis.d1(t_mapped) * (*t_max - *t_min)
+                let (t_eval, dt_dedge) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
+                basis.d1(t_eval) * dt_dedge
             }
 
             CurveGeom::Composite { segments } => {
@@ -410,9 +451,8 @@ impl CurveGeom {
             }
 
             CurveGeom::Trimmed { basis, t_min, t_max } => {
-                let t_mapped = *t_min + t * (*t_max - *t_min);
-                let scale = *t_max - *t_min;
-                basis.d2(t_mapped) * (scale * scale)
+                let (t_eval, dt_dedge) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
+                basis.d2(t_eval) * (dt_dedge * dt_dedge)
             }
 
             CurveGeom::Composite { segments } => {
@@ -504,6 +544,40 @@ impl CurveGeom {
     }
 }
 
+/// Rebuild edge curve so `t=0` / `t=1` match canonical B-Rep vertex positions.
+///
+/// STEP `LINE` entities often reference a unit `VECTOR`; the actual edge span is
+/// defined by `VERTEX_POINT` coordinates, not vector magnitude.
+pub fn normalize_edge_curve_to_vertices(
+    curve: CurveGeom,
+    p_lo: Vec3,
+    p_hi: Vec3,
+    tol: f32,
+) -> CurveGeom {
+    let chord = p_hi - p_lo;
+    let len = chord.length();
+    if len < tol {
+        return CurveGeom::Line {
+            origin: p_lo,
+            direction: Vec3::X,
+        };
+    }
+
+    let match_tol = tol.max(1e-6) * 10.0;
+    let c0 = curve.d0(0.0);
+    let c1 = curve.d0(1.0);
+    let fwd = (c0 - p_lo).length() <= match_tol && (c1 - p_hi).length() <= match_tol;
+    if fwd {
+        return curve;
+    }
+
+    // Analytic curve endpoints reversed or wrong length — chord between vertices.
+    CurveGeom::Line {
+        origin: p_lo,
+        direction: chord,
+    }
+}
+
 // ── SurfaceGeom ────────────────────────────────────────────
 
 use crate::step::nurbs::NurbsSurface;
@@ -546,13 +620,171 @@ fn knot_domain_width(knots: &[f32], degree: usize, count: usize) -> f32 {
     knots[count] - knots[degree]
 }
 
+/// Native surface parameter bounds (STEP / `BRepAdaptor_Surface` domain).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceParamRange {
+    pub u_min: f32,
+    pub u_max: f32,
+    pub v_min: f32,
+    pub v_max: f32,
+}
+
+impl SurfaceParamRange {
+    pub fn u_span(&self) -> f32 {
+        (self.u_max - self.u_min).max(1e-12)
+    }
+
+    pub fn v_span(&self) -> f32 {
+        (self.v_max - self.v_min).max(1e-12)
+    }
+
+    pub fn normalize(&self, u: f32, v: f32) -> (f32, f32) {
+        (
+            (u - self.u_min) / self.u_span(),
+            (v - self.v_min) / self.v_span(),
+        )
+    }
+
+    pub fn denormalize(&self, u_norm: f32, v_norm: f32) -> (f32, f32) {
+        (
+            self.u_min + u_norm * self.u_span(),
+            self.v_min + v_norm * self.v_span(),
+        )
+    }
+}
+
 impl SurfaceGeom {
+    /// Native parameter bounds in STEP / OCC surface space (not normalized [0,1]^2).
+    pub fn param_range(&self) -> SurfaceParamRange {
+        match self {
+            SurfaceGeom::Plane { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: 1.0,
+                v_min: 0.0,
+                v_max: 1.0,
+            },
+            SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Cone { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: std::f32::consts::TAU,
+                v_min: -1.0e6,
+                v_max: 1.0e6,
+            },
+            SurfaceGeom::Sphere { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: std::f32::consts::TAU,
+                v_min: 0.0,
+                v_max: std::f32::consts::PI,
+            },
+            SurfaceGeom::Torus { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: std::f32::consts::TAU,
+                v_min: 0.0,
+                v_max: std::f32::consts::TAU,
+            },
+            SurfaceGeom::BSpline(nurbs) => SurfaceParamRange {
+                u_min: nurbs.knots_u[nurbs.degree_u],
+                u_max: nurbs.knots_u[nurbs.u_count()],
+                v_min: nurbs.knots_v[nurbs.degree_v],
+                v_max: nurbs.knots_v[nurbs.v_count()],
+            },
+            SurfaceGeom::Extrusion { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: 1.0,
+                v_min: 0.0,
+                v_max: 1.0,
+            },
+            SurfaceGeom::Revolution { .. } => SurfaceParamRange {
+                u_min: 0.0,
+                u_max: 1.0,
+                v_min: 0.0,
+                v_max: std::f32::consts::TAU,
+            },
+            SurfaceGeom::Offset { basis, .. } => basis.param_range(),
+        }
+    }
+
+    /// Map native STEP / PCurve (u,v) into parameters accepted by `d0` / `d1` / `normal`.
+    pub fn native_uv_to_d0(&self, u: f32, v: f32) -> (f32, f32) {
+        match self {
+            SurfaceGeom::Plane { .. } => (u, v),
+            SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => {
+                (u / std::f32::consts::TAU, v)
+            }
+            SurfaceGeom::Sphere { .. } => {
+                (u / std::f32::consts::TAU, v / std::f32::consts::PI)
+            }
+            SurfaceGeom::Torus { .. } => {
+                (u / std::f32::consts::TAU, v / std::f32::consts::TAU)
+            }
+            SurfaceGeom::BSpline(_) => self.param_range().normalize(u, v),
+            SurfaceGeom::Extrusion { .. } => (u, v),
+            SurfaceGeom::Revolution { .. } => (u, v / std::f32::consts::TAU),
+            SurfaceGeom::Offset { basis, .. } => basis.native_uv_to_d0(u, v),
+        }
+    }
+
+    /// Map `d0` / `project` normalized parameters back to native STEP UV.
+    pub fn d0_uv_to_native(&self, u: f32, v: f32) -> (f32, f32) {
+        match self {
+            SurfaceGeom::Plane { .. } => (u, v),
+            SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => {
+                (u * std::f32::consts::TAU, v)
+            }
+            SurfaceGeom::Sphere { .. } => {
+                (u * std::f32::consts::TAU, v * std::f32::consts::PI)
+            }
+            SurfaceGeom::Torus { .. } => {
+                (u * std::f32::consts::TAU, v * std::f32::consts::TAU)
+            }
+            SurfaceGeom::BSpline(_) => self.param_range().denormalize(u, v),
+            SurfaceGeom::Extrusion { .. } => (u, v),
+            SurfaceGeom::Revolution { .. } => (u, v * std::f32::consts::TAU),
+            SurfaceGeom::Offset { basis, .. } => basis.d0_uv_to_native(u, v),
+        }
+    }
+
+    /// Evaluate surface at native STEP parameters.
+    pub fn d0_native(&self, u: f32, v: f32) -> Vec3 {
+        let (un, vn) = self.native_uv_to_d0(u, v);
+        self.d0(un, vn)
+    }
+
+    /// Native U period for closed/periodic surfaces (None if not periodic).
+    pub fn native_u_period(&self) -> Option<f32> {
+        match self {
+            SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Cone { .. }
+            | SurfaceGeom::Sphere { .. }
+            | SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
+            SurfaceGeom::Revolution { .. } => Some(std::f32::consts::TAU),
+            SurfaceGeom::Offset { basis, .. } => basis.native_u_period(),
+            _ => None,
+        }
+    }
+
+    /// Native V period for closed/periodic surfaces (None if not periodic).
+    pub fn native_v_period(&self) -> Option<f32> {
+        match self {
+            SurfaceGeom::Sphere { .. } => Some(std::f32::consts::PI),
+            SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
+            SurfaceGeom::Offset { basis, .. } => basis.native_v_period(),
+            _ => None,
+        }
+    }
+
+    /// Surface normal at native STEP parameters.
+    pub fn normal_native(&self, u: f32, v: f32) -> Vec3 {
+        let (un, vn) = self.native_uv_to_d0(u, v);
+        self.normal(un, vn)
+    }
+
     /// Evaluate position at parameter (u, v) ∈ [0, 1]^2.
     pub fn d0(&self, u: f32, v: f32) -> Vec3 {
         match self {
             SurfaceGeom::Plane { origin, normal, u_dir } => {
-                let v_dir = normal.cross(*u_dir);
-                *origin + *u_dir * u + v_dir * v
+                let (u_axis, v_axis) = plane_tangent_basis(*normal, *u_dir);
+                *origin + u_axis * u + v_axis * v
             }
             SurfaceGeom::Cylinder { origin, axis, radius } => {
                 let (x_dir, y_dir) = build_ortho_axes(*axis);
@@ -620,8 +852,8 @@ impl SurfaceGeom {
     pub fn d1(&self, u: f32, v: f32) -> (Vec3, Vec3) {
         match self {
             SurfaceGeom::Plane { normal, u_dir, .. } => {
-                let v_dir = normal.cross(*u_dir);
-                (*u_dir, v_dir)
+                let (u_axis, v_axis) = plane_tangent_basis(*normal, *u_dir);
+                (u_axis, v_axis)
             }
             SurfaceGeom::Cylinder { axis, radius, .. } => {
                 let (x_dir, y_dir) = build_ortho_axes(*axis);
@@ -767,14 +999,25 @@ impl SurfaceGeom {
     best_t
 }
 
-    /// Returns `None` for surfaces requiring numerical optimization
-    /// (torus, B-spline, extrusion, offset).
+    /// Evaluate surface at native UV coordinates returned by `project` / PCurve.
+    pub fn d0_at_native_uv(&self, u: f32, v: f32) -> Vec3 {
+        match self {
+            SurfaceGeom::BSpline(nurbs) => nurbs.evaluate(u, v),
+            SurfaceGeom::Offset { basis, distance } => {
+                let (un, vn) = basis.native_uv_to_d0(u, v);
+                basis.d0(un, vn) + basis.normal(un, vn) * *distance
+            }
+            _ => self.d0_native(u, v),
+        }
+    }
+
+    /// Returns native STEP UV. `None` for torus, extrusion, offset.
     pub fn project(&self, point: Vec3) -> Option<(f32, f32)> {
         match self {
             SurfaceGeom::Plane { origin, normal, u_dir } => {
-                let v_dir = normal.cross(*u_dir);
+                let (u_axis, v_axis) = plane_tangent_basis(*normal, *u_dir);
                 let rel = point - *origin;
-                Some((rel.dot(*u_dir), rel.dot(v_dir)))
+                Some((rel.dot(u_axis), rel.dot(v_axis)))
             }
             SurfaceGeom::Cylinder { origin, axis, .. } => {
                 let a = axis.normalize();
@@ -788,7 +1031,7 @@ impl SurfaceGeom {
                 } else {
                     u_raw / std::f32::consts::TAU
                 };
-                Some((u, v))
+                Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::Cone { apex, axis, .. } => {
                 let a = axis.normalize();
@@ -802,7 +1045,7 @@ impl SurfaceGeom {
                 } else {
                     u_raw / std::f32::consts::TAU
                 };
-                Some((u, v))
+                Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::Sphere { center, .. } => {
                 let rel = point - *center;
@@ -818,7 +1061,7 @@ impl SurfaceGeom {
                 } else {
                     u_raw / std::f32::consts::TAU
                 };
-                Some((u, v))
+                Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
                 let axis = axis_dir.normalize();
@@ -827,7 +1070,9 @@ impl SurfaceGeom {
                 let along = rel.dot(axis);
                 let radial = rel - axis * along;
                 let r = radial.length();
-                if r < 1e-10 { return Some((0.5, 0.0)); }
+                if r < 1e-10 {
+                    return Some(self.d0_uv_to_native(0.5, 0.0));
+                }
                 // Angle around axis
                 let (x_dir, y_dir) = build_ortho_axes(axis);
                 let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
@@ -841,7 +1086,7 @@ impl SurfaceGeom {
                 let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
                 // Find closest point on generatrix
                 let u = Self::find_closest_t_on_curve(generatrix, unrotated);
-                Some((u, v))
+                Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::BSpline(nurbs) => {
                 // Coarse grid search to find initial guess
@@ -879,18 +1124,323 @@ impl SurfaceGeom {
                     step *= 0.5;
                 }
 
-                // Normalize UV to [0,1]
-                let u_norm = if (u_end - u_range).abs() > 1e-8 {
-                    (u - u_range) / (u_end - u_range)
-                } else { 0.5 };
-                let v_norm = if (v_end - v_range).abs() > 1e-8 {
-                    (v - v_range) / (v_end - v_range)
-                } else { 0.5 };
-                Some((u_norm, v_norm))
+                Some((u, v))
             }
-            SurfaceGeom::Torus { .. }
-            | SurfaceGeom::Extrusion { .. }
-            | SurfaceGeom::Offset { .. } => None,
+            SurfaceGeom::Torus { center, axis, major_r, minor_r } => {
+                let grid = 16;
+                let mut best_u = 0.0f32;
+                let mut best_v = 0.0f32;
+                let mut best_d2 = f32::MAX;
+                for i in 0..=grid {
+                    let u = i as f32 / grid as f32;
+                    for j in 0..=grid {
+                        let v = j as f32 / grid as f32;
+                        let p = self.d0(u, v);
+                        let d2 = (p - point).length_squared();
+                        if d2 < best_d2 {
+                            best_d2 = d2;
+                            best_u = u;
+                            best_v = v;
+                        }
+                    }
+                }
+                let mut u = best_u;
+                let mut v = best_v;
+                let mut step = 1.0 / grid as f32 * 0.5;
+                for _ in 0..8 {
+                    for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
+                        let nu = (u + du).clamp(0.0, 1.0);
+                        let nv = (v + dv).clamp(0.0, 1.0);
+                        let d2 = (self.d0(nu, nv) - point).length_squared();
+                        if d2 < best_d2 {
+                            best_d2 = d2;
+                            u = nu;
+                            v = nv;
+                        }
+                    }
+                    step *= 0.5;
+                }
+                let _ = (center, axis, major_r, minor_r);
+                Some(self.d0_uv_to_native(u, v))
+            }
+            SurfaceGeom::Extrusion { generatrix, direction } => {
+                let dir = direction.normalize();
+                let (u_lo, u_hi) = generatrix.native_param_range();
+                let n = 64;
+                let mut best_u = u_lo;
+                let mut best_v = 0.0f32;
+                let mut best_d2 = f32::MAX;
+                for i in 0..=n {
+                    let u = u_lo + (u_hi - u_lo) * i as f32 / n as f32;
+                    let g = generatrix.d0(u);
+                    let v = (point - g).dot(dir);
+                    let d2 = (g + dir * v - point).length_squared();
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        best_u = u;
+                        best_v = v;
+                    }
+                }
+                let mut step = (u_hi - u_lo).max(1e-6) / (n as f32 * 2.0);
+                for _ in 0..8 {
+                    for &du in &[-step, step] {
+                        let u = (best_u + du).clamp(u_lo, u_hi);
+                        let g = generatrix.d0(u);
+                        let v = (point - g).dot(dir);
+                        let d2 = (g + dir * v - point).length_squared();
+                        if d2 < best_d2 {
+                            best_d2 = d2;
+                            best_u = u;
+                            best_v = v;
+                        }
+                    }
+                    step *= 0.5;
+                }
+                Some((best_u, best_v))
+            }
+            SurfaceGeom::Offset { basis, distance } => {
+                let (u_native, v_native) = basis.project(point)?;
+                let (mut u, mut v) = basis.native_uv_to_d0(u_native, v_native);
+                let mut best_d2 = {
+                    let p = basis.d0(u, v) + basis.normal(u, v) * *distance;
+                    (p - point).length_squared()
+                };
+                let mut step = 0.05f32;
+                for _ in 0..8 {
+                    for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
+                        let nu = (u + du).clamp(0.0, 1.0);
+                        let nv = (v + dv).clamp(0.0, 1.0);
+                        let p = basis.d0(nu, nv) + basis.normal(nu, nv) * *distance;
+                        let d2 = (p - point).length_squared();
+                        if d2 < best_d2 {
+                            best_d2 = d2;
+                            u = nu;
+                            v = nv;
+                        }
+                    }
+                    step *= 0.5;
+                }
+                Some(basis.d0_uv_to_native(u, v))
+            }
+        }
+    }
+
+    /// Map a 3D point to native surface UV; validates `project` and falls back to grid search.
+    pub fn inverse_native_uv(&self, point: Vec3, max_dist: f32) -> Option<(f32, f32)> {
+        if let SurfaceGeom::Offset { basis, distance } = self {
+            return Self::inverse_native_uv_offset(basis, *distance, point, max_dist);
+        }
+        if let SurfaceGeom::Extrusion { generatrix, direction } = self {
+            return Self::inverse_native_uv_extrusion(generatrix, *direction, point, max_dist);
+        }
+        if let Some(uv) = self.project(point) {
+            let err = (self.d0_native(uv.0, uv.1) - point).length();
+            if err <= max_dist {
+                return Some(uv);
+            }
+        }
+        let search_tol = max_dist.max(0.5);
+        let uv = self.grid_search_native_uv(point, search_tol, 16, 10)?;
+        let err = (self.d0_native(uv.0, uv.1) - point).length();
+        if err <= max_dist {
+            Some(uv)
+        } else {
+            None
+        }
+    }
+
+    fn inverse_native_uv_extrusion(
+        generatrix: &CurveGeom,
+        direction: Vec3,
+        point: Vec3,
+        max_dist: f32,
+    ) -> Option<(f32, f32)> {
+        let dir = direction.normalize();
+        let (u_lo, u_hi) = generatrix.native_param_range();
+        let n = 64;
+        let mut best_u = u_lo;
+        let mut best_v = 0.0f32;
+        let mut best_d2 = f32::MAX;
+        for i in 0..=n {
+            let u = u_lo + (u_hi - u_lo) * i as f32 / n as f32;
+            let g = generatrix.d0(u);
+            let v = (point - g).dot(dir);
+            let d2 = (g + dir * v - point).length_squared();
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_u = u;
+                best_v = v;
+            }
+        }
+        let mut step = (u_hi - u_lo).max(1e-6) / (n as f32 * 2.0);
+        for _ in 0..8 {
+            for &du in &[-step, step] {
+                let u = (best_u + du).clamp(u_lo, u_hi);
+                let g = generatrix.d0(u);
+                let v = (point - g).dot(dir);
+                let d2 = (g + dir * v - point).length_squared();
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best_u = u;
+                    best_v = v;
+                }
+            }
+            step *= 0.5;
+        }
+        if best_d2.sqrt() <= max_dist {
+            Some((best_u, best_v))
+        } else {
+            None
+        }
+    }
+
+    fn inverse_native_uv_offset(
+        basis: &SurfaceGeom,
+        distance: f32,
+        point: Vec3,
+        max_dist: f32,
+    ) -> Option<(f32, f32)> {
+        let search_tol = max_dist.max(0.5);
+        let (mut u, mut v) = basis.project(point)?;
+        let mut best_u = u;
+        let mut best_v = v;
+        let mut best_err = (basis.d0_native(u, v) + basis.normal_native(u, v) * distance - point)
+            .length();
+        for _ in 0..16 {
+            if best_err <= max_dist {
+                return Some((best_u, best_v));
+            }
+            let target = point - basis.normal_native(u, v) * distance;
+            if let Some((u2, v2)) = basis.inverse_native_uv(target, search_tol) {
+                u = u2;
+                v = v2;
+                let err = (basis.d0_native(u, v) + basis.normal_native(u, v) * distance - point)
+                    .length();
+                if err < best_err {
+                    best_err = err;
+                    best_u = u;
+                    best_v = v;
+                }
+            } else {
+                break;
+            }
+        }
+        if best_err <= max_dist {
+            Some((best_u, best_v))
+        } else {
+            None
+        }
+    }
+
+    /// Build-time UV inverse (coarser grid) for PCurve synthesis during StepToTopoDS.
+    pub fn inverse_native_uv_build(&self, point: Vec3, max_dist: f32) -> Option<(f32, f32)> {
+        if let SurfaceGeom::Offset { basis, distance } = self {
+            return Self::inverse_native_uv_offset(basis, *distance, point, max_dist);
+        }
+        if let SurfaceGeom::Extrusion { generatrix, direction } = self {
+            return Self::inverse_native_uv_extrusion(generatrix, *direction, point, max_dist);
+        }
+        if let Some(uv) = self.project(point) {
+            let err = (self.d0_native(uv.0, uv.1) - point).length();
+            if err <= max_dist {
+                return Some(uv);
+            }
+        }
+        let search_tol = max_dist.max(0.5);
+        let uv = self.grid_search_native_uv(point, search_tol, 8, 5)?;
+        let err = (self.d0_native(uv.0, uv.1) - point).length();
+        if err <= max_dist {
+            Some(uv)
+        } else {
+            None
+        }
+    }
+
+    fn grid_search_native_uv(
+        &self,
+        point: Vec3,
+        max_dist: f32,
+        grid: u32,
+        refine_iters: u32,
+    ) -> Option<(f32, f32)> {
+        let r = self.param_range();
+        let (u_lo, u_hi, v_lo, v_hi) = self.native_search_window(&r, point);
+        let u_span = (u_hi - u_lo).max(1e-12);
+        let v_span = (v_hi - v_lo).max(1e-12);
+        if u_span <= 1e-12 && v_span <= 1e-12 {
+            return None;
+        }
+
+        let grid = grid.max(1);
+        let mut best_u = u_lo;
+        let mut best_v = v_lo;
+        let mut best_d2 = f32::MAX;
+        for i in 0..=grid {
+            let u = u_lo + u_span * i as f32 / grid as f32;
+            for j in 0..=grid {
+                let v = v_lo + v_span * j as f32 / grid as f32;
+                let d2 = (self.d0_native(u, v) - point).length_squared();
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best_u = u;
+                    best_v = v;
+                }
+            }
+        }
+
+        let mut step_u = u_span / grid as f32 * 0.5;
+        let mut step_v = v_span / grid as f32 * 0.5;
+        for _ in 0..refine_iters {
+            for &(du, dv) in &[(step_u, 0.0), (-step_u, 0.0), (0.0, step_v), (0.0, -step_v)] {
+                let nu = (best_u + du).clamp(u_lo, u_hi);
+                let nv = (best_v + dv).clamp(v_lo, v_hi);
+                let d2 = (self.d0_native(nu, nv) - point).length_squared();
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best_u = nu;
+                    best_v = nv;
+                }
+            }
+            step_u *= 0.5;
+            step_v *= 0.5;
+        }
+
+        if best_d2.sqrt() > max_dist {
+            return None;
+        }
+        Some((best_u, best_v))
+    }
+
+    fn native_search_window(
+        &self,
+        range: &SurfaceParamRange,
+        point: Vec3,
+    ) -> (f32, f32, f32, f32) {
+        match self {
+            SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => {
+                let v_seed = self.project(point).map(|(_, v)| v).unwrap_or(0.0);
+                let half = 50.0f32;
+                (
+                    range.u_min,
+                    range.u_max,
+                    v_seed - half,
+                    v_seed + half,
+                )
+            }
+            SurfaceGeom::Plane { .. } => {
+                if let Some((u, v)) = self.project(point) {
+                    let half = 10.0f32;
+                    (u - half, u + half, v - half, v + half)
+                } else {
+                    (range.u_min, range.u_max, range.v_min, range.v_max)
+                }
+            }
+            _ => (
+                range.u_min,
+                range.u_max,
+                range.v_min,
+                range.v_max,
+            ),
         }
     }
 
@@ -1229,14 +1779,17 @@ mod tests {
     }
 
     #[test]
-    fn test_torus_project_returns_none() {
+    fn test_torus_project() {
         let torus = SurfaceGeom::Torus {
             center: Vec3::ZERO,
             axis: Vec3::Z,
             major_r: 3.0,
             minor_r: 1.0,
         };
-        assert!(torus.project(Vec3::new(4.0, 0.0, 0.0)).is_none());
+        let p = torus.d0_native(0.0, 0.0);
+        let (u, v) = torus.project(p).expect("torus project");
+        let back = torus.d0_native(u, v);
+        assert!((back - p).length() < 0.05, "project roundtrip err={}", (back - p).length());
     }
 
     #[test]
@@ -1254,7 +1807,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extrusion_project_returns_none() {
+    fn test_extrusion_project() {
         let generatrix = CurveGeom::Line {
             origin: Vec3::ZERO,
             direction: Vec3::X,
@@ -1263,7 +1816,10 @@ mod tests {
             generatrix: Box::new(generatrix),
             direction: Vec3::Z,
         };
-        assert!(extrusion.project(Vec3::ZERO).is_none());
+        let p = extrusion.d0_native(0.5, 2.0);
+        let (u, v) = extrusion.project(p).expect("extrusion project");
+        let back = extrusion.d0_native(u, v);
+        assert!((back - p).length() < 1e-3);
     }
 
     #[test]
@@ -1343,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_offset_project_returns_none() {
+    fn test_offset_project() {
         let plane = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -1353,7 +1909,63 @@ mod tests {
             basis: Box::new(plane),
             distance: 2.0,
         };
-        assert!(offset.project(Vec3::ZERO).is_none());
+        let p = offset.d0_native(1.0, 1.0);
+        let (u, v) = offset.project(p).expect("offset project");
+        let back = offset.d0_native(u, v);
+        assert!((back - p).length() < 0.05);
+    }
+
+    #[test]
+    fn test_bspline_param_range_knot_domain() {
+        let nurbs = crate::step::nurbs::NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
+        let bspline = SurfaceGeom::BSpline(nurbs);
+        let r = bspline.param_range();
+        assert!((r.u_min - 0.0).abs() < 1e-6);
+        assert!((r.u_max - 1.0).abs() < 1e-6);
+        assert!((r.v_min - 0.0).abs() < 1e-6);
+        assert!((r.v_max - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_native_uv_roundtrip_bspline() {
+        let nurbs = crate::step::nurbs::NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
+        let bspline = SurfaceGeom::BSpline(nurbs);
+        let native = (0.25, 0.75);
+        let d0 = bspline.native_uv_to_d0(native.0, native.1);
+        let back = bspline.d0_uv_to_native(d0.0, d0.1);
+        assert!((back.0 - native.0).abs() < 1e-5);
+        assert!((back.1 - native.1).abs() < 1e-5);
+        let p_native = bspline.d0_native(native.0, native.1);
+        let p_d0 = bspline.d0(d0.0, d0.1);
+        assert!((p_native - p_d0).length() < 1e-5);
+    }
+
+    #[test]
+    fn test_native_uv_roundtrip_cylinder() {
+        let cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 1.0,
+        };
+        let native = (std::f32::consts::PI, 2.0);
+        let d0 = cyl.native_uv_to_d0(native.0, native.1);
+        assert!((d0.0 - 0.5).abs() < 1e-5);
+        assert!((d0.1 - 2.0).abs() < 1e-5);
+        let back = cyl.d0_uv_to_native(d0.0, d0.1);
+        assert!((back.0 - native.0).abs() < 1e-4);
+        assert!((back.1 - native.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_inverse_native_uv_bspline_off_surface_seed() {
+        let nurbs = crate::step::nurbs::NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
+        let bspline = SurfaceGeom::BSpline(nurbs);
+        let target = Vec3::new(0.5, 0.5, 0.0);
+        let uv = bspline
+            .inverse_native_uv(target, 0.01)
+            .expect("inverse_native_uv");
+        let back = bspline.d0_native(uv.0, uv.1);
+        assert!((back - target).length() < 0.01);
     }
 
     #[test]
