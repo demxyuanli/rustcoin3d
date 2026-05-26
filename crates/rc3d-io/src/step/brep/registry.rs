@@ -6,6 +6,7 @@ use rc3d_core::math::Vec3;
 use rc3d_core::utils::hash::f32x3_quantized_bits;
 use super::topo::*;
 use super::geom::CurveGeom;
+use super::geom::normalize_edge_curve_to_vertices;
 
 #[derive(Debug)]
 pub struct BRepRegistry {
@@ -65,25 +66,64 @@ impl BRepRegistry {
         face: FaceKey,
         pcurve: CurveGeom,
     ) -> EdgeKey {
-        // Canonicalize endpoint pair so (A,B) and (B,A) match the same shared edge.
-        let key = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
-        if let Some(&ek) = self.edge_hash_index.get(&key) {
+        let (v_lo, v_hi) = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
+        if let Some(&ek) = self.edge_hash_index.get(&(v_lo, v_hi)) {
             if let Some(edge) = self.edges.get_mut(ek) {
                 edge.pcurves.insert(face, pcurve);
             }
             return ek;
         }
+        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance);
         let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
+            v_low: v_lo,
+            v_high: v_hi,
             pcurves: {
                 let mut m = HashMap::new();
                 m.insert(face, pcurve);
                 m
             },
         });
-        self.edge_hash_index.insert(key, ek);
+        self.edge_hash_index.insert((v_lo, v_hi), ek);
         ek
+    }
+
+    /// Insert a seam edge without endpoint deduplication (supports closed seams v_start == v_end).
+    pub fn add_seam_edge(
+        &mut self,
+        v_start: VertexKey,
+        v_end: VertexKey,
+        curve: CurveGeom,
+        tolerance: f32,
+        face: FaceKey,
+        pcurve: CurveGeom,
+    ) -> EdgeKey {
+        let (v_lo, v_hi) = if v_start <= v_end {
+            (v_start, v_end)
+        } else {
+            (v_end, v_start)
+        };
+        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let curve = if v_lo == v_hi {
+            curve
+        } else {
+            normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance)
+        };
+        self.edges.insert(BRepEdge {
+            curve,
+            tolerance,
+            v_low: v_lo,
+            v_high: v_hi,
+            pcurves: {
+                let mut m = HashMap::new();
+                m.insert(face, pcurve);
+                m
+            },
+        })
     }
 
     /// Find edges shared by two faces. A shared edge has PCURVEs for both faces.
@@ -115,6 +155,8 @@ mod tests {
             surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
             outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
             inner_wires: vec![], same_sense: true, tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
         })
     }
 

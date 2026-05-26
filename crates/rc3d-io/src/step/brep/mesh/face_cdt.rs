@@ -251,6 +251,7 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
         same_sense: true,
         tolerance: 1e-4,
         seam_edges: vec![],
+        color: None,
     };
     let mut verts = Vec::new();
     let mut norms = Vec::new();
@@ -284,6 +285,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         };
         // Four points on a sphere radius=10 at equator band (v-native ≈ PI/2)
         // Native UV: Sphere::native_uv_to_d0 maps u→u/TAU, v→v/PI

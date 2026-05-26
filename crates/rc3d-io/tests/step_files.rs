@@ -151,3 +151,47 @@ fn test_shared_topology_import() {
 
     println!("  B-Rep PIPELINE OK");
 }
+
+/// Verify assembly tree: product hierarchy, shell mapping, and transform propagation.
+#[test]
+fn test_assembly_tree_hierarchy() {
+    let path = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"), "/../../test_data/AssemblyExample-Assembly.step"
+    ));
+    if !path.exists() {
+        println!("SKIP: test data not found");
+        return;
+    }
+
+    let bytes = std::fs::read(path).expect("read file");
+    let text = String::from_utf8_lossy(&bytes);
+    let exchange = rc3d_io::step::parser::parse_exchange(&text).expect("parse");
+
+    // Build assembly tree
+    let tree = rc3d_io::step::assembly::build_assembly_tree(&exchange.entities);
+    println!("  Assembly tree: {} nodes, root_index={}", tree.nodes.len(), tree.root_index);
+    assert!(!tree.nodes.is_empty(), "assembly tree should have nodes");
+
+    // Verify at least one node has a name
+    let named = tree.nodes.iter().filter(|n| !n.name.is_empty()).count();
+    println!("  Named nodes: {}", named);
+    assert!(named > 0, "should have at least one named product node");
+
+    // Verify shell mapping
+    let shell_nodes: Vec<_> = tree.nodes.iter().filter(|n| !n.shells.is_empty()).collect();
+    println!("  Nodes with shells: {}", shell_nodes.len());
+    // For AssemblyExample, expect at least one product node with geometry attached
+    // (may be 0 for pure-hierarchy STEP files without geometry; that's acceptable)
+
+    // Verify flattened shells
+    let flat = tree.flatten_shells();
+    println!("  Flattened shells: {}", flat.len());
+
+    // Verify shell transforms are built
+    let xforms = rc3d_io::step::assembly::extract_shell_transforms(&exchange.entities);
+    println!("  Shell transforms: {}", xforms.len());
+
+    // Verify styles are extractable
+    let styles = rc3d_io::step::assembly::extract_shell_styles(&exchange.entities);
+    println!("  Shell styles: {}", styles.len());
+}

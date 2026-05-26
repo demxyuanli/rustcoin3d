@@ -83,6 +83,19 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let brep_result = brep::build_brep(&exchange.entities)?;
     let mut reg = brep_result.registry;
     let shell_transforms = assembly::extract_shell_transforms(&exchange.entities);
+    let shell_styles = assembly::extract_shell_styles(&exchange.entities);
+
+    // Assembly tree (P2: hierarchical Transform nodes — currently flat transforms are
+    // applied per-shell via shell_transforms, which is correct for single-product files.
+    // TODO: per-product Separator→Transform→[Material→Coordinate3→IFS] using the tree.)
+    let assembly_tree = assembly::build_assembly_tree(&exchange.entities);
+    if !assembly_tree.nodes.is_empty() && assembly_tree.nodes.iter().any(|n| !n.shells.is_empty()) {
+        log::info!(
+            "[STEP] assembly tree: {} nodes, {} with geometry (flat rendering)",
+            assembly_tree.nodes.len(),
+            assembly_tree.nodes.iter().filter(|n| !n.shells.is_empty()).count(),
+        );
+    }
 
     // Heal
     let heal_config = brep::heal::HealConfig::default();
@@ -99,17 +112,28 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    let default_mat = MaterialNode {
-        diffuse_color: Vec3::new(0.9, 0.9, 0.9),
-        base_color: Vec3::new(0.94, 0.94, 0.94),
-        roughness: 0.35, opacity: 1.0, ..Default::default()
-    };
-    graph.add_child(root, NodeData::Material(default_mat));
+    // Default material color for shells without explicit styling
+    fn make_material(color: [f32; 3]) -> MaterialNode {
+        MaterialNode {
+            diffuse_color: Vec3::new(color[0], color[1], color[2]),
+            base_color: Vec3::new(color[0], color[1], color[2]),
+            roughness: 0.35, opacity: 1.0, ..Default::default()
+        }
+    }
+    let default_color = [0.9, 0.9, 0.9];
+    graph.add_child(root, NodeData::Material(make_material(default_color)));
 
     let mut any_geom = false;
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
             let mut mesh = brep::mesh::mesh_brep_shell(solid.outer_shell, &reg, &mesh_config, &total_heal.skip_face_keys);
+
+            // Look up per-shell color from STYLED_ITEM
+            let shell_color = reg.shells.get(solid.outer_shell)
+                .and_then(|s| s.step_id)
+                .and_then(|sid| shell_styles.get(&sid))
+                .map(|style| [style.diffuse.x, style.diffuse.y, style.diffuse.z]);
+
             if let Some(shell) = reg.shells.get(solid.outer_shell) {
                 if let Some(step_id) = shell.step_id {
                     if let Some(xform) = shell_transforms.get(&step_id) {
@@ -121,6 +145,10 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
             any_geom = true;
 
             let comp = graph.add_child(root, NodeData::Separator(SeparatorNode));
+            // Per-shell material with color from STEP if available
+            graph.add_child(comp, NodeData::Material(make_material(
+                shell_color.unwrap_or(default_color)
+            )));
             graph.add_child(comp, NodeData::Coordinate3(Coordinate3Node { point: mesh.vertices }));
             if !mesh.normals.is_empty() {
                 graph.add_child(comp, NodeData::Normal(NormalNode::from_vectors(mesh.normals)));

@@ -71,6 +71,7 @@ mod tests {
             bounds: vec![],
             surface_id: None,
             same_sense: true,
+            face_id: None,
         }
     }
 

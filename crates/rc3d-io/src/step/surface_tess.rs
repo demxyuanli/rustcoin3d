@@ -511,6 +511,7 @@ pub fn tessellate_curved_face(
                 bounds: face.bounds.clone(),
                 surface_id: Some(base_id),
                 same_sense: face.same_sense,
+                face_id: None,
             };
             // Tessellate the base surface
             let base_trim = trim.cloned();
@@ -537,6 +538,7 @@ pub fn tessellate_curved_face(
                 bounds: face.bounds.clone(),
                 surface_id: Some(inner_surface_id),
                 same_sense: face.same_sense,
+                face_id: None,
             };
             tessellate_curved_face(&inner_face, entities, trim)
         }
@@ -548,6 +550,7 @@ pub fn tessellate_curved_face(
                 bounds: face.bounds.clone(),
                 surface_id: Some(base_id),
                 same_sense: face.same_sense,
+                face_id: None,
             };
             tessellate_curved_face(&base_face, entities, trim)
         }
@@ -562,6 +565,7 @@ pub fn tessellate_curved_face(
                 bounds: face.bounds.clone(),
                 surface_id: Some(base_id),
                 same_sense: face.same_sense,
+                face_id: None,
             };
             // Constrain tessellation to the trimmed UV domain
             let base_surface = entities.get(&base_id)?;

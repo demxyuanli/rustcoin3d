@@ -149,6 +149,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
         let edges_data = [
             (Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)),

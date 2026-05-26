@@ -25,6 +25,7 @@ fn make_face_3d(pts_3d: &[(f32, f32, f32)]) -> StepFace {
         bounds: vec![StepLoop { edges }],
         surface_id: None,
         same_sense: true,
+        face_id: None,
     }
 }
 

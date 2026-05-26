@@ -378,6 +378,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
 
         let curve_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };

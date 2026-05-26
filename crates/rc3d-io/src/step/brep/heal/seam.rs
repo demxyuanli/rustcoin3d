@@ -298,6 +298,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
 
         let n = fix_missing_seams(&mut reg, face_key);
@@ -326,6 +327,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
 
         let z0 = 0.0f32;

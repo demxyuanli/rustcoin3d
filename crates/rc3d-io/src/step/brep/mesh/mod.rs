@@ -502,6 +502,7 @@ mod mesh_integration {
                 same_sense: true,
                 tolerance: 1e-4,
                 seam_edges: vec![],
+                color: None,
             })
         };
         let edges_data = [

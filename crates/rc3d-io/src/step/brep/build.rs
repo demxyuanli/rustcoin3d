@@ -21,6 +21,7 @@ use crate::step::nurbs::NurbsSurface;
 use super::registry::BRepRegistry;
 use super::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom};
+use super::geom::normalize_edge_curve_to_vertices;
 use rc3d_core::math::Vec3;
 
 #[derive(Debug)]
@@ -40,6 +41,10 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
     }
 
     let tol = topology::global_tolerance(entities);
+
+    // Extract per-face colors from STYLED_ITEM entities
+    let face_colors = topology::collect_face_colors(entities);
+
     let mut shell_keys = Vec::new();
 
     for shell in &shells {
@@ -65,6 +70,8 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                 inner_wires: vec![],
                 same_sense: face_data.same_sense,
                 tolerance: tol,
+                seam_edges: vec![],
+                color: None,
             });
 
             // ── Pass 2: Build edges with PCURVEs for this face ──
@@ -82,24 +89,6 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                             CurveGeom::Line { origin: edge_data.start, direction: d }
                         });
 
-                    // Build the PCURVE for this face.
-                    // Always prefer synthetic PCURVE (3D curve → surface.project() → UV polylines).
-                    // STEP PCURVE data is often wrong/absent for procedural surfaces and even
-                    // analytic surfaces can have mismatched UV parameterizations across faces.
-                    // Plane.project() and similar are exact — synthetic PCURVEs are reliable.
-                    let pcurve = build_synthetic_pcurve(&curve, &surface)
-                        .or_else(|| {
-                            // Fallback: try STEP PCURVE data if synthetic failed
-                            if let Some(sid) = face_data.surface_id {
-                                build_pcurve_for_face(edge_data.curve_id, sid, entities)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| CurveGeom::Line {
-                            origin: Vec3::ZERO, direction: Vec3::X,
-                        });
-
                     // Find or create vertices
                     let v_start = reg.find_or_add_vertex(edge_data.start, tol);
                     let v_end = reg.find_or_add_vertex(edge_data.end, tol);
@@ -110,15 +99,31 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                         (v_start, v_end)
                     };
 
-                    // Insert edge with PCURVE
+                    let (v_lo, v_hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                    let p_lo = reg.vertices.get(v_lo).unwrap().position;
+                    let p_hi = reg.vertices.get(v_hi).unwrap().position;
+                    let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tol);
+
+                    let pcurve = resolve_edge_pcurve(
+                        &curve,
+                        &surface,
+                        edge_data.curve_id,
+                        face_data.surface_id,
+                        entities,
+                        tol,
+                    );
+
                     let ek = reg.add_edge_with_pcurve(
                         v0, v1, curve, tol, face_key, pcurve,
                     );
-                    loop_edges.push((ek, if edge_data.reversed {
-                        Orientation::Reversed
-                    } else {
+                    // Mesh params run v_low→v_high; wire may traverse the opposite direction.
+                    let (v_lo_key, _v_hi_key) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                    let wire_orient = if v0 == v_lo_key {
                         Orientation::Forward
-                    }));
+                    } else {
+                        Orientation::Reversed
+                    };
+                    loop_edges.push((ek, wire_orient));
                 }
 
                 // Build wire from loop edges
@@ -138,6 +143,12 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
                         vec![]
                     };
                 }
+                // Apply face color from STYLED_ITEM if available
+                if let Some(fid) = face_data.face_id {
+                    if let Some(&rgb) = face_colors.get(&fid) {
+                        face.color = Some(rgb);
+                    }
+                }
             }
 
             face_keys.push((face_key, Orientation::Forward));
@@ -148,6 +159,7 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
             let sk = reg.shells.insert(BRepShell {
                 faces: face_keys,
                 closed: shell.faces.len() >= 4, // heuristic: 4+ faces likely closed
+                step_id: Some(shell.id),
             });
             shell_keys.push(sk);
         }
@@ -272,6 +284,14 @@ fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceGeom>
         "RECTANGULAR_TRIMMED_SURFACE" => {
             let basis_id = geom::nth_ref(&record.params, 1)?;
             build_surface(basis_id, entities)
+        }
+        // AP242 supertypes — won't appear directly, log if encountered
+        "ELEMENTARY_SURFACE" | "SWEPT_SURFACE" => {
+            log::warn!(
+                "[BRep] build_surface: supertype '{}' for #{} should not appear directly in STEP data",
+                record.name, surface_id
+            );
+            None
         }
         _ => None,
     }
@@ -448,18 +468,13 @@ fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             // TRIMMED_CURVE('', #basis_curve, (trim1), (trim2), sense, master_rep)
             let basis_id = geom::nth_ref(&record.params, 1)?;
             let basis = build_curve(basis_id, entities)?;
-            // Trim parameters may be omitted or are trim selects; default to (0,1)
-            let trim1 = record.params.nth_param(2)
-                .and_then(|v| v.as_list())
-                .and_then(|l| l.first()?.as_real())
-                .unwrap_or(0.0) as f32;
-            let trim2 = record.params.nth_param(3)
-                .and_then(|v| v.as_list())
-                .and_then(|l| l.first()?.as_real())
-                .unwrap_or(1.0) as f32;
-            let t_min = trim1.min(trim2);
-            let t_max = trim1.max(trim2);
-            Some(CurveGeom::Trimmed { basis: Box::new(basis), t_min, t_max })
+            let t_min = parse_trim_bound(&record.params, 2).unwrap_or(0.0);
+            let t_max = parse_trim_bound(&record.params, 3).unwrap_or(1.0);
+            Some(CurveGeom::Trimmed {
+                basis: Box::new(basis),
+                t_min: t_min.min(t_max),
+                t_max: t_min.max(t_max),
+            })
         }
         "POLYLINE" => {
             let pt_ids = geom::nth_list_refs(&record.params, 1).unwrap_or_default();
@@ -579,6 +594,90 @@ fn build_bspline_3d(
     })
 }
 
+/// Build a 2D B-spline PCurve in native surface UV space.
+fn build_bspline_2d(
+    record: &EntityRecord,
+    entities: &EntityIndex,
+) -> Option<CurveGeom> {
+    let degree = geom::nth_int(&record.params, 1).unwrap_or(2) as usize;
+    let cp_ids = geom::nth_list_refs(&record.params, 2)?;
+
+    let control_points: Vec<Vec3> = cp_ids
+        .iter()
+        .filter_map(|&id| {
+            resolve_cartesian_2d(id, entities).map(|(u, v)| Vec3::new(u, v, 0.0))
+        })
+        .collect();
+
+    if control_points.len() < degree + 1 {
+        return None;
+    }
+
+    let cp_count = control_points.len();
+
+    let knots = if record.name == "B_SPLINE_CURVE_WITH_KNOTS"
+        || record.name == "RATIONAL_B_SPLINE_CURVE"
+    {
+        let mults = geom::nth_list_ints(&record.params, 6);
+        let knot_vals = geom::nth_list_reals(&record.params, 7);
+        let mut knots = Vec::new();
+        if !mults.is_empty() && !knot_vals.is_empty() {
+            for (i, &m) in mults.iter().enumerate() {
+                let k = knot_vals
+                    .get(i)
+                    .and_then(|v| v.as_real())
+                    .unwrap_or(0.0) as f32;
+                for _ in 0..m.max(1) {
+                    knots.push(k);
+                }
+            }
+        }
+        knots
+    } else {
+        Vec::new()
+    };
+
+    let knots = if knots.len() >= cp_count + degree + 1 {
+        knots
+    } else {
+        let mut k = Vec::with_capacity(cp_count + degree + 1);
+        for _ in 0..=degree {
+            k.push(0.0f32);
+        }
+        for i in 1..(cp_count - degree) {
+            k.push(i as f32 / (cp_count - degree) as f32);
+        }
+        for _ in 0..=degree {
+            k.push(1.0f32);
+        }
+        k
+    };
+
+    let weights = if record.name == "RATIONAL_B_SPLINE_CURVE" {
+        let list = record.params.as_list()?;
+        let weight_data = list.last()?;
+        find_curve_weights(weight_data, cp_count)
+    } else {
+        None
+    };
+
+    Some(CurveGeom::BSpline {
+        degree,
+        control_points,
+        knots,
+        weights,
+    })
+}
+
+fn parse_trim_bound(params: &StepValue, index: usize) -> Option<f32> {
+    params
+        .nth_param(index)?
+        .as_list()?
+        .first()?
+        .as_real()
+        .map(|v| v as f32)
+}
+
 /// Extract weights from a RATIONAL_B_SPLINE_CURVE weight param.
 fn find_curve_weights(weight_val: &StepValue, expected_count: usize) -> Option<Vec<f32>> {
     if let StepValue::List(items) = weight_val {
@@ -599,6 +698,153 @@ fn find_curve_weights(weight_val: &StepValue, expected_count: usize) -> Option<V
 
 // ── PCURVE resolution ─────────────────────────────────────────────
 
+/// Polyline sample count for synthetic / fallback PCurves (validate uses 8 samples).
+const PCURVE_POLYLINE_SAMPLES: u32 = 16;
+
+/// Resolve PCURVE for an edge: STEP first (OCCT), validated against the 3D curve;
+/// fall back to synthetic projection when STEP data is missing or inconsistent.
+fn resolve_edge_pcurve(
+    curve: &CurveGeom,
+    surface: &SurfaceGeom,
+    edge_curve_id: u64,
+    surface_id: Option<u64>,
+    entities: &EntityIndex,
+    tol: f32,
+) -> CurveGeom {
+    let step_pc = surface_id.and_then(|sid| build_pcurve_for_face(edge_curve_id, sid, entities));
+
+    let match_tol = pcurve_match_tol(curve, tol);
+
+    if let Some(ref pc) = step_pc {
+        if validate_pcurve_on_surface(curve, pc, surface, match_tol, false) {
+            return pc.clone();
+        }
+        if validate_pcurve_on_surface(curve, pc, surface, match_tol, true) {
+            return reverse_pcurve(pc);
+        }
+        log::debug!(
+            "[BRep] STEP PCURVE rejected for edge #{}, trying synthetic",
+            edge_curve_id
+        );
+    }
+
+    if let Some(syn) = build_synthetic_pcurve(curve, surface, match_tol) {
+        if validate_pcurve_on_surface(curve, &syn, surface, match_tol, false) {
+            return syn;
+        }
+    }
+
+    let fb = build_parametric_fallback_pcurve(curve, surface, match_tol);
+    if validate_pcurve_on_surface(curve, &fb, surface, match_tol, false) {
+        return fb;
+    }
+
+    if let Some(ref pc) = step_pc {
+        if !pcurve_uv_is_degenerate(pc) {
+            return pc.clone();
+        }
+    }
+    fb
+}
+
+fn pcurve_match_tol(curve: &CurveGeom, tol: f32) -> f32 {
+    let edge_len = (curve.d0(0.0) - curve.d0(1.0)).length();
+    (tol.max(1e-4) * 10.0).max(edge_len * 0.05).max(1e-3)
+}
+
+/// Sample the 3D curve and PCurve-on-surface; reject if they diverge beyond tolerance.
+fn validate_pcurve_on_surface(
+    curve: &CurveGeom,
+    pcurve: &CurveGeom,
+    surface: &SurfaceGeom,
+    match_tol: f32,
+    reversed: bool,
+) -> bool {
+    const SAMPLES: usize = 8;
+    for i in 0..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        let p3 = curve.d0(t);
+        let t_pc = if reversed { 1.0 - t } else { t };
+        let uv = pcurve.d0(t_pc);
+        if !pcurve_uv_matches_3d(surface, p3, uv, match_tol) {
+            return false;
+        }
+    }
+    true
+}
+
+fn pcurve_uv_matches_3d(
+    surface: &SurfaceGeom,
+    p3: Vec3,
+    uv: Vec3,
+    match_tol: f32,
+) -> bool {
+    let u = uv.x;
+    let v = uv.y;
+    if (p3 - surface.d0_native(u, v)).length() <= match_tol {
+        return true;
+    }
+    if let Some(period_u) = surface.native_u_period() {
+        for shift in [-1.0f32, 1.0] {
+            if (p3 - surface.d0_native(u + shift * period_u, v)).length() <= match_tol {
+                return true;
+            }
+        }
+    }
+    if let Some(period_v) = surface.native_v_period() {
+        for shift in [-1.0f32, 1.0] {
+            if (p3 - surface.d0_native(u, v + shift * period_v)).length() <= match_tol {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn reverse_pcurve(pcurve: &CurveGeom) -> CurveGeom {
+    let n = PCURVE_POLYLINE_SAMPLES;
+    let mut points = Vec::with_capacity(n as usize + 1);
+    for i in 0..=n {
+        let t = 1.0 - i as f32 / n as f32;
+        points.push(pcurve.d0(t));
+    }
+    CurveGeom::Polyline { points }
+}
+
+fn pcurve_uv_is_degenerate(pcurve: &CurveGeom) -> bool {
+    const SAMPLES: usize = 8;
+    let p0 = pcurve.d0(0.0);
+    pcurve.d0(1.0);
+    for i in 1..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        if (pcurve.d0(t) - p0).length_squared() > 1e-12 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Last-resort UV polyline: inverse map each 3D sample into native surface UV.
+fn build_parametric_fallback_pcurve(
+    curve: &CurveGeom,
+    surface: &SurfaceGeom,
+    match_tol: f32,
+) -> CurveGeom {
+    let inv_tol = (match_tol * 5.0).max(0.5);
+    let n = PCURVE_POLYLINE_SAMPLES;
+    let mut uv_points = Vec::with_capacity(n as usize + 1);
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let p3 = curve.d0(t);
+        let (u, v) = surface
+            .inverse_native_uv_build(p3, inv_tol)
+            .or_else(|| surface.project(p3))
+            .unwrap_or((t, 0.0));
+        uv_points.push(Vec3::new(u, v, 0.0));
+    }
+    CurveGeom::Polyline { points: uv_points }
+}
+
 /// Resolve the 2D PCURVE for an edge on a specific face's surface.
 ///
 /// Walks: EDGE_CURVE → SURFACE_CURVE → PCURVE list → match by basis_surface → 2D curve
@@ -616,7 +862,10 @@ fn build_pcurve_for_face(
     };
 
     let sc_rec = entities.get(&sc_id)?;
-    if sc_rec.name != "SURFACE_CURVE" && sc_rec.name != "SEAM_CURVE" {
+    if sc_rec.name != "SURFACE_CURVE"
+        && sc_rec.name != "SEAM_CURVE"
+        && sc_rec.name != "INTERSECTION_CURVE"
+    {
         // No PCURVE available: standalone 3D curve. Return None so the caller
         // falls back to the default PCURVE.
         return None;
@@ -676,7 +925,7 @@ fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             })
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
-            build_bspline_3d(record, entities)
+            build_bspline_2d(record, entities)
         }
         "DEFINITIONAL_REPRESENTATION" => {
             let items = record.params.nth_param(1)?.as_list()?;
@@ -685,7 +934,48 @@ fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
         }
         "TRIMMED_CURVE" => {
             let basis_id = geom::nth_ref(&record.params, 1)?;
-            build_2d_curve(basis_id, entities)
+            let basis = build_2d_curve(basis_id, entities)?;
+            let t_min = parse_trim_bound(&record.params, 2).unwrap_or(0.0);
+            let t_max = parse_trim_bound(&record.params, 3).unwrap_or(1.0);
+            Some(CurveGeom::Trimmed {
+                basis: Box::new(basis),
+                t_min: t_min.min(t_max),
+                t_max: t_min.max(t_max),
+            })
+        }
+        "POLYLINE" => {
+            let pt_ids = geom::nth_list_refs(&record.params, 1).unwrap_or_default();
+            let points: Vec<Vec3> = pt_ids
+                .iter()
+                .filter_map(|&id| {
+                    resolve_cartesian_2d(id, entities).map(|(u, v)| Vec3::new(u, v, 0.0))
+                })
+                .collect();
+            if points.len() < 2 {
+                None
+            } else {
+                Some(CurveGeom::Polyline { points })
+            }
+        }
+        "COMPOSITE_CURVE" => {
+            let seg_ids = geom::nth_list_refs(&record.params, 1).unwrap_or_default();
+            let segments: Vec<(CurveGeom, bool)> = seg_ids
+                .iter()
+                .filter_map(|&seg_id| {
+                    let seg_rec = entities.get(&seg_id)?;
+                    let parent_id = geom::nth_ref(&seg_rec.params, 3)?;
+                    let same_sense = match seg_rec.params.nth_param(2) {
+                        Some(StepValue::Enum(s)) => s == ".T.",
+                        _ => true,
+                    };
+                    build_2d_curve(parent_id, entities).map(|c| (c, same_sense))
+                })
+                .collect();
+            if segments.is_empty() {
+                None
+            } else {
+                Some(CurveGeom::Composite { segments })
+            }
         }
         _ => None,
     }
@@ -729,28 +1019,47 @@ fn nth_list_f64(params: &StepValue, index: usize) -> Option<Vec<f64>> {
 
 /// Build a synthetic PCURVE by sampling the 3D curve and projecting
 /// each point onto the surface's UV domain.
-fn build_synthetic_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Option<CurveGeom> {
-    let n = 32;
-    let mut uv_points = Vec::with_capacity(n + 1);
-    let mut proj_failures = 0usize;
+fn build_synthetic_pcurve(
+    curve: &CurveGeom,
+    surface: &SurfaceGeom,
+    match_tol: f32,
+) -> Option<CurveGeom> {
+    let n = PCURVE_POLYLINE_SAMPLES;
+    let inv_tol = (match_tol * 5.0).max(0.5);
+    let mut uv_points = Vec::with_capacity(n as usize + 1);
+    let mut map_failures = 0usize;
     for i in 0..=n {
         let t = i as f32 / n as f32;
         let p3 = curve.d0(t);
-        match surface.project(p3) {
+        match surface.inverse_native_uv_build(p3, inv_tol) {
             Some((u, v)) => uv_points.push(Vec3::new(u, v, 0.0)),
-            None => { proj_failures += 1; return None; }
+            None => {
+                map_failures += 1;
+            }
         }
     }
-    if uv_points.len() < 2 { return None; }
-    // Guard against degenerate (all-identical) polylines from zero-length edges
-    let first = uv_points[0];
-    if uv_points.iter().all(|p| (p - first).length_squared() < 1e-12) {
-        eprintln!("[BRep] synthetic_pcurve: all {} points identical at ({:.3},{:.3}), 3D curve d0(0)={:?}, d0(0.5)={:?}",
-            uv_points.len(), first.x, first.y, curve.d0(0.0), curve.d0(0.5));
+    if uv_points.len() < 2 {
         return None;
     }
-    if proj_failures > 0 {
-        eprintln!("[BRep] synthetic_pcurve: {} projection failures out of {}", proj_failures, n + 1);
+    let first = uv_points[0];
+    if uv_points.iter().all(|p| (p - first).length_squared() < 1e-12) {
+        log::debug!(
+            "[BRep] synthetic_pcurve: all {} points identical at ({:.3},{:.3}), 3D curve d0(0)={:?}, d0(0.5)={:?}",
+            uv_points.len(),
+            first.x,
+            first.y,
+            curve.d0(0.0),
+            curve.d0(0.5)
+        );
+        return None;
+    }
+    if map_failures > 0 {
+        log::debug!(
+            "[BRep] synthetic_pcurve: {} inverse UV failures out of {}",
+            map_failures,
+            n + 1
+        );
+        return None;
     }
     Some(CurveGeom::Polyline { points: uv_points })
 }
@@ -872,6 +1181,25 @@ mod tests {
             }
             _ => panic!("expected Trimmed"),
         }
+    }
+
+    #[test]
+    fn test_build_2d_curve_trimmed_line_uv() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0));
+#2 = DIRECTION('', (1.0, 0.0));
+#10 = LINE('', #1, #2);
+#20 = TRIMMED_CURVE('', #10, (0.25), (0.75), .T., .PARAMETER.);\
+",
+        );
+        let pcurve = build_2d_curve(20, &entities).expect("2d trimmed pcurve");
+        let p0 = pcurve.d0(0.0);
+        let p1 = pcurve.d0(1.0);
+        assert!((p0.x - 0.25).abs() < 1e-4);
+        assert!(p0.y.abs() < 1e-4);
+        assert!((p1.x - 0.75).abs() < 1e-4);
+        assert!(p1.y.abs() < 1e-4);
     }
 
     #[test]

@@ -255,6 +255,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
         let edges_data = [
             (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
@@ -314,6 +315,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-6,
             seam_edges: vec![],
+            color: None,
         });
         let a = Vec3::ZERO;
         let b = Vec3::new(10.0, 0.0, 0.0);
@@ -373,6 +375,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
         let shell_key = reg.shells.insert(BRepShell {
             faces: vec![(face_key, Orientation::Forward)],
@@ -419,6 +422,7 @@ mod tests {
                 same_sense: true,
                 tolerance: 1e-4,
                 seam_edges: vec![],
+                color: None,
             }));
         }
         let faces: Vec<_> = face_keys

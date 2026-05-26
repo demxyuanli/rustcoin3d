@@ -462,6 +462,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         });
 
         let mut edge_keys = Vec::new();

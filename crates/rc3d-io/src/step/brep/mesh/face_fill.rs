@@ -778,6 +778,7 @@ mod tests {
             same_sense: true,
             tolerance: 1e-4,
             seam_edges: vec![],
+            color: None,
         };
         let mut verts: Vec<Vec3> = vec![
             Vec3::new(0.0, 0.0, 0.0),
