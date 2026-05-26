@@ -114,10 +114,16 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
     if let (Some(fv), Some(lv)) = (first_v, last_v) {
         if fv != lv {
             let gap = vertex_gap(fv, lv, reg);
-            if gap > face.tolerance.max(1e-4) {
+            let tol = face.tolerance.max(1e-4);
+            if gap > tol {
                 report.errors.push(format!(
                     "face {:?} outer wire open: gap {:.6}",
                     face_key, gap
+                ));
+            } else {
+                report.warnings.push(format!(
+                    "face {:?} outer wire not closed (gap {:.6} within tol {:.6})",
+                    face_key, gap, tol
                 ));
             }
         }
@@ -141,6 +147,20 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
             ));
         }
     }
+
+    // Edge tolerance checks
+    for &(ek, _) in &wire.edges {
+        report.warnings.extend(check_edge_tolerance(ek, reg));
+    }
+
+    // Surface singularity detection
+    report.warnings.extend(check_surface_singularities(face_key, reg));
+
+    // Parameter range validity
+    report.warnings.extend(check_parameter_range(face_key, reg));
+
+    // Wire orientation consistency
+    report.warnings.extend(check_wire_orientation(face_key, reg));
 
     if report.errors.len() > errors_before {
         report.failed_faces.push(face_key);
@@ -245,6 +265,243 @@ fn segments_intersect_2d(
     let u = ((bx0 - ax0) * (ay1 - ay0) - (by0 - ay0) * (ax1 - ax0)) / d;
     let edge_eps = eps;
     t > edge_eps && t < 1.0 - edge_eps && u > edge_eps && u < 1.0 - edge_eps
+}
+
+/// Check edge tolerance validity (OCC BRepCheck_Edge).
+fn check_edge_tolerance(ek: EdgeKey, reg: &BRepRegistry) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let edge = match reg.edges.get(ek) {
+        Some(e) => e,
+        None => return warnings,
+    };
+
+    let p0 = reg.vertices.get(edge.v_low).map(|v| v.position);
+    let p1 = reg.vertices.get(edge.v_high).map(|v| v.position);
+    let approx_len = match (p0, p1) {
+        (Some(a), Some(b)) => (a - b).length(),
+        _ => return warnings,
+    };
+
+    if approx_len < 1e-12 {
+        return warnings;
+    }
+
+    if edge.tolerance > approx_len * 10.0 {
+        warnings.push(format!(
+            "edge {:?}: tolerance {:.6} > 10x edge length {:.6}",
+            ek, edge.tolerance, approx_len
+        ));
+    }
+    if edge.tolerance < 1e-12 {
+        warnings.push(format!("edge {:?}: tolerance {:.6} is near-zero", ek, edge.tolerance));
+    }
+
+    warnings
+}
+
+/// Check for surface singularities on the trim boundary (OCC BRepCheck_Face).
+fn check_surface_singularities(
+    face_key: FaceKey,
+    reg: &BRepRegistry,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return warnings,
+    };
+
+    match &face.surface {
+        crate::step::brep::geom::SurfaceGeom::Sphere { .. } => {
+            let wire = match reg.wires.get(face.outer_wire) {
+                Some(w) => w,
+                None => return warnings,
+            };
+            for &(ek, _) in &wire.edges {
+                let edge = match reg.edges.get(ek) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if let Some(pc) = edge.pcurves.get(&face_key) {
+                    for t in [0.0, 1.0] {
+                        let uv = pc.d0(t);
+                        if (uv.y.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.01 {
+                            warnings.push(format!(
+                                "face {:?}: potential degeneracy near sphere pole at u={:.3}, v={:.3}",
+                                face_key, uv.x, uv.y
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        crate::step::brep::geom::SurfaceGeom::Cone { .. } => {
+            let wire = match reg.wires.get(face.outer_wire) {
+                Some(w) => w,
+                None => return warnings,
+            };
+            for &(ek, _) in &wire.edges {
+                let edge = match reg.edges.get(ek) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                for &vk in &[edge.v_low, edge.v_high] {
+                    if let Some(v) = reg.vertices.get(vk) {
+                        if let crate::step::brep::geom::SurfaceGeom::Cone { apex, .. } = &face.surface {
+                            if (v.position - *apex).length() < face.tolerance * 10.0 {
+                                warnings.push(format!(
+                                    "face {:?}: potential degeneracy at cone apex", face_key
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    warnings
+}
+
+/// Check that PCurve UV coordinates fall within the surface's natural domain.
+fn check_parameter_range(
+    face_key: FaceKey,
+    reg: &BRepRegistry,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return warnings,
+    };
+
+    let (u_range, v_range): ((f32, f32), (f32, f32)) = match &face.surface {
+        crate::step::brep::geom::SurfaceGeom::BSpline(nurbs) => {
+            let uk = &nurbs.knots_u;
+            let vk = &nurbs.knots_v;
+            ((uk[0], uk[uk.len() - 1]), (vk[0], vk[vk.len() - 1]))
+        }
+        _ => ((0.0, 0.0), (0.0, 0.0)),
+    };
+
+    if u_range == (0.0, 0.0) && v_range == (0.0, 0.0) {
+        return warnings;
+    }
+
+    let wire = match reg.wires.get(face.outer_wire) {
+        Some(w) => w,
+        None => return warnings,
+    };
+    for &(ek, _) in &wire.edges {
+        let edge = match reg.edges.get(ek) {
+            Some(e) => e,
+            None => continue,
+        };
+        if let Some(pc) = edge.pcurves.get(&face_key) {
+            for t in [0.0, 1.0] {
+                let uv = pc.d0(t);
+                let margin = 0.1;
+                if uv.x < u_range.0 - margin || uv.x > u_range.1 + margin {
+                    warnings.push(format!(
+                        "face {:?} edge {:?}: PCurve U={:.6} outside surface U range [{:.3}, {:.3}]",
+                        face_key, ek, uv.x, u_range.0, u_range.1
+                    ));
+                }
+                if uv.y < v_range.0 - margin || uv.y > v_range.1 + margin {
+                    warnings.push(format!(
+                        "face {:?} edge {:?}: PCurve V={:.6} outside surface V range [{:.3}, {:.3}]",
+                        face_key, ek, uv.y, v_range.0, v_range.1
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
+}
+
+/// Check wire orientation consistency using signed area in UV space.
+fn check_wire_orientation(
+    face_key: FaceKey,
+    reg: &BRepRegistry,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return warnings,
+    };
+
+    if let Some(wire) = reg.wires.get(face.outer_wire) {
+        let uv_points = collect_wire_uv_polygon(wire, face_key, reg);
+        if uv_points.len() >= 3 {
+            let area = signed_area_2d(&uv_points);
+            let expected_positive = face.same_sense;
+            if (area > 0.0) != expected_positive {
+                warnings.push(format!(
+                    "face {:?}: outer wire orientation inconsistent (signed_area={:.6}, same_sense={})",
+                    face_key, area, expected_positive
+                ));
+            }
+        }
+    }
+
+    for &inner_wire_key in &face.inner_wires {
+        if let Some(wire) = reg.wires.get(inner_wire_key) {
+            let uv_points = collect_wire_uv_polygon(wire, face_key, reg);
+            if uv_points.len() >= 3 {
+                let area = signed_area_2d(&uv_points);
+                let outer_positive = face.same_sense;
+                if (area > 0.0) == outer_positive {
+                    warnings.push(format!(
+                        "face {:?}: inner wire orientation should be opposite of outer (signed_area={:.6})",
+                        face_key, area
+                    ));
+                }
+            }
+        }
+    }
+
+    warnings
+}
+
+fn collect_wire_uv_polygon(
+    wire: &crate::step::brep::topo::BRepWire,
+    face_key: FaceKey,
+    reg: &BRepRegistry,
+) -> Vec<(f32, f32)> {
+    let mut points = Vec::new();
+    for &(ek, _) in &wire.edges {
+        if let Some(edge) = reg.edges.get(ek) {
+            if let Some(pc) = edge.pcurves.get(&face_key) {
+                let uv = pc.d0(0.0);
+                points.push((uv.x, uv.y));
+            }
+        }
+    }
+    if points.len() >= 2 {
+        if let Some(last_edge) = wire.edges.last().and_then(|&(ek, _)| {
+            reg.edges.get(ek).and_then(|e| e.pcurves.get(&face_key)).map(|pc| {
+                let uv = pc.d0(1.0);
+                (uv.x, uv.y)
+            })
+        }) {
+            points.push(last_edge);
+        }
+    }
+    points
+}
+
+fn signed_area_2d(pts: &[(f32, f32)]) -> f32 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0f32;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += pts[i].0 * pts[j].1;
+        area -= pts[j].0 * pts[i].1;
+    }
+    area * 0.5
 }
 
 #[cfg(test)]
