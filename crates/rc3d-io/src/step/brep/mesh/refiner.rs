@@ -84,16 +84,9 @@ pub fn refine_mesh(
                 verts.push(mid_pt);
 
                 let mut mid_n = Vec3::Z;
-                // Try to project centroid to UV for better normal
                 if let Some((u, v)) = surface.project(mid_pt) {
                     mid_n = surface.normal_native(u, v);
                     if !same_sense { mid_n = -mid_n; }
-                } else {
-                    // Fallback: use normal from derivatives at domain center
-                    if let Some((u, v)) = try_get_uv(mid_pt, surface) {
-                        mid_n = surface.normal_native(u, v);
-                        if !same_sense { mid_n = -mid_n; }
-                    }
                 }
                 norms.push(mid_n);
 
@@ -141,7 +134,10 @@ pub fn refine_mesh_interior(
                 continue;
             }
             let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
-            if local_boundary.contains(&i0)
+            if i0 >= refined.vertices.len()
+                || i1 >= refined.vertices.len()
+                || i2 >= refined.vertices.len()
+                || local_boundary.contains(&i0)
                 || local_boundary.contains(&i1)
                 || local_boundary.contains(&i2)
             {
@@ -275,11 +271,6 @@ pub fn merge_refined_face(
     let new_tri_count = new_tris.len() / 4;
     all_indices.splice(start..end.min(all_indices.len()), new_tris);
     new_tri_count
-}
-
-/// Try to get UV coordinates for a 3D point. Returns None if impossible.
-fn try_get_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)> {
-    surface.project(point)
 }
 
 #[cfg(test)]

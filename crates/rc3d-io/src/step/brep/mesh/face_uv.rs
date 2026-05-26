@@ -255,21 +255,19 @@ fn collect_wire_loop(
             } else {
                 None
             };
-            let (uv, from_pcurve) = match uv {
-                Some(uv) => (uv, true),
+            let uv = match uv {
+                Some(uv) => uv,
                 None => {
                     all_pcurve = false;
-                    let projected = match global_vertices.get(global_idx) {
+                    match global_vertices.get(global_idx) {
                         Some(pt) => surface
                             .project(*pt)
                             .or_else(|| surface.inverse_native_uv(*pt, inv_tol))
                             .unwrap_or((0.0, 0.0)),
                         None => (0.0, 0.0),
-                    };
-                    (projected, false)
+                    }
                 }
             };
-            let _ = from_pcurve;
             boundary.push(UvVertex { global_idx, uv });
         }
     }

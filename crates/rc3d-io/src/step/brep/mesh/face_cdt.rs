@@ -218,9 +218,9 @@ pub fn triangulate_uv_cdt_with_steiner(
         let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
         let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
         if point_in_trim(cu, cv, &outer_uv, &inner_uv) {
-            let key0 = ((uv0.0 * 1e6) as u64, (uv0.1 * 1e6) as u64);
-            let key1 = ((uv1.0 * 1e6) as u64, (uv1.1 * 1e6) as u64);
-            let key2 = ((uv2.0 * 1e6) as u64, (uv2.1 * 1e6) as u64);
+            let key0 = ((uv0.0 * 1e6).round() as u64, (uv0.1 * 1e6).round() as u64);
+            let key1 = ((uv1.0 * 1e6).round() as u64, (uv1.1 * 1e6).round() as u64);
+            let key2 = ((uv2.0 * 1e6).round() as u64, (uv2.1 * 1e6).round() as u64);
             if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
                 (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
             {

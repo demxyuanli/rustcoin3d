@@ -71,18 +71,11 @@ fn add_vertex_loop_seams(
         _ => {}
     }
 
+    // VERTEX_LOOP faces keep empty wires — mesh_closed_surface handles the
+    // full parametric surface via analytic UV grid. Only trimmed periodic faces
+    // get seam edges inserted into wires (see fix_trimmed_periodic_seam below).
     let count = added.len();
     if count > 0 {
-        // Insert seam edges directly into the outer wire (OCC style).
-        // For VERTEX_LOOP faces the wire is empty, so these become the wire.
-        if let Some(face) = reg.faces.get(face_key) {
-            if let Some(wire) = reg.wires.get_mut(face.outer_wire) {
-                for &ek in &added {
-                    wire.edges.push((ek, Orientation::Forward));
-                }
-            }
-        }
-        // Also populate seam_edges for backward compatibility (overlay, diagnostics).
         if let Some(face) = reg.faces.get_mut(face_key) {
             face.seam_edges.extend(added.iter().copied());
         }
