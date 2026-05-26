@@ -46,7 +46,7 @@ impl Default for BRepMeshConfig {
             face: FaceFillConfig::default(),
             refine: RefineConfig::default(),
             optimize: OptimizeConfig::default(),
-            relative_deflection: 0.0,
+            relative_deflection: 0.005,
             same_parameter_tol: 1e-4,
         }
     }
@@ -285,6 +285,11 @@ pub fn mesh_brep_shell_with_report(
         }
     }
 
+    let deg_after_fill = cull_degenerate_tris(&mut all_indices, &global_vertices);
+    if deg_after_fill > 0 {
+        log::debug!("[BRep mesh] removed {} degenerate tris after fill", deg_after_fill);
+    }
+
     if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
         for range in &face_ranges {
             let face = match reg.faces.get(range.face_key) {
@@ -317,6 +322,11 @@ pub fn mesh_brep_shell_with_report(
                 &local_to_global,
             );
         }
+    }
+
+    let deg_after_refine = cull_degenerate_tris(&mut all_indices, &global_vertices);
+    if deg_after_refine > 0 {
+        log::debug!("[BRep mesh] removed {} degenerate tris after refine", deg_after_refine);
     }
 
     for n in &mut global_normals {
@@ -358,6 +368,30 @@ pub fn mesh_brep_shell_with_report(
     };
     optimize_mesh(&mut mesh, &scaled_config.optimize);
     ShellMeshOutput { mesh, report }
+}
+
+fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
+    let mut out = Vec::with_capacity(indices.len());
+    let mut removed = 0usize;
+    for chunk in indices.chunks(4) {
+        if chunk.len() < 4 || chunk[3] != -1 {
+            out.extend_from_slice(chunk);
+            continue;
+        }
+        let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
+        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            out.extend_from_slice(chunk);
+            continue;
+        }
+        let area = (vertices[i0] - vertices[i1]).cross(vertices[i0] - vertices[i2]).length();
+        if area > 1e-12 {
+            out.extend_from_slice(chunk);
+        } else {
+            removed += 1;
+        }
+    }
+    *indices = out;
+    removed
 }
 
 /// Tessellate a closed analytic surface face (VERTEX_LOOP, e.g. full sphere).

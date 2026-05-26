@@ -35,6 +35,8 @@ pub struct HealConfig {
     pub fix_orientation: bool,
     pub fix_reorder: bool,
     pub fix_missing_seams: bool,
+    pub fix_vertex_tolerance: bool,
+    pub fix_small_area: bool,
 }
 
 impl Default for HealConfig {
@@ -44,6 +46,8 @@ impl Default for HealConfig {
             fix_orientation: true,
             fix_reorder: true,
             fix_missing_seams: true,
+            fix_vertex_tolerance: true,
+            fix_small_area: true,
         }
     }
 }

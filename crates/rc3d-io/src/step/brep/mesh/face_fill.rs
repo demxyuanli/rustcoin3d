@@ -29,11 +29,11 @@ impl Default for FaceFillConfig {
     fn default() -> Self {
         Self {
             enable_interior: true,
-            deflection_interior: 0.05,
+            deflection_interior: 0.01,
             min_size: 1e-3,
-            min_size_relative: 0.001,
+            min_size_relative: 0.01,
             shell_min_size: 0.0,
-            max_adapt_iterations: 6,
+            max_adapt_iterations: 8,
         }
     }
 }
