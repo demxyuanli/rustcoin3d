@@ -190,13 +190,26 @@ pub fn fill_trimmed(
     }
 }
 
-pub fn grid_fallback_3d(
+/// Surface-aware fill: project boundary to surface, CDT + Steiner refinement.
+/// OCC BRepMesh_Face surface-only degraded path (when PCURVEs unavailable).
+///
+/// Two strategies depending on boundary->surface projection success rate:
+/// - >70%: CDT in projected UV space with insert-time Steiner refinement.
+/// - ≤70%: fit a plane for 2D coords, CDT in plane space, Steiner points
+///   snapped to surface via `surface.project()` + `surface.d0_native()`.
+///
+/// All interior points are evaluated via `surface.d0_native()` — none remain
+/// on a fitted plane.
+#[allow(clippy::too_many_arguments)]
+pub fn surface_fill_3d(
     face_key: FaceKey,
     boundary_global: &[usize],
-    _face: &BRepFace,
-    global_vertices: &[Vec3],
+    face: &BRepFace,
+    global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    config: &FaceFillConfig,
 ) -> FaceMeshRange {
     let first_tri = all_indices.len() / 4;
     let boundary_set: HashSet<usize> = boundary_global.iter().copied().collect();
@@ -212,25 +225,149 @@ pub fn grid_fallback_3d(
     }
 
     log::debug!(
-        "[BRep mesh] face {:?}: grid fallback 3D ({} boundary verts)",
+        "[BRep mesh] face {:?}: surface fill 3D ({} boundary verts)",
         face_key,
         boundary_global.len()
     );
 
+    // ── Phase 1: project boundary points to surface ──
+    let inv_tol = face.tolerance.max(1e-3);
+    let mut projected: Vec<Option<(f32, f32)>> = Vec::with_capacity(boundary_global.len());
+    let mut success_count = 0usize;
+    for &gi in boundary_global {
+        let pt = global_vertices[gi];
+        let uv = face
+            .surface
+            .project(pt)
+            .or_else(|| face.surface.inverse_native_uv(pt, inv_tol));
+        if uv.is_some() {
+            success_count += 1;
+        }
+        projected.push(uv);
+    }
+    let success_ratio = success_count as f32 / boundary_global.len() as f32;
+
+    log::debug!(
+        "[BRep mesh] face {:?}: {}/{} boundary pts projected ({:.0}%)",
+        face_key, success_count, boundary_global.len(), success_ratio * 100.0
+    );
+
+    // ── Phase 2a: >70% → UV-based CDT + Steiner (reuse triangulate_uv_cdt_with_steiner) ──
+    if success_ratio > 0.7 {
+        let boundary_uvs: Vec<super::face_uv::UvVertex> = boundary_global
+            .iter()
+            .zip(projected.iter())
+            .filter_map(|(&gi, uv)| uv.map(|uv| super::face_uv::UvVertex { global_idx: gi, uv }))
+            .collect();
+
+        if boundary_uvs.len() >= 3 {
+            let loops = super::face_uv::FaceUvLoops {
+                outer: super::face_uv::UvLoop {
+                    boundary: boundary_uvs,
+                },
+                inners: vec![],
+                uv_source: super::face_uv::UvSource::SurfaceFill,
+            };
+
+            log::debug!(
+                "[BRep mesh] face {:?}: UV CDT + Steiner ({} boundary UVs)",
+                face_key,
+                loops.outer.boundary.len()
+            );
+
+            let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
+                &loops, face, global_vertices, global_normals, pos_to_idx, config,
+            );
+
+            if !tris_flat.is_empty() {
+                let mut tris: Vec<(i32, i32, i32)> = Vec::new();
+                for chunk in tris_flat.chunks(3) {
+                    if chunk.len() == 3 {
+                        tris.push((chunk[0] as i32, chunk[1] as i32, chunk[2] as i32));
+                    }
+                }
+                for (mut i0, mut i1, mut i2) in tris {
+                    if i0 == i1 || i1 == i2 || i2 == i0 {
+                        continue;
+                    }
+                    fix_winding(
+                        &mut i0, &mut i1, &mut i2,
+                        global_vertices,
+                        &face.surface,
+                        face.same_sense,
+                    );
+                    all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+                    accumulate_normals(i0, i1, i2, global_vertices, global_normals);
+                }
+                let tri_count = all_indices.len() / 4 - first_tri;
+                return FaceMeshRange {
+                    face_key,
+                    first_tri,
+                    tri_count,
+                    boundary_global: boundary_set,
+                    max_chord_error,
+                };
+            }
+            log::debug!(
+                "[BRep mesh] face {:?}: UV CDT returned no triangles, falling back to planar",
+                face_key
+            );
+        }
+    }
+
+    // ── Phase 2b: planar parameterization + surface-projected Steiner ──
+    surface_fill_3d_planar(
+        face_key,
+        boundary_global,
+        face,
+        global_vertices,
+        global_normals,
+        all_indices,
+        pos_to_idx,
+        config,
+        first_tri,
+        boundary_set,
+    )
+}
+
+/// Planar fallback: fit a plane to boundary, CDT in 2D plane coords,
+/// Steiner points snapped to surface via `surface.project()` + `surface.d0_native()`.
+fn surface_fill_3d_planar(
+    face_key: FaceKey,
+    boundary_global: &[usize],
+    face: &BRepFace,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    config: &FaceFillConfig,
+    first_tri: usize,
+    boundary_set: HashSet<usize>,
+) -> FaceMeshRange {
+    use rc3d_core::utils::hash::f32x3_quantized_bits;
+    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+
+    log::debug!(
+        "[BRep mesh] face {:?}: planar CDT + surface-projected Steiner ({} boundary verts)",
+        face_key,
+        boundary_global.len()
+    );
+
+    // Fit plane
     let points: Vec<Vec3> = boundary_global
         .iter()
         .map(|&gi| global_vertices[gi])
         .collect();
 
     let mut normal = Vec3::ZERO;
-    for i in 2..points.len() {
-        let cross = (points[1] - points[0]).cross(points[i] - points[0]);
-        if cross.length() > 1e-10 {
-            normal = cross;
-            break;
-        }
+    for i in 0..points.len() {
+        let p0 = points[i];
+        let p1 = points[(i + 1) % points.len()];
+        normal.x += (p0.y - p1.y) * (p0.z + p1.z);
+        normal.y += (p0.z - p1.z) * (p0.x + p1.x);
+        normal.z += (p0.x - p1.x) * (p0.y + p1.y);
     }
-    if normal.length() < 1e-10 {
+    if normal.length_squared() < 1e-20 {
         return FaceMeshRange {
             face_key,
             first_tri,
@@ -240,6 +377,7 @@ pub fn grid_fallback_3d(
         };
     }
     normal = normal.normalize();
+
     let u_axis = if normal.dot(Vec3::Z).abs() < 0.9 {
         normal.cross(Vec3::Z).normalize()
     } else {
@@ -248,45 +386,207 @@ pub fn grid_fallback_3d(
     let v_axis = normal.cross(u_axis).normalize();
     let origin = points[0];
 
-    let flat: Vec<f64> = points
+    // 2D coords on plane
+    let plane_uvs: Vec<(f64, f64)> = points
         .iter()
-        .flat_map(|p| {
+        .map(|p| {
             let rel = *p - origin;
-            [rel.dot(u_axis) as f64, rel.dot(v_axis) as f64]
+            (rel.dot(u_axis) as f64, rel.dot(v_axis) as f64)
         })
         .collect();
 
-    let ear_indices = match earcutr::earcut(&flat, &[], 2) {
-        Ok(indices) if !indices.is_empty() => indices,
-        _ => {
-            let g0 = boundary_global[0] as i32;
-            for i in 1..boundary_global.len() - 1 {
-                all_indices.extend_from_slice(&[
-                    g0,
-                    boundary_global[i] as i32,
-                    boundary_global[i + 1] as i32,
-                    -1,
-                ]);
-            }
-            let tri_count = all_indices.len() / 4 - first_tri;
+    // Build CDT in plane 2D space
+    let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
+        ConstrainedDelaunayTriangulation::new();
+    let mut handles: Vec<spade::handles::FixedVertexHandle> = Vec::new();
+    let mut uv_to_gi: HashMap<(u64, u64), usize> = HashMap::new();
+
+    for (i, &gi) in boundary_global.iter().enumerate() {
+        let (pu, pv) = plane_uvs[i];
+        let pt = Point2::new(pu, pv);
+        let Ok(h) = cdt.insert(pt) else {
             return FaceMeshRange {
-                face_key,
-                first_tri,
-                tri_count,
-                boundary_global: boundary_set,
-                max_chord_error: 0.0,
+                face_key, first_tri, tri_count: 0,
+                boundary_global: boundary_set, max_chord_error: 0.0,
             };
-        }
+        };
+        let key = ((pu * 1e6) as u64, (pv * 1e6) as u64);
+        uv_to_gi.insert(key, gi);
+        handles.push(h);
+    }
+
+    // Add outer boundary constraints
+    let n = boundary_global.len();
+    for i in 0..n {
+        let a = handles[i];
+        let b = handles[(i + 1) % n];
+        let _ = cdt.try_add_constraint(a, b);
+    }
+
+    // Helper: compute 3D point on fitted plane from 2D coords
+    let plane_to_3d = |pu: f64, pv: f64| -> Vec3 {
+        origin + u_axis * (pu as f32) + v_axis * (pv as f32)
     };
 
-    for chunk in ear_indices.chunks(3) {
-        if chunk.len() != 3 {
+    // ── Steiner refinement (surface-projected) ──
+    let mut max_chord = 0.0f32;
+    if config.enable_interior && config.deflection_interior > 0.0 {
+        let min_sz = effective_min_size(config);
+        for _iter in 0..config.max_adapt_iterations {
+            let mut splits: Vec<(f64, f64)> = Vec::new();
+            for face_h in cdt.inner_faces() {
+                let verts: Vec<_> = face_h
+                    .vertices()
+                    .iter()
+                    .map(|v| v.fix().index())
+                    .collect();
+                if verts.len() != 3 {
+                    continue;
+                }
+                let i0 = verts[0];
+                let i1 = verts[1];
+                let i2 = verts[2];
+
+                let uv0 = (
+                    cdt.vertex(handles[i0]).position().x,
+                    cdt.vertex(handles[i0]).position().y,
+                );
+                let uv1 = (
+                    cdt.vertex(handles[i1]).position().x,
+                    cdt.vertex(handles[i1]).position().y,
+                );
+                let uv2 = (
+                    cdt.vertex(handles[i2]).position().x,
+                    cdt.vertex(handles[i2]).position().y,
+                );
+
+                // Look up 3D positions (always from surface via d0_native)
+                let key0 = ((uv0.0 * 1e6) as u64, (uv0.1 * 1e6) as u64);
+                let key1 = ((uv1.0 * 1e6) as u64, (uv1.1 * 1e6) as u64);
+                let key2 = ((uv2.0 * 1e6) as u64, (uv2.1 * 1e6) as u64);
+                let Some(&gi0) = uv_to_gi.get(&key0) else { continue; };
+                let Some(&gi1) = uv_to_gi.get(&key1) else { continue; };
+                let Some(&gi2) = uv_to_gi.get(&key2) else { continue; };
+                let p0 = global_vertices[gi0];
+                let p1 = global_vertices[gi1];
+                let p2 = global_vertices[gi2];
+
+                let mut tri_split = false;
+                for (a, b) in [(&p0, &p1), (&p1, &p2), (&p2, &p0)] {
+                    let mid_3d = (*a + *b) * 0.5;
+                    if let Some((su, sv)) = face.surface.project(mid_3d) {
+                        let on_surf = face.surface.d0_native(su, sv);
+                        let dev = (mid_3d - on_surf).length();
+                        max_chord = max_chord.max(dev);
+                        let edge_len = (*a - *b).length();
+                        if dev > config.deflection_interior && edge_len > min_sz {
+                            tri_split = true;
+                        }
+                    }
+                }
+                if tri_split {
+                    // Insert Steiner at triangle centroid in plane 2D space
+                    let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
+                    let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
+                    splits.push((cu, cv));
+                }
+            }
+            if splits.is_empty() {
+                break;
+            }
+            // Dedup and insert Steiner points
+            let mut dedup = HashSet::new();
+            for (pu, pv) in splits {
+                let key = ((pu * 1e4) as u64, (pv * 1e4) as u64);
+                if dedup.contains(&key) {
+                    continue;
+                }
+                dedup.insert(key);
+
+                // Snap plane 3D point to surface
+                let mid_3d_plane = plane_to_3d(pu, pv);
+                let Some((su, sv)) = face.surface.project(mid_3d_plane) else {
+                    continue;
+                };
+                let pt_3d = face.surface.d0_native(su, sv);
+                let hash = f32x3_quantized_bits([pt_3d.x, pt_3d.y, pt_3d.z]);
+                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                    let i = global_vertices.len();
+                    global_vertices.push(pt_3d);
+                    let mut n = face.surface.normal_native(su, sv);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    global_normals.push(n);
+                    i
+                });
+
+                let pt = Point2::new(pu, pv);
+                if let Ok(h) = cdt.insert(pt) {
+                    let map_key = ((pu * 1e6) as u64, (pv * 1e6) as u64);
+                    uv_to_gi.insert(map_key, gi);
+                    handles.push(h);
+                }
+            }
+        }
+    }
+
+    // ── Extract all triangles (no trim filtering — no trim domain) ──
+    let mut tris: Vec<(i32, i32, i32)> = Vec::new();
+    for face_h in cdt.inner_faces() {
+        let verts: Vec<_> = face_h
+            .vertices()
+            .iter()
+            .map(|v| v.fix().index())
+            .collect();
+        if verts.len() != 3 {
             continue;
         }
-        let (i0, i1, i2) = (
-            boundary_global[chunk[0]] as i32,
-            boundary_global[chunk[1]] as i32,
-            boundary_global[chunk[2]] as i32,
+        let uv0 = (
+            cdt.vertex(handles[verts[0]]).position().x,
+            cdt.vertex(handles[verts[0]]).position().y,
+        );
+        let uv1 = (
+            cdt.vertex(handles[verts[1]]).position().x,
+            cdt.vertex(handles[verts[1]]).position().y,
+        );
+        let uv2 = (
+            cdt.vertex(handles[verts[2]]).position().x,
+            cdt.vertex(handles[verts[2]]).position().y,
+        );
+        let key0 = ((uv0.0 * 1e6) as u64, (uv0.1 * 1e6) as u64);
+        let key1 = ((uv1.0 * 1e6) as u64, (uv1.1 * 1e6) as u64);
+        let key2 = ((uv2.0 * 1e6) as u64, (uv2.1 * 1e6) as u64);
+        if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
+            (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
+        {
+            tris.push((gi0 as i32, gi1 as i32, gi2 as i32));
+        }
+    }
+
+    if tris.is_empty() {
+        log::debug!(
+            "[BRep mesh] face {:?}: planar CDT produced no triangles",
+            face_key
+        );
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: boundary_set,
+            max_chord_error: 0.0,
+        };
+    }
+
+    for (mut i0, mut i1, mut i2) in tris {
+        if i0 == i1 || i1 == i2 || i2 == i0 {
+            continue;
+        }
+        fix_winding(
+            &mut i0, &mut i1, &mut i2,
+            global_vertices,
+            &face.surface,
+            face.same_sense,
         );
         all_indices.extend_from_slice(&[i0, i1, i2, -1]);
         accumulate_normals(i0, i1, i2, global_vertices, global_normals);
@@ -298,7 +598,7 @@ pub fn grid_fallback_3d(
         first_tri,
         tri_count,
         boundary_global: boundary_set,
-        max_chord_error: 0.0,
+        max_chord_error: max_chord,
     }
 }
 
