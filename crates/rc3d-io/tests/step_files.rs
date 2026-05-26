@@ -252,3 +252,59 @@ fn test_assembly_tree_hierarchy() {
     let styles = rc3d_io::step::assembly::extract_shell_styles(&exchange.entities);
     println!("  Shell styles: {}", styles.len());
 }
+
+#[test]
+fn test_heal_passes_on_cs_step() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/cs.step");
+    if !path.exists() {
+        println!("SKIP: cs.step not found");
+        return;
+    }
+    let text = std::fs::read_to_string(&path).expect("read cs.step");
+    let exchange = rc3d_io::step::parser::parse_exchange(&text).expect("parse");
+    let brep = rc3d_io::step::brep::build_brep(&exchange.entities).expect("brep");
+    let mut reg = brep.registry;
+
+    for &sk in &brep.root_solids {
+        let outer_shell = reg.solids.get(sk).unwrap().outer_shell;
+
+        let heal_cfg = rc3d_io::step::brep::heal::HealConfig::default();
+        // Phase 1 fixes are all enabled by default
+        let heal = rc3d_io::step::brep::heal::heal_shell(outer_shell, &mut reg, &heal_cfg);
+
+        println!(
+            "solid {:?}: merged_vertices={}, removed_small={}, closed_uv={}, shifted={}, check_errors={}, check_warnings={}",
+            sk,
+            heal.merged_vertices,
+            heal.removed_small_edges,
+            heal.closed_uv_gaps,
+            heal.shifted_pcurves,
+            heal.check_errors,
+            heal.check_warnings,
+        );
+
+        let mesh_cfg = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
+        let shell = reg.shells.get(outer_shell).unwrap();
+        for &(face_key, _) in &shell.faces {
+            if heal.skip_face_keys.contains(&face_key) {
+                println!("  face {:?}: SKIPPED by heal", face_key);
+            }
+        }
+        let output = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
+            outer_shell,
+            &reg,
+            &mesh_cfg,
+            &heal.skip_face_keys,
+        );
+        assert!(
+            output.report.meshed_faces > 0,
+            "at least one face should be meshed"
+        );
+        println!(
+            "  meshed {} faces, {} tris, {} skipped",
+            output.report.meshed_faces,
+            output.mesh.indices.len() / 4,
+            heal.skip_face_keys.len(),
+        );
+    }
+}
