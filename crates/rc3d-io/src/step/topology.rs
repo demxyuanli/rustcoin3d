@@ -36,6 +36,90 @@ pub struct StepShell {
     pub faces: Vec<StepFace>,
 }
 
+/// Solid model: outer shell plus optional void shells from `BREP_WITH_VOIDS`.
+#[derive(Debug, Clone)]
+pub struct StepSolidModel {
+    pub outer: StepShell,
+    pub voids: Vec<StepShell>,
+}
+
+fn collect_void_shell_ids(record: &super::parser::EntityRecord) -> Vec<u64> {
+    let mut voids = Vec::new();
+    if let Some(list) = record.params.nth_param(2).and_then(|v| v.as_list()) {
+        for item in list {
+            if let Some(id) = item.as_ref_id() {
+                voids.push(id);
+            }
+        }
+    }
+    voids
+}
+
+/// Collect manifold solids with void shells when present.
+pub fn collect_solid_models(entities: &EntityIndex) -> Vec<StepSolidModel> {
+    use std::collections::HashSet;
+    let mut models = Vec::new();
+    let mut seen: HashSet<u64> = HashSet::new();
+
+    for (_, record) in entities.iter() {
+        match record.name.as_str() {
+            "BREP_WITH_VOIDS" | "MANIFOLD_SOLID_BREP" => {
+                if let Some(outer_id) = nth_ref(&record.params, 1) {
+                    if seen.insert(outer_id) {
+                        let faces = extract_shell_faces(outer_id, entities);
+                        if faces.is_empty() {
+                            continue;
+                        }
+                        let voids = if record.name == "BREP_WITH_VOIDS" {
+                            collect_void_shell_ids(record)
+                                .into_iter()
+                                .filter_map(|void_id| {
+                                    if seen.insert(void_id) {
+                                        let vf = extract_shell_faces(void_id, entities);
+                                        if vf.is_empty() {
+                                            None
+                                        } else {
+                                            Some(StepShell { id: void_id, faces: vf })
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        models.push(StepSolidModel {
+                            outer: StepShell { id: outer_id, faces },
+                            voids,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (&id, record) in entities.iter() {
+        match record.name.as_str() {
+            "CLOSED_SHELL" | "OPEN_SHELL" | "SHELL" => {
+                if seen.insert(id) {
+                    let faces = extract_shell_faces(id, entities);
+                    if !faces.is_empty() {
+                        models.push(StepSolidModel {
+                            outer: StepShell { id, faces },
+                            voids: Vec::new(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    models
+}
+
 /// Extract global distance tolerance from UNCERTAINTY_MEASURE_WITH_UNIT entities.
 pub fn global_tolerance(entities: &EntityIndex) -> f32 {
     for (_id, record) in entities.iter() {
@@ -56,43 +140,10 @@ pub fn global_tolerance(entities: &EntityIndex) -> f32 {
 
 /// Collect all Shell entities and extract their faces, keeping shells separate.
 pub fn collect_shells(entities: &EntityIndex) -> Vec<StepShell> {
-    use std::collections::HashSet;
-    let mut shells = Vec::new();
-    let mut seen: HashSet<u64> = HashSet::new();
-
-    // First pass: collect shells referenced by MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS
-    for (&_id, record) in entities.iter() {
-        match record.name.as_str() {
-            "BREP_WITH_VOIDS" | "MANIFOLD_SOLID_BREP" => {
-                if let Some(outer_id) = nth_ref(&record.params, 1) {
-                    if seen.insert(outer_id) {
-                        let faces = extract_shell_faces(outer_id, entities);
-                        if !faces.is_empty() {
-                            shells.push(StepShell { id: outer_id, faces });
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Second pass: collect standalone shells (not already covered by brep)
-    for (&id, record) in entities.iter() {
-        match record.name.as_str() {
-            "CLOSED_SHELL" | "OPEN_SHELL" | "SHELL" => {
-                if seen.insert(id) {
-                    let faces = extract_shell_faces(id, entities);
-                    if !faces.is_empty() {
-                        shells.push(StepShell { id, faces });
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    shells
+    collect_solid_models(entities)
+        .into_iter()
+        .map(|m| m.outer)
+        .collect()
 }
 
 /// Collect all Shell entities and extract their faces into a flat list.

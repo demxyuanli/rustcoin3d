@@ -24,14 +24,45 @@ use super::geom::{CurveGeom, SurfaceGeom};
 use super::geom::normalize_edge_curve_to_vertices;
 use rc3d_core::math::Vec3;
 
+#[derive(Debug, Default, Clone)]
+pub struct BRepBuildReport {
+    pub skipped_faces: usize,
+    pub skipped_edges: usize,
+    pub void_shell_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BRepBuildOptions {
+    pub allow_geometry_fallback: bool,
+}
+
+impl BRepBuildOptions {
+    pub fn from_import(options: &crate::step::import_options::StepImportOptions) -> Self {
+        Self {
+            allow_geometry_fallback: options.allow_geometry_fallback(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BRepBuildResult {
     pub registry: BRepRegistry,
     pub root_solids: Vec<SolidKey>,
+    pub build_report: BRepBuildReport,
 }
 
 /// Build a full B-Rep from STEP entities.
 pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> {
+    build_brep_with_options(entities, &BRepBuildOptions {
+        allow_geometry_fallback: true,
+    })
+}
+
+/// Build a full B-Rep with import strictness options.
+pub fn build_brep_with_options(
+    entities: &EntityIndex,
+    _options: &BRepBuildOptions,
+) -> Result<BRepBuildResult, StepError> {
     let mut reg = BRepRegistry::new();
 
     // Collect shells from the STEP file
@@ -175,7 +206,21 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
         root_solids.push(solid_key);
     }
 
-    Ok(BRepBuildResult { registry: reg, root_solids })
+    let void_shell_count = root_solids
+        .iter()
+        .filter_map(|&sk| reg.solids.get(sk))
+        .map(|s| s.void_shells.len())
+        .sum();
+
+    Ok(BRepBuildResult {
+        registry: reg,
+        root_solids,
+        build_report: BRepBuildReport {
+            skipped_faces: 0,
+            skipped_edges: 0,
+            void_shell_count,
+        },
+    })
 }
 
 // ── Surface building ──────────────────────────────────────────────

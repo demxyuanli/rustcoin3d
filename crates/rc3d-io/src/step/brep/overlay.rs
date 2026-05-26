@@ -26,7 +26,7 @@ pub fn build_edge_curves(
     root: rc3d_core::NodeId,
     reg: &BRepRegistry,
     root_solids: &[SolidKey],
-    shell_transforms: &std::collections::HashMap<u64, AssemblyTransform>,
+    shell_instances: &[(u64, AssemblyTransform)],
     mesh_config: &BRepMeshConfig,
 ) -> Option<rc3d_core::NodeId> {
     let edge_polys = discretize_all_edges(reg, &mesh_config.edge);
@@ -37,20 +37,33 @@ pub fn build_edge_curves(
     for &sk in root_solids {
         let solid = reg.solids.get(sk)?;
         let shell = reg.shells.get(solid.outer_shell)?;
-        let xform = shell
-            .step_id
-            .and_then(|id| shell_transforms.get(&id));
+        let step_id = shell.step_id?;
+
+        let xforms: Vec<&AssemblyTransform> = shell_instances
+            .iter()
+            .filter(|(id, _)| *id == step_id)
+            .map(|(_, xform)| xform)
+            .collect();
+
+        let default_xform = AssemblyTransform::default();
+        let xform_list: Vec<&AssemblyTransform> = if xforms.is_empty() {
+            vec![&default_xform]
+        } else {
+            xforms
+        };
 
         let (edge_keys, seam_keys) = collect_shell_edge_keys(reg, solid.outer_shell);
-        append_edge_segments(
-            reg,
-            &edge_polys,
-            &edge_keys,
-            &seam_keys,
-            xform,
-            &mut points,
-            &mut indices,
-        );
+        for xform in xform_list {
+            append_edge_segments(
+                reg,
+                &edge_polys,
+                &edge_keys,
+                &seam_keys,
+                Some(xform),
+                &mut points,
+                &mut indices,
+            );
+        }
     }
 
     if points.is_empty() || indices.is_empty() {

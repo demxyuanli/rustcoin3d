@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::path::Path;
 use super::entity_types::EntityType;
+use super::import_options::StepImportOptions;
 use super::value::StepValue;
 
 #[derive(Debug, Clone)]
@@ -14,21 +15,33 @@ pub struct EntityRecord {
 
 pub type EntityIndex = HashMap<u64, EntityRecord>;
 
+#[derive(Debug, Default, Clone)]
+pub struct ParseDiagnostics {
+    pub skipped_entities: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct Exchange {
     pub header: Option<super::header::HeaderInfo>,
     pub entities: EntityIndex,
+    pub diagnostics: ParseDiagnostics,
 }
 
 /// Parse ISO 10303-21 ASCII exchange structure text.
 pub fn parse_exchange(input: &str) -> Result<Exchange, String> {
+    parse_exchange_with_options(input, &StepImportOptions::default())
+}
+
+pub fn parse_exchange_with_options(
+    input: &str,
+    options: &StepImportOptions,
+) -> Result<Exchange, String> {
     let input = input.trim();
     if !input.starts_with("ISO-10303-21;") {
         return Err("missing ISO-10303-21 header".into());
     }
     let rest = &input["ISO-10303-21;".len()..];
 
-    // Parse HEADER section (between ISO-10303-21 and DATA)
     let data_pos = rest.find("DATA;");
     let header = if let Some(dp) = data_pos {
         let header_region = &rest[..dp];
@@ -40,16 +53,27 @@ pub fn parse_exchange(input: &str) -> Result<Exchange, String> {
     let rest = skip_until(rest, "DATA;").ok_or("DATA section not found")?;
     let rest = &rest["DATA;".len()..];
 
-    // Parse DATA section entities
     let rest = rest.trim_start();
-    let (mut entities, _) = parse_entities(rest)?;
+    let recover = options.recover_skipped_entities();
+    let (mut entities, diagnostics, _) = parse_entities(rest, recover)?;
 
-    // Tag each entity with its EntityType
+    if !recover && !diagnostics.skipped_entities.is_empty() {
+        return Err(format!(
+            "STEP parse: {} malformed entit(y/ies) in strict mode: {}",
+            diagnostics.skipped_entities.len(),
+            diagnostics.skipped_entities.join("; ")
+        ));
+    }
+
     for record in entities.values_mut() {
         record.entity_type = EntityType::from_name(&record.name);
     }
 
-    Ok(Exchange { header, entities })
+    Ok(Exchange {
+        header,
+        entities,
+        diagnostics,
+    })
 }
 
 fn skip_until<'a>(input: &'a str, marker: &str) -> Option<&'a str> {
@@ -57,15 +81,18 @@ fn skip_until<'a>(input: &'a str, marker: &str) -> Option<&'a str> {
     Some(&input[pos..])
 }
 
-fn parse_entities(input: &str) -> Result<(EntityIndex, &str), String> {
+fn parse_entities(
+    input: &str,
+    recover_skipped: bool,
+) -> Result<(EntityIndex, ParseDiagnostics, &str), String> {
     let mut entities = EntityIndex::new();
+    let mut diagnostics = ParseDiagnostics::default();
     let mut rest = input;
     loop {
         rest = rest.trim_start();
         if rest.is_empty() || rest.starts_with("ENDSEC;") || rest.starts_with("END-ISO") {
             break;
         }
-        // Skip comments
         if rest.starts_with("/*") {
             if let Some(end) = rest.find("*/") {
                 rest = &rest[end + 2..];
@@ -74,12 +101,28 @@ fn parse_entities(input: &str) -> Result<(EntityIndex, &str), String> {
         }
         match parse_entity(rest) {
             Ok((eid, ename, eparams, new_rest)) => {
-                entities.insert(eid, EntityRecord { name: ename, params: eparams, entity_type: EntityType::Unknown });
+                entities.insert(
+                    eid,
+                    EntityRecord {
+                        name: ename,
+                        params: eparams,
+                        entity_type: EntityType::Unknown,
+                    },
+                );
                 rest = new_rest;
             }
             Err(e) => {
+                let snippet: String = rest.chars().take(60).collect();
+                diagnostics
+                    .skipped_entities
+                    .push(format!("{} (near `{}`)", e, snippet));
+                if !recover_skipped {
+                    return Err(format!(
+                        "STEP parse error (strict): {} (near `{}`)",
+                        e, snippet
+                    ));
+                }
                 log::warn!("STEP parse error, skipping entity: {}", e);
-                // Attempt to recover by finding the next entity start or statement end
                 if let Some(next) = rest[1..].find('#') {
                     rest = &rest[next + 1..];
                 } else if let Some(semi) = rest.find(';') {
@@ -90,7 +133,7 @@ fn parse_entities(input: &str) -> Result<(EntityIndex, &str), String> {
             }
         }
     }
-    Ok((entities, rest))
+    Ok((entities, diagnostics, rest))
 }
 
 fn parse_entity(input: &str) -> Result<(u64, String, StepValue, &str), String> {
@@ -407,7 +450,16 @@ fn parse_keyword(input: &str) -> Result<(String, &str), String> {
 pub fn parse_exchange_streaming<R: BufRead>(
     reader: &mut R,
 ) -> Result<Exchange, String> {
+    parse_exchange_streaming_with_options(reader, &StepImportOptions::default())
+}
+
+pub fn parse_exchange_streaming_with_options<R: BufRead>(
+    reader: &mut R,
+    options: &StepImportOptions,
+) -> Result<Exchange, String> {
+    let recover = options.recover_skipped_entities();
     let mut entities = EntityIndex::new();
+    let mut diagnostics = ParseDiagnostics::default();
     let mut line_buf = String::new();
     let mut entity_buf = String::new();
     let mut in_data = false;
@@ -513,8 +565,12 @@ pub fn parse_exchange_streaming<R: BufRead>(
                     });
                 }
                 Err(e) => {
+                    let msg = format!("line {}: {}", line_num, e);
+                    if !recover {
+                        return Err(format!("STEP stream parse error (strict): {}", msg));
+                    }
+                    diagnostics.skipped_entities.push(msg);
                     log::warn!("STEP stream parse error at line {}: {}", line_num, e);
-                    // Try to recover by finding the next entity start
                     if let Some(next_hash) = entity_buf[1..].find("#") {
                         let remaining = &entity_buf[next_hash..];
                         entity_buf = remaining.to_string();
@@ -549,15 +605,25 @@ pub fn parse_exchange_streaming<R: BufRead>(
     }
 
     log::info!("STEP streaming parse complete: {} entities", entities.len());
-    Ok(Exchange { header: None, entities })
+    Ok(Exchange {
+        header: None,
+        entities,
+        diagnostics,
+    })
 }
 
 /// Parse a STEP file from disk using streaming I/O (reduces memory vs. read_to_string).
-/// For very large files (>100MB), prefer this over `parse_step`.
 pub fn parse_step_from_file(path: &Path) -> Result<Exchange, String> {
+    parse_step_from_file_with_options(path, &StepImportOptions::default())
+}
+
+pub fn parse_step_from_file_with_options(
+    path: &Path,
+    options: &StepImportOptions,
+) -> Result<Exchange, String> {
     let file = File::open(path).map_err(|e| format!("cannot open {}: {}", path.display(), e))?;
-    let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB read buffer
-    parse_exchange_streaming(&mut reader)
+    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+    parse_exchange_streaming_with_options(&mut reader, options)
 }
 
 // ---------------------------------------------------------------------------

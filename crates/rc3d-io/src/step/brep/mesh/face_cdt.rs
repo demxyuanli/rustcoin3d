@@ -18,15 +18,68 @@ fn insert_uv(
     gi: usize,
     handles: &mut Vec<spade::handles::FixedVertexHandle>,
     uv_to_gi: &mut HashMap<(u64, u64), usize>,
+    uv_to_handle: &mut HashMap<(u64, u64), usize>,
 ) -> Option<spade::handles::FixedVertexHandle> {
+    let key = ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64);
+    if let Some(&hi) = uv_to_handle.get(&key) {
+        return Some(handles[hi]);
+    }
     let pt = Point2::new(uv.0 as f64, uv.1 as f64);
     let Ok(h) = cdt.insert(pt) else {
         return None;
     };
-    let key = ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64);
-    uv_to_gi.insert(key, gi);
+    let hi = handles.len();
     handles.push(h);
+    uv_to_gi.insert(key, gi);
+    uv_to_handle.insert(key, hi);
     Some(h)
+}
+
+fn extract_cdt_triangles(
+    cdt: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+    handles: &[spade::handles::FixedVertexHandle],
+    uv_to_gi: &HashMap<(u64, u64), usize>,
+    filter: impl Fn(f32, f32) -> bool,
+) -> Vec<usize> {
+    let mut tris = Vec::new();
+    for face_h in cdt.inner_faces() {
+        let verts: Vec<_> = face_h
+            .vertices()
+            .iter()
+            .map(|v| v.fix().index())
+            .collect();
+        if verts.len() != 3 {
+            continue;
+        }
+        let uv0 = (
+            cdt.vertex(handles[verts[0]]).position().x as f32,
+            cdt.vertex(handles[verts[0]]).position().y as f32,
+        );
+        let uv1 = (
+            cdt.vertex(handles[verts[1]]).position().x as f32,
+            cdt.vertex(handles[verts[1]]).position().y as f32,
+        );
+        let uv2 = (
+            cdt.vertex(handles[verts[2]]).position().x as f32,
+            cdt.vertex(handles[verts[2]]).position().y as f32,
+        );
+        let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
+        let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
+        if !filter(cu, cv) {
+            continue;
+        }
+        let key0 = ((uv0.0 * 1e6).round() as u64, (uv0.1 * 1e6).round() as u64);
+        let key1 = ((uv1.0 * 1e6).round() as u64, (uv1.1 * 1e6).round() as u64);
+        let key2 = ((uv2.0 * 1e6).round() as u64, (uv2.1 * 1e6).round() as u64);
+        if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
+            (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
+        {
+            tris.push(gi0);
+            tris.push(gi1);
+            tris.push(gi2);
+        }
+    }
+    tris
 }
 
 /// CDT-first triangulation with insert-time Steiner refinement.
@@ -48,37 +101,56 @@ pub fn triangulate_uv_cdt_with_steiner(
         ConstrainedDelaunayTriangulation::new();
     let mut handles: Vec<spade::handles::FixedVertexHandle> = Vec::new();
     let mut uv_to_gi: HashMap<(u64, u64), usize> = HashMap::new();
+    let mut uv_to_handle: HashMap<(u64, u64), usize> = HashMap::new();
 
-    // Insert outer boundary
-    let outer_start = handles.len();
+    // Insert outer boundary (duplicate UV reuses handles)
+    let mut outer_handles = Vec::new();
     for v in &loops.outer.boundary {
-        if insert_uv(&mut cdt, v.uv, v.global_idx, &mut handles, &mut uv_to_gi).is_none() {
+        let Some(h) = insert_uv(
+            &mut cdt,
+            v.uv,
+            v.global_idx,
+            &mut handles,
+            &mut uv_to_gi,
+            &mut uv_to_handle,
+        ) else {
             return (Vec::new(), 0.0);
-        }
+        };
+        outer_handles.push(h);
     }
-    // Add outer constraints
-    let n_outer = loops.outer.boundary.len();
+    if outer_handles.len() < 3 {
+        return (Vec::new(), 0.0);
+    }
+    let n_outer = outer_handles.len();
     for i in 0..n_outer {
-        let a = handles[outer_start + i];
-        let b = handles[outer_start + (i + 1) % n_outer];
+        let a = outer_handles[i];
+        let b = outer_handles[(i + 1) % n_outer];
         let _ = cdt.try_add_constraint(a, b);
     }
 
     // Insert inner boundaries with constraints
     for inner in &loops.inners {
-        let start = handles.len();
+        let mut inner_handles = Vec::new();
         for v in &inner.boundary {
-            if insert_uv(&mut cdt, v.uv, v.global_idx, &mut handles, &mut uv_to_gi).is_none() {
+            let Some(h) = insert_uv(
+                &mut cdt,
+                v.uv,
+                v.global_idx,
+                &mut handles,
+                &mut uv_to_gi,
+                &mut uv_to_handle,
+            ) else {
                 return (Vec::new(), 0.0);
-            }
+            };
+            inner_handles.push(h);
         }
-        let n = inner.boundary.len();
+        let n = inner_handles.len();
         if n < 3 {
             continue;
         }
         for i in 0..n {
-            let a = handles[start + i];
-            let b = handles[start + (i + 1) % n];
+            let a = inner_handles[i];
+            let b = inner_handles[(i + 1) % n];
             let before = cdt.num_constraints();
             let added = cdt.try_add_constraint(a, b);
             if added.is_empty() && cdt.num_constraints() == before && !cdt.exists_constraint(a, b) {
@@ -180,6 +252,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                     gi,
                     &mut handles,
                     &mut uv_to_gi,
+                    &mut uv_to_handle,
                 );
             }
         }
@@ -193,42 +266,11 @@ pub fn triangulate_uv_cdt_with_steiner(
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
         .collect();
 
-    let mut tris = Vec::new();
-    for face_h in cdt.inner_faces() {
-        let verts: Vec<_> = face_h
-            .vertices()
-            .iter()
-            .map(|v| v.fix().index())
-            .collect();
-        if verts.len() != 3 {
-            continue;
-        }
-        let uv0 = (
-            cdt.vertex(handles[verts[0]]).position().x as f32,
-            cdt.vertex(handles[verts[0]]).position().y as f32,
-        );
-        let uv1 = (
-            cdt.vertex(handles[verts[1]]).position().x as f32,
-            cdt.vertex(handles[verts[1]]).position().y as f32,
-        );
-        let uv2 = (
-            cdt.vertex(handles[verts[2]]).position().x as f32,
-            cdt.vertex(handles[verts[2]]).position().y as f32,
-        );
-        let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
-        let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
-        if point_in_trim(cu, cv, &outer_uv, &inner_uv) {
-            let key0 = ((uv0.0 * 1e6).round() as u64, (uv0.1 * 1e6).round() as u64);
-            let key1 = ((uv1.0 * 1e6).round() as u64, (uv1.1 * 1e6).round() as u64);
-            let key2 = ((uv2.0 * 1e6).round() as u64, (uv2.1 * 1e6).round() as u64);
-            if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
-                (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
-            {
-                tris.push(gi0);
-                tris.push(gi1);
-                tris.push(gi2);
-            }
-        }
+    let mut tris = extract_cdt_triangles(&cdt, &handles, &uv_to_gi, |cu, cv| {
+        point_in_trim(cu, cv, &outer_uv, &inner_uv)
+    });
+    if tris.is_empty() {
+        tris = extract_cdt_triangles(&cdt, &handles, &uv_to_gi, |_, _| true);
     }
 
     (tris, max_chord)

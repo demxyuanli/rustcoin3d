@@ -218,9 +218,10 @@ impl AssemblyTransform {
 
 /// Map from shell entity ID to its accumulated assembly transform.
 pub type ShellTransformMap = HashMap<u64, AssemblyTransform>;
+pub type ShellInstanceList = Vec<(u64, AssemblyTransform)>;
 
-/// Build assembly graph from entity index and output shell transforms.
-pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
+/// All (shell_id, world transform) pairs — supports repeated assembly instances.
+pub fn extract_shell_instances(entities: &EntityIndex) -> ShellInstanceList {
     let mut graph = AssemblyGraph::default();
 
     // Pass 1: collect data using entity IDs
@@ -300,18 +301,25 @@ pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
         }
     }
 
-    // Pass 3: walk product definitions → shell transforms
-    let mut shell_transforms: ShellTransformMap = HashMap::new();
+    let mut instances = ShellInstanceList::new();
     for (&pd_id, shape_ids) in &graph.shapes {
         let xform = graph.accumulate(pd_id);
         for &sid in shape_ids {
             for shell_id in find_shells_in_representation(sid, entities) {
-                shell_transforms.insert(shell_id, xform.clone());
+                instances.push((shell_id, xform.clone()));
             }
         }
     }
 
-    shell_transforms
+    instances
+}
+
+/// Last occurrence wins per shell id (legacy API).
+pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
+    extract_shell_instances(entities)
+        .into_iter()
+        .map(|(id, xform)| (id, xform))
+        .collect()
 }
 
 #[derive(Default)]

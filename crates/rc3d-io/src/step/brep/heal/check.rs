@@ -9,6 +9,8 @@ use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey};
 pub struct CheckReport {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+    /// Faces that failed validation and should not be meshed.
+    pub failed_faces: Vec<FaceKey>,
 }
 
 impl CheckReport {
@@ -49,6 +51,7 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepRegistry) -> CheckReport {
 }
 
 fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
+    let errors_before = report.errors.len();
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
         None => {
@@ -137,6 +140,10 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
                 face_key, seam_ek
             ));
         }
+    }
+
+    if report.errors.len() > errors_before {
+        report.failed_faces.push(face_key);
     }
 }
 

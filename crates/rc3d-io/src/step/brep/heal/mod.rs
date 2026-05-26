@@ -120,6 +120,12 @@ pub fn heal_shell(
     let check_report = check_shell(shell_key, reg);
     report.check_errors = check_report.errors.len();
     report.check_warnings = check_report.warnings.len();
+    for &fk in &check_report.failed_faces {
+        if !report.skip_face_keys.contains(&fk) {
+            report.skip_face_keys.push(fk);
+            log::warn!("[BRep heal] face {:?} failed topology check, skipping mesh", fk);
+        }
+    }
     for e in &check_report.errors {
         log::warn!("[BRep check] {}", e);
     }

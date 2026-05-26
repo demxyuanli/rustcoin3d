@@ -9,7 +9,11 @@ pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
 pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
-pub use step::{parse_step, parse_step_file, write_step_file, write_step_entities_file, StepError};
+pub use step::{
+    decode_step_bytes, parse_step, parse_step_file, parse_step_file_with_options,
+    parse_step_with_options, write_step_file, write_step_entities_file, StepError, StepImportMode,
+    StepImportOptions, StepImportReport,
+};
 pub use step::write::{write_step_from_entities, write_step_from_graph};
 pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};
 pub use step::xml::{write_xml_step, parse_xml_step};

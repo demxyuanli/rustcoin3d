@@ -35,6 +35,63 @@ fn load(name: &str, size_mb: f64) {
 }
 
 #[test] fn t_assembly() { load("AssemblyExample-Assembly.step", 0.5); }
+#[test]
+fn test_cs_step_face_mesh_coverage() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/cs.step");
+    if !path.exists() {
+        println!("SKIP: cs.step not found");
+        return;
+    }
+    let text = std::fs::read_to_string(&path).expect("read cs.step");
+    let exchange = rc3d_io::step::parser::parse_exchange(&text).expect("parse");
+    let brep = rc3d_io::step::brep::build_brep(&exchange.entities).expect("brep");
+    let mut reg = brep.registry;
+    let heal_cfg = rc3d_io::step::brep::heal::HealConfig::default();
+    let mesh_cfg = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
+    for &sk in &brep.root_solids {
+        let outer_shell = reg.solids.get(sk).unwrap().outer_shell;
+        let heal = rc3d_io::step::brep::heal::heal_shell(outer_shell, &mut reg, &heal_cfg);
+        let shell = reg.shells.get(outer_shell).unwrap();
+        println!("solid {:?}: {} faces, skip={:?}", sk, shell.faces.len(), heal.skip_face_keys);
+        let out = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
+            outer_shell,
+            &reg,
+            &mesh_cfg,
+            &heal.skip_face_keys,
+        );
+        let mut meshed = 0usize;
+        for &(fk, _) in &shell.faces {
+            let skipped = heal.skip_face_keys.contains(&fk);
+            let face = reg.faces.get(fk).unwrap();
+            let wire = reg.wires.get(face.outer_wire).unwrap();
+            let face_stats = out.report.faces.iter().find(|f| f.face_key == fk);
+            let tris = face_stats.map(|f| f.tri_count).unwrap_or(0);
+            if skipped {
+                println!("  {:?} SKIPPED (wire_edges={})", fk, wire.edges.len());
+                continue;
+            }
+            if tris > 0 {
+                meshed += 1;
+            }
+            println!(
+                "  {:?} wire_edges={} tris={} grid_fb={}",
+                fk,
+                wire.edges.len(),
+                tris,
+                face_stats.map(|f| f.grid_fallback).unwrap_or(false)
+            );
+        }
+        println!("  meshed_faces={}/{}", meshed, shell.faces.len());
+        assert_eq!(
+            meshed,
+            shell.faces.len(),
+            "expected all faces meshed, got {}/{}",
+            meshed,
+            shell.faces.len()
+        );
+    }
+}
+
 #[test] fn t_shape() { load("Shape.step", 0.1); }
 #[test] fn t_shape1() { load("Shape-1.step", 0.3); }
 #[test] fn t_shape2() { load("Shape-2.step", 0.8); }

@@ -67,6 +67,24 @@ pub fn effective_min_size(config: &FaceFillConfig) -> f32 {
     min
 }
 
+/// Fan triangulation along the outer boundary wire order (3D topology, not UV).
+fn fan_triangulate_outer(loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    let b = &loops.outer.boundary;
+    if b.len() < 3 {
+        return Vec::new();
+    }
+    let g0 = b[0].global_idx as i32;
+    let mut tris = Vec::new();
+    for i in 1..b.len().saturating_sub(1) {
+        let g1 = b[i].global_idx as i32;
+        let g2 = b[i + 1].global_idx as i32;
+        if g0 != g1 && g1 != g2 && g2 != g0 {
+            tris.push((g0, g1, g2));
+        }
+    }
+    tris
+}
+
 /// CDT-first triangulation with Steiner refinement, earcut as ultimate fallback.
 #[allow(clippy::too_many_arguments)]
 pub fn fill_trimmed(
@@ -153,6 +171,10 @@ pub fn fill_trimmed(
                     ));
                 }
             }
+        }
+
+        if tris.is_empty() {
+            tris = fan_triangulate_outer(loops);
         }
 
         if tris.is_empty() {
@@ -575,6 +597,17 @@ fn surface_fill_3d_planar(
             (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
         {
             tris.push((gi0 as i32, gi1 as i32, gi2 as i32));
+        }
+    }
+
+    if tris.is_empty() && boundary_global.len() >= 3 {
+        let g0 = boundary_global[0] as i32;
+        for i in 1..boundary_global.len().saturating_sub(1) {
+            let g1 = boundary_global[i] as i32;
+            let g2 = boundary_global[i + 1] as i32;
+            if g0 != g1 && g1 != g2 && g2 != g0 {
+                tris.push((g0, g1, g2));
+            }
         }
     }
 
