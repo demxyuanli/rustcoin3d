@@ -183,8 +183,13 @@ mod tests {
 
     #[test]
     fn test_fix_connected_already_connected() {
-        let (mut reg, wire_key, v1, _v2) = make_registry_with_two_edges(0.0);
-        let report = fix_connected_wire(wire_key, &mut reg, 1e-3);
-        assert!(report.merged_vertices > 0 || report.already_connected > 0);
+        let (mut reg, wire_key, _v1, _v2) = make_registry_with_two_edges(0.0);
+        // First call merges the coincident vertices
+        let r1 = fix_connected_wire(wire_key, &mut reg, 1e-3);
+        assert!(r1.merged_vertices > 0);
+        // Second call: vertices are already the same key → already_connected
+        let r2 = fix_connected_wire(wire_key, &mut reg, 1e-3);
+        assert!(r2.already_connected > 0);
+        assert_eq!(r2.merged_vertices, 0);
     }
 }

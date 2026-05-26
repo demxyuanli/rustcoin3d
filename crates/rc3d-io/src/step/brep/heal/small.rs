@@ -3,12 +3,6 @@
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::{EdgeKey, Orientation, WireKey};
 
-#[derive(Debug, Default)]
-pub struct SmallEdgeReport {
-    pub removed_edges: usize,
-    pub wires_emptied: usize,
-}
-
 /// Remove edges whose 3D curve length is below `min_length`.
 ///
 /// Seam edges (listed in face.seam_edges) are never removed — they may be

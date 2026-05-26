@@ -334,7 +334,7 @@ fn check_surface_singularities(
                 }
             }
         }
-        crate::step::brep::geom::SurfaceGeom::Cone { .. } => {
+        crate::step::brep::geom::SurfaceGeom::Cone { apex, .. } => {
             let wire = match reg.wires.get(face.outer_wire) {
                 Some(w) => w,
                 None => return warnings,
@@ -346,12 +346,10 @@ fn check_surface_singularities(
                 };
                 for &vk in &[edge.v_low, edge.v_high] {
                     if let Some(v) = reg.vertices.get(vk) {
-                        if let crate::step::brep::geom::SurfaceGeom::Cone { apex, .. } = &face.surface {
-                            if (v.position - *apex).length() < face.tolerance * 10.0 {
-                                warnings.push(format!(
-                                    "face {:?}: potential degeneracy at cone apex", face_key
-                                ));
-                            }
+                        if (v.position - *apex).length() < face.tolerance * 10.0 {
+                            warnings.push(format!(
+                                "face {:?}: potential degeneracy at cone apex", face_key
+                            ));
                         }
                     }
                 }
