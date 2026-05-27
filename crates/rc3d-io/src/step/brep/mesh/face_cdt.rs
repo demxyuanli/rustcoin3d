@@ -16,6 +16,9 @@ use crate::step::brep::topo::BRepFace;
 /// Cap Steiner splits per iteration to avoid CDT blow-up on bad trim domains.
 const MAX_SPLITS_PER_ITER: usize = 256;
 
+/// Hard cap on CDT vertices per face (boundary + Steiner).
+const MAX_CDT_VERTICES: usize = 4096;
+
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
 }
@@ -243,6 +246,13 @@ pub fn triangulate_uv_cdt_with_steiner(
     if config.enable_interior && config.deflection_interior > 0.0 {
         let min_sz = effective_min_size(config);
         for _iter in 0..config.max_adapt_iterations {
+            if handles.len() >= MAX_CDT_VERTICES {
+                log::warn!(
+                    "[BRep mesh] CDT vertex cap ({}) reached, stopping Steiner refinement",
+                    MAX_CDT_VERTICES
+                );
+                break;
+            }
             let mut splits: Vec<(f64, f64)> = Vec::new();
             for face_h in cdt.inner_faces() {
                 let verts: Vec<_> = face_h
