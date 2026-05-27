@@ -68,7 +68,7 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
             | EntityType::PerpendicularityTolerance
             | EntityType::RunoutTolerance
             | EntityType::StraightnessTolerance => {
-                if let Some(tol) = extract_tolerance(record.entity_type, &record.params, entities) {
+                if let Some(tol) = extract_tolerance(eid, record.entity_type, &record.params, entities) {
                     pmi.tolerances.push(tol);
                 }
             }
@@ -190,6 +190,7 @@ fn extract_datum(
 }
 
 fn extract_tolerance(
+    entity_id: u64,
     entity_type: EntityType,
     params: &super::super::value::StepValue,
     entities: &EntityIndex,
@@ -222,13 +223,20 @@ fn extract_tolerance(
         if anno_rec.entity_type != EntityType::AnnotationOccurrence {
             continue;
         }
-        if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
-            let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
-            let pts = resolve_pmi_points(&ref_ids, entities);
-            if let Some(&first) = pts.first() {
-                origin = first;
+        // ANNOTATION_OCCURRENCE(name, item, styled_item, ref_points?)
+        if let Some(item_id) = anno_rec.params.nth_param(1).and_then(|v| v.as_ref_id()) {
+            if item_id != entity_id {
+                continue;
             }
-            leader_points = pts;
+            if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
+                let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
+                let pts = resolve_pmi_points(&ref_ids, entities);
+                if let Some(&first) = pts.first() {
+                    origin = first;
+                }
+                leader_points = pts;
+            }
+            break;
         }
     }
 

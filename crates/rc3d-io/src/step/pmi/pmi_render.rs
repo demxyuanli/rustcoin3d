@@ -52,7 +52,13 @@ fn datum_to_element(datum: &PmiDatum) -> AnnotationElement {
 /// Convert a PmiToleranceFrame to an AnnotationElement (GdtFeatureControlFrame).
 /// Returns None if the tolerance symbol is not recognized.
 fn tolerance_to_element(tol: &PmiToleranceFrame) -> Option<AnnotationElement> {
-    let symbol = tol.symbol?;
+    let symbol = match tol.symbol {
+        Some(s) => s,
+        None => {
+            log::warn!("[PMI] unrecognized tolerance symbol for '{}', skipping", tol.text);
+            return None;
+        }
+    };
     Some(AnnotationElement::GdtFeatureControlFrame {
         symbol,
         tolerance: tol.value,
