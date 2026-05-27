@@ -201,16 +201,17 @@ fn extract_tolerance(
 }
 
 /// Map an EntityType to the corresponding GD&T symbol.
-fn gdt_symbol_for_entity(entity_type: EntityType) -> GdtSymbol {
+/// Returns None for unrecognized types — callers must handle fallback explicitly.
+fn gdt_symbol_for_entity(entity_type: EntityType) -> Option<GdtSymbol> {
     match entity_type {
-        EntityType::FlatnessTolerance | EntityType::GeometricTolerance => GdtSymbol::Flatness,
-        EntityType::PositionTolerance => GdtSymbol::Position,
-        EntityType::ProfileTolerance => GdtSymbol::ProfileOfSurface,
-        EntityType::ParallelismTolerance => GdtSymbol::Parallelism,
-        EntityType::PerpendicularityTolerance => GdtSymbol::Perpendicularity,
-        EntityType::RunoutTolerance => GdtSymbol::CircularRunout,
-        EntityType::StraightnessTolerance => GdtSymbol::Straightness,
-        _ => GdtSymbol::Flatness,
+        EntityType::FlatnessTolerance => Some(GdtSymbol::Flatness),
+        EntityType::PositionTolerance => Some(GdtSymbol::Position),
+        EntityType::ProfileTolerance => Some(GdtSymbol::ProfileOfSurface),
+        EntityType::ParallelismTolerance => Some(GdtSymbol::Parallelism),
+        EntityType::PerpendicularityTolerance => Some(GdtSymbol::Perpendicularity),
+        EntityType::RunoutTolerance => Some(GdtSymbol::CircularRunout),
+        EntityType::StraightnessTolerance => Some(GdtSymbol::Straightness),
+        _ => None,
     }
 }
 
