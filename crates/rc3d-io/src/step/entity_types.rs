@@ -80,6 +80,16 @@ pub enum EntityType {
     DatumFeature,
     DatumTarget,
     GeometricTolerance,
+    // Tolerance subtypes
+    FlatnessTolerance,
+    PositionTolerance,
+    ProfileTolerance,
+    ParallelismTolerance,
+    PerpendicularityTolerance,
+    RunoffTolerance,
+    StraightnessTolerance,
+    // Datum
+    DatumReferenceElement,
     // Style / colour
     SurfaceStyleUsage,
     SurfaceSideStyle,
@@ -171,6 +181,14 @@ impl EntityType {
             "DATUM_FEATURE" => Self::DatumFeature,
             "DATUM_TARGET" => Self::DatumTarget,
             "GEOMETRIC_TOLERANCE" => Self::GeometricTolerance,
+            "FLATNESS_TOLERANCE" => Self::FlatnessTolerance,
+            "POSITION_TOLERANCE" => Self::PositionTolerance,
+            "LINE_PROFILE_TOLERANCE" | "SURFACE_PROFILE_TOLERANCE" | "PROFILE_TOLERANCE" => Self::ProfileTolerance,
+            "PARALLELISM_TOLERANCE" => Self::ParallelismTolerance,
+            "PERPENDICULARITY_TOLERANCE" => Self::PerpendicularityTolerance,
+            "CIRCULAR_RUNOUT_TOLERANCE" | "TOTAL_RUNOUT_TOLERANCE" => Self::RunoffTolerance,
+            "STRAIGHTNESS_TOLERANCE" => Self::StraightnessTolerance,
+            "DATUM_REFERENCE_ELEMENT" => Self::DatumReferenceElement,
             // Style / colour
             "SURFACE_STYLE_USAGE" => Self::SurfaceStyleUsage,
             "SURFACE_SIDE_STYLE" => Self::SurfaceSideStyle,
