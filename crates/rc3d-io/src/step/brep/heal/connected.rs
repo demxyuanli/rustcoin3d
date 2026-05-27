@@ -1,7 +1,7 @@
 //! Topological vertex sharing at wire junctions (OCC ShapeFix_Wire::FixConnected).
 
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, Orientation, VertexKey, WireKey};
+use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
 /// Result of a FixConnected pass.
 #[derive(Debug, Default)]
@@ -73,7 +73,97 @@ pub fn fix_connected_wire(
     // Apply merges: replace all references to `replace` with `keep`
     let applied = apply_vertex_merges(reg, &merges);
     report.merged_vertices = applied;
+
+    // After vertex merging, nudge PCurve endpoints at junctions where
+    // 3D is now connected but UV endpoints still differ.
+    if applied > 0 {
+        nudge_pcurve_endpoints(&edges, reg);
+    }
+
     report
+}
+
+/// After vertex merging, nudge PCurve endpoints at connected junctions
+/// where 3D vertices now match but UV endpoints still differ.
+fn nudge_pcurve_endpoints(edges: &[(EdgeKey, Orientation)], reg: &mut BRepRegistry) {
+    let n = edges.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (ek_i, orient_i) = edges[i];
+        let (ek_j, orient_j) = edges[j];
+
+        // Check that 3D vertices are now the same
+        let end_i_vk = match get_vertex_at(ek_i, orient_i, false, reg) {
+            Some(v) => v,
+            None => continue,
+        };
+        let start_j_vk = match get_vertex_at(ek_j, orient_j, true, reg) {
+            Some(v) => v,
+            None => continue,
+        };
+        if end_i_vk != start_j_vk {
+            continue;
+        }
+
+        // Nudge PCurve endpoints for each face
+        let face_keys: Vec<FaceKey> = {
+            let edge_i = match reg.edges.get(ek_i) {
+                Some(e) => e,
+                None => continue,
+            };
+            edge_i.pcurves.keys().copied().collect()
+        };
+        for face_key in face_keys {
+            let (uv_i, uv_j, at_end) = {
+                let edge_i = match reg.edges.get(ek_i) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let edge_j = match reg.edges.get(ek_j) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let pc_i = match edge_i.pcurves.get(&face_key) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let pc_j = match edge_j.pcurves.get(&face_key) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let t_i = if orient_i == Orientation::Reversed { 0.0 } else { 1.0 };
+                let t_j = if orient_j == Orientation::Reversed { 1.0 } else { 0.0 };
+                (pc_i.d0(t_i), pc_j.d0(t_j), t_i > 1.0 - 1e-6)
+            };
+
+            let dist = ((uv_i.x - uv_j.x).powi(2) + (uv_i.y - uv_j.y).powi(2)).sqrt();
+            if dist > 1e-10 && dist < 1e-3 {
+                if let Some(pc) = reg.pcurve_mut(ek_i, face_key) {
+                    *pc = nudge_line_pcurve(pc, uv_j.x - uv_i.x, uv_j.y - uv_i.y, at_end);
+                }
+            }
+        }
+    }
+}
+
+fn get_vertex_at(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepRegistry) -> Option<VertexKey> {
+    let edge = reg.edges.get(ek)?;
+    if (orient == Orientation::Forward) == is_start {
+        Some(edge.v_low)
+    } else {
+        Some(edge.v_high)
+    }
+}
+
+fn nudge_line_pcurve(pc: &crate::step::brep::geom::CurveGeom, du: f32, dv: f32, at_end: bool) -> crate::step::brep::geom::CurveGeom {
+    use crate::step::brep::geom::CurveGeom;
+    match pc {
+        CurveGeom::Line { origin, direction } => CurveGeom::Line {
+            origin: if at_end { *origin + rc3d_core::math::Vec3::new(du, dv, 0.0) } else { *origin },
+            direction: *direction + rc3d_core::math::Vec3::new(if at_end { 0.0 } else { du }, if at_end { 0.0 } else { dv }, 0.0),
+        },
+        other => other.clone(),
+    }
 }
 
 /// Replace all references to `replace` vertex with `keep` across all edges.

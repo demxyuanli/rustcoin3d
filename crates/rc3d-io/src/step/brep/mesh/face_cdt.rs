@@ -12,8 +12,25 @@ use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::topo::BRepFace;
 
+/// Cap Steiner splits per iteration to avoid CDT blow-up on bad trim domains.
+const MAX_SPLITS_PER_ITER: usize = 256;
+
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
+}
+
+/// Estimate chord deviation at a UV point by sampling the surface.
+fn chord_dev_at(u: f32, v: f32, surface: &SurfaceGeom) -> f32 {
+    let p = surface.d0_native(u, v);
+    let eps = 1e-5;
+    let pu = surface.d0_native(u + eps, v);
+    let pv = surface.d0_native(u, v + eps);
+    // Approximate deviation as the distance from point to tangent plane at midpoint
+    let du = pu - p;
+    let dv = pv - p;
+    let normal = du.cross(dv).normalize();
+    let mid = surface.d0_native(u + eps * 0.5, v + eps * 0.5);
+    (mid - p).dot(normal).abs()
 }
 
 fn insert_uv(
@@ -169,8 +186,9 @@ pub fn triangulate_uv_cdt_with_steiner(
     // Degenerated edges (from surface singularities like sphere poles / cone apex)
     // have zero-length UV PCurves (direction == Vec3::ZERO), making CDT constraint
     // insertion meaningless. Skipped for now — future Phase 3 work will carry non-zero
-    // UV extent data through BRepFace for degenerated edge constraint insertion.
-    let _ = &face.degenerated_edges; // reserved for degenerated edge CDT constraints (Phase 3)
+    // Degenerated edge CDT constraints are handled in face_fill.rs by
+    // pre-extracting UV data from the registry before calling this function.
+    // See fill_trimmed() for degenerated edge constraint insertion logic.
 
     let mut max_chord = 0.0f32;
     if config.enable_interior && config.deflection_interior > 0.0 {
@@ -269,6 +287,15 @@ pub fn triangulate_uv_cdt_with_steiner(
             }
             if splits.is_empty() {
                 break;
+            }
+            // Sort by descending chord error: refine worst triangles first
+            splits.sort_unstable_by(|(u1, v1), (u2, v2)| {
+                let d1 = chord_dev_at(*u1 as f32, *v1 as f32, &face.surface);
+                let d2 = chord_dev_at(*u2 as f32, *v2 as f32, &face.surface);
+                d2.partial_cmp(&d1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if splits.len() > MAX_SPLITS_PER_ITER {
+                splits.truncate(MAX_SPLITS_PER_ITER);
             }
             let mut dedup = HashSet::new();
             for (u, v) in splits {

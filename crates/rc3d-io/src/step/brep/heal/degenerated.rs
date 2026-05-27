@@ -102,8 +102,48 @@ fn find_singularities(surface: &SurfaceGeom) -> Vec<SingularityInfo> {
         SurfaceGeom::Cone { apex, .. } => {
             vec![SingularityInfo { point_3d: *apex, uv: (0.0, 0.0) }]
         }
+        SurfaceGeom::BSpline(nurbs) => find_bspline_singularities(nurbs),
+        SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+            find_revolution_singularities(generatrix, *axis_origin, *axis_dir)
+        }
         _ => vec![],
     }
+}
+
+fn find_bspline_singularities(nurbs: &crate::step::nurbs::NurbsSurface) -> Vec<SingularityInfo> {
+    // Sample the derivative grid at the parameter boundaries.
+    // A singularity exists where |dS/du × dS/dv| ≈ 0.
+    let mut result = Vec::new();
+    let samples = 8;
+    for iu in 0..=samples {
+        let u = nurbs.knots_u[0] + (nurbs.knots_u[nurbs.knots_u.len() - 1] - nurbs.knots_u[0]) * iu as f32 / samples as f32;
+        for iv in 0..=samples {
+            let v = nurbs.knots_v[0] + (nurbs.knots_v[nurbs.knots_v.len() - 1] - nurbs.knots_v[0]) * iv as f32 / samples as f32;
+            let d1 = nurbs.derivative(u, v);
+            let cross = d1.0.cross(d1.1).length();
+            if cross < 1e-6 {
+                let pt = nurbs.evaluate(u, v);
+                result.push(SingularityInfo { point_3d: pt, uv: (u, v) });
+            }
+        }
+    }
+    result
+}
+
+fn find_revolution_singularities(generatrix: &crate::step::brep::geom::CurveGeom, axis_origin: Vec3, axis_dir: Vec3) -> Vec<SingularityInfo> {
+    // A revolution surface has a singularity where the generatrix touches the axis.
+    // Check the generatrix endpoints: if either is on the axis, that's a pole.
+    let axis_n = axis_dir.normalize();
+    let mut result = Vec::new();
+    for t in [0.0, 1.0] {
+        let pt = generatrix.d0(t);
+        let rel = pt - axis_origin;
+        let proj = rel - axis_n * rel.dot(axis_n);
+        if proj.length() < 1e-4 {
+            result.push(SingularityInfo { point_3d: pt, uv: (0.0, t) });
+        }
+    }
+    result
 }
 
 #[cfg(test)]

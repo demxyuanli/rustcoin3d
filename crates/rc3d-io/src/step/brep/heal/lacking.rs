@@ -2,7 +2,7 @@
 //! Detects edges connected in 3D but disconnected in UV space.
 
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, WireKey};
+use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
 #[derive(Debug, Default)]
 pub struct LackingReport {
@@ -60,8 +60,34 @@ pub fn fix_lacking_edges(
                 edge.tolerance = edge.tolerance.max(dist_uv * 1.1);
                 report.tolerance_fixes += 1;
             }
+        } else if dist_uv < tol_uv * 1000.0 {
+            // Large gap: insert a new line-segment PCurve edge between the junction vertices
+            let (vk_i, vk_j, tolerance) = {
+                let edge_i = match reg.edges.get(ek_i) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let vk_i = get_junction_vertex(ek_i, orient_i, false, reg);
+                let vk_j = get_junction_vertex(ek_j, orient_j, true, reg);
+                (vk_i, vk_j, edge_i.tolerance)
+            };
+            let (Some(vk_i), Some(vk_j)) = (vk_i, vk_j) else { continue; };
+
+            let new_curve = crate::step::brep::geom::CurveGeom::Line {
+                origin: p_i,
+                direction: p_j - p_i,
+            };
+            let new_pc = crate::step::brep::geom::CurveGeom::Line {
+                origin: rc3d_core::math::Vec3::new(u1, v1, 0.0),
+                direction: rc3d_core::math::Vec3::new(u2 - u1, v2 - v1, 0.0),
+            };
+            let ek_new = reg.add_edge_with_pcurve(vk_i, vk_j, new_curve, tolerance, face_key, new_pc);
+            if let Some(wire) = reg.wires.get_mut(wire_key) {
+                let insert_pos = (i + 1) % wire.edges.len();
+                wire.edges.insert(insert_pos, (ek_new, Orientation::Forward));
+                report.edges_added += 1;
+            }
         }
-        // Large gaps (insert new edge) deferred to Phase 3 (requires surface d0 sampling)
     }
 
     report
@@ -74,6 +100,15 @@ fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepR
         _ => edge.v_high,
     };
     reg.vertices.get(vk).map(|v| v.position)
+}
+
+fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRepRegistry) -> Option<VertexKey> {
+    let edge = reg.edges.get(ek)?;
+    if (orient == Orientation::Forward) != is_end {
+        Some(edge.v_low)
+    } else {
+        Some(edge.v_high)
+    }
 }
 
 fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepRegistry) -> Option<(f32, f32)> {

@@ -30,11 +30,31 @@ pub fn fix_periodic_degenerated(
         )
     };
 
-    // Only applies to sphere surfaces with a single wire wrapping the full U range
-    let sphere = match &surface {
-        SurfaceGeom::Sphere { center, radius } => (*center, *radius),
+    // Determine poles based on surface type
+    let poles: Vec<(Vec3, (f32, f32))> = match &surface {
+        SurfaceGeom::Sphere { center, radius } => vec![
+            (*center + Vec3::new(0.0, 0.0, *radius), (0.0, std::f32::consts::FRAC_PI_2)),
+            (*center - Vec3::new(0.0, 0.0, *radius), (0.0, -std::f32::consts::FRAC_PI_2)),
+        ],
+        SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+            let axis_n = axis_dir.normalize();
+            let mut pts = Vec::new();
+            for t in [0.0, 1.0] {
+                let pt = generatrix.d0(t);
+                let rel = pt - *axis_origin;
+                let proj = rel - axis_n * rel.dot(axis_n);
+                if proj.length() < 1e-4 {
+                    pts.push((pt, (0.0, t)));
+                }
+            }
+            pts
+        }
         _ => return report,
     };
+
+    if poles.is_empty() {
+        return report;
+    }
 
     // Check if degeneracies are already present
     if !existing_degen.is_empty() {
@@ -46,7 +66,7 @@ pub fn fix_periodic_degenerated(
         None => return report,
     };
 
-    // Check if the wire wraps full U range (all 2*PI)
+    // Check if the wire wraps full U range
     let mut u_min = f32::MAX;
     let mut u_max = f32::MIN;
     for &(ek, _) in &wire.edges {
@@ -61,14 +81,8 @@ pub fn fix_periodic_degenerated(
 
     let u_span = u_max - u_min;
     if u_span < std::f32::consts::TAU * 0.9 {
-        return report; // Doesn't wrap full period
+        return report;
     }
-
-    // Wire wraps full U → need pole degeneracies
-    let poles = [
-        (sphere.0 + Vec3::new(0.0, 0.0, sphere.1), (0.0, std::f32::consts::FRAC_PI_2)),
-        (sphere.0 - Vec3::new(0.0, 0.0, sphere.1), (0.0, -std::f32::consts::FRAC_PI_2)),
-    ];
 
     let mut new_degen = Vec::new();
     for &(pole_3d, pole_uv) in &poles {

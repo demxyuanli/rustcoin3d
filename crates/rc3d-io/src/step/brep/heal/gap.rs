@@ -1,6 +1,6 @@
 //! Gap closing via vertex merging. T3.2
 
-use super::super::topo::{WireKey, EdgeKey, FaceKey, Orientation};
+use super::super::topo::{WireKey, EdgeKey, FaceKey, Orientation, VertexKey};
 use super::super::registry::BRepRegistry;
 use rc3d_core::math::Vec3;
 
@@ -29,13 +29,26 @@ pub fn close_wire_gaps(
         let (ek_i, _) = edges[i];
         let (ek_j, _) = edges[j];
 
-        let end_i = get_endpoint(ek_i, reg, false); // end of edge i
-        let start_j = get_endpoint(ek_j, reg, true); // start of edge j
+        let (end_vk_i, start_vk_j) = match (
+            get_endpoint_vertex(ek_i, reg, false),
+            get_endpoint_vertex(ek_j, reg, true),
+        ) {
+            (Some(vi), Some(vj)) => (vi, vj),
+            _ => continue,
+        };
 
-        if let (Some(ei), Some(sj)) = (end_i, start_j) {
-            if (ei - sj).length() > 0.0 && (ei - sj).length() < tolerance {
-                // Merge: update the start vertex of edge j
-                // (simplified: just note the gap, actual merge requires vertex registry update)
+        if end_vk_i == start_vk_j {
+            continue; // already connected
+        }
+
+        let pos_i = reg.vertices.get(end_vk_i).map(|v| v.position);
+        let pos_j = reg.vertices.get(start_vk_j).map(|v| v.position);
+
+        if let (Some(pi), Some(pj)) = (pos_i, pos_j) {
+            let gap = (pi - pj).length();
+            if gap > 0.0 && gap < tolerance {
+                // Merge: replace start_vk_j with end_vk_i across all edges
+                merge_vertex_references(reg, end_vk_i, start_vk_j);
                 closed += 1;
             }
         }
@@ -44,10 +57,23 @@ pub fn close_wire_gaps(
     closed
 }
 
-fn get_endpoint(ek: EdgeKey, reg: &BRepRegistry, is_start: bool) -> Option<Vec3> {
+fn get_endpoint_vertex(ek: EdgeKey, reg: &BRepRegistry, is_start: bool) -> Option<VertexKey> {
     let edge = reg.edges.get(ek)?;
-    let vk = if is_start { edge.v_low } else { edge.v_high };
-    reg.vertices.get(vk).map(|v| v.position)
+    Some(if is_start { edge.v_low } else { edge.v_high })
+}
+
+/// Replace all references to `replace` vertex with `keep` across all edges,
+/// then remove `replace` from the registry.
+fn merge_vertex_references(reg: &mut BRepRegistry, keep: VertexKey, replace: VertexKey) {
+    for (_, edge) in reg.edges.iter_mut() {
+        if edge.v_low == replace {
+            edge.v_low = keep;
+        }
+        if edge.v_high == replace {
+            edge.v_high = keep;
+        }
+    }
+    reg.vertices.remove(replace);
 }
 
 /// Close gaps between PCurve endpoints of adjacent edges in UV space.
