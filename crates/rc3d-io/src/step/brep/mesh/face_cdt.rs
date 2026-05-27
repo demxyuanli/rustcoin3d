@@ -10,6 +10,7 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use super::face_fill::{effective_min_size, FaceFillConfig};
 use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::step::brep::geom::SurfaceGeom;
+use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::BRepFace;
 
 /// Cap Steiner splits per iteration to avoid CDT blow-up on bad trim domains.
@@ -118,6 +119,7 @@ pub fn triangulate_uv_cdt_with_steiner(
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
     config: &FaceFillConfig,
+    reg: Option<&BRepRegistry>,
 ) -> (Vec<usize>, f32) {
     if loops.outer.boundary.len() < 3 {
         return (Vec::new(), 0.0);
@@ -186,9 +188,56 @@ pub fn triangulate_uv_cdt_with_steiner(
     // Degenerated edges (from surface singularities like sphere poles / cone apex)
     // have zero-length UV PCurves (direction == Vec3::ZERO), making CDT constraint
     // insertion meaningless. Skipped for now — future Phase 3 work will carry non-zero
-    // Degenerated edge CDT constraints are handled in face_fill.rs by
-    // pre-extracting UV data from the registry before calling this function.
-    // See fill_trimmed() for degenerated edge constraint insertion logic.
+    // Insert degenerated edges as CDT constraints
+    if let Some(reg) = reg {
+        for &dek in &face.degenerated_edges {
+            let edge = match reg.edges.get(dek) {
+                Some(e) => e,
+                None => continue,
+            };
+            // Degenerated edges are created for this face; use the first available PCurve
+            let pc = match edge.pcurves.values().next() {
+                Some(p) => p,
+                None => continue,
+            };
+            let uv0 = pc.d0(0.0);
+            let uv1 = pc.d0(1.0);
+            // Skip zero-length PCurves (legacy degenerated edges)
+            if (uv0.x - uv1.x).abs() < 1e-10 && (uv0.y - uv1.y).abs() < 1e-10 {
+                continue;
+            }
+            // Create a global vertex for this degenerated edge's UV endpoints if not already present
+            let pt0 = face.surface.d0_native(uv0.x, uv0.y);
+            let pt1 = face.surface.d0_native(uv1.x, uv1.y);
+            let hash0 = f32x3_quantized_bits([pt0.x, pt0.y, pt0.z]);
+            let hash1 = f32x3_quantized_bits([pt1.x, pt1.y, pt1.z]);
+            let gi0 = *pos_to_idx.entry(hash0).or_insert_with(|| {
+                let i = global_vertices.len();
+                global_vertices.push(pt0);
+                let mut n = face.surface.normal_native(uv0.x, uv0.y);
+                if !face.same_sense { n = -n; }
+                global_normals.push(n);
+                i
+            });
+            let gi1 = *pos_to_idx.entry(hash1).or_insert_with(|| {
+                let i = global_vertices.len();
+                global_vertices.push(pt1);
+                let mut n = face.surface.normal_native(uv1.x, uv1.y);
+                if !face.same_sense { n = -n; }
+                global_normals.push(n);
+                i
+            });
+            let h0 = match insert_uv(&mut cdt, (uv0.x, uv0.y), gi0, &mut handles, &mut handle_gi, &mut uv_to_handle) {
+                Some(h) => h,
+                None => continue,
+            };
+            let h1 = match insert_uv(&mut cdt, (uv1.x, uv1.y), gi1, &mut handles, &mut handle_gi, &mut uv_to_handle) {
+                Some(h) => h,
+                None => continue,
+            };
+            let _ = cdt.try_add_constraint(h0, h1);
+        }
+    }
 
     let mut max_chord = 0.0f32;
     if config.enable_interior && config.deflection_interior > 0.0 {
@@ -378,7 +427,7 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
         ..Default::default()
     };
     let (tris, _) = triangulate_uv_cdt_with_steiner(
-        loops, &face, &mut verts, &mut norms, &mut pmap, &config,
+        loops, &face, &mut verts, &mut norms, &mut pmap, &config, None,
     );
     if tris.is_empty() {
         None
@@ -438,7 +487,7 @@ mod tests {
         };
 
         let (tris_loose, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_loose,
+            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_loose, None,
         );
         let verts_before = verts.len();
 
@@ -448,7 +497,7 @@ mod tests {
             ..config_loose.clone()
         };
         let (tris_tight, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_tight,
+            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_tight, None,
         );
         assert!(verts.len() > verts_before,
             "tight deflection should insert Steiner points on sphere, verts {} -> {}",
@@ -551,7 +600,7 @@ mod tests {
             ..Default::default()
         };
         let (tris, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config,
+            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config, None,
         );
         assert!(!tris.is_empty());
         for chunk in tris.chunks(3) {

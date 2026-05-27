@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use rc3d_core::math::Vec3;
 
 use super::face_cdt::triangulate_uv_cdt_with_steiner;
-use super::face_uv::{FaceUvLoops, loops_native_surface_uv};
+use super::face_uv::{split_boundary_chains_at_3d_jumps, FaceUvLoops, loops_native_surface_uv};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::topo::{BRepFace, FaceKey};
 
@@ -67,6 +67,387 @@ pub fn effective_min_size(config: &FaceFillConfig) -> f32 {
     min
 }
 
+pub fn face_boundary_is_mixed(loops: &FaceUvLoops, verts: &[Vec3]) -> bool {
+    super::face_uv::boundary_is_mixed(&loops.outer.boundary, verts)
+}
+
+fn max_allowed_triangle_edge(loops: &FaceUvLoops, verts: &[Vec3]) -> f32 {
+    let boundary = &loops.outer.boundary;
+    let n = boundary.len();
+    if n < 2 {
+        return 1.0;
+    }
+    let mut lens = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let len = if boundary[i].global_idx < verts.len() && boundary[j].global_idx < verts.len() {
+            (verts[boundary[j].global_idx] - verts[boundary[i].global_idx]).length()
+        } else {
+            0.0
+        };
+        lens.push(len);
+    }
+    for inner in &loops.inners {
+        let m = inner.boundary.len();
+        for i in 0..m {
+            let j = (i + 1) % m;
+            let len = if inner.boundary[i].global_idx < verts.len()
+                && inner.boundary[j].global_idx < verts.len()
+            {
+                (verts[inner.boundary[j].global_idx] - verts[inner.boundary[i].global_idx]).length()
+            } else {
+                0.0
+            };
+            lens.push(len);
+        }
+    }
+    let mut sorted = lens.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = sorted[sorted.len() / 2];
+    let max_b = lens.iter().copied().fold(0.0f32, f32::max);
+    (med * 3.0).max(1e-4).min(max_b * 1.5)
+}
+
+fn tri_max_edge_len(i0: i32, i1: i32, i2: i32, verts: &[Vec3]) -> f32 {
+    let (i0, i1, i2) = (i0 as usize, i1 as usize, i2 as usize);
+    if i0 >= verts.len() || i1 >= verts.len() || i2 >= verts.len() {
+        return f32::MAX;
+    }
+    let (p0, p1, p2) = (verts[i0], verts[i1], verts[i2]);
+    (p1 - p0)
+        .length()
+        .max((p2 - p1).length())
+        .max((p0 - p2).length())
+}
+
+fn triangle_passes_quality(
+    i0: i32,
+    i1: i32,
+    i2: i32,
+    verts: &[Vec3],
+    max_edge: f32,
+    surface: &SurfaceGeom,
+    same_sense: bool,
+) -> bool {
+    if tri_max_edge_len(i0, i1, i2, verts) > max_edge {
+        return false;
+    }
+    let (p0, p1, p2) = (verts[i0 as usize], verts[i1 as usize], verts[i2 as usize]);
+    let tri_n = (p1 - p0).cross(p2 - p0);
+    if tri_n.length() <= 1e-10 {
+        return false;
+    }
+    let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
+    let Some((u, v)) = surface.project(centroid) else {
+        return true;
+    };
+    let mut sn = surface.normal_native(u, v);
+    if !same_sense {
+        sn = -sn;
+    }
+    tri_n.normalize().dot(sn) > -0.05
+}
+
+fn chain_closing_3d_len(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
+    if chain.len() < 2 {
+        return f32::MAX;
+    }
+    let a = chain[0].global_idx;
+    let b = chain[chain.len() - 1].global_idx;
+    if a >= verts.len() || b >= verts.len() {
+        return f32::MAX;
+    }
+    (verts[b] - verts[a]).length()
+}
+
+fn chain_arc_length(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
+    if chain.len() < 2 {
+        return 0.0;
+    }
+    let mut arc = 0.0f32;
+    for w in chain.windows(2) {
+        let a = w[0].global_idx;
+        let b = w[1].global_idx;
+        if a < verts.len() && b < verts.len() {
+            arc += (verts[b] - verts[a]).length();
+        }
+    }
+    arc
+}
+
+fn triangulate_open_chain_strip(chain: &[super::face_uv::UvVertex]) -> Vec<(i32, i32, i32)> {
+    if chain.len() < 3 {
+        return Vec::new();
+    }
+    let mut tris = Vec::new();
+    for i in 0..chain.len().saturating_sub(2) {
+        let (g0, g1, g2) = (
+            chain[i].global_idx as i32,
+            chain[i + 1].global_idx as i32,
+            chain[i + 2].global_idx as i32,
+        );
+        if g0 != g1 && g1 != g2 && g2 != g0 {
+            tris.push((g0, g1, g2));
+        }
+    }
+    tris
+}
+
+fn chain_planarity_deviation(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
+    if chain.len() < 3 {
+        return f32::MAX;
+    }
+    let mut normal = Vec3::ZERO;
+    for i in 0..chain.len() {
+        let j = (i + 1) % chain.len();
+        let Some(pi) = verts.get(chain[i].global_idx) else { continue; };
+        let Some(pj) = verts.get(chain[j].global_idx) else { continue; };
+        normal.x += (pi.y - pj.y) * (pi.z + pj.z);
+        normal.y += (pi.z - pj.z) * (pi.x + pj.x);
+        normal.z += (pi.x - pj.x) * (pi.y + pj.y);
+    }
+    if normal.length_squared() < 1e-20 {
+        return f32::MAX;
+    }
+    normal = normal.normalize();
+    let Some(origin) = verts.get(chain[0].global_idx) else {
+        return f32::MAX;
+    };
+    chain
+        .iter()
+        .filter_map(|v| verts.get(v.global_idx))
+        .map(|p| (*p - *origin).cross(normal).length())
+        .fold(0.0f32, f32::max)
+}
+
+fn chain_should_earcut(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> bool {
+    let arc = chain_arc_length(chain, verts);
+    if arc < 1e-6 {
+        return false;
+    }
+    chain_planarity_deviation(chain, verts) < arc * 0.08
+}
+
+fn triangulate_open_chain_uv(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> Vec<(i32, i32, i32)> {
+    if chain.len() < 3 {
+        return Vec::new();
+    }
+    if !chain_should_earcut(chain, verts) {
+        return triangulate_open_chain_strip(chain);
+    }
+    let flat: Vec<f64> = chain
+        .iter()
+        .flat_map(|v| [v.uv.0 as f64, v.uv.1 as f64])
+        .collect();
+    let Ok(indices) = earcutr::earcut(&flat, &[], 2) else {
+        return triangulate_open_chain_strip(chain);
+    };
+    let mut tris = Vec::new();
+    for chunk in indices.chunks(3) {
+        if chunk.len() != 3 {
+            continue;
+        }
+        let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
+        if i0 >= chain.len() || i1 >= chain.len() || i2 >= chain.len() {
+            continue;
+        }
+        let (g0, g1, g2) = (
+            chain[i0].global_idx as i32,
+            chain[i1].global_idx as i32,
+            chain[i2].global_idx as i32,
+        );
+        if g0 != g1 && g1 != g2 && g2 != g0 {
+            tris.push((g0, g1, g2));
+        }
+    }
+    if tris.is_empty() {
+        triangulate_open_chain_strip(chain)
+    } else {
+        tris
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn triangulate_loops_cdt(
+    work_loops: &FaceUvLoops,
+    face: &BRepFace,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    fill_cfg: &FaceFillConfig,
+) -> (Vec<(i32, i32, i32)>, f32) {
+    let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
+        work_loops,
+        face,
+        global_vertices,
+        global_normals,
+        pos_to_idx,
+        fill_cfg,
+        None,
+    );
+    let mut tris = Vec::new();
+    for chunk in tris_flat.chunks(3) {
+        if chunk.len() != 3 {
+            continue;
+        }
+        tris.push((chunk[0] as i32, chunk[1] as i32, chunk[2] as i32));
+    }
+    (tris, max_chord_error)
+}
+
+fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    let mut tris: Vec<(i32, i32, i32)> = Vec::new();
+    let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
+    for v in &work_loops.outer.boundary {
+        earcut_verts.push((v.global_idx, v.uv));
+    }
+    let mut hole_indices = Vec::new();
+    for inner in &work_loops.inners {
+        hole_indices.push(earcut_verts.len());
+        for v in &inner.boundary {
+            earcut_verts.push((v.global_idx, v.uv));
+        }
+    }
+    if earcut_verts.len() < 3 {
+        return tris;
+    }
+    let flat: Vec<f64> = earcut_verts
+        .iter()
+        .flat_map(|&(_, (u, v))| [u as f64, v as f64])
+        .collect();
+    let ear_indices = match earcutr::earcut(&flat, &hole_indices, 2) {
+        Ok(indices) if !indices.is_empty() => indices,
+        _ => {
+            let g0 = earcut_verts[0].0 as i32;
+            for i in 1..earcut_verts.len() - 1 {
+                tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
+            }
+            return tris;
+        }
+    };
+    for chunk in ear_indices.chunks(3) {
+        if chunk.len() != 3 {
+            continue;
+        }
+        let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
+        if i0 >= earcut_verts.len() || i1 >= earcut_verts.len() || i2 >= earcut_verts.len() {
+            continue;
+        }
+        tris.push((
+            earcut_verts[i0].0 as i32,
+            earcut_verts[i1].0 as i32,
+            earcut_verts[i2].0 as i32,
+        ));
+    }
+    tris
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_filtered_triangles(
+    tris: Vec<(i32, i32, i32)>,
+    apply_quality: bool,
+    max_edge: f32,
+    face: &BRepFace,
+    global_vertices: &mut [Vec3],
+    global_normals: &mut [Vec3],
+    all_indices: &mut Vec<i32>,
+) -> usize {
+    let mut emitted = 0usize;
+    for (mut i0, mut i1, mut i2) in tris.iter().copied() {
+        if i0 == i1 || i1 == i2 || i2 == i0 {
+            continue;
+        }
+        if apply_quality
+            && !triangle_passes_quality(
+                i0,
+                i1,
+                i2,
+                global_vertices,
+                max_edge,
+                &face.surface,
+                face.same_sense,
+            )
+        {
+            continue;
+        }
+        fix_winding(
+            &mut i0,
+            &mut i1,
+            &mut i2,
+            global_vertices,
+            &face.surface,
+            face.same_sense,
+        );
+        all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+        accumulate_normals(i0, i1, i2, global_vertices, global_normals);
+        emitted += 1;
+    }
+
+    if emitted == 0 && apply_quality {
+        for (mut i0, mut i1, mut i2) in tris {
+            if i0 == i1 || i1 == i2 || i2 == i0 {
+                continue;
+            }
+            if tri_max_edge_len(i0, i1, i2, global_vertices) > max_edge * 1.25 {
+                continue;
+            }
+            fix_winding(
+                &mut i0,
+                &mut i1,
+                &mut i2,
+                global_vertices,
+                &face.surface,
+                face.same_sense,
+            );
+            all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+            accumulate_normals(i0, i1, i2, global_vertices, global_normals);
+            emitted += 1;
+        }
+    }
+
+    emitted
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_mixed_boundary_segmented(
+    face_key: FaceKey,
+    work_loops: &FaceUvLoops,
+    face: &BRepFace,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    first_tri: usize,
+    boundary_global: HashSet<usize>,
+) -> FaceMeshRange {
+    let (chains, _) = split_boundary_chains_at_3d_jumps(
+        &work_loops.outer.boundary,
+        global_vertices,
+        8.0,
+    );
+    let mut tris = Vec::new();
+    for chain in &chains {
+        tris.extend(triangulate_open_chain_uv(chain, global_vertices));
+    }
+    let max_edge = max_allowed_triangle_edge(work_loops, global_vertices);
+    let emitted = emit_filtered_triangles(
+        tris,
+        false,
+        max_edge,
+        face,
+        global_vertices,
+        global_normals,
+        all_indices,
+    );
+    let _ = first_tri;
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count: emitted,
+        boundary_global,
+        max_chord_error: 0.0,
+    }
+}
+
 /// Fan triangulation along the outer boundary wire order (3D topology, not UV).
 fn fan_triangulate_outer(loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
     let b = &loops.outer.boundary;
@@ -116,8 +497,8 @@ pub fn fill_trimmed(
     };
 
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
+    let mut max_chord_error = 0.0f32;
 
-    // --- Primary: CDT + insert-time Steiner refinement ---
     let fill_cfg = if is_plane {
         config.clone()
     } else {
@@ -127,105 +508,84 @@ pub fn fill_trimmed(
             ..config.clone()
         }
     };
-    let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
-        &work_loops, face, global_vertices, global_normals, pos_to_idx, &fill_cfg,
+
+    let (chains, long_count) = split_boundary_chains_at_3d_jumps(
+        &work_loops.outer.boundary,
+        global_vertices,
+        8.0,
     );
-    for chunk in tris_flat.chunks(3) {
-        if chunk.len() != 3 {
-            continue;
-        }
-        tris.push((chunk[0] as i32, chunk[1] as i32, chunk[2] as i32));
-    }
+    let use_segmentation = !is_plane && chains.len() >= 2 && long_count >= 2;
 
-    // --- Fallback: earcut if CDT produced no triangles ---
-    if tris.is_empty() {
-        let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
-        for v in &work_loops.outer.boundary {
-            earcut_verts.push((v.global_idx, v.uv));
+    if use_segmentation {
+        for chain in &chains {
+            tris.extend(triangulate_open_chain_uv(chain, global_vertices));
         }
-        let mut hole_indices = Vec::new();
-        for inner in &work_loops.inners {
-            hole_indices.push(earcut_verts.len());
-            for v in &inner.boundary {
-                earcut_verts.push((v.global_idx, v.uv));
-            }
-        }
-
-        if earcut_verts.len() >= 3 {
-            let flat: Vec<f64> = earcut_verts
-                .iter()
-                .flat_map(|&(_, (u, v))| [u as f64, v as f64])
-                .collect();
-
-            let ear_indices = match earcutr::earcut(&flat, &hole_indices, 2) {
-                Ok(indices) if !indices.is_empty() => indices,
-                _ => {
-                    let g0 = earcut_verts[0].0 as i32;
-                    for i in 1..earcut_verts.len() - 1 {
-                        tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
-                    }
-                    vec![]
-                }
-            };
-
-            if !ear_indices.is_empty() {
-                for chunk in ear_indices.chunks(3) {
-                    if chunk.len() != 3 {
-                        continue;
-                    }
-                    let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
-                    if i0 >= earcut_verts.len()
-                        || i1 >= earcut_verts.len()
-                        || i2 >= earcut_verts.len()
-                    {
-                        continue;
-                    }
-                    tris.push((
-                        earcut_verts[i0].0 as i32,
-                        earcut_verts[i1].0 as i32,
-                        earcut_verts[i2].0 as i32,
-                    ));
-                }
-            }
-        }
-
-        if tris.is_empty() && is_plane {
-            tris = fan_triangulate_outer(&work_loops);
-        }
-
-        if tris.is_empty() {
-            log::debug!("[BRep mesh] face fill: triangulation failed, skipping");
-            return FaceMeshRange {
-                face_key,
-                first_tri,
-                tri_count: 0,
-                boundary_global,
-                max_chord_error: 0.0,
-            };
-        }
-    }
-
-    for (mut i0, mut i1, mut i2) in tris {
-        if i0 == i1 || i1 == i2 || i2 == i0 {
-            continue;
-        }
-        fix_winding(
-            &mut i0,
-            &mut i1,
-            &mut i2,
+    } else {
+        let (cdt_tris, chord) = triangulate_loops_cdt(
+            &work_loops,
+            face,
             global_vertices,
-            &face.surface,
-            face.same_sense,
+            global_normals,
+            pos_to_idx,
+            &fill_cfg,
         );
-        all_indices.extend_from_slice(&[i0, i1, i2, -1]);
-        accumulate_normals(i0, i1, i2, global_vertices, global_normals);
+        tris = cdt_tris;
+        max_chord_error = chord;
     }
 
-    let tri_count = all_indices.len() / 4 - first_tri;
+    if tris.is_empty() {
+        tris = triangulate_loops_earcut_fallback(&work_loops);
+    }
+
+    if tris.is_empty() && use_segmentation {
+        let (cdt_tris, chord) = triangulate_loops_cdt(
+            &work_loops,
+            face,
+            global_vertices,
+            global_normals,
+            pos_to_idx,
+            &fill_cfg,
+        );
+        tris = cdt_tris;
+        max_chord_error = chord;
+    }
+
+    if tris.is_empty() && is_plane {
+        tris = fan_triangulate_outer(&work_loops);
+    }
+
+    if tris.is_empty() {
+        log::debug!("[BRep mesh] face fill: triangulation failed, skipping");
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global,
+            max_chord_error: 0.0,
+        };
+    }
+
+    let apply_quality = !is_plane && !use_segmentation;
+    let max_edge = if apply_quality {
+        max_allowed_triangle_edge(&work_loops, global_vertices)
+    } else {
+        f32::MAX
+    };
+
+    let emitted = emit_filtered_triangles(
+        tris,
+        apply_quality,
+        max_edge,
+        face,
+        global_vertices,
+        global_normals,
+        all_indices,
+    );
+
     FaceMeshRange {
         face_key,
         first_tri,
-        tri_count,
+        tri_count: emitted,
         boundary_global,
         max_chord_error,
     }
@@ -270,6 +630,37 @@ pub fn surface_fill_3d(
         face_key,
         boundary_global.len()
     );
+
+    let pseudo_loops = super::face_uv::FaceUvLoops {
+        outer: super::face_uv::UvLoop {
+            boundary: boundary_global
+                .iter()
+                .map(|&gi| super::face_uv::UvVertex {
+                    global_idx: gi,
+                    uv: (0.0, 0.0),
+                })
+                .collect(),
+        },
+        inners: vec![],
+        uv_source: super::face_uv::UvSource::SurfaceFill,
+    };
+    if face_boundary_is_mixed(&pseudo_loops, global_vertices) {
+        log::debug!(
+            "[BRep mesh] face {:?}: mixed boundary, segmented chain fill",
+            face_key
+        );
+        let work_loops = loops_native_surface_uv(&pseudo_loops, face, global_vertices);
+        return fill_mixed_boundary_segmented(
+            face_key,
+            &work_loops,
+            face,
+            global_vertices,
+            global_normals,
+            all_indices,
+            first_tri,
+            boundary_set,
+        );
+    }
 
     // ── Phase 1: project boundary points to surface ──
     let inv_tol = face.tolerance.max(1e-3);
@@ -317,7 +708,7 @@ pub fn surface_fill_3d(
             );
 
             let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
-                &loops, face, global_vertices, global_normals, pos_to_idx, config,
+                &loops, face, global_vertices, global_normals, pos_to_idx, config, None,
             );
 
             if !tris_flat.is_empty() {
@@ -641,21 +1032,30 @@ fn surface_fill_3d_planar(
         };
     }
 
-    for (mut i0, mut i1, mut i2) in tris {
-        if i0 == i1 || i1 == i2 || i2 == i0 {
-            continue;
-        }
-        fix_winding(
-            &mut i0, &mut i1, &mut i2,
-            global_vertices,
-            &face.surface,
-            face.same_sense,
-        );
-        all_indices.extend_from_slice(&[i0, i1, i2, -1]);
-        accumulate_normals(i0, i1, i2, global_vertices, global_normals);
-    }
+    let pseudo_loops = FaceUvLoops {
+        outer: super::face_uv::UvLoop {
+            boundary: boundary_global
+                .iter()
+                .map(|&gi| super::face_uv::UvVertex {
+                    global_idx: gi,
+                    uv: (0.0, 0.0),
+                })
+                .collect(),
+        },
+        inners: vec![],
+        uv_source: super::face_uv::UvSource::SurfaceFill,
+    };
+    let max_edge = max_allowed_triangle_edge(&pseudo_loops, global_vertices);
+    let tri_count = emit_filtered_triangles(
+        tris,
+        true,
+        max_edge,
+        face,
+        global_vertices,
+        global_normals,
+        all_indices,
+    );
 
-    let tri_count = all_indices.len() / 4 - first_tri;
     FaceMeshRange {
         face_key,
         first_tri,

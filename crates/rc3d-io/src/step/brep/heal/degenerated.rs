@@ -60,20 +60,28 @@ pub fn fix_degenerated_edges(
                 let uv = pc.d0(t);
                 let dist_uv = ((uv.x - singularity.uv.0).powi(2) + (uv.y - singularity.uv.1).powi(2)).sqrt();
                 if dist_uv < 1e-4 {
-                    // Create degenerated edge at this singularity
-                    let vk = reg.find_or_add_vertex(singularity.point_3d, tolerance);
+                    // Find the other (regular) endpoint of this edge
+                    let other_t = if t < 0.5 { 1.0 } else { 0.0 };
+                    let regular_uv = pc.d0(other_t);
+                    let regular_3d = edge.curve.d0(other_t);
+
+                    // Create degenerated edge with real UV extent:
+                    // PCurve goes from the regular vertex's UV to the singularity UV
+                    let vk_sing = reg.find_or_add_vertex(singularity.point_3d, tolerance);
+                    let vk_regular = reg.find_or_add_vertex(regular_3d, tolerance);
+
                     let degen_curve = crate::step::brep::geom::CurveGeom::Line {
-                        origin: singularity.point_3d,
-                        direction: Vec3::ZERO,
+                        origin: regular_3d,
+                        direction: singularity.point_3d - regular_3d,
                     };
                     let degen_pc = crate::step::brep::geom::CurveGeom::Line {
-                        origin: Vec3::new(singularity.uv.0, singularity.uv.1, 0.0),
-                        direction: Vec3::ZERO,
+                        origin: Vec3::new(regular_uv.x, regular_uv.y, 0.0),
+                        direction: Vec3::new(singularity.uv.0 - regular_uv.x, singularity.uv.1 - regular_uv.y, 0.0),
                     };
-                    let dek = reg.add_seam_edge(vk, vk, degen_curve, tolerance, face_key, degen_pc);
+                    let dek = reg.add_seam_edge(vk_regular, vk_sing, degen_curve, tolerance, face_key, degen_pc);
                     degen_edges.push(dek);
                     report.degenerate_edges_created += 1;
-                    break; // one degenerated edge per wire edge per singularity
+                    break;
                 }
             }
         }
@@ -149,7 +157,8 @@ fn find_revolution_singularities(generatrix: &crate::step::brep::geom::CurveGeom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::topo::BRepWire;
+    use crate::step::brep::geom::CurveGeom;
+    use crate::step::brep::topo::{BRepWire, Orientation};
     use rc3d_core::math::Vec3;
 
     #[test]
@@ -178,6 +187,44 @@ mod tests {
         });
         let report = fix_degenerated_edges(fk, &mut reg);
         assert!(report.degeneracies_found > 0, "cone should have apex singularity");
+    }
+
+    #[test]
+    fn test_create_degenerated_edge_with_uv_extent() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        // Create a wire edge whose PCurve passes near the north pole
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        // Vertex near equator, PCurve goes from equator to near north pole
+        let v_eq = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v_near_pole = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
+        let line = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(-1.0, 0.0, 1.0) };
+        // PCurve: UV from (0,0) at the equator to near the north pole at (0, PI/2 - 1e-6)
+        let pole_v = std::f32::consts::FRAC_PI_2 - 1e-6;
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            direction: Vec3::new(0.0, pole_v, 0.0),
+        };
+        let ek = reg.add_edge_with_pcurve(v_eq, v_near_pole, line, 1e-4, fk, pc);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+
+        let report = fix_degenerated_edges(fk, &mut reg);
+        assert!(report.degenerate_edges_created > 0, "should create degenerated edges");
+        // Verify degenerated edge has real UV extent (non-zero PCurve direction)
+        let face = reg.faces.get(fk).unwrap();
+        for &dek in &face.degenerated_edges {
+            let edge = reg.edges.get(dek).unwrap();
+            let pc = edge.pcurves.values().next().unwrap();
+            let uv0 = pc.d0(0.0);
+            let uv1 = pc.d0(1.0);
+            let uv_len = ((uv0.x - uv1.x).powi(2) + (uv0.y - uv1.y).powi(2)).sqrt();
+            assert!(uv_len > 1e-6, "degenerated edge PCurve should have real UV extent, got {}", uv_len);
+        }
     }
 
     #[test]

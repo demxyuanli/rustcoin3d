@@ -127,6 +127,41 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
                 semi_minor: *semi_minor,
             }
         }
+        CurveGeom::BSpline { degree, control_points, knots, weights } => {
+            // Translate control polygon so first/last CPs match vertex endpoints
+            if control_points.len() < 2 {
+                return curve.clone();
+            }
+            let cp_start = control_points[0];
+            let cp_end = control_points[control_points.len() - 1];
+            let delta_start = v_start - cp_start;
+            let delta_end = v_end - cp_end;
+
+            // Use average shift for interior control points
+            let mut new_cp = control_points.clone();
+            let n = new_cp.len();
+            for (i, cp) in new_cp.iter_mut().enumerate() {
+                let t = i as f32 / (n - 1) as f32;
+                let delta = delta_start * (1.0 - t) + delta_end * t;
+                *cp = *cp + delta;
+            }
+            CurveGeom::BSpline {
+                degree: *degree,
+                control_points: new_cp,
+                knots: knots.clone(),
+                weights: weights.clone(),
+            }
+        }
+        CurveGeom::Polyline { points } => {
+            if points.len() < 2 {
+                return curve.clone();
+            }
+            let mut new_pts = points.clone();
+            new_pts[0] = v_start;
+            let last = new_pts.len() - 1;
+            new_pts[last] = v_end;
+            CurveGeom::Polyline { points: new_pts }
+        }
         other => other.clone(),
     }
 }
