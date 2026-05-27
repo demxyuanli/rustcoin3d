@@ -9,6 +9,7 @@ pub mod shifted;
 pub mod edge_curve;
 pub mod lacking;
 pub mod degenerated;
+pub mod self_intersect;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -22,6 +23,7 @@ use shifted::fix_shifted_pcurves;
 use edge_curve::fix_edge_curves;
 use lacking::fix_lacking_edges;
 use degenerated::fix_degenerated_edges;
+use self_intersect::fix_self_intersecting_wire;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -38,6 +40,7 @@ pub struct HealReport {
     pub skip_face_keys: Vec<FaceKey>,
     pub lacking_tolerance_fixes: usize,
     pub degenerate_edges_created: usize,
+    pub self_intersections_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
 }
@@ -55,6 +58,7 @@ impl HealReport {
         self.adjusted_edge_curves += other.adjusted_edge_curves;
         self.lacking_tolerance_fixes += other.lacking_tolerance_fixes;
         self.degenerate_edges_created += other.degenerate_edges_created;
+        self.self_intersections_fixed += other.self_intersections_fixed;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -75,6 +79,7 @@ pub struct HealConfig {
     pub fix_edge_curves: bool,
     pub fix_lacking: bool,
     pub fix_degenerated: bool,
+    pub fix_self_intersection: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -94,6 +99,7 @@ impl Default for HealConfig {
             fix_edge_curves: true,
             fix_lacking: true,
             fix_degenerated: true,
+            fix_self_intersection: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -208,6 +214,21 @@ pub fn heal_shell(
             report.lacking_tolerance_fixes += lr.tolerance_fixes;
             if lr.tolerance_fixes > 0 {
                 log::debug!("[BRep heal] FixLacking face {:?}: {} tolerance fix(es)", face_key, lr.tolerance_fixes);
+            }
+        }
+
+        if config.fix_self_intersection {
+            let sir = fix_self_intersecting_wire(outer_wire, *face_key, reg);
+            if sir.intersections_found > 0 {
+                report.self_intersections_fixed += sir.intersections_found;
+                log::debug!("[BRep heal] FixSelfIntersection face {:?}: {} intersections, {} edges split, rebuilt={}",
+                    face_key, sir.intersections_found, sir.edges_split, sir.wires_rebuilt);
+            }
+            let wire_empty = reg.wires.get(outer_wire).map(|w| w.edges.is_empty()).unwrap_or(false);
+            if wire_empty {
+                report.skip_face_keys.push(*face_key);
+                log::warn!("[BRep heal] FixSelfIntersection face {:?}: unfixable, marking for skip", face_key);
+                continue;
             }
         }
 
