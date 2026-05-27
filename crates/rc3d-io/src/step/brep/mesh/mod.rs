@@ -8,6 +8,8 @@ pub mod same_param;
 pub mod report;
 pub mod t4_quality;
 pub mod diagnostic;
+pub mod algo_factory;
+pub mod void_subtract;
 
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
@@ -19,22 +21,132 @@ use crate::step::mesh_result::MeshResult;
 use edge_disc::{EdgeDiscConfig, EdgePolygon, discretize_all_edges};
 use face_fill::{
     face_boundary_is_mixed, fix_tri_winding, FaceFillConfig, FaceMeshRange, fill_trimmed,
-    surface_fill_3d, measure_face_chord_error,
+    mesh_revolution_native_grid, mesh_ruled_two_wire_edges, surface_fill_3d,
+    measure_face_chord_error,
 };
 use super::geom::SurfaceParamRange;
-use face_uv::{collect_face_loops, UvSource};
+use face_uv::{collect_face_loops, loops_native_surface_uv, point_in_trim, FaceUvLoops, UvSource};
 use refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map, RefineConfig};
 use optimize::{OptimizeConfig, optimize_mesh};
 use same_param::apply_same_parameter;
+use algo_factory::{select_face_mesh_algo, FaceMeshAlgo};
 use diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinates_if_requested};
 use report::{
     apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport,
 };
 
-/// UV grid resolution for closed analytic surfaces (sphere, torus).
+/// UV grid resolution fallback when deflection config is unavailable.
 pub const MESH_CLOSED_SURFACE_SEGS: u32 = 64;
-/// Faces with fewer tris after CDT/surface fill are re-tessellated via parametric grid.
-const MIN_ADEQUATE_FACE_TRIS: usize = 64;
+
+fn min_adequate_trim_tris(surface: &SurfaceGeom) -> usize {
+    match surface {
+        SurfaceGeom::Revolution { .. }
+        | SurfaceGeom::BSpline(_)
+        | SurfaceGeom::Offset { .. } => 64,
+        _ => 8,
+    }
+}
+
+/// True when UV bounds cover most of the native period (untrimmed analytic sheet).
+fn uv_bounds_span_untrimmed_period(
+    surface: &SurfaceGeom,
+    bounds: (f32, f32, f32, f32),
+) -> bool {
+    let pr = surface.param_range();
+    let du = (bounds.1 - bounds.0) / (pr.u_max - pr.u_min).max(1e-6);
+    let dv = (bounds.3 - bounds.2) / (pr.v_max - pr.v_min).max(1e-6);
+    du > 0.85 && dv > 0.85
+}
+
+fn allows_trimmed_uv_grid(
+    reg: &BRepRegistry,
+    face: &super::topo::BRepFace,
+    loops: &FaceUvLoops,
+    global_vertices: &[Vec3],
+) -> bool {
+    if loops.native_uv_bounds().is_none()
+        && loops.uv_bounds_from_projection(face, global_vertices).is_none()
+    {
+        return false;
+    }
+    let wire_len = reg
+        .wires
+        .get(face.outer_wire)
+        .map(|w| w.edges.len())
+        .unwrap_or(0);
+    if wire_len == 0 {
+        return false;
+    }
+    matches!(
+        &face.surface,
+        SurfaceGeom::Revolution { .. }
+            | SurfaceGeom::Cone { .. }
+            | SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Offset { .. }
+            | SurfaceGeom::BSpline(_)
+            | SurfaceGeom::Plane { .. }
+    )
+}
+
+fn allows_parametric_grid_fallback(
+    reg: &BRepRegistry,
+    face: &super::topo::BRepFace,
+    loops: &face_uv::FaceUvLoops,
+) -> bool {
+    let Some(bounds) = loops.native_uv_bounds() else {
+        return false;
+    };
+    let wire_len = reg
+        .wires
+        .get(face.outer_wire)
+        .map(|w| w.edges.len())
+        .unwrap_or(0);
+    match &face.surface {
+        SurfaceGeom::Revolution { .. }
+        | SurfaceGeom::Cone { .. }
+        | SurfaceGeom::Cylinder { .. }
+        | SurfaceGeom::Offset { .. } => {
+            // Few edges = trimmed patch; never paint the full native period (causes cone/sheet artifacts).
+            if wire_len < 3 {
+                return false;
+            }
+            !uv_bounds_span_untrimmed_period(&face.surface, bounds)
+        }
+        _ => true,
+    }
+}
+
+/// VERTEX_LOOP on a closed analytic surface: wire is only pole degeneracy (+ optional seam),
+/// not a trim boundary. Mesh the full native parameter rectangle (OCC closed-face path).
+fn uses_closed_parametric_mesh(reg: &BRepRegistry, face: &super::topo::BRepFace) -> bool {
+    if !face.inner_wires.is_empty() {
+        return false;
+    }
+    if !matches!(
+        &face.surface,
+        SurfaceGeom::Sphere { .. } | SurfaceGeom::Torus { .. }
+    ) {
+        return false;
+    }
+    let wire = match reg.wires.get(face.outer_wire) {
+        Some(w) => w,
+        None => return false,
+    };
+    if wire.edges.is_empty() {
+        return true;
+    }
+    if face.degenerated_edges.iter().any(|&dek| {
+        wire.edges.iter().any(|&(ek, _)| ek == dek)
+    }) {
+        return true;
+    }
+    wire.edges.iter().all(|&(ek, _)| {
+        let Some(e) = reg.edges.get(ek) else {
+            return false;
+        };
+        e.v_low == e.v_high || face.seam_edges.contains(&ek)
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct BRepMeshConfig {
@@ -205,10 +317,11 @@ pub fn mesh_brep_shell_with_report(
             None => continue,
         };
 
-        if info.wire_edges.is_empty() {
+        if info.wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
             let tris_before = all_indices.len() / 4;
             mesh_closed_surface(
                 face,
+                &scaled_config.face,
                 &mut global_vertices,
                 &mut global_normals,
                 &mut pos_to_idx,
@@ -247,8 +360,26 @@ pub fn mesh_brep_shell_with_report(
             ));
         }
 
-        let used_surface_fill = !loops.is_fillable() || loops.uv_source == UvSource::SurfaceFill;
-        let mixed_boundary = !used_surface_fill
+        let wire_empty = info.wire_edges.is_empty();
+        // Revolution/Offset/BSpline: prefer native UV CDT; 3D "mixed" jumps are often seam artifacts.
+        let prefer_native_cdt = matches!(
+            &face.surface,
+            SurfaceGeom::Revolution { .. }
+                | SurfaceGeom::BSpline(_)
+                | SurfaceGeom::Offset { .. }
+                | SurfaceGeom::Cylinder { .. }
+                | SurfaceGeom::Cone { .. }
+        );
+        let mut algo = select_face_mesh_algo(face, &loops, wire_empty);
+        if prefer_native_cdt && loops.is_fillable() {
+            algo = FaceMeshAlgo::TrimmedCdt;
+        }
+        if matches!(face.surface, SurfaceGeom::Plane { .. }) && loops.is_fillable() {
+            algo = FaceMeshAlgo::TrimmedCdt;
+        }
+        let mut used_surface_fill = algo == FaceMeshAlgo::SurfaceFill3d;
+        let mixed_boundary = algo == FaceMeshAlgo::TrimmedCdt
+            && !prefer_native_cdt
             && !matches!(face.surface, SurfaceGeom::Plane { .. })
             && face_boundary_is_mixed(&loops, &global_vertices);
 
@@ -266,8 +397,23 @@ pub fn mesh_brep_shell_with_report(
             boundary_ordered.pop();
         }
 
-        let mut range = if used_surface_fill || mixed_boundary {
-            surface_fill_3d(
+        let tris_before_face = all_indices.len() / 4;
+        let chord_reject = (scaled_config.face.deflection_interior * 10.0).max(0.05);
+
+        let mut range = match algo {
+            FaceMeshAlgo::SurfaceFill3d | FaceMeshAlgo::ClosedParametric if mixed_boundary => {
+                surface_fill_3d(
+                    info.face_key,
+                    &boundary_ordered,
+                    face,
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut all_indices,
+                    &mut pos_to_idx,
+                    &scaled_config.face,
+                )
+            }
+            FaceMeshAlgo::SurfaceFill3d => surface_fill_3d(
                 info.face_key,
                 &boundary_ordered,
                 face,
@@ -276,9 +422,18 @@ pub fn mesh_brep_shell_with_report(
                 &mut all_indices,
                 &mut pos_to_idx,
                 &scaled_config.face,
-            )
-        } else {
-            fill_trimmed(
+            ),
+            FaceMeshAlgo::TrimmedCdt if mixed_boundary => surface_fill_3d(
+                info.face_key,
+                &boundary_ordered,
+                face,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            ),
+            FaceMeshAlgo::TrimmedCdt | FaceMeshAlgo::ClosedParametric => fill_trimmed(
                 info.face_key,
                 &loops,
                 face,
@@ -288,10 +443,37 @@ pub fn mesh_brep_shell_with_report(
                 &mut all_indices,
                 &mut pos_to_idx,
                 &scaled_config.face,
-            )
+            ),
         };
 
         range.face_key = info.face_key;
+
+        if used_surface_fill
+            && range.tri_count > 0
+            && range.max_chord_error > chord_reject
+        {
+            log::debug!(
+                "[BRep mesh] face {:?}: reject surface fill (chord {:.4} > {:.4}), retry trimmed CDT",
+                info.face_key,
+                range.max_chord_error,
+                chord_reject
+            );
+            all_indices.truncate(tris_before_face * 4);
+            range = fill_trimmed(
+                info.face_key,
+                &loops,
+                face,
+                reg,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            range.face_key = info.face_key;
+            used_surface_fill = false;
+        }
+
         if used_surface_fill {
             report.grid_fallback_count += 1;
         }
@@ -313,33 +495,194 @@ pub fn mesh_brep_shell_with_report(
         }
 
         let mut used_parametric_grid = false;
-        let keep_trimmed_plane = range.tri_count > 0
-            && matches!(face.surface, SurfaceGeom::Plane { .. });
-        if range.tri_count < MIN_ADEQUATE_FACE_TRIS && !keep_trimmed_plane {
+        let keep_trimmed = range.tri_count > 0
+            && range.max_chord_error <= chord_reject
+            && !used_surface_fill
+            && !mixed_boundary;
+
+        let grid_loops = if prefer_native_cdt
+            || matches!(face.surface, SurfaceGeom::Plane { .. })
+        {
+            loops_native_surface_uv(&loops, face, &global_vertices)
+        } else {
+            loops.clone()
+        };
+
+        let diag_shape = std::env::var("SHAPE_FACE_DIAG").is_ok();
+        if diag_shape {
+            let wire_len = reg
+                .wires
+                .get(face.outer_wire)
+                .map(|w| w.edges.len())
+                .unwrap_or(0);
+            let v_min = grid_loops
+                .outer
+                .boundary
+                .iter()
+                .map(|v| v.uv.1)
+                .fold(f32::INFINITY, f32::min);
+            let v_max = grid_loops
+                .outer
+                .boundary
+                .iter()
+                .map(|v| v.uv.1)
+                .fold(f32::MIN, f32::max);
+            eprintln!(
+                "[mesh diag] {:?} pre-grid tris={} wire={} outer_uv={} v=[{:.4},{:.4}] native={:?} rv={:?} allow={}",
+                info.face_key,
+                range.tri_count,
+                wire_len,
+                grid_loops.outer.boundary.len(),
+                v_min,
+                v_max,
+                grid_loops.native_uv_bounds(),
+                grid_loops.revolution_v_bounds_from_3d(face, &global_vertices),
+                allows_trimmed_uv_grid(reg, face, &grid_loops, &global_vertices),
+            );
+        }
+
+        if range.tri_count < min_adequate_trim_tris(&face.surface) && info.wire_edges.len() == 2 {
             if range.tri_count > 0 {
                 all_indices.truncate(range.first_tri * 4);
-                range.tri_count = 0;
             }
-            let tris_before = all_indices.len() / 4;
-            mesh_parametric_grid(
-                face,
-                loops.native_uv_bounds(),
-                &mut global_vertices,
-                &mut global_normals,
-                &mut pos_to_idx,
-                &mut all_indices,
-            );
-            let grid_tris = all_indices.len() / 4 - tris_before;
-            if grid_tris > 0 {
-                range.tri_count = grid_tris;
-                range.first_tri = tris_before;
-                used_parametric_grid = true;
-                report.grid_fallback_count += 1;
-                log::debug!(
-                    "[BRep mesh] face {:?}: parametric grid fallback ({} tris)",
+            let segs = parametric_grid_segs(face, &scaled_config.face);
+            if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+                let uv_bounds = grid_loops
+                    .revolution_native_uv_bounds_from_boundary(face, &global_vertices)
+                    .or_else(|| {
+                        let (u0, u1, _v0, _v1) = grid_loops.native_uv_bounds()?;
+                        let (rv0, rv1) =
+                            grid_loops.revolution_v_bounds_from_3d(face, &global_vertices)?;
+                        Some((u0, u1, rv0, rv1))
+                    });
+                if let Some(bounds) = uv_bounds {
+                    let native = mesh_revolution_native_grid(
+                        info.face_key,
+                        face,
+                        bounds,
+                        segs,
+                        segs,
+                        &mut global_vertices,
+                        &mut global_normals,
+                        &mut all_indices,
+                    );
+                    if native.tri_count > 0 {
+                        range = native;
+                    }
+                }
+            } else if matches!(
+                face.surface,
+                SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }
+            ) {
+                let ruled = mesh_ruled_two_wire_edges(
                     info.face_key,
-                    grid_tris
+                    face,
+                    &info.wire_edges,
+                    &edge_boundary_idx,
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut all_indices,
+                    &mut pos_to_idx,
+                    segs,
+                    segs,
                 );
+                if ruled.tri_count > 0 {
+                    range = ruled;
+                }
+            }
+        }
+
+        if range.tri_count < min_adequate_trim_tris(&face.surface)
+            && allows_trimmed_uv_grid(reg, face, &grid_loops, &global_vertices)
+        {
+            let mut uv_bounds = grid_loops
+                .native_uv_bounds()
+                .or_else(|| grid_loops.uv_bounds_from_projection(face, &global_vertices));
+            if let (Some((u0, u1, v0, v1)), Some((rv0, rv1))) = (
+                uv_bounds,
+                grid_loops.revolution_v_bounds_from_3d(face, &global_vertices),
+            ) {
+                if matches!(face.surface, SurfaceGeom::Revolution { .. })
+                    && (v1 - v0).abs() < 1e-5
+                {
+                    uv_bounds = Some((u0, u1, rv0, rv1));
+                }
+            }
+            if let Some(uv_bounds) = uv_bounds {
+                if range.tri_count > 0 {
+                    all_indices.truncate(range.first_tri * 4);
+                }
+                let tris_before = all_indices.len() / 4;
+                range.first_tri = tris_before;
+                mesh_trimmed_uv_grid(
+                    face,
+                    &grid_loops,
+                    uv_bounds,
+                    Some(&scaled_config.face),
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut pos_to_idx,
+                    &mut all_indices,
+                );
+                range.tri_count = all_indices.len() / 4 - tris_before;
+                if range.tri_count == 0 {
+                    let wire_len = reg
+                        .wires
+                        .get(face.outer_wire)
+                        .map(|w| w.edges.len())
+                        .unwrap_or(0);
+                    if wire_len == 2 && matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+                        mesh_uv_bbox_grid(
+                            face,
+                            uv_bounds,
+                            Some(&scaled_config.face),
+                            &mut global_vertices,
+                            &mut global_normals,
+                            &mut pos_to_idx,
+                            &mut all_indices,
+                        );
+                        range.tri_count = all_indices.len() / 4 - tris_before;
+                    }
+                }
+                if range.tri_count > 0 {
+                    used_parametric_grid = true;
+                    report.grid_fallback_count += 1;
+                    log::debug!(
+                        "[BRep mesh] face {:?}: trimmed UV grid ({} tris)",
+                        info.face_key,
+                        range.tri_count
+                    );
+                }
+            }
+        }
+
+        if range.tri_count == 0
+            && !keep_trimmed
+            && allows_parametric_grid_fallback(reg, face, &loops)
+        {
+            if let Some(uv_bounds) = loops.native_uv_bounds() {
+                let tris_before = all_indices.len() / 4;
+                mesh_parametric_grid(
+                    face,
+                    Some(uv_bounds),
+                    Some(&scaled_config.face),
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut pos_to_idx,
+                    &mut all_indices,
+                );
+                let grid_tris = all_indices.len() / 4 - tris_before;
+                if grid_tris > 0 {
+                    range.tri_count = grid_tris;
+                    range.first_tri = tris_before;
+                    used_parametric_grid = true;
+                    report.grid_fallback_count += 1;
+                    log::debug!(
+                        "[BRep mesh] face {:?}: UV-clipped grid fallback ({} tris)",
+                        info.face_key,
+                        grid_tris
+                    );
+                }
             }
         }
 
@@ -373,6 +716,7 @@ pub fn mesh_brep_shell_with_report(
         mesh_parametric_grid(
             face,
             None,
+            Some(&scaled_config.face),
             &mut global_vertices,
             &mut global_normals,
             &mut pos_to_idx,
@@ -432,15 +776,6 @@ pub fn mesh_brep_shell_with_report(
         }
     }
 
-    for n in &mut global_normals {
-        let len = n.length();
-        if len > 1e-10 {
-            *n = *n * (1.0 / len);
-        } else {
-            *n = Vec3::Z;
-        }
-    }
-
     report.total_tris = all_indices.len() / 4;
     for stats in &mut report.faces {
         if stats.grid_fallback || stats.tri_count == 0 {
@@ -474,6 +809,7 @@ pub fn mesh_brep_shell_with_report(
         log::debug!("[BRep mesh] culled {culled} degenerate triangle(s)");
         report.total_tris = mesh.indices.len() / 4;
     }
+    recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
     optimize_mesh(&mut mesh, &scaled_config.optimize);
     if collect_diag {
         log_mesh_coordinates_if_requested(
@@ -487,6 +823,40 @@ pub fn mesh_brep_shell_with_report(
         );
     }
     ShellMeshOutput { mesh, report }
+}
+
+/// Area-weighted vertex normals from final triangle winding (fixes ruled/off-surface fills).
+fn recompute_normals_from_tris(vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>) {
+    if normals.len() != vertices.len() {
+        normals.resize(vertices.len(), Vec3::ZERO);
+    }
+    for n in normals.iter_mut() {
+        *n = Vec3::ZERO;
+    }
+    for chunk in indices.chunks(4) {
+        if chunk.len() < 4 || chunk[3] != -1 {
+            continue;
+        }
+        let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
+        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            continue;
+        }
+        let n = (vertices[i1] - vertices[i0]).cross(vertices[i2] - vertices[i0]);
+        if n.length_squared() < 1e-20 {
+            continue;
+        }
+        normals[i0] += n;
+        normals[i1] += n;
+        normals[i2] += n;
+    }
+    for n in normals.iter_mut() {
+        let len = n.length();
+        if len > 1e-10 {
+            *n = *n * (1.0 / len);
+        } else {
+            *n = Vec3::Y;
+        }
+    }
 }
 
 fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
@@ -513,19 +883,142 @@ fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
     removed
 }
 
-/// UV parametric grid tessellation for any surface type (last-resort / closed faces).
-fn mesh_parametric_grid(
+/// Grid resolution from DeflectionInterior (OCC BRepMesh-style, not a fixed 64x64).
+fn parametric_grid_segs(face: &super::topo::BRepFace, config: &FaceFillConfig) -> u32 {
+    let defl = config.deflection_interior.max(1e-6);
+    match &face.surface {
+        SurfaceGeom::Plane { .. } => 2,
+        SurfaceGeom::Sphere { radius, .. } => {
+            let circ = 2.0 * std::f32::consts::PI * radius;
+            ((circ / defl).ceil() as u32).clamp(8, 128)
+        }
+        SurfaceGeom::Torus { major_r, minor_r, .. } => {
+            let circ = 2.0 * std::f32::consts::PI * (major_r + minor_r);
+            ((circ / defl).ceil() as u32).clamp(8, 128)
+        }
+        SurfaceGeom::Cylinder { radius, .. } => {
+            let circ = 2.0 * std::f32::consts::PI * radius;
+            ((circ / defl).ceil() as u32).clamp(8, 128)
+        }
+        SurfaceGeom::Cone { radius_at_apex, .. } => {
+            let circ = 2.0 * std::f32::consts::PI * radius_at_apex.max(1e-6);
+            ((circ / defl).ceil() as u32).clamp(8, 128)
+        }
+        _ => MESH_CLOSED_SURFACE_SEGS,
+    }
+}
+
+/// Parametric grid over the boundary UV bounding box (no trim test; for 2-edge revolution patches).
+fn mesh_uv_bbox_grid(
     face: &super::topo::BRepFace,
-    uv_bounds: Option<(f32, f32, f32, f32)>,
+    uv_bounds: (f32, f32, f32, f32),
+    fill_config: Option<&FaceFillConfig>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
     all_indices: &mut Vec<i32>,
 ) {
-    let segs: u32 = match &face.surface {
-        SurfaceGeom::Plane { .. } => 2,
-        _ => MESH_CLOSED_SURFACE_SEGS,
-    };
+    mesh_parametric_grid(
+        face,
+        Some(uv_bounds),
+        fill_config,
+        global_vertices,
+        global_normals,
+        pos_to_idx,
+        all_indices,
+    );
+}
+
+/// Parametric grid clipped to the face trim (outer/holes in UV).
+fn mesh_trimmed_uv_grid(
+    face: &super::topo::BRepFace,
+    loops: &FaceUvLoops,
+    uv_bounds: (f32, f32, f32, f32),
+    fill_config: Option<&FaceFillConfig>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    all_indices: &mut Vec<i32>,
+) {
+    let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    if outer_uv.len() < 3 {
+        return;
+    }
+    let holes: Vec<Vec<(f32, f32)>> = loops
+        .inners
+        .iter()
+        .map(|l| l.boundary.iter().map(|v| v.uv).collect())
+        .collect();
+
+    let segs = fill_config
+        .map(|c| parametric_grid_segs(face, c))
+        .unwrap_or(16)
+        .clamp(4, 64);
+    let (u_min, u_max, v_min, v_max) = uv_bounds;
+
+    for iu in 0..segs {
+        for iv in 0..segs {
+            let u0 = u_min + (u_max - u_min) * iu as f32 / segs as f32;
+            let u1 = u_min + (u_max - u_min) * (iu + 1) as f32 / segs as f32;
+            let v0 = v_min + (v_max - v_min) * iv as f32 / segs as f32;
+            let v1 = v_min + (v_max - v_min) * (iv + 1) as f32 / segs as f32;
+            let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+            if !corners
+                .iter()
+                .all(|&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
+            {
+                continue;
+            }
+            let mut idx = [0i32; 4];
+            for (k, &(u, v)) in corners.iter().enumerate() {
+                let pt = face.surface.d0_native(u, v);
+                let mut n = face.surface.normal_native(u, v);
+                if !face.same_sense {
+                    n = -n;
+                }
+                let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                    let i = global_vertices.len();
+                    global_vertices.push(pt);
+                    global_normals.push(n);
+                    i
+                });
+                idx[k] = gi as i32;
+            }
+            for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
+                if i0 == i1 || i1 == i2 || i2 == i0 {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut i0,
+                    &mut i1,
+                    &mut i2,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+            }
+        }
+    }
+}
+
+/// UV parametric grid tessellation for any surface type (last-resort / closed faces).
+fn mesh_parametric_grid(
+    face: &super::topo::BRepFace,
+    uv_bounds: Option<(f32, f32, f32, f32)>,
+    fill_config: Option<&FaceFillConfig>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    all_indices: &mut Vec<i32>,
+) {
+    let segs = fill_config
+        .map(|c| parametric_grid_segs(face, c))
+        .unwrap_or_else(|| match &face.surface {
+            SurfaceGeom::Plane { .. } => 2,
+            _ => MESH_CLOSED_SURFACE_SEGS,
+        });
     let pr = if let Some((u_min, u_max, v_min, v_max)) = uv_bounds {
         SurfaceParamRange {
             u_min,
@@ -588,9 +1081,10 @@ fn mesh_parametric_grid(
     }
 }
 
-/// Tessellate a closed analytic surface face (VERTEX_LOOP, e.g. full sphere).
+/// Tessellate a closed analytic surface face (VERTEX_LOOP fallback when CDT cannot run).
 fn mesh_closed_surface(
     face: &super::topo::BRepFace,
+    fill_config: &FaceFillConfig,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -599,6 +1093,7 @@ fn mesh_closed_surface(
     mesh_parametric_grid(
         face,
         None,
+        Some(fill_config),
         global_vertices,
         global_normals,
         pos_to_idx,

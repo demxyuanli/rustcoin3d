@@ -259,15 +259,35 @@ fn exchange_to_scene_graph(
             if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
                 continue;
             }
+            // Subtract void shells from mesh
+            let void_meshes: Vec<_> = solid.void_shells.iter().map(|&vk| {
+                brep::mesh::mesh_brep_shell(
+                    vk,
+                    &reg,
+                    &mesh_config,
+                    &total_heal.skip_face_keys,
+                )
+            }).collect();
+            let void_result = brep::mesh::void_subtract::subtract_void_meshes(
+                &base_mesh, &void_meshes,
+            );
+            if void_result.removed_tris > 0 {
+                log::info!(
+                    "[STEP] void subtraction: removed {} tris, kept {}",
+                    void_result.removed_tris,
+                    void_result.mesh.indices.len() / 4,
+                );
+            }
+            let final_mesh = void_result.mesh;
             log::info!(
                 "[STEP] mesh: {} verts, {} tris",
-                base_mesh.vertices.len(),
-                base_mesh.indices.len() / 4,
+                final_mesh.vertices.len(),
+                final_mesh.indices.len() / 4,
             );
 
             let base_offset = props_vertices.len() as i32;
-            props_vertices.extend_from_slice(&base_mesh.vertices);
-            for chunk in base_mesh.indices.chunks(4) {
+            props_vertices.extend_from_slice(&final_mesh.vertices);
+            for chunk in final_mesh.indices.chunks(4) {
                 if chunk.len() >= 3 {
                     props_indices.extend_from_slice(&[
                         chunk[0] + base_offset,
@@ -301,7 +321,7 @@ fn exchange_to_scene_graph(
             }
 
             for xform in instances {
-                let mut mesh = base_mesh.clone();
+                let mut mesh = final_mesh.clone();
                 apply_mesh_transform(&mut mesh, xform);
                 any_geom = true;
 
