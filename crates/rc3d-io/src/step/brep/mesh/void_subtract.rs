@@ -93,8 +93,11 @@ pub fn subtract_void_meshes(
 
     let cell_size_inv = 1.0 / cell_size;
     let mut kept_vertices = Vec::new();
+    let mut kept_normals = Vec::new();
     let mut kept_indices = Vec::new();
     let mut removed = 0usize;
+
+    let has_normals = outer_mesh.normals.len() == outer_mesh.vertices.len();
 
     for chunk in outer_mesh.indices.chunks(4) {
         if chunk.len() < 3 { continue; }
@@ -119,6 +122,11 @@ pub fn subtract_void_meshes(
             kept_indices.extend_from_slice(&[
                 base, base + 1, base + 2, -1,
             ]);
+            if has_normals {
+                kept_normals.push(outer_mesh.normals[i0]);
+                kept_normals.push(outer_mesh.normals[i1]);
+                kept_normals.push(outer_mesh.normals[i2]);
+            }
         }
     }
 
@@ -126,7 +134,7 @@ pub fn subtract_void_meshes(
         mesh: MeshResult {
             vertices: kept_vertices,
             indices: kept_indices,
-            normals: outer_mesh.normals.clone(),
+            normals: kept_normals,
         },
         removed_tris: removed,
     }
@@ -134,8 +142,8 @@ pub fn subtract_void_meshes(
 
 /// Ray-cast test: is `point` inside the void mesh?
 ///
-/// Casts a ray along +X and counts triangle intersections.
-/// Odd count → inside, even count → outside.
+/// Casts a ray along +X and counts triangle intersections using
+/// DDA grid traversal. Odd count → inside, even count → outside.
 fn point_inside_void_mesh(
     point: &Vec3,
     void_tris: &[[Vec3; 3]],
@@ -146,18 +154,18 @@ fn point_inside_void_mesh(
     let cy = (point.y * cell_size_inv).floor() as i32;
     let cz = (point.z * cell_size_inv).floor() as i32;
 
+    let max_x = grid.keys().map(|k| k.0).max().unwrap_or(i32::MIN);
+
     let mut seen = std::collections::HashSet::<usize>::new();
-    for &(ci, cj, ck) in &[
-        (cx, cy, cz),
-        (cx - 1, cy, cz),
-        (cx + 1, cy, cz),
-        (cx, cy - 1, cz),
-        (cx, cy + 1, cz),
-        (cx, cy, cz - 1),
-        (cx, cy, cz + 1),
-    ] {
-        if let Some(candidates) = grid.get(&(ci, cj, ck)) {
-            seen.extend(candidates);
+    // DDA walk along +X through grid cells
+    for ci in cx..=max_x {
+        // Tube check: current Y,Z cell + immediate neighbors
+        for &(dcj, dck) in &[(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let cj = cy + dcj;
+            let ck = cz + dck;
+            if let Some(candidates) = grid.get(&(ci, cj, ck)) {
+                seen.extend(candidates);
+            }
         }
     }
 
