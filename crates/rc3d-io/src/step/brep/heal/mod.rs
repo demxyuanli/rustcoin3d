@@ -258,7 +258,12 @@ pub fn heal_shell(
     }
 
     if config.fix_small_area {
-        report.skip_face_keys = fix_small_area(shell_key, reg);
+        let small = fix_small_area(shell_key, reg);
+        for fk in small {
+            if !report.skip_face_keys.contains(&fk) {
+                report.skip_face_keys.push(fk);
+            }
+        }
     }
 
     if config.fix_orientation {

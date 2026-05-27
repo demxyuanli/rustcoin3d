@@ -252,7 +252,8 @@ mod tests {
 
         let pc = reg.pcurve_mut(ek, f0).unwrap();
         *pc = CurveGeom::Line { origin: Vec3::new(2.0, 0.0, 0.0), direction: Vec3::Y };
-        drop(pc);
+        // Explicitly end the mutable borrow before reading back
+        let _ = pc;
 
         let edge = reg.edges.get(ek).unwrap();
         let updated = edge.pcurves.get(&f0).unwrap();

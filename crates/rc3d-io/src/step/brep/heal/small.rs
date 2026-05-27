@@ -120,11 +120,12 @@ mod tests {
     fn test_remove_zero_length_edge() {
         let mut reg = BRepRegistry::new();
         let (wire_key, _edge_keys, _fk) = make_wire_with_edges(&mut reg, &[1.0, 0.0, 2.0]);
-        let before = reg.wires.get(wire_key).unwrap().edges.len();
+        let before_len = reg.wires.get(wire_key).unwrap().edges.len();
         let result = remove_small_edges(wire_key, &mut reg, &[], 1e-6);
         assert!(result.is_some());
         let after = result.unwrap().len();
         assert_eq!(after, 2, "zero-length edge should be removed");
+        assert_eq!(before_len, 3, "should have started with 3 edges");
         assert!(reg.wires.get(wire_key).unwrap().edges.len() == 2);
     }
 

@@ -109,7 +109,6 @@ fn find_singularities(surface: &SurfaceGeom) -> Vec<SingularityInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::geom::CurveGeom;
     use crate::step::brep::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
