@@ -9,7 +9,9 @@ pub mod shifted;
 pub mod edge_curve;
 pub mod lacking;
 pub mod degenerated;
+pub mod periodic;
 pub mod self_intersect;
+pub mod intersecting_wires;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -23,7 +25,9 @@ use shifted::fix_shifted_pcurves;
 use edge_curve::fix_edge_curves;
 use lacking::fix_lacking_edges;
 use degenerated::fix_degenerated_edges;
+use periodic::fix_periodic_degenerated;
 use self_intersect::fix_self_intersecting_wire;
+use intersecting_wires::fix_intersecting_wires;
 pub use check::{check_shell, CheckReport};
 
 #[derive(Debug, Default)]
@@ -40,7 +44,9 @@ pub struct HealReport {
     pub skip_face_keys: Vec<FaceKey>,
     pub lacking_tolerance_fixes: usize,
     pub degenerate_edges_created: usize,
+    pub periodic_degen_created: usize,
     pub self_intersections_fixed: usize,
+    pub inner_wires_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
 }
@@ -58,7 +64,9 @@ impl HealReport {
         self.adjusted_edge_curves += other.adjusted_edge_curves;
         self.lacking_tolerance_fixes += other.lacking_tolerance_fixes;
         self.degenerate_edges_created += other.degenerate_edges_created;
+        self.periodic_degen_created += other.periodic_degen_created;
         self.self_intersections_fixed += other.self_intersections_fixed;
+        self.inner_wires_fixed += other.inner_wires_fixed;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -79,7 +87,9 @@ pub struct HealConfig {
     pub fix_edge_curves: bool,
     pub fix_lacking: bool,
     pub fix_degenerated: bool,
+    pub fix_periodic_degenerated: bool,
     pub fix_self_intersection: bool,
+    pub fix_intersecting_wires: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -99,7 +109,9 @@ impl Default for HealConfig {
             fix_edge_curves: true,
             fix_lacking: true,
             fix_degenerated: true,
+            fix_periodic_degenerated: true,
             fix_self_intersection: true,
+            fix_intersecting_wires: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -205,8 +217,25 @@ pub fn heal_shell(
             }
         }
 
+        if config.fix_periodic_degenerated {
+            let pr = fix_periodic_degenerated(*face_key, reg);
+            report.periodic_degen_created += pr.pole_edges_created;
+            if pr.degeneracies_reconstructed > 0 {
+                log::debug!("[BRep heal] FixPeriodicDegenerated face {:?}: {} pole degeneracies", face_key, pr.degeneracies_reconstructed);
+            }
+        }
+
         if config.fix_missing_seams {
             report.added_seams += fix_missing_seams(reg, *face_key);
+        }
+
+        if config.fix_intersecting_wires {
+            let iwr = fix_intersecting_wires(*face_key, reg);
+            let total_fixes = iwr.inner_wires_trimmed + iwr.inner_wires_removed + iwr.inner_wires_merged;
+            report.inner_wires_fixed += total_fixes;
+            if total_fixes > 0 {
+                log::debug!("[BRep heal] FixIntersectingWires face {:?}: {} inner wire fix(es)", face_key, total_fixes);
+            }
         }
 
         if config.fix_lacking {
