@@ -210,7 +210,7 @@ fn check_non_manifold(
     warnings
 }
 
-fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepRegistry) -> Vec<String> {
+pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepRegistry) -> Vec<String> {
     let mut warnings = Vec::new();
     let Some(face) = reg.faces.get(face_key) else {
         return warnings;

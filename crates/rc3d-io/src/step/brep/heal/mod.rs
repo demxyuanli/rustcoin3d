@@ -32,7 +32,7 @@ use periodic::fix_periodic_degenerated;
 use self_intersect::fix_self_intersecting_wire;
 use intersecting_wires::fix_intersecting_wires;
 use vertex_position::fix_vertex_positions;
-pub use check::{check_shell, CheckReport};
+pub use check::{check_shell, check_uv_self_intersection, CheckReport};
 pub use pipeline::{auto_heal_shell, HealLevel};
 
 #[derive(Debug, Default)]
@@ -142,6 +142,15 @@ pub fn heal_shell(
         }
     };
 
+    // Fix edge curves BEFORE per-face loop (OCC: FixEdgeCurves runs before FixSelfIntersection)
+    if config.fix_edge_curves {
+        let adjusted = fix_edge_curves(shell_key, reg, config.gap_tolerance);
+        report.adjusted_edge_curves = adjusted;
+        if adjusted > 0 {
+            log::debug!("[BRep heal] FixEdgeCurves: adjusted {} edge(s)", adjusted);
+        }
+    }
+
     // Single per-face traversal: all wire-level passes in one loop
     for (face_key, _) in &face_keys {
         // Extract face data before any mutable registry access
@@ -245,13 +254,17 @@ pub fn heal_shell(
             let sir = fix_self_intersecting_wire(outer_wire, *face_key, reg);
             if sir.intersections_found > 0 {
                 report.self_intersections_fixed += sir.intersections_found;
-                log::debug!("[BRep heal] FixSelfIntersection face {:?}: {} intersections, {} edges split, rebuilt={}",
-                    face_key, sir.intersections_found, sir.edges_split, sir.wires_rebuilt);
+                log::debug!("[BRep heal] FixSelfIntersection face {:?}: {} intersections fixed", face_key, sir.intersections_found);
+                // Re-check after fix: if still self-intersecting, mark as unfixable
+                let si_warnings = check_uv_self_intersection(*face_key, reg);
+                if !si_warnings.is_empty() {
+                    log::warn!("[BRep heal] FixSelfIntersection face {:?}: still self-intersecting after fix, marking for skip", face_key);
+                    report.skip_face_keys.push(*face_key);
+                    continue;
+                }
             }
-            let wire_empty = reg.wires.get(outer_wire).map(|w| w.edges.is_empty()).unwrap_or(false);
-            if wire_empty {
+            if reg.wires.get(outer_wire).map(|w| w.edges.is_empty()).unwrap_or(false) {
                 report.skip_face_keys.push(*face_key);
-                log::warn!("[BRep heal] FixSelfIntersection face {:?}: unfixable, marking for skip", face_key);
                 continue;
             }
         }
@@ -263,14 +276,6 @@ pub fn heal_shell(
                 log::debug!("[BRep heal] FixDegenerated face {:?}: {} singularities, {} edges created",
                     face_key, dr.degeneracies_found, dr.degenerate_edges_created);
             }
-        }
-    }
-
-    if config.fix_edge_curves {
-        let adjusted = fix_edge_curves(shell_key, reg, config.gap_tolerance);
-        report.adjusted_edge_curves += adjusted;
-        if adjusted > 0 {
-            log::debug!("[BRep heal] FixEdgeCurves: adjusted {} edge(s)", adjusted);
         }
     }
 
