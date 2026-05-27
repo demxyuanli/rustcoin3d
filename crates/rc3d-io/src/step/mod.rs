@@ -154,11 +154,15 @@ fn exchange_to_scene_graph(
         );
     }
 
-    let heal_config = brep::heal::HealConfig::default();
     let mut total_heal = brep::heal::HealReport::default();
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            total_heal.merge(brep::heal::heal_shell(solid.outer_shell, &mut reg, &heal_config));
+            total_heal.merge(brep::heal::auto_heal_shell(
+                solid.outer_shell,
+                &mut reg,
+                brep::heal::HealLevel::Standard,
+                5,
+            ));
         }
     }
     import_report.heal_check_errors = total_heal.check_errors;
