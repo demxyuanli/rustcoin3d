@@ -128,7 +128,15 @@ pub fn fix_self_intersecting_wire(
         let mut t_prev = 0.0f32;
         let endpoint_t = [&splits[..], &[1.0f32]].concat();
         for &t in endpoint_t.iter() {
+            // Skip segments shorter than threshold in both parameter and UV space
             if t - t_prev < 1e-6 {
+                t_prev = t;
+                continue;
+            }
+            let uv_start = pcurve.d0(t_prev);
+            let uv_end = pcurve.d0(t);
+            let uv_len = ((uv_start.x - uv_end.x).powi(2) + (uv_start.y - uv_end.y).powi(2)).sqrt();
+            if uv_len < 1e-6 {
                 t_prev = t;
                 continue;
             }

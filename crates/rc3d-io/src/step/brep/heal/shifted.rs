@@ -128,10 +128,22 @@ fn shift_pcurve(
     dv: f32,
 ) -> crate::step::brep::geom::CurveGeom {
     use crate::step::brep::geom::CurveGeom;
+    let shift = rc3d_core::math::Vec3::new(du, dv, 0.0);
     match pc {
         CurveGeom::Line { origin, direction } => CurveGeom::Line {
-            origin: *origin + rc3d_core::math::Vec3::new(du, dv, 0.0),
+            origin: *origin + shift,
             direction: *direction,
+        },
+        CurveGeom::Circle { center, axis, radius } => CurveGeom::Circle {
+            center: *center + shift,
+            axis: *axis,
+            radius: *radius,
+        },
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => CurveGeom::Ellipse {
+            center: *center + shift,
+            axis: *axis,
+            semi_major: *semi_major,
+            semi_minor: *semi_minor,
         },
         other => other.clone(),
     }

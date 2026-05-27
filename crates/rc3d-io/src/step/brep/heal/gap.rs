@@ -170,17 +170,28 @@ fn pcurve_endpoint(
 }
 
 /// Nudge a PCurve's endpoint by (du, dv) in UV space.
-/// For Line-based PCurves: adjust the origin. For other types: clone unchanged.
 fn translate_pcurve_endpoint(
     pc: &crate::step::brep::geom::CurveGeom,
     du: f32,
     dv: f32,
 ) -> crate::step::brep::geom::CurveGeom {
     use crate::step::brep::geom::CurveGeom;
+    let shift = Vec3::new(du, dv, 0.0);
     match pc {
         CurveGeom::Line { origin, direction } => CurveGeom::Line {
-            origin: *origin + Vec3::new(du, dv, 0.0),
+            origin: *origin + shift,
             direction: *direction,
+        },
+        CurveGeom::Circle { center, axis, radius } => CurveGeom::Circle {
+            center: *center + shift,
+            axis: *axis,
+            radius: *radius,
+        },
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => CurveGeom::Ellipse {
+            center: *center + shift,
+            axis: *axis,
+            semi_major: *semi_major,
+            semi_minor: *semi_minor,
         },
         other => other.clone(),
     }

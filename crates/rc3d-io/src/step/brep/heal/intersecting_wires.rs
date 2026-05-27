@@ -71,10 +71,16 @@ pub fn fix_intersecting_wires(
         kept_inner.push(inner_wk);
     }
 
-    // Update face with filtered inner wires
-    if kept_inner.len() != inner_wks.len() {
+    // Merge intersecting inner wires pairwise
+    let merged = merge_intersecting_inner_wires(&kept_inner, face_key, reg);
+    if kept_inner.len() > merged.len() {
+        report.inner_wires_merged += kept_inner.len() - merged.len();
+    }
+
+    // Update face with filtered/merged inner wires
+    if merged.len() != inner_wks.len() {
         if let Some(face) = reg.faces.get_mut(face_key) {
-            face.inner_wires = kept_inner;
+            face.inner_wires = merged;
         }
     }
 
@@ -122,6 +128,72 @@ fn point_in_polygon_winding(u: f32, v: f32, poly: &[(f32, f32)]) -> bool {
         }
     }
     wn != 0
+}
+
+fn merge_intersecting_inner_wires(
+    wires: &[WireKey],
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+) -> Vec<WireKey> {
+    let mut result: Vec<WireKey> = wires.to_vec();
+    let mut i = 0;
+    while i < result.len() {
+        let mut j = i + 1;
+        while j < result.len() {
+            if wires_intersect_2d(result[i], result[j], face_key, reg) {
+                // Merge wire j into wire i: concatenate edge lists
+                if let (Some(wire_i), Some(wire_j)) = (
+                    reg.wires.get(result[i]),
+                    reg.wires.get(result[j]),
+                ) {
+                    let mut merged_edges = wire_i.edges.clone();
+                    merged_edges.extend(wire_j.edges.clone());
+                    if let Some(w) = reg.wires.get_mut(result[i]) {
+                        w.edges = merged_edges;
+                    }
+                }
+                result.remove(j);
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+fn wires_intersect_2d(wk_a: WireKey, wk_b: WireKey, fk: FaceKey, reg: &BRepRegistry) -> bool {
+    let poly_a = match collect_wire_uv_polygon(wk_a, fk, reg) {
+        Some(p) => p,
+        None => return false,
+    };
+    let poly_b = match collect_wire_uv_polygon(wk_b, fk, reg) {
+        Some(p) => p,
+        None => return false,
+    };
+    // Bounding box quick reject
+    let (min_a, max_a) = polygon_bbox(&poly_a);
+    let (min_b, max_b) = polygon_bbox(&poly_b);
+    if max_a.0 < min_b.0 || max_b.0 < min_a.0 || max_a.1 < min_b.1 || max_b.1 < min_a.1 {
+        return false;
+    }
+    // Check if any vertex of A is inside B, or vice versa
+    poly_a.iter().any(|&(u, v)| point_in_polygon_winding(u, v, &poly_b))
+        || poly_b.iter().any(|&(u, v)| point_in_polygon_winding(u, v, &poly_a))
+}
+
+fn polygon_bbox(poly: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for &(x, y) in poly {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    ((min_x, min_y), (max_x, max_y))
 }
 
 fn cross_2d(x1: f32, y1: f32, x2: f32, y2: f32, u: f32, v: f32) -> f32 {
