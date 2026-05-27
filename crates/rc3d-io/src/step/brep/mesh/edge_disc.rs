@@ -16,11 +16,18 @@ pub struct EdgeDiscConfig {
     pub angle_deflection: f32,
     pub min_points: usize,
     pub max_points: usize,
+    pub relative_deflection: bool,
 }
 
 impl Default for EdgeDiscConfig {
     fn default() -> Self {
-        Self { deflection: 0.01, angle_deflection: 0.1, min_points: 2, max_points: 256 }
+        Self {
+            deflection: 0.01,
+            angle_deflection: 0.1,
+            min_points: 2,
+            max_points: 256,
+            relative_deflection: false,
+        }
     }
 }
 
@@ -57,30 +64,44 @@ pub fn discretize_edge(
         None => return EdgePolygon { params_3d: vec![], params_2d: HashMap::new() },
     };
 
+    let effective_deflection = if config.relative_deflection {
+        let len = (edge.curve.d0(1.0) - edge.curve.d0(0.0)).length();
+        len * config.deflection
+    } else {
+        config.deflection
+    };
+    let ec = EdgeDiscConfig {
+        deflection: effective_deflection,
+        angle_deflection: config.angle_deflection,
+        min_points: config.min_points,
+        max_points: config.max_points,
+        relative_deflection: config.relative_deflection,
+    };
+
     let params_3d = if is_seam_or_isoparam_edge(ek, edge, reg) {
         if let Some(exact) = sample_polyline_on_surface_exact(edge, reg) {
             exact
         } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
             if is_usable_pcurve(pcurve) {
-                sample_pcurve_on_surface(pcurve, surface, config)
+                sample_pcurve_on_surface(pcurve, surface, &ec)
             } else {
                 let mesh_curve = mesh_curve_for_edge(edge, reg);
-                sample_curve_adaptive(&mesh_curve, 0.0, 1.0, config)
+                sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
             }
         } else {
             let mesh_curve = mesh_curve_for_edge(edge, reg);
-            sample_curve_adaptive(&mesh_curve, 0.0, 1.0, config)
+            sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
         }
     } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
         if is_usable_pcurve(pcurve) {
-            sample_pcurve_on_surface(pcurve, surface, config)
+            sample_pcurve_on_surface(pcurve, surface, &ec)
         } else {
             let mesh_curve = mesh_curve_for_edge(edge, reg);
-            sample_curve_adaptive(&mesh_curve, 0.0, 1.0, config)
+            sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
         }
     } else {
         let mesh_curve = mesh_curve_for_edge(edge, reg);
-        sample_curve_adaptive(&mesh_curve, 0.0, 1.0, config)
+        sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
     };
 
     let mut params_2d = HashMap::new();
