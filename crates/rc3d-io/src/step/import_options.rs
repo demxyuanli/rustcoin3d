@@ -1,5 +1,7 @@
 //! STEP import strictness and quality reporting.
 
+use crate::step::brep::heal::HealLevel;
+
 /// How strictly STEP import treats parse/build/heal issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepImportMode {
@@ -11,22 +13,34 @@ pub enum StepImportMode {
 
 impl Default for StepImportMode {
     fn default() -> Self {
-        Self::Strict
+        Self::Preview
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct StepImportOptions {
     pub mode: StepImportMode,
+    /// Auto-heal level for B-Rep shells (default Advanced for industrial STEP).
+    pub heal_level: HealLevel,
+    /// When > 0, mesh deflection scales with shell bbox diagonal (OCC relative mode).
+    pub mesh_relative_deflection: f32,
 }
 
 impl StepImportOptions {
     pub fn strict() -> Self {
-        Self { mode: StepImportMode::Strict }
+        Self {
+            mode: StepImportMode::Strict,
+            heal_level: HealLevel::Standard,
+            mesh_relative_deflection: 0.001,
+        }
     }
 
     pub fn preview() -> Self {
-        Self { mode: StepImportMode::Preview }
+        Self {
+            mode: StepImportMode::Preview,
+            heal_level: HealLevel::Standard,
+            mesh_relative_deflection: 0.001,
+        }
     }
 
     pub fn recover_skipped_entities(&self) -> bool {
@@ -54,7 +68,7 @@ impl StepImportOptions {
 
 impl Default for StepImportOptions {
     fn default() -> Self {
-        Self::strict()
+        Self::preview()
     }
 }
 
@@ -66,4 +80,6 @@ pub struct StepImportReport {
     pub void_shell_count: usize,
     pub validation_errors: usize,
     pub heal_check_errors: usize,
+    pub unknown_entity_count: usize,
+    pub continuity_defects: usize,
 }
