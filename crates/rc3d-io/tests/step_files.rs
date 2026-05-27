@@ -1,6 +1,7 @@
 //! One-by-one STEP file tests to isolate crashes.
 //! Run with: cargo test -p rc3d-io --test step_files -- --nocapture
 
+use rc3d_core::NodeId;
 use rc3d_io::{parse_step_file, write_step_from_entities};
 use std::path::Path;
 
@@ -345,6 +346,98 @@ fn test_assembly_tree_hierarchy() {
     // Verify styles are extractable
     let styles = rc3d_io::step::assembly::extract_shell_styles(&exchange.entities);
     println!("  Shell styles: {}", styles.len());
+}
+
+/// Integration test: PMI extraction from a STEP snippet containing
+/// dimension, datum, and tolerance entities, and their wiring into
+/// an AnnotationSet scene graph node.
+#[test]
+fn test_pmi_extraction_from_step_snippet() {
+    use rc3d_io::step::parser::parse_exchange;
+    use rc3d_io::step::pmi::pmi_extract::extract_pmi;
+    use rc3d_scene::SceneGraph;
+    use rc3d_scene::node_data::{NodeData, SeparatorNode};
+
+    let input = "\
+ISO-10303-21;
+HEADER;
+FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING'));
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('pt1', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('pt2', (10.0, 0.0, 0.0));
+#3 = DIMENSIONAL_CHARACTERISTIC_REPRESENTATION('', 10.0);
+#4 = DIMENSIONAL_SIZE('dist', '', #3);
+#5 = ANNOTATION_OCCURRENCE('', #4, $, (#1, #2));
+#10 = CARTESIAN_POINT('org', (5.0, 0.0, 0.0));
+#11 = AXIS2_PLACEMENT_3D('', #10, #12, #13);
+#12 = DIRECTION('', (0.0, 0.0, 1.0));
+#13 = DIRECTION('', (1.0, 0.0, 0.0));
+#14 = DATUM('', 'A', (#11));
+#20 = CARTESIAN_POINT('org2', (5.0, 2.0, 0.0));
+#21 = GEOMETRIC_TOLERANCE('', '', #3);
+#22 = ANNOTATION_OCCURRENCE('', #21, $, (#20));
+ENDSEC;
+END-ISO-10303-21;
+    ";
+
+    // Phase 1: parse entities (snippet has no B-Rep geometry, so parse_step
+    // would fail with NoGeometry; use parse_exchange + extract_pmi directly)
+    let exchange = parse_exchange(input).expect("parse exchange");
+
+    // Phase 2: extract PMI data
+    let pmi = extract_pmi(&exchange.entities);
+
+    // Verify all three PMI types are present and correct
+    assert_eq!(pmi.dimensions.len(), 1, "should extract one dimension");
+    assert_eq!(pmi.datums.len(), 1, "should extract one datum");
+    assert_eq!(pmi.tolerances.len(), 1, "should extract one tolerance");
+
+    // Verify dimension content
+    let dim = &pmi.dimensions[0];
+    assert!(dim.text.contains("dist"), "dimension text should contain 'dist'");
+    assert!((dim.start.x - 0.0).abs() < 1e-6, "dimension start.x should be 0.0");
+    assert!((dim.end.x - 10.0).abs() < 1e-6, "dimension end.x should be 10.0");
+
+    // Verify datum content
+    let datum = &pmi.datums[0];
+    assert_eq!(datum.label, "A", "datum label should be 'A'");
+    assert!((datum.origin.x - 5.0).abs() < 1e-6, "datum origin.x should be 5.0");
+
+    // Verify tolerance content
+    let tol = &pmi.tolerances[0];
+    assert!((tol.value - 10.0).abs() < 1e-6, "tolerance value should be 10.0");
+
+    // Phase 3: verify PMI -> AnnotationSet scene graph bridge
+    let mut graph = SceneGraph::new();
+    let root = graph.add_root(NodeData::Separator(SeparatorNode));
+    let annot_id = rc3d_io::step::pmi::pmi_render::attach_pmi_to_scene(
+        &mut graph, root, &pmi,
+    );
+    assert!(
+        annot_id != NodeId::default(),
+        "attach_pmi_to_scene should return a valid NodeId"
+    );
+
+    // Verify AnnotationSet node exists among root's children
+    let children = graph.children(root).expect("root should have children");
+    let found_annot = children.iter().any(|&cid| {
+        graph.get(cid).is_some_and(|entry| {
+            matches!(&entry.data, NodeData::AnnotationSet(s) if !s.elements.is_empty())
+        })
+    });
+    assert!(found_annot, "PMI AnnotationSet node should exist in scene graph");
+
+    // Verify the AnnotationSet has the correct number of elements.
+    // GEOMETRIC_TOLERANCE (generic base type) is extracted but has no
+    // specific GDT symbol, so it is filtered out during rendering.
+    let annot_entry = graph.get(annot_id).expect("AnnotationSet should be found");
+    if let NodeData::AnnotationSet(ann) = &annot_entry.data {
+        // dimension + datum = 2; tolerance is extracted but skipped in render
+        assert_eq!(ann.elements.len(), 2, "AnnotationSet should have 2 elements (dim + datum)");
+    } else {
+        panic!("expected AnnotationSet node at returned annot_id");
+    }
 }
 
 #[test]
