@@ -3,7 +3,7 @@
 use super::super::entity_types::EntityType;
 use super::super::parser::EntityIndex;
 use rc3d_core::math::Vec3;
-use rc3d_scene::node_data::GdtSymbol;
+use rc3d_scene::node_data::{GdtMaterialCondition, GdtSymbol};
 
 /// Linear dimension with start/end points and offset direction.
 #[derive(Debug, Clone)]
@@ -22,12 +22,18 @@ pub struct PmiDatum {
     pub label: String,
 }
 
-/// Geometric tolerance frame with leader lines.
+/// Geometric tolerance frame with GD&T typed fields.
 #[derive(Debug, Clone)]
 pub struct PmiToleranceFrame {
     pub origin: Vec3,
     pub leader_points: Vec<Vec3>,
     pub text: String,
+    pub symbol: Option<GdtSymbol>,
+    pub value: f32,
+    pub diameter: bool,
+    pub datum_primary: Option<String>,
+    pub datum_secondary: Option<String>,
+    pub material_condition: Option<GdtMaterialCondition>,
 }
 
 /// All extracted PMI data from a STEP file.
@@ -62,7 +68,7 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
             | EntityType::PerpendicularityTolerance
             | EntityType::RunoutTolerance
             | EntityType::StraightnessTolerance => {
-                if let Some(tol) = extract_tolerance(&record.params, entities) {
+                if let Some(tol) = extract_tolerance(record.entity_type, &record.params, entities) {
                     pmi.tolerances.push(tol);
                 }
             }
@@ -184,19 +190,58 @@ fn extract_datum(
 }
 
 fn extract_tolerance(
+    entity_type: EntityType,
     params: &super::super::value::StepValue,
-    _entities: &EntityIndex,
+    entities: &EntityIndex,
 ) -> Option<PmiToleranceFrame> {
-    // GEOMETRIC_TOLERANCE(name, name, ...)
     let text = params.nth_param(1)
         .and_then(|v| v.as_string())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "TOL".to_string());
-    // Default origin at zero, no leader points
+
+    let mut origin = Vec3::ZERO;
+    let mut leader_points = vec![];
+    let mut value = 0.0f32;
+    let diameter = false;
+    let datum_primary: Option<String> = None;
+    let datum_secondary: Option<String> = None;
+
+    // Resolve tolerance value from DIMENSIONAL_CHARACTERISTIC_REPRESENTATION
+    if let Some(nom_val) = params.nth_param(2) {
+        if let Some(id) = nom_val.as_ref_id() {
+            if let Some(rec) = entities.get(&id) {
+                if let Some(v) = rec.params.nth_param(1) {
+                    value = v.as_real().unwrap_or(0.0) as f32;
+                }
+            }
+        }
+    }
+
+    // Resolve position: search ANNOTATION_OCCURRENCE for anchor points
+    for (_, anno_rec) in entities.iter() {
+        if anno_rec.entity_type != EntityType::AnnotationOccurrence {
+            continue;
+        }
+        if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
+            let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
+            let pts = resolve_pmi_points(&ref_ids, entities);
+            if let Some(&first) = pts.first() {
+                origin = first;
+            }
+            leader_points = pts;
+        }
+    }
+
     Some(PmiToleranceFrame {
-        origin: Vec3::ZERO,
-        leader_points: vec![],
+        origin,
+        leader_points,
         text,
+        symbol: gdt_symbol_for_entity(entity_type),
+        value,
+        diameter,
+        datum_primary,
+        datum_secondary,
+        material_condition: None,
     })
 }
 
