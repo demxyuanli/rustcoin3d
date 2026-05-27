@@ -283,4 +283,53 @@ mod tests {
         assert!(r2.already_connected > 0);
         assert_eq!(r2.merged_vertices, 0);
     }
+
+    #[test]
+    fn test_fix_connected_closed_wire() {
+        let mut reg = BRepRegistry::new();
+        // Build a 3-edge closed triangle wire
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(0.5, 0.866, 0.0), 1e-4);
+        // Create separate "duplicate" vertex at same position for connected check
+        let v0_dup = reg.vertices.insert(crate::step::brep::topo::BRepVertex {
+            position: Vec3::ZERO,
+            tolerance: 1e-4,
+        });
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: WireKey::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
+        // Edge 3: v2 → v0_dup (different vertex key at same position = gap at closure)
+        let e3 = reg.add_edge_with_pcurve(v2, v0_dup, line.clone(), 1e-4, fk, line.clone());
+        let wk = reg.wires.insert(BRepWire {
+            edges: vec![
+                (e1, Orientation::Forward),
+                (e2, Orientation::Forward),
+                (e3, Orientation::Forward),
+            ],
+        });
+        let report = fix_connected_wire(wk, &mut reg, 1e-3);
+        assert!(
+            report.merged_vertices > 0,
+            "closed wire last->first gap should be merged"
+        );
+    }
 }

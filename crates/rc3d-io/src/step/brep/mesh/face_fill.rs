@@ -8,6 +8,7 @@ use rc3d_core::math::Vec3;
 use super::face_cdt::triangulate_uv_cdt_with_steiner;
 use super::face_uv::{split_boundary_chains_at_3d_jumps, FaceUvLoops, loops_native_surface_uv};
 use crate::step::brep::geom::SurfaceGeom;
+use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::{BRepFace, FaceKey};
 
 #[derive(Debug, Clone)]
@@ -271,6 +272,7 @@ fn triangulate_open_chain_uv(chain: &[super::face_uv::UvVertex], verts: &[Vec3])
 fn triangulate_loops_cdt(
     work_loops: &FaceUvLoops,
     face: &BRepFace,
+    reg: &BRepRegistry,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -283,7 +285,7 @@ fn triangulate_loops_cdt(
         global_normals,
         pos_to_idx,
         fill_cfg,
-        None,
+        Some(reg),
     );
     let mut tris = Vec::new();
     for chunk in tris_flat.chunks(3) {
@@ -472,6 +474,7 @@ pub fn fill_trimmed(
     face_key: FaceKey,
     loops: &FaceUvLoops,
     face: &BRepFace,
+    reg: &BRepRegistry,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
@@ -524,6 +527,7 @@ pub fn fill_trimmed(
         let (cdt_tris, chord) = triangulate_loops_cdt(
             &work_loops,
             face,
+            reg,
             global_vertices,
             global_normals,
             pos_to_idx,
@@ -541,6 +545,7 @@ pub fn fill_trimmed(
         let (cdt_tris, chord) = triangulate_loops_cdt(
             &work_loops,
             face,
+            reg,
             global_vertices,
             global_normals,
             pos_to_idx,
@@ -1191,6 +1196,7 @@ fn accumulate_normals(
 mod tests {
     use super::*;
     use crate::step::brep::mesh::face_uv::{point_in_trim, signed_area_2d, UvLoop, UvSource, UvVertex};
+    use crate::step::brep::registry::BRepRegistry;
     use crate::step::brep::topo::{BRepFace, FaceKey};
 
     #[test]
@@ -1243,11 +1249,13 @@ mod tests {
         let mut norms = vec![Vec3::Z; 8];
         let mut indices = Vec::new();
         let mut pos_map = HashMap::new();
+        let reg = BRepRegistry::new();
         let fk = FaceKey::default();
         let range = fill_trimmed(
             fk,
             &loops,
             &face,
+            &reg,
             &mut verts,
             &mut norms,
             &mut indices,

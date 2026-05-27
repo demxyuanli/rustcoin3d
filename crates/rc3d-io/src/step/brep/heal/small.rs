@@ -148,4 +148,20 @@ mod tests {
         let result = remove_small_edges(wire_key, &mut reg, &[], 1e-3);
         assert!(result.is_none(), "wire with all edges removed should return None");
     }
+
+    #[test]
+    fn test_small_inner_wire_removed() {
+        let mut reg = BRepRegistry::new();
+        let (wire_key, _edge_keys, face_key) =
+            make_wire_with_edges(&mut reg, &[0.0, 0.0]);
+        // Make this an inner wire by updating the face
+        if let Some(face) = reg.faces.get_mut(face_key) {
+            face.inner_wires.push(wire_key);
+        }
+        let result = remove_small_edges(wire_key, &mut reg, &[], 1e-3);
+        assert!(
+            result.is_none(),
+            "inner wire with all small edges removed should return None"
+        );
+    }
 }

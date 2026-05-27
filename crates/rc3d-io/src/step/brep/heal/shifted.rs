@@ -152,6 +152,8 @@ fn shift_pcurve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::step::brep::geom::CurveGeom;
+    use crate::step::brep::topo::{BRepWire, Orientation};
     use rc3d_core::math::Vec3;
 
     #[test]
@@ -176,5 +178,112 @@ mod tests {
         let (pu, pv) = surface_periods(&s);
         assert_eq!(pu, 0.0);
         assert_eq!(pv, 0.0);
+    }
+
+    #[test]
+    fn test_shifted_cylinder_pcurve() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 1.0,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let curve_3d = CurveGeom::Line {
+            origin: Vec3::new(1.0, 0.0, 0.0),
+            direction: Vec3::new(0.0, 0.0, 1.0),
+        };
+        let pc_normal = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+        };
+        let pc_shifted = CurveGeom::Line {
+            origin: Vec3::new(std::f32::consts::TAU, 0.0, 0.0),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+        };
+        // Direct insert to get distinct EdgeKeys (add_edge_with_pcurve would dedup on vertex pair)
+        let e1 = reg.edges.insert(crate::step::brep::topo::BRepEdge {
+            v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
+            pcurves: std::collections::HashMap::from([(fk, pc_normal.clone())]),
+        });
+        let e2 = reg.edges.insert(crate::step::brep::topo::BRepEdge {
+            v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
+            pcurves: std::collections::HashMap::from([(fk, pc_normal.clone())]),
+        });
+        let e3 = reg.edges.insert(crate::step::brep::topo::BRepEdge {
+            v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
+            pcurves: std::collections::HashMap::from([(fk, pc_normal)]),
+        });
+        let e4 = reg.edges.insert(crate::step::brep::topo::BRepEdge {
+            v_low: v0, v_high: v1, curve: curve_3d, tolerance: 1e-4,
+            pcurves: std::collections::HashMap::from([(fk, pc_shifted)]),
+        });
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, Orientation::Forward),
+            (e3, Orientation::Forward),
+            (e4, Orientation::Forward),
+        ];
+        let report = fix_shifted_pcurves(wk, fk, &mut reg);
+        // One PCurve should be shifted back to match the cluster
+        assert!(
+            report.shifts_applied > 0,
+            "shifted cylinder PCurve should be detected and corrected"
+        );
+    }
+
+    #[test]
+    fn test_no_false_positive() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 1.0,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::new(1.0, 0.0, 0.0),
+            direction: Vec3::new(0.0, 0.0, 1.0),
+        };
+        // Both PCurves are close to U=0 — not shifted
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.1, 0.0, 0.0),
+            direction: Vec3::new(0.5, 0.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, Orientation::Forward),
+        ];
+        let report = fix_shifted_pcurves(wk, fk, &mut reg);
+        assert_eq!(
+            report.shifts_applied, 0,
+            "valid unshifted PCurves should not be modified"
+        );
     }
 }

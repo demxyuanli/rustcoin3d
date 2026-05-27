@@ -190,4 +190,39 @@ mod tests {
             defects
         );
     }
+
+    #[test]
+    fn test_g1_discontinuity_at_seam() {
+        let mut reg = BRepRegistry::new();
+        // Two faces meeting at 90 degrees along a shared edge
+        let surface1 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface2 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::X, u_dir: Vec3::Y };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let wk1 = reg.wires.insert(BRepWire { edges: vec![] });
+        let f1 = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface: surface1, outer_wire: wk1, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let wk2 = reg.wires.insert(BRepWire { edges: vec![] });
+        let f2 = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface: surface2, outer_wire: wk2, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, line.clone());
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, line.clone());
+        reg.wires.get_mut(wk1).unwrap().edges = vec![(ek, Orientation::Forward)];
+        reg.wires.get_mut(wk2).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(f1, Orientation::Forward), (f2, Orientation::Forward)],
+            closed: false, step_id: None,
+        });
+        // With strict G1 tolerance, 90-degree faces should produce a G1 defect
+        let defects = check_shell_continuity(sk, &reg, 0.01, 1.0);
+        // 90 degrees > 1 degree, so G1 defect expected
+        assert!(!defects.is_empty(), "90-degree faces should produce G1 defect");
+    }
 }

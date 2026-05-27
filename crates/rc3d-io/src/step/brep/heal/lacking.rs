@@ -174,4 +174,13 @@ mod tests {
         let report = fix_lacking_edges(wk, fk, &mut reg, 1e-3, 2e-4);
         assert_eq!(report.tolerance_fixes, 0, "no fix when UV gap is zero");
     }
+
+    #[test]
+    fn test_lacking_large_gap_new_edge() {
+        let mut reg = BRepRegistry::new();
+        let (wk, fk) = make_wire_with_uv_gap(&mut reg, 0.01);
+        let report = fix_lacking_edges(wk, fk, &mut reg, 1e-3, 1e-4);
+        // Large UV gap should trigger edge insertion (dist_uv >= tol_uv * 10)
+        assert!(report.edges_added > 0 || report.tolerance_fixes > 0, "large UV gap should be fixed");
+    }
 }

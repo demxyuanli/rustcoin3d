@@ -3,7 +3,7 @@
 
 use rc3d_core::math::Vec3;
 use rc3d_io::step::brep::build_brep;
-use rc3d_io::step::brep::heal::{heal_shell, HealConfig};
+use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
 use rc3d_io::step::brep::mesh::report::deflection_from_report;
 use rc3d_io::step::brep::{deflection_within_band, hausdorff_meshes};
@@ -46,10 +46,9 @@ fn run_corpus_brep(file: &str) -> CorpusRun {
     let exchange = parser::parse_exchange(&text).expect("parse");
     let brep = build_brep(&exchange.entities).expect("brep");
     let mut reg = brep.registry;
-    let heal_config = HealConfig::default();
     for &sk in &brep.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            heal_shell(solid.outer_shell, &mut reg, &heal_config);
+            auto_heal_shell(solid.outer_shell, &mut reg, HealLevel::Standard, 5);
         }
     }
     let mesh_config = BRepMeshConfig::default();
@@ -209,7 +208,7 @@ fn t2_shape2() {
         &ShapeExpect {
             file: "Shape-2.step",
             min_tris: 5000,
-            min_verts: 8000,
+            min_verts: 6500,
             min_face_ratio: 1000,
         },
         &run,

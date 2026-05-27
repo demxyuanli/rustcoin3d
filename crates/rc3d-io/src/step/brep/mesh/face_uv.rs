@@ -482,6 +482,75 @@ fn ensure_loop_orientation(boundary: &mut Vec<UvVertex>, is_hole: bool) {
     }
 }
 
+/// Split outer boundary into open chains at large 3D edge jumps (cap/spiral junctions).
+pub fn split_boundary_chains_at_3d_jumps(
+    boundary: &[UvVertex],
+    verts: &[Vec3],
+    jump_ratio: f32,
+) -> (Vec<Vec<UvVertex>>, usize) {
+    let n = boundary.len();
+    if n < 3 {
+        return (Vec::new(), 0);
+    }
+    let mut lens = Vec::with_capacity(n);
+    let mut dzs = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if boundary[i].global_idx < verts.len() && boundary[j].global_idx < verts.len() {
+            let pi = verts[boundary[i].global_idx];
+            let pj = verts[boundary[j].global_idx];
+            lens.push((pj - pi).length());
+            dzs.push((pj.z - pi.z).abs());
+        } else {
+            lens.push(0.0);
+            dzs.push(0.0);
+        }
+    }
+    let mut sorted = lens.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = sorted[sorted.len() / 2];
+    let len_thresh = (med * jump_ratio).max(med + 0.5).max(1.0);
+
+    let mut dz_sorted = dzs.clone();
+    dz_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let dz_med = dz_sorted[dz_sorted.len() / 2];
+    let dz_thresh = (dz_med * 15.0).max(8.0);
+
+    let is_jump = |i: usize| lens[i] > len_thresh || dzs[i] > dz_thresh;
+    let long_count = (0..n).filter(|&i| is_jump(i)).count();
+
+    let mut chains: Vec<Vec<UvVertex>> = Vec::new();
+    let mut current = vec![boundary[0].clone()];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        if is_jump(i) {
+            if current.len() >= 3 {
+                chains.push(current);
+            }
+            current = vec![boundary[j].clone()];
+        } else if j != 0 {
+            current.push(boundary[j].clone());
+        }
+    }
+    if current.len() >= 3 {
+        chains.push(current);
+    }
+    if chains.is_empty() {
+        chains.push(boundary.to_vec());
+    }
+    (chains, long_count)
+}
+
+pub fn boundary_has_3d_jumps(boundary: &[UvVertex], verts: &[Vec3], jump_ratio: f32) -> bool {
+    let (_, long_count) = split_boundary_chains_at_3d_jumps(boundary, verts, jump_ratio);
+    long_count >= 2
+}
+
+/// Mixed cap+side topology: at least two large 3D jumps on the outer wire.
+pub fn boundary_is_mixed(boundary: &[UvVertex], verts: &[Vec3]) -> bool {
+    boundary_has_3d_jumps(boundary, verts, 8.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

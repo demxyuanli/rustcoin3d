@@ -82,6 +82,31 @@ mod tests {
     use rc3d_core::math::Vec3;
 
     #[test]
+    fn test_unit_sphere_properties() {
+        // Approximate sphere with octahedron subdivision
+        let r = 1.0f32;
+        let mut verts = Vec::new();
+        let mut idx = Vec::new();
+        // Simple octahedron approximating a sphere
+        let top = Vec3::new(0.0, 0.0, r);
+        let bot = Vec3::new(0.0, 0.0, -r);
+        let front = Vec3::new(r, 0.0, 0.0);
+        let back = Vec3::new(-r, 0.0, 0.0);
+        let left = Vec3::new(0.0, r, 0.0);
+        let right = Vec3::new(0.0, -r, 0.0);
+        verts.extend([top, front, left, back, right, bot]);
+        // 8 triangles covering the octahedron
+        idx.extend([
+            0,1,2,-1, 0,2,3,-1, 0,3,4,-1, 0,4,1,-1, // top hemisphere
+            5,2,1,-1, 5,3,2,-1, 5,4,3,-1, 5,1,4,-1, // bottom hemisphere
+        ]);
+        let props = compute_mesh_properties(&verts, &idx);
+        // Octahedron volume = 4/3 < sphere's 4π/3
+        assert!(props.volume > 0.5 && props.volume < 5.0, "octahedron volume should be in ballpark");
+        assert!(props.surface_area > 3.0 && props.surface_area < 20.0, "octahedron area should be reasonable");
+    }
+
+    #[test]
     fn test_unit_cube_properties() {
         // Unit cube: 12 triangles, 8 vertices
         let verts = vec![

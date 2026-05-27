@@ -188,10 +188,8 @@ pub fn triangulate_uv_cdt_with_steiner(
         }
     }
 
-    // Degenerated edges (from surface singularities like sphere poles / cone apex)
-    // have zero-length UV PCurves (direction == Vec3::ZERO), making CDT constraint
-    // insertion meaningless. Skipped for now — future Phase 3 work will carry non-zero
-    // Insert degenerated edges as CDT constraints
+    // Degenerated edges (from surface singularities like sphere poles / cone apex).
+    // Insert degenerated edges as CDT constraints when PCurve UV extent is non-zero.
     if let Some(reg) = reg {
         for &dek in &face.degenerated_edges {
             let edge = match reg.edges.get(dek) {

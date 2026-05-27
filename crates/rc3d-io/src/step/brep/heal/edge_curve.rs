@@ -234,4 +234,38 @@ mod tests {
         let adjusted = fix_edge_curves(sk, &mut reg, 1e-3);
         assert_eq!(adjusted, 0, "already-aligned curve should not be counted");
     }
+
+    #[test]
+    fn test_fix_circle_arc() {
+        let mut reg = BRepRegistry::new();
+        let center = Vec3::new(1.0, 0.0, 0.0);
+        let v0 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4); // at angle 0
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 1.01, 0.0), 1e-4); // slightly off true circle
+        let circle = CurveGeom::Circle { center, axis: Vec3::Z, radius: 1.0 };
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        // Insert edge directly to bypass normalize_edge_curve_to_vertices (which converts
+        // non-matching curves to line chords). We want the circle geometry preserved so
+        // fix_edge_curves can detect and adjust the deviation.
+        let ek = reg.edges.insert(BRepEdge {
+            curve: circle.clone(),
+            tolerance: 1e-4,
+            v_low: v0.min(v1),
+            v_high: v0.max(v1),
+            pcurves: {
+                let mut m = HashMap::new();
+                m.insert(fk, circle.clone());
+                m
+            },
+        });
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(BRepShell { faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None });
+        let adjusted = fix_edge_curves(sk, &mut reg, 1e-3);
+        assert!(adjusted > 0, "circle edge with offset endpoint should be adjusted");
+    }
 }

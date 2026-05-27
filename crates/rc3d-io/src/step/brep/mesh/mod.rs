@@ -7,6 +7,7 @@ pub mod face_cdt;
 pub mod same_param;
 pub mod report;
 pub mod t4_quality;
+pub mod diagnostic;
 
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
@@ -16,11 +17,15 @@ use super::registry::BRepRegistry;
 use super::geom::SurfaceGeom;
 use crate::step::mesh_result::MeshResult;
 use edge_disc::{EdgeDiscConfig, EdgePolygon, discretize_all_edges};
-use face_fill::{FaceFillConfig, FaceMeshRange, fill_trimmed, surface_fill_3d, measure_face_chord_error};
+use face_fill::{
+    face_boundary_is_mixed, FaceFillConfig, FaceMeshRange, fill_trimmed, surface_fill_3d,
+    measure_face_chord_error,
+};
 use face_uv::{collect_face_loops, UvSource};
 use refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map, RefineConfig};
 use optimize::{OptimizeConfig, optimize_mesh};
 use same_param::apply_same_parameter;
+use diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinates_if_requested};
 use report::{
     apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport,
 };
@@ -186,6 +191,8 @@ pub fn mesh_brep_shell_with_report(
 
     let mut all_indices: Vec<i32> = Vec::new();
     let mut face_ranges: Vec<FaceMeshRange> = Vec::new();
+    let collect_diag = diag_enabled();
+    let mut wire_diag: Vec<String> = Vec::new();
 
     for info in &face_infos {
         let face = match reg.faces.get(info.face_key) {
@@ -225,11 +232,39 @@ pub fn mesh_brep_shell_with_report(
             &global_vertices,
         );
 
-        let used_surface_fill = !loops.is_fillable() || loops.uv_source == UvSource::SurfaceFill;
-        let mut range = if !used_surface_fill {
-            fill_trimmed(
+        if collect_diag && !info.wire_edges.is_empty() {
+            wire_diag.extend(format_wire_loop_lines(
                 info.face_key,
                 &loops,
+                &info.wire_edges,
+                &edge_boundary_idx,
+                &global_vertices,
+            ));
+        }
+
+        let used_surface_fill = !loops.is_fillable() || loops.uv_source == UvSource::SurfaceFill;
+        let mixed_boundary = !used_surface_fill
+            && !matches!(face.surface, SurfaceGeom::Plane { .. })
+            && face_boundary_is_mixed(&loops, &global_vertices);
+
+        let mut boundary_ordered = Vec::new();
+        for &(ek, ref pis) in &info.wire_edges {
+            for &pi in pis {
+                if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
+                    if boundary_ordered.last() != Some(&gi) {
+                        boundary_ordered.push(gi);
+                    }
+                }
+            }
+        }
+        if boundary_ordered.len() >= 2 && boundary_ordered.first() == boundary_ordered.last() {
+            boundary_ordered.pop();
+        }
+
+        let mut range = if used_surface_fill || mixed_boundary {
+            surface_fill_3d(
+                info.face_key,
+                &boundary_ordered,
                 face,
                 &mut global_vertices,
                 &mut global_normals,
@@ -238,25 +273,11 @@ pub fn mesh_brep_shell_with_report(
                 &scaled_config.face,
             )
         } else {
-            let mut boundary_ordered = Vec::new();
-            for &(ek, ref pis) in &info.wire_edges {
-                for &pi in pis {
-                    if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
-                        if boundary_ordered.last() != Some(&gi) {
-                            boundary_ordered.push(gi);
-                        }
-                    }
-                }
-            }
-            if boundary_ordered.len() >= 2
-                && boundary_ordered.first() == boundary_ordered.last()
-            {
-                boundary_ordered.pop();
-            }
-            surface_fill_3d(
+            fill_trimmed(
                 info.face_key,
-                &boundary_ordered,
+                &loops,
                 face,
+                reg,
                 &mut global_vertices,
                 &mut global_normals,
                 &mut all_indices,
@@ -270,22 +291,7 @@ pub fn mesh_brep_shell_with_report(
             report.grid_fallback_count += 1;
         }
 
-        if range.tri_count == 0 && !used_surface_fill {
-            let mut boundary_ordered = Vec::new();
-            for &(ek, ref pis) in &info.wire_edges {
-                for &pi in pis {
-                    if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
-                        if boundary_ordered.last() != Some(&gi) {
-                            boundary_ordered.push(gi);
-                        }
-                    }
-                }
-            }
-            if boundary_ordered.len() >= 2
-                && boundary_ordered.first() == boundary_ordered.last()
-            {
-                boundary_ordered.pop();
-            }
+        if range.tri_count == 0 && !used_surface_fill && !mixed_boundary {
             range = surface_fill_3d(
                 info.face_key,
                 &boundary_ordered,
@@ -399,7 +405,23 @@ pub fn mesh_brep_shell_with_report(
         indices: all_indices,
         normals: global_normals,
     };
+    let culled = cull_degenerate_tris(&mut mesh.indices, &mesh.vertices);
+    if culled > 0 {
+        log::debug!("[BRep mesh] culled {culled} degenerate triangle(s)");
+        report.total_tris = mesh.indices.len() / 4;
+    }
     optimize_mesh(&mut mesh, &scaled_config.optimize);
+    if collect_diag {
+        log_mesh_coordinates_if_requested(
+            shell_key,
+            reg,
+            &mesh.vertices,
+            &mesh.indices,
+            &face_ranges,
+            &report,
+            &wire_diag,
+        );
+    }
     ShellMeshOutput { mesh, report }
 }
 

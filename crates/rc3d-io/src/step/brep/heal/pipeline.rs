@@ -140,6 +140,65 @@ fn has_multiple_wires(check: &CheckReport) -> bool {
     check.warnings.iter().any(|w| w.contains("inner wire") || w.contains("intersecting"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+    use crate::step::brep::topo::{BRepWire, Orientation};
+    use crate::step::brep::registry::BRepRegistry;
+    use rc3d_core::math::Vec3;
+
+    #[test]
+    fn test_auto_heal_converges() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        // Build edges and determine orientation based on v_low/v_high vs wire direction
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, line);
+        let orient_for = |ek, from_vk| {
+            let edge = reg.edges.get(ek).unwrap();
+            if edge.v_low == from_vk { Orientation::Forward } else { Orientation::Reversed }
+        };
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, orient_for(e1, v0)), (e2, orient_for(e2, v1)), (e3, orient_for(e3, v2)),
+        ];
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
+        });
+        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 3);
+        assert!(report.check_errors <= 1, "simple wire should converge quickly");
+    }
+
+    #[test]
+    fn test_auto_heal_max_iterations() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
+        });
+        // Heal with max 1 iteration — should not panic or loop
+        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 1);
+        assert!(report.merged_vertices >= 0, "should complete without error");
+    }
+}
+
 impl HealReport {
     /// Sum of all categories to give a quick total-fixes count for pipeline diagnostics.
     fn total_fix_count(&self) -> usize {

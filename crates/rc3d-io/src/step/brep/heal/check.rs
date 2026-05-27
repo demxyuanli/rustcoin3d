@@ -660,6 +660,83 @@ mod tests {
     }
 
     #[test]
+    fn test_check_edge_tolerance_oversized() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(0.01, 0.0, 0.0), 1e-4);
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::new(0.01, 0.0, 0.0),
+        };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        // Artificially set tolerance way too high
+        if let Some(edge) = reg.edges.get_mut(ek) {
+            edge.tolerance = 1.0;
+        }
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let warnings = check_edge_tolerance(ek, &reg);
+        assert!(
+            !warnings.is_empty(),
+            "oversized tolerance should produce warnings"
+        );
+    }
+
+    #[test]
+    fn test_check_surface_singularity_sphere_pole() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+        };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        // Create an edge with a PCurve endpoint near the sphere north pole
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // PCurve from pole-adjacent UV to equator
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, std::f32::consts::FRAC_PI_2 - 0.001, 0.0),
+            direction: Vec3::new(1.0, -std::f32::consts::FRAC_PI_2 + 0.001, 0.0),
+        };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let warnings = check_surface_singularities(fk, &reg);
+        assert!(
+            !warnings.is_empty(),
+            "sphere pole should produce singularity warnings"
+        );
+    }
+
+    #[test]
     fn non_manifold_edge_yields_warning() {
         let mut reg = BRepRegistry::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
@@ -693,7 +770,7 @@ mod tests {
                 tolerance: 1e-4,
                 seam_edges: vec![],
                 color: None,
-            degenerated_edges: vec![],
+                degenerated_edges: vec![],
             }));
         }
         let faces: Vec<_> = face_keys

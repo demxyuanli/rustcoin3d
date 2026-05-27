@@ -241,4 +241,38 @@ mod tests {
         assert_eq!(report.degeneracies_found, 0);
         assert_eq!(report.degenerate_edges_created, 0);
     }
+
+    #[test]
+    fn test_degenerated_edges_on_face() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let v_np = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
+        let v_eq = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 1.0), direction: Vec3::new(1.0, 0.0, -1.0) };
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, std::f32::consts::FRAC_PI_2 - 1e-6, 0.0),
+            direction: Vec3::new(0.1, -std::f32::consts::FRAC_PI_2 + 1e-6, 0.0),
+        };
+        let ek = reg.add_edge_with_pcurve(v_np, v_eq, line, 1e-4, fk, pc);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let report = fix_degenerated_edges(fk, &mut reg);
+        assert!(report.degenerate_edges_created > 0);
+        let face = reg.faces.get(fk).unwrap();
+        assert!(!face.degenerated_edges.is_empty());
+        for &dek in &face.degenerated_edges {
+            let edge = reg.edges.get(dek).unwrap();
+            // Degenerated edge should have a PCurve with real UV extent
+            let pc = edge.pcurves.values().next().unwrap();
+            let uv0 = pc.d0(0.0);
+            let uv1 = pc.d0(1.0);
+            let uv_len = ((uv0.x - uv1.x).powi(2) + (uv0.y - uv1.y).powi(2)).sqrt();
+            assert!(uv_len > 1e-6, "degenerated edge PCurve should have real UV extent, got {}", uv_len);
+        }
+    }
 }

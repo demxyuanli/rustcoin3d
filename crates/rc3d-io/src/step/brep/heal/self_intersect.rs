@@ -410,4 +410,39 @@ mod tests {
             "simple triangle should have no self-intersections"
         );
     }
+
+    #[test]
+    fn test_fix_self_intersect_too_many() {
+        let mut reg = BRepRegistry::new();
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        // Create edges that all cross through the origin (0,0) at interior t≈0.5.
+        // Each edge goes from one point on the unit circle to the opposite point,
+        // so every non-adjacent pair intersects at (0,0) — far more than the 50 cap.
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let mut edges = Vec::new();
+        for i in 0..60 {
+            let angle = (i as f32 / 60.0) * std::f32::consts::TAU;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+            let a = reg.find_or_add_vertex(Vec3::new(cos_a, sin_a, 0.0), 1e-4);
+            let b = reg.find_or_add_vertex(Vec3::new(-cos_a, -sin_a, 0.0), 1e-4);
+            let pc = CurveGeom::Line {
+                origin: Vec3::new(cos_a, sin_a, 0.0),
+                direction: Vec3::new(-2.0 * cos_a, -2.0 * sin_a, 0.0),
+            };
+            let ek = reg.add_edge_with_pcurve(a, b, line.clone(), 1e-4, fk, pc);
+            edges.push((ek, Orientation::Forward));
+        }
+        reg.wires.get_mut(wk).unwrap().edges = edges;
+        let report = fix_self_intersecting_wire(wk, fk, &mut reg);
+        // Should detect many intersections and clear the wire (>50 cap)
+        let wire_empty = reg.wires.get(wk).unwrap().edges.is_empty();
+        assert!(wire_empty, ">50 intersections should clear the wire");
+    }
 }

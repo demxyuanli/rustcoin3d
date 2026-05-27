@@ -203,11 +203,108 @@ fn cross_2d(x1: f32, y1: f32, x2: f32, y2: f32, u: f32, v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+    use crate::step::brep::topo::{BRepWire, Orientation};
+    use rc3d_core::math::Vec3;
 
     #[test]
     fn test_point_in_square() {
         let square = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
         assert!(point_in_polygon_winding(0.5, 0.5, &square));
         assert!(!point_in_polygon_winding(2.0, 0.5, &square));
+    }
+
+    #[test]
+    fn test_inner_outside_outer_removed() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        // Outer wire: UV square from (0,0) to (1,1) — use proper per-edge PCurves
+        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc2 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
+        let pc3 = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-1.0, 0.0, 0.0) };
+        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 1.0, 0.0), direction: Vec3::new(0.0, -1.0, 0.0) };
+        let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk_outer, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4);
+        reg.wires.get_mut(wk_outer).unwrap().edges = vec![
+            (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
+        ];
+        // Inner wire: small triangle at offset +10 (entirely outside outer square)
+        let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
+        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(10.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(11.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
+        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(11.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
+        let wk_inner = reg.wires.insert(BRepWire { edges: vec![
+            (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
+        ]});
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.inner_wires = vec![wk_inner];
+        }
+        let report = fix_intersecting_wires(fk, &mut reg);
+        assert!(report.inner_wires_removed > 0, "inner wire outside outer should be removed");
+    }
+
+    #[test]
+    fn test_no_false_positive_separate_inners() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(3.0, 3.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 3.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        // Outer wire: UV square from (0,0) to (3,3) — proper per-edge PCurves
+        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(3.0, 0.0, 0.0) };
+        let pc2 = CurveGeom::Line { origin: Vec3::new(3.0, 0.0, 0.0), direction: Vec3::new(0.0, 3.0, 0.0) };
+        let pc3 = CurveGeom::Line { origin: Vec3::new(3.0, 3.0, 0.0), direction: Vec3::new(-3.0, 0.0, 0.0) };
+        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 3.0, 0.0), direction: Vec3::new(0.0, -3.0, 0.0) };
+        let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk_outer, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4);
+        reg.wires.get_mut(wk_outer).unwrap().edges = vec![
+            (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
+        ];
+        // Inner wire: small triangle properly inside (offset by +1)
+        let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
+        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(2.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
+        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(2.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
+        let wk_inner = reg.wires.insert(BRepWire { edges: vec![
+            (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
+        ]});
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.inner_wires = vec![wk_inner];
+        }
+        let report = fix_intersecting_wires(fk, &mut reg);
+        assert_eq!(report.inner_wires_removed, 0, "properly separate inner wires should not be removed");
     }
 }
