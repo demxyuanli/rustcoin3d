@@ -74,13 +74,28 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             }
         }
         CurveGeom::Circle { center, axis, radius } => {
-            let _to_start = v_start - *center;
-            let _to_end = v_end - *center;
-            let _u_dir = _to_start.normalize();
-            let _angle = {
-                let dot = _u_dir.dot(_to_end.normalize()).max(-1.0).min(1.0);
-                dot.acos()
-            };
+            // Re-project vertices onto the circle to get new parameter angles.
+            // The circle geometry (center, axis, radius) stays the same; only the
+            // parametric range changes, which is stored implicitly by the vertices.
+            let to_start = v_start - *center;
+            let to_end = v_end - *center;
+            // Project onto the circle plane (perpendicular to axis)
+            let axis_n = axis.normalize();
+            let proj_start = to_start - axis_n * to_start.dot(axis_n);
+            let proj_end = to_end - axis_n * to_end.dot(axis_n);
+            let new_start = *center + proj_start.normalize() * *radius;
+            let new_end = *center + proj_end.normalize() * *radius;
+            // Verify the reprojection is close
+            let err_start = (new_start - v_start).length();
+            let err_end = (new_end - v_end).length();
+            if err_start.max(err_end) > *radius * 1e-3 {
+                log::debug!(
+                    "[BRep heal] FixEdgeCurves: circle reprojection error ({:.6}, {:.6}) > 0.1% radius, keeping original",
+                    err_start, err_end
+                );
+                return curve.clone();
+            }
+            // The curve geometry is unchanged; vertex positions define the arc extent
             CurveGeom::Circle {
                 center: *center,
                 axis: *axis,
@@ -88,6 +103,23 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             }
         }
         CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => {
+            // Same approach as circle: project vertices, validate, keep geometry
+            let to_start = v_start - *center;
+            let to_end = v_end - *center;
+            let axis_n = axis.normalize();
+            let proj_start = to_start - axis_n * to_start.dot(axis_n);
+            let proj_end = to_end - axis_n * to_end.dot(axis_n);
+            let new_start = *center + proj_start.normalize() * *semi_major;
+            let new_end = *center + proj_end.normalize() * *semi_major;
+            let err_start = (new_start - v_start).length();
+            let err_end = (new_end - v_end).length();
+            if err_start.max(err_end) > *semi_major * 1e-3 {
+                log::debug!(
+                    "[BRep heal] FixEdgeCurves: ellipse reprojection error ({:.6}, {:.6}), keeping original",
+                    err_start, err_end
+                );
+                return curve.clone();
+            }
             CurveGeom::Ellipse {
                 center: *center,
                 axis: *axis,

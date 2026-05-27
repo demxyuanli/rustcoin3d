@@ -1,7 +1,7 @@
 //! UV boundary self-intersection repair (OCC ShapeFix_Wire::FixSelfIntersection).
 
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, WireKey};
+use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
 #[derive(Debug, Default)]
 pub struct SelfIntersectReport {
@@ -148,13 +148,107 @@ pub fn fix_self_intersecting_wire(
         }
     }
 
-    // Rebuild wire
-    if let Some(wire) = reg.wires.get_mut(wire_key) {
-        wire.edges = new_edges;
-        report.wires_rebuilt = true;
+    // Build new wire by connecting split segments via shared vertices.
+    // Each split segment is a directed edge from v_start to v_end.
+    // After splitting, the wire should form a valid traversal through
+    // the intersection points. We reorder the new edges by endpoint matching
+    // (same algorithm as reorder_wire_edges in reorder.rs).
+    let ordered = reorder_by_endpoints(&new_edges, reg);
+    if ordered.len() >= 3 {
+        if let Some(wire) = reg.wires.get_mut(wire_key) {
+            wire.edges = ordered;
+            report.wires_rebuilt = true;
+        }
+    } else {
+        log::warn!("[BRep heal] FixSelfIntersection face {:?}: wire too short after split, marking failed", face_key);
+        if let Some(wire) = reg.wires.get_mut(wire_key) {
+            wire.edges.clear();
+        }
     }
 
     report
+}
+
+/// Reorder edges into a connected chain by matching endpoints.
+/// Uses the same algorithm as heal::reorder::reorder_wire_edges.
+fn reorder_by_endpoints(
+    edges: &[(EdgeKey, Orientation)],
+    reg: &BRepRegistry,
+) -> Vec<(EdgeKey, Orientation)> {
+    if edges.len() <= 1 {
+        return edges.to_vec();
+    }
+    let n = edges.len();
+    let mut used = vec![false; n];
+    let mut result = Vec::with_capacity(n);
+
+    // Start from the first edge
+    used[0] = true;
+    result.push(edges[0]);
+
+    for _ in 1..n {
+        let last = result.last().unwrap();
+        let last_end_vk = get_end_vertex(last.0, last.1, reg);
+
+        let mut found = false;
+        for (j, &(ek, orient)) in edges.iter().enumerate() {
+            if used[j] {
+                continue;
+            }
+            let v_start = get_start_vertex(ek, orient, reg);
+            if v_start == last_end_vk {
+                used[j] = true;
+                result.push((ek, orient));
+                found = true;
+                break;
+            }
+            // Also try reversed: check if this edge's end matches our end
+            let v_end = get_end_vertex(ek, orient, reg);
+            if v_end == last_end_vk {
+                // Insert with reversed orientation
+                let rev_orient = if orient == Orientation::Forward {
+                    Orientation::Reversed
+                } else {
+                    Orientation::Forward
+                };
+                used[j] = true;
+                result.push((ek, rev_orient));
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // Try matching any remaining edge's start to a previous start
+            for (j, &(ek, orient)) in edges.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+                used[j] = true;
+                result.push((ek, orient));
+                break;
+            }
+        }
+    }
+
+    result
+}
+
+fn get_start_vertex(ek: EdgeKey, orient: Orientation, reg: &BRepRegistry) -> Option<VertexKey> {
+    let edge = reg.edges.get(ek)?;
+    if orient == Orientation::Reversed {
+        Some(edge.v_high)
+    } else {
+        Some(edge.v_low)
+    }
+}
+
+fn get_end_vertex(ek: EdgeKey, orient: Orientation, reg: &BRepRegistry) -> Option<VertexKey> {
+    let edge = reg.edges.get(ek)?;
+    if orient == Orientation::Reversed {
+        Some(edge.v_low)
+    } else {
+        Some(edge.v_high)
+    }
 }
 
 /// Compute intersection of two 2D segments. Returns (t_a, t_b) where intersection = a0 + t*(a1-a0).
