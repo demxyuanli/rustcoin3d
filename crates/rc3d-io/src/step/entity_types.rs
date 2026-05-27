@@ -17,6 +17,7 @@ pub enum EntityType {
     TrimmedCurve,
     CompositeCurve,
     SeamCurve,
+    SurfaceCurve,
     IntersectionCurve,
     OffsetCurve3D,
     // Surfaces
@@ -112,6 +113,7 @@ impl EntityType {
             "TRIMMED_CURVE" => Self::TrimmedCurve,
             "COMPOSITE_CURVE" => Self::CompositeCurve,
             "SEAM_CURVE" => Self::SeamCurve,
+            "SURFACE_CURVE" => Self::SurfaceCurve,
             "INTERSECTION_CURVE" => Self::IntersectionCurve,
             "OFFSET_CURVE_3D" => Self::OffsetCurve3D,
             "PLANE" => Self::Plane,
