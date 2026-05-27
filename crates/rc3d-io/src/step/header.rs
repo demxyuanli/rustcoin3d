@@ -206,7 +206,7 @@ fn strip_list_parens(s: &str) -> String {
 /// Extract the AP identifier from a FILE_SCHEMA identifier string.
 /// FILE_SCHEMA strings use the format: 'SCHEMA_NAME {{ version }}'
 pub(crate) fn extract_ap_schema(schema_str: &str) -> Option<String> {
-    let name = schema_str.split("{{").next()?.trim().trim_matches('\'');
+    let name = schema_str.split("{{").next().unwrap_or("").trim().trim_matches('\'');
     let upper = name.to_uppercase();
     for ap in &["AP242", "AP214", "AP203", "AP209", "AP210", "AP238"] {
         if upper.contains(ap) {
@@ -295,5 +295,15 @@ ENDSEC;
 DATA;";
         let (header, _) = parse_header(input).unwrap();
         assert_eq!(header.ap_schema.as_deref(), Some("AP214"));
+    }
+
+    #[test]
+    fn test_ap_schema_unrecognized() {
+        let input = "HEADER;
+FILE_SCHEMA(('UNKNOWN_SCHEMA'));
+ENDSEC;
+DATA;";
+        let (header, _) = parse_header(input).unwrap();
+        assert_eq!(header.ap_schema, None);
     }
 }
