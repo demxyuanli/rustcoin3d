@@ -95,6 +95,94 @@ fn test_cs_step_face_mesh_coverage() {
 #[test] fn t_shape() { load("Shape.step", 0.1); }
 #[test] fn t_shape1() { load("Shape-1.step", 0.3); }
 #[test] fn t_shape2() { load("Shape-2.step", 0.8); }
+
+#[test]
+fn test_shape2_heal_diagnostics() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/Shape-2.step");
+    if !path.exists() { println!("SKIP"); return; }
+    let text = std::fs::read_to_string(&path).expect("read");
+    let exchange = rc3d_io::step::parser::parse_exchange(&text).expect("parse");
+    println!("Parsed: {} entities", exchange.entities.len());
+
+    let brep = rc3d_io::step::brep::build_brep(&exchange.entities).expect("brep");
+    println!("B-Rep: {} solids, {} faces total",
+        brep.root_solids.len(),
+        brep.registry.faces.len());
+
+    let mut reg = brep.registry;
+    let mesh_cfg = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
+
+    for &sk in &brep.root_solids {
+        let solid = reg.solids.get(sk).unwrap();
+        let shell_key = solid.outer_shell;
+        let n_faces = reg.shells.get(shell_key).unwrap().faces.len();
+        println!("\nShell: {} faces", n_faces);
+
+        // Run heal with diagnostics
+        let heal = rc3d_io::step::brep::heal::auto_heal_shell(
+            shell_key, &mut reg,
+            rc3d_io::step::brep::heal::HealLevel::Standard,
+            3,
+        );
+        println!("Heal report:");
+        println!("  merged_vertices={}", heal.merged_vertices);
+        println!("  removed_small_edges={}", heal.removed_small_edges);
+        println!("  closed_uv_gaps={}", heal.closed_uv_gaps);
+        println!("  shifted_pcurves={}", heal.shifted_pcurves);
+        println!("  reordered_wires={}", heal.reordered_wires);
+        println!("  added_seams={}", heal.added_seams);
+        println!("  lacking_tolerance_fixes={}", heal.lacking_tolerance_fixes);
+        println!("  self_intersections_fixed={}", heal.self_intersections_fixed);
+        println!("  degenerate_edges_created={}", heal.degenerate_edges_created);
+        println!("  periodic_degen_created={}", heal.periodic_degen_created);
+        println!("  adjusted_edge_curves={}", heal.adjusted_edge_curves);
+        println!("  split_faces_created={}", heal.split_faces_created);
+        println!("  check_errors={}", heal.check_errors);
+        println!("  check_warnings={}", heal.check_warnings);
+        println!("  skip_face_keys={:?}", heal.skip_face_keys.len());
+        println!("  inner_wires_fixed={}", heal.inner_wires_fixed);
+
+        // Mesh
+        let output = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
+            shell_key, &reg, &mesh_cfg, &heal.skip_face_keys,
+        );
+        let faces = reg.shells.get(shell_key).unwrap().faces.clone();
+        println!("\nMesh: {} triangles, {} meshed_faces, {} skipped",
+            output.mesh.indices.len() / 4,
+            output.report.meshed_faces,
+            faces.len().saturating_sub(output.report.meshed_faces),
+        );
+
+        for &(face_key, _) in &faces {
+            let face = reg.faces.get(face_key).unwrap();
+            let wire = reg.wires.get(face.outer_wire).unwrap();
+            let skipped = heal.skip_face_keys.contains(&face_key);
+            let face_stats = output.report.faces.iter().find(|f| f.face_key == face_key);
+            let tris = face_stats.map(|f| f.tri_count).unwrap_or(0);
+            let status = if skipped { "SKIPPED" } else if tris > 0 { "MESHED" } else { "EMPTY" };
+            let surf_name = format!("{:?}", std::mem::discriminant(&face.surface));
+            println!("  face {:?}: {} edges, {} tris, {} surface={}",
+                face_key, wire.edges.len(), tris, status, surf_name);
+        }
+        // Write heal check errors to file for diagnostic
+        let check_report = rc3d_io::step::brep::heal::check_shell(shell_key, &reg);
+        let mut diag = String::new();
+        diag.push_str(&format!("Shell: {} faces\n", n_faces));
+        diag.push_str(&format!("Heal: merged={}, removed={}, uv_gaps={}, shifted={}, reordered={}, seams={}, lacking={}, self_int={}, degen={}, periodic={}, edge_curves={}, split={}\n",
+            heal.merged_vertices, heal.removed_small_edges, heal.closed_uv_gaps,
+            heal.shifted_pcurves, heal.reordered_wires, heal.added_seams,
+            heal.lacking_tolerance_fixes, heal.self_intersections_fixed,
+            heal.degenerate_edges_created, heal.periodic_degen_created,
+            heal.adjusted_edge_curves, heal.split_faces_created));
+        diag.push_str(&format!("Errors ({}):\n", check_report.errors.len()));
+        for e in &check_report.errors { diag.push_str(&format!("  {}\n", e)); }
+        diag.push_str(&format!("Warnings ({}):\n", check_report.warnings.len()));
+        for w in &check_report.warnings { diag.push_str(&format!("  {}\n", w)); }
+        std::fs::write("target/shape2_diag.txt", &diag).ok();
+
+        assert!(output.report.meshed_faces > 0, "at least one face should be meshed");
+    }
+}
 #[test]
 #[ignore = "large industrial file; run manually"]
 fn t_bender() {
@@ -204,6 +292,12 @@ fn test_shared_topology_import() {
         let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(solid.outer_shell, reg, &mesh_config, &[]);
         println!("  Mesh: {} vertices, {} indices", mesh.vertices.len(), mesh.indices.len());
         assert!(!mesh.vertices.is_empty(), "should produce mesh vertices");
+    }
+
+    // Verify AP schema was detected (all valid STEP files should have a FILE_SCHEMA)
+    if let Some(ref header) = exchange.header {
+        assert!(header.ap_schema.is_some(), "AP schema should be detected");
+        println!("  AP_SCHEMA: {:?}", header.ap_schema);
     }
 
     println!("  B-Rep PIPELINE OK");
