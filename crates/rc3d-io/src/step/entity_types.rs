@@ -86,7 +86,7 @@ pub enum EntityType {
     ProfileTolerance,
     ParallelismTolerance,
     PerpendicularityTolerance,
-    RunoffTolerance,
+    RunoutTolerance,
     StraightnessTolerance,
     // Datum
     DatumReferenceElement,
@@ -186,7 +186,7 @@ impl EntityType {
             "LINE_PROFILE_TOLERANCE" | "SURFACE_PROFILE_TOLERANCE" | "PROFILE_TOLERANCE" => Self::ProfileTolerance,
             "PARALLELISM_TOLERANCE" => Self::ParallelismTolerance,
             "PERPENDICULARITY_TOLERANCE" => Self::PerpendicularityTolerance,
-            "CIRCULAR_RUNOUT_TOLERANCE" | "TOTAL_RUNOUT_TOLERANCE" => Self::RunoffTolerance,
+            "CIRCULAR_RUNOUT_TOLERANCE" | "TOTAL_RUNOUT_TOLERANCE" => Self::RunoutTolerance,
             "STRAIGHTNESS_TOLERANCE" => Self::StraightnessTolerance,
             "DATUM_REFERENCE_ELEMENT" => Self::DatumReferenceElement,
             // Style / colour

@@ -38,7 +38,7 @@ In `entity_types.rs`, in the PMI section (after `GeometricTolerance,` around lin
     ProfileTolerance,
     ParallelismTolerance,
     PerpendicularityTolerance,
-    RunoffTolerance,
+    RunoutTolerance,
     StraightnessTolerance,
     // Datum
     DatumReferenceElement,
@@ -54,7 +54,7 @@ In the `from_name` match block, after `"GEOMETRIC_TOLERANCE" => Self::GeometricT
             "LINE_PROFILE_TOLERANCE" | "SURFACE_PROFILE_TOLERANCE" | "PROFILE_TOLERANCE" => Self::ProfileTolerance,
             "PARALLELISM_TOLERANCE" => Self::ParallelismTolerance,
             "PERPENDICULARITY_TOLERANCE" => Self::PerpendicularityTolerance,
-            "CIRCULAR_RUNOUT_TOLERANCE" | "TOTAL_RUNOUT_TOLERANCE" => Self::RunoffTolerance,
+            "CIRCULAR_RUNOUT_TOLERANCE" | "TOTAL_RUNOUT_TOLERANCE" => Self::RunoutTolerance,
             "STRAIGHTNESS_TOLERANCE" => Self::StraightnessTolerance,
             "DATUM_REFERENCE_ELEMENT" => Self::DatumReferenceElement,
 ```
@@ -320,7 +320,7 @@ In `extract_pmi()`, after the `EntityType::GeometricTolerance` match arm (around
             | EntityType::ProfileTolerance
             | EntityType::ParallelismTolerance
             | EntityType::PerpendicularityTolerance
-            | EntityType::RunoffTolerance
+            | EntityType::RunoutTolerance
             | EntityType::StraightnessTolerance => {
                 if let Some(tol) = extract_tolerance(&record.params, entities) {
                     pmi.tolerances.push(tol);
@@ -342,7 +342,7 @@ fn gdt_symbol_for_entity(entity_type: EntityType) -> GdtSymbol {
         EntityType::ProfileTolerance => GdtSymbol::ProfileOfSurface,
         EntityType::ParallelismTolerance => GdtSymbol::Parallelism,
         EntityType::PerpendicularityTolerance => GdtSymbol::Perpendicularity,
-        EntityType::RunoffTolerance => GdtSymbol::CircularRunout,
+        EntityType::RunoutTolerance => GdtSymbol::CircularRunout,
         EntityType::StraightnessTolerance => GdtSymbol::Straightness,
         _ => GdtSymbol::Flatness,
     }

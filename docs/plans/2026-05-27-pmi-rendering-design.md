@@ -51,7 +51,7 @@ pass_markup (已有) + plane_text (已有)
 | `ProfileTolerance` | PROFILE_TOLERANCE / LINE_PROFILE_TOLERANCE / SURFACE_PROFILE_TOLERANCE | 轮廓度 |
 | `ParallelismTolerance` | PARALLELISM_TOLERANCE | 平行度 |
 | `PerpendicularityTolerance` | PERPENDICULARITY_TOLERANCE | 垂直度 |
-| `RunoffTolerance` | CIRCULAR_RUNOUT_TOLERANCE / TOTAL_RUNOUT_TOLERANCE | 跳动 |
+| `RunoutTolerance` | CIRCULAR_RUNOUT_TOLERANCE / TOTAL_RUNOUT_TOLERANCE | 跳动 |
 | `StraightnessTolerance` | STRAIGHTNESS_TOLERANCE | 直线度 |
 | `DatumReferenceElement` | DATUM_REFERENCE_ELEMENT | 基准引用 |
 
@@ -208,7 +208,7 @@ EntityType::FlatnessTolerance
 | EntityType::ProfileTolerance
 | EntityType::ParallelismTolerance
 | EntityType::PerpendicularityTolerance
-| EntityType::RunoffTolerance
+| EntityType::RunoutTolerance
 | EntityType::StraightnessTolerance => {
     if let Some(tol) = extract_tolerance(&record.params, entities) {
         pmi.tolerances.push(tol);
