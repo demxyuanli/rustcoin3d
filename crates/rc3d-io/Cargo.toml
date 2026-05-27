@@ -19,6 +19,6 @@ spade = "2"
 slotmap = "1"
 
 [features]
-default = []
+default = ["pmi"]
 pmi = []
 

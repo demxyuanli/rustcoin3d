@@ -1,6 +1,5 @@
 pub mod value;
 pub mod entity_types;
-#[cfg(feature = "pmi")]
 pub mod pmi;
 pub mod parser;
 pub mod geom;
@@ -396,6 +395,23 @@ fn exchange_to_scene_graph(
         || import_report.skipped_edges > 0
     {
         log::warn!("[STEP] import report: {:?}", import_report);
+    }
+
+    // PMI annotations
+    {
+        let pmi_data = pmi::pmi_extract::extract_pmi(&exchange.entities);
+        let has_pmi = !pmi_data.dimensions.is_empty()
+            || !pmi_data.datums.is_empty()
+            || !pmi_data.tolerances.is_empty();
+        if has_pmi {
+            log::info!(
+                "[STEP] PMI: {} dims, {} datums, {} tolerances",
+                pmi_data.dimensions.len(),
+                pmi_data.datums.len(),
+                pmi_data.tolerances.len(),
+            );
+            pmi::pmi_render::attach_pmi_to_scene(&mut graph, root, &pmi_data);
+        }
     }
 
     if let Some(root_entry) = graph.get_mut(root) {
