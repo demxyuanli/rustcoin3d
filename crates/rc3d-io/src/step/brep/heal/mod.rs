@@ -17,7 +17,7 @@ pub mod vertex_position;
 pub mod split_face;
 pub mod pipeline;
 
-use super::topo::{ShellKey, FaceKey, Orientation};
+use super::topo::{ShellKey, FaceKey};
 use super::registry::BRepRegistry;
 use reorder::reorder_wire_edges;
 use gap::close_wire_gaps_2d;
@@ -141,12 +141,10 @@ pub fn heal_shell(
 ) -> HealReport {
     let mut report = HealReport::default();
 
-    let face_keys: Vec<(FaceKey, Orientation)> = {
-        match reg.shells.get(shell_key) {
-            Some(s) => s.faces.clone(),
-            None => return report,
-        }
+    let Some(shell) = reg.shells.get(shell_key) else {
+        return report;
     };
+    let face_keys = shell.faces.clone();
 
     // Fix edge curves BEFORE per-face loop (OCC: FixEdgeCurves runs before FixSelfIntersection)
     if config.fix_edge_curves {
@@ -356,11 +354,18 @@ fn fix_vertex_tolerance(reg: &mut BRepRegistry) -> usize {
 }
 
 fn fix_small_area(shell_key: ShellKey, reg: &BRepRegistry) -> Vec<FaceKey> {
-    let shell = match reg.shells.get(shell_key) { Some(s) => s, None => return vec![] };
+    let Some(shell) = reg.shells.get(shell_key) else {
+        return vec![];
+    };
     let mut skip = Vec::new();
     for &(face_key, _) in &shell.faces {
-        let face = match reg.faces.get(face_key) { Some(f) => f, None => continue };
-        let wire = match reg.wires.get(face.outer_wire) { Some(w) => w, None => { skip.push(face_key); continue; } };
+        let Some(face) = reg.faces.get(face_key) else {
+            continue;
+        };
+        let Some(wire) = reg.wires.get(face.outer_wire) else {
+            skip.push(face_key);
+            continue;
+        };
         if wire.edges.is_empty() && face.seam_edges.is_empty() {
             log::warn!("[BRep heal] face {:?} has zero area, marking for skip", face_key);
             skip.push(face_key);

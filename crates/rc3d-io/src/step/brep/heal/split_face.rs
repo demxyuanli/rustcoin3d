@@ -2,9 +2,8 @@
 //! When a face has inner wires that are actually separate outer regions,
 //! split them into distinct faces.
 
-use std::collections::HashMap;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, ShellKey, WireKey};
+use crate::step::brep::topo::{FaceKey, Orientation, ShellKey, WireKey};
 use crate::step::brep::topo::BRepFace;
 
 #[derive(Debug, Default)]
@@ -23,7 +22,6 @@ pub fn fix_split_face(
 ) -> SplitFaceReport {
     let mut report = SplitFaceReport::default();
 
-    // Collect existing faces and their wires
     let shell_faces: Vec<(FaceKey, Orientation)> = {
         let Some(shell) = reg.shells.get(shell_key) else { return report; };
         shell.faces.clone()
@@ -41,19 +39,9 @@ pub fn fix_split_face(
             continue;
         }
 
-        let surface = face.surface.clone();
-        let tolerance = face.tolerance;
-        let same_sense = face.same_sense;
-        let seam_edges = face.seam_edges.clone();
-        let color = face.color;
-
-        // Compute signed area of the outer wire to determine its orientation
-        let outer_area = match wire_signed_area_uv(face.outer_wire, face_key, reg) {
-            Some(a) => a,
-            None => {
-                new_faces.push((face_key, shell_orient));
-                continue;
-            }
+        let Some(outer_area) = wire_signed_area_uv(face.outer_wire, face_key, reg) else {
+            new_faces.push((face_key, shell_orient));
+            continue;
         };
 
         let outer_positive = outer_area > 0.0;
@@ -61,29 +49,25 @@ pub fn fix_split_face(
         let mut split_wires = Vec::new();
 
         for &inner_wk in &face.inner_wires {
-            let inner_area = match wire_signed_area_uv(inner_wk, face_key, reg) {
-                Some(a) => a,
-                None => {
-                    keep_inner.push(inner_wk);
-                    continue;
+            match wire_signed_area_uv(inner_wk, face_key, reg) {
+                Some(inner_area) if (inner_area > 0.0) == outer_positive => {
+                    split_wires.push(inner_wk);
                 }
-            };
-            let inner_positive = inner_area > 0.0;
-
-            // If inner wire has the SAME sign as the outer wire, it's actually
-            // an outer wire for a separate face region — split it out
-            if inner_positive == outer_positive {
-                split_wires.push(inner_wk);
-            } else {
-                keep_inner.push(inner_wk);
+                Some(_) => keep_inner.push(inner_wk),
+                None => keep_inner.push(inner_wk),
             }
         }
 
-        // Update the original face to remove split wires
         if split_wires.is_empty() {
             new_faces.push((face_key, shell_orient));
             continue;
         }
+
+        let surface = face.surface.clone();
+        let tolerance = face.tolerance;
+        let same_sense = face.same_sense;
+        let seam_edges = face.seam_edges.clone();
+        let color = face.color;
 
         if let Some(face_mut) = reg.faces.get_mut(face_key) {
             face_mut.inner_wires = keep_inner;
@@ -91,7 +75,6 @@ pub fn fix_split_face(
         new_faces.push((face_key, shell_orient));
         report.wires_reassigned += split_wires.len();
 
-        // Create new faces for each split wire
         for wk in split_wires {
             let new_face_key = reg.faces.insert(BRepFace {
                 surface: surface.clone(),
@@ -112,7 +95,6 @@ pub fn fix_split_face(
         }
     }
 
-    // Update shell with (possibly) additional faces
     if report.faces_created > 0 {
         if let Some(shell) = reg.shells.get_mut(shell_key) {
             shell.faces = new_faces;
@@ -135,9 +117,8 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<f
     if pts.len() < 3 {
         return None;
     }
-    // Close the polygon
-    if let Some(&(last_ek, _)) = wire.edges.last() {
-        if let Some(edge) = reg.edges.get(last_ek) {
+    if let Some(&last_ek) = wire.edges.last() {
+        if let Some(edge) = reg.edges.get(last_ek.0) {
             if let Some(pc) = edge.pcurves.get(&fk) {
                 let uv = pc.d0(1.0);
                 pts.push((uv.x, uv.y));
@@ -145,9 +126,6 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<f
         }
     }
     let n = pts.len();
-    if n < 3 {
-        return None;
-    }
     let mut area = 0.0f32;
     for i in 0..n {
         let j = (i + 1) % n;
