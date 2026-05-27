@@ -74,7 +74,7 @@ fn extract_dimension(
     //   name: STRING
     //   name: STRING (description)
     //   nominal_value: DIMENSIONAL_CHARACTERISTIC or subtype
-    let name = params.nth_param(1)
+    let name = params.nth_param(0)
         .and_then(|v| v.as_string())
         .map(|s| s.to_string())
         .unwrap_or_default();
@@ -251,5 +251,7 @@ END-ISO-10303-21;
         let dim = &pmi.dimensions[0];
         assert!((dim.start.x - 0.0).abs() < 1e-6);
         assert!((dim.end.x - 10.0).abs() < 1e-6);
+        // Name from DIMENSIONAL_SIZE param[0] should be in the text
+        assert!(dim.text.contains("dist"), "expected text '{}' to contain 'dist'", dim.text);
     }
 }
