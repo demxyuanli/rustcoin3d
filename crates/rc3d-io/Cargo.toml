@@ -18,7 +18,3 @@ earcutr = "0.4"
 spade = "2"
 slotmap = "1"
 
-[features]
-default = ["pmi"]
-pmi = []
-
