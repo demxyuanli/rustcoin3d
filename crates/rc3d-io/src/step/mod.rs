@@ -101,8 +101,17 @@ pub fn parse_step_with_options(
     input: &str,
     options: &StepImportOptions,
 ) -> Result<SceneGraph, StepError> {
-    let exchange = parser::parse_exchange_with_options(input, options)
-        .map_err(StepError::Parse)?;
+    let trimmed = input.trim();
+    let exchange = if trimmed.starts_with("<?xml") || trimmed.starts_with("<iso_10303_28") {
+        let entities = xml::parse_xml_step(trimmed).map_err(StepError::Parse)?;
+        parser::Exchange {
+            header: None,
+            entities,
+            diagnostics: parser::ParseDiagnostics::default(),
+        }
+    } else {
+        parser::parse_exchange_with_options(trimmed, options).map_err(StepError::Parse)?
+    };
     exchange_to_scene_graph(exchange, options)
 }
 
@@ -112,6 +121,13 @@ fn exchange_to_scene_graph(
 ) -> Result<SceneGraph, StepError> {
     let mut import_report = StepImportReport::default();
     import_report.skipped_parse_entities = exchange.diagnostics.skipped_entities.len();
+    import_report.unknown_entity_count = exchange.diagnostics.unknown_entity_count;
+    if import_report.unknown_entity_count > 0 {
+        log::warn!(
+            "[STEP] {} unknown entity type(s) in file",
+            import_report.unknown_entity_count
+        );
+    }
 
     let report = validate::validate(&exchange.entities);
     log::info!(
@@ -160,13 +176,34 @@ fn exchange_to_scene_graph(
             total_heal.merge(brep::heal::auto_heal_shell(
                 solid.outer_shell,
                 &mut reg,
-                brep::heal::HealLevel::Standard,
+                options.heal_level,
                 5,
             ));
         }
     }
     import_report.heal_check_errors = total_heal.check_errors;
     log::info!("[STEP] healed: {:?}", total_heal);
+
+    let g0_tol = topology::global_tolerance(&exchange.entities);
+    for &sk in &brep_result.root_solids {
+        if let Some(solid) = reg.solids.get(sk) {
+            let defects = brep::heal::check_shell_continuity(
+                solid.outer_shell,
+                &reg,
+                g0_tol,
+                5.0,
+            );
+            import_report.continuity_defects += defects.len();
+            if !defects.is_empty() {
+                log::info!(
+                    "[STEP] shell {:?}: {} continuity defect(s)",
+                    solid.outer_shell,
+                    defects.len()
+                );
+            }
+        }
+    }
+
     if options.fail_on_heal_check_errors() && total_heal.check_errors > 0 {
         return Err(StepError::ImportQuality(format!(
             "B-Rep heal reported {} check error(s)",
@@ -174,7 +211,8 @@ fn exchange_to_scene_graph(
         )));
     }
 
-    let mesh_config = brep::mesh::BRepMeshConfig::default();
+    let mut mesh_config = brep::mesh::BRepMeshConfig::default();
+    mesh_config.relative_deflection = options.mesh_relative_deflection;
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
@@ -192,6 +230,8 @@ fn exchange_to_scene_graph(
 
     let default_xform = assembly::AssemblyTransform::default();
     let mut any_geom = false;
+    let mut props_vertices: Vec<Vec3> = Vec::new();
+    let mut props_indices: Vec<i32> = Vec::new();
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
             let base_mesh = brep::mesh::mesh_brep_shell(
@@ -202,6 +242,19 @@ fn exchange_to_scene_graph(
             );
             if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
                 continue;
+            }
+
+            let base_offset = props_vertices.len() as i32;
+            props_vertices.extend_from_slice(&base_mesh.vertices);
+            for chunk in base_mesh.indices.chunks(4) {
+                if chunk.len() >= 3 {
+                    props_indices.extend_from_slice(&[
+                        chunk[0] + base_offset,
+                        chunk[1] + base_offset,
+                        chunk[2] + base_offset,
+                        -1,
+                    ]);
+                }
             }
 
             let shell_step_id = reg
@@ -260,6 +313,18 @@ fn exchange_to_scene_graph(
 
     if !any_geom {
         return Err(StepError::NoGeometry);
+    }
+
+    if !props_vertices.is_empty() && !props_indices.is_empty() {
+        let props = brep::compute_mesh_properties(&props_vertices, &props_indices);
+        log::info!(
+            "[STEP] mesh properties: volume={:.6} area={:.6} com=[{:.4}, {:.4}, {:.4}]",
+            props.volume,
+            props.surface_area,
+            props.center_of_mass[0],
+            props.center_of_mass[1],
+            props.center_of_mass[2],
+        );
     }
 
     log::info!(

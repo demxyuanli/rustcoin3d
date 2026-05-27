@@ -16,17 +16,20 @@ pub mod continuity;
 pub mod vertex_position;
 pub mod split_face;
 pub mod pipeline;
+pub mod curve_trim;
 
-use super::topo::{ShellKey, FaceKey};
+use std::collections::HashSet;
+
+use super::topo::{FaceKey, ShellKey, WireKey};
 use super::registry::BRepRegistry;
 use reorder::reorder_wire_edges;
-use gap::close_wire_gaps_2d;
+use gap::{close_wire_gaps, close_wire_gaps_2d};
 use orient::fix_shell_orientation;
 use seam::fix_missing_seams;
 use connected::fix_connected_wire;
 use small::remove_small_edges;
 use shifted::fix_shifted_pcurves;
-use edge_curve::fix_edge_curves;
+use edge_curve::fix_edge_curves_wire;
 use lacking::fix_lacking_edges;
 use degenerated::fix_degenerated_edges;
 use periodic::fix_periodic_degenerated;
@@ -35,9 +38,10 @@ use intersecting_wires::fix_intersecting_wires;
 use vertex_position::fix_vertex_positions;
 use split_face::fix_split_face;
 pub use check::{check_shell, check_uv_self_intersection, CheckReport};
+pub use continuity::check_shell_continuity;
 pub use pipeline::{auto_heal_shell, HealLevel};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 pub struct HealReport {
     pub reordered_wires: usize,
     pub closed_gaps: usize,
@@ -58,6 +62,34 @@ pub struct HealReport {
     pub split_faces_created: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
+    skip_faces_seen: HashSet<FaceKey>,
+}
+
+impl Default for HealReport {
+    fn default() -> Self {
+        Self {
+            reordered_wires: 0,
+            closed_gaps: 0,
+            closed_uv_gaps: 0,
+            flipped_faces: 0,
+            added_seams: 0,
+            merged_vertices: 0,
+            removed_small_edges: 0,
+            shifted_pcurves: 0,
+            adjusted_edge_curves: 0,
+            skip_face_keys: Vec::new(),
+            lacking_tolerance_fixes: 0,
+            degenerate_edges_created: 0,
+            periodic_degen_created: 0,
+            self_intersections_fixed: 0,
+            inner_wires_fixed: 0,
+            vertex_positions_fixed: 0,
+            split_faces_created: 0,
+            check_errors: 0,
+            check_warnings: 0,
+            skip_faces_seen: HashSet::new(),
+        }
+    }
 }
 
 impl HealReport {
@@ -78,9 +110,17 @@ impl HealReport {
         self.inner_wires_fixed += other.inner_wires_fixed;
         self.vertex_positions_fixed += other.vertex_positions_fixed;
         self.split_faces_created += other.split_faces_created;
-        self.skip_face_keys.extend(other.skip_face_keys);
+        for fk in other.skip_face_keys {
+            push_skip_face(self, fk);
+        }
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
+    }
+}
+
+fn push_skip_face(report: &mut HealReport, face_key: FaceKey) {
+    if report.skip_faces_seen.insert(face_key) {
+        report.skip_face_keys.push(face_key);
     }
 }
 
@@ -91,6 +131,7 @@ pub struct HealConfig {
     pub fix_reorder: bool,
     pub fix_missing_seams: bool,
     pub fix_connected: bool,
+    pub fix_gaps_3d: bool,
     pub fix_vertex_tolerance: bool,
     pub fix_small_area: bool,
     pub fix_small_edges: bool,
@@ -107,6 +148,44 @@ pub struct HealConfig {
     pub uv_gap_tolerance: f32,
 }
 
+impl HealConfig {
+    /// All fix flags disabled; gap_tolerance preserved from caller when needed.
+    pub fn all_disabled() -> Self {
+        Self {
+            gap_tolerance: 1e-4,
+            fix_orientation: false,
+            fix_reorder: false,
+            fix_missing_seams: false,
+            fix_connected: false,
+            fix_gaps_3d: false,
+            fix_vertex_tolerance: false,
+            fix_small_area: false,
+            fix_small_edges: false,
+            fix_shifted: false,
+            fix_edge_curves: false,
+            fix_lacking: false,
+            fix_degenerated: false,
+            fix_periodic_degenerated: false,
+            fix_self_intersection: false,
+            fix_intersecting_wires: false,
+            fix_vertex_position: false,
+            fix_split_face: false,
+            small_edge_min_length: 1e-6,
+            uv_gap_tolerance: 0.0,
+        }
+    }
+
+    /// Minimal wire repair after self-intersection split.
+    pub fn wire_reconnect_only(gap_tolerance: f32) -> Self {
+        let mut cfg = Self::all_disabled();
+        cfg.gap_tolerance = gap_tolerance;
+        cfg.fix_connected = true;
+        cfg.fix_gaps_3d = true;
+        cfg.fix_reorder = true;
+        cfg
+    }
+}
+
 impl Default for HealConfig {
     fn default() -> Self {
         Self {
@@ -115,6 +194,7 @@ impl Default for HealConfig {
             fix_reorder: true,
             fix_missing_seams: true,
             fix_connected: true,
+            fix_gaps_3d: true,
             fix_vertex_tolerance: true,
             fix_small_area: true,
             fix_small_edges: true,
@@ -133,6 +213,217 @@ impl Default for HealConfig {
     }
 }
 
+fn wire_is_closed(wire_key: WireKey, reg: &BRepRegistry) -> bool {
+    let Some(wire) = reg.wires.get(wire_key) else {
+        return false;
+    };
+    if wire.edges.len() < 2 {
+        return false;
+    }
+    let mut first_v = None;
+    let mut last_v = None;
+    for &(ek, orient) in &wire.edges {
+        let Some(edge) = reg.edges.get(ek) else {
+            return false;
+        };
+        let (v_start, v_end) = if orient == super::topo::Orientation::Forward {
+            (edge.v_low, edge.v_high)
+        } else {
+            (edge.v_high, edge.v_low)
+        };
+        if first_v.is_none() {
+            first_v = Some(v_start);
+        }
+        if let Some(lv) = last_v {
+            if lv != v_start {
+                return false;
+            }
+        }
+        last_v = Some(v_end);
+    }
+    matches!((first_v, last_v), (Some(f), Some(l)) if f == l)
+}
+
+/// Wire-level heal passes (outer and inner wires).
+fn heal_wire_passes(
+    wire_key: WireKey,
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+    config: &HealConfig,
+    seam_edges: &[super::topo::EdgeKey],
+    report: &mut HealReport,
+) -> bool {
+    if config.fix_connected {
+        let cr = fix_connected_wire(wire_key, reg, config.gap_tolerance);
+        report.merged_vertices += cr.merged_vertices;
+    }
+
+    if config.fix_small_edges {
+        let old_len = reg.wires.get(wire_key).map(|w| w.edges.len()).unwrap_or(0);
+        if let Some(updated) =
+            remove_small_edges(wire_key, reg, seam_edges, config.small_edge_min_length)
+        {
+            if updated.len() != old_len {
+                report.removed_small_edges += 1;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    if config.fix_reorder {
+        let wire = match reg.wires.get(wire_key) {
+            Some(w) => w,
+            None => return false,
+        };
+        if let Some(reordered) = reorder_wire_edges(&wire.edges, reg) {
+            if let Some(w) = reg.wires.get_mut(wire_key) {
+                w.edges = reordered;
+                report.reordered_wires += 1;
+            }
+        }
+    }
+
+    if config.fix_gaps_3d {
+        let closed = wire_is_closed(wire_key, reg);
+        let gaps = close_wire_gaps(wire_key, reg, config.gap_tolerance, closed);
+        if gaps > 0 {
+            report.closed_gaps += gaps;
+        }
+    }
+
+    if config.uv_gap_tolerance > 0.0 {
+        let uv_closed = close_wire_gaps_2d(
+            wire_key,
+            face_key,
+            reg,
+            config.gap_tolerance,
+            config.uv_gap_tolerance,
+        );
+        if uv_closed > 0 {
+            report.closed_uv_gaps += uv_closed;
+        }
+    }
+
+    if config.fix_shifted {
+        let sr = fix_shifted_pcurves(wire_key, face_key, reg);
+        report.shifted_pcurves += sr.shifts_applied;
+    }
+
+    if config.fix_edge_curves {
+        let adjusted = fix_edge_curves_wire(wire_key, face_key, reg, config.gap_tolerance);
+        report.adjusted_edge_curves += adjusted;
+    }
+
+    true
+}
+
+/// Face-level heal passes after all wires are processed.
+fn heal_face_passes(
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+    config: &HealConfig,
+    report: &mut HealReport,
+) -> bool {
+    let (outer_wire, inner_wires) = {
+        let Some(face) = reg.faces.get(face_key) else {
+            return false;
+        };
+        (face.outer_wire, face.inner_wires.clone())
+    };
+
+    if config.fix_lacking {
+        if !heal_lacking_on_wire(outer_wire, face_key, reg, config, report) {
+            return false;
+        }
+        for &iw in &inner_wires {
+            if !heal_lacking_on_wire(iw, face_key, reg, config, report) {
+                return false;
+            }
+        }
+    }
+
+    if config.fix_periodic_degenerated {
+        let pr = fix_periodic_degenerated(face_key, reg);
+        report.periodic_degen_created += pr.pole_edges_created;
+    }
+
+    if config.fix_self_intersection {
+        if !heal_self_intersect_on_wire(outer_wire, face_key, reg, config, report) {
+            return false;
+        }
+        for &iw in &inner_wires {
+            if !heal_self_intersect_on_wire(iw, face_key, reg, config, report) {
+                return false;
+            }
+        }
+    }
+
+    if config.fix_intersecting_wires {
+        let iwr = fix_intersecting_wires(face_key, reg);
+        let total_fixes = iwr.inner_wires_trimmed + iwr.inner_wires_removed + iwr.inner_wires_merged;
+        report.inner_wires_fixed += total_fixes;
+    }
+
+    if config.fix_missing_seams {
+        report.added_seams += fix_missing_seams(reg, face_key);
+    }
+
+    if config.fix_degenerated {
+        let dr = fix_degenerated_edges(face_key, reg);
+        report.degenerate_edges_created += dr.degenerate_edges_created;
+    }
+
+    true
+}
+
+fn heal_lacking_on_wire(
+    wire_key: WireKey,
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+    config: &HealConfig,
+    report: &mut HealReport,
+) -> bool {
+    let lr = fix_lacking_edges(
+        wire_key,
+        face_key,
+        reg,
+        config.gap_tolerance,
+        config.uv_gap_tolerance,
+    );
+    report.lacking_tolerance_fixes += lr.tolerance_fixes;
+    !reg.wires.get(wire_key).map(|w| w.edges.is_empty()).unwrap_or(true)
+}
+
+fn heal_self_intersect_on_wire(
+    wire_key: WireKey,
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+    config: &HealConfig,
+    report: &mut HealReport,
+) -> bool {
+    let sir = fix_self_intersecting_wire(wire_key, face_key, reg);
+    if sir.intersections_found > 0 {
+        report.self_intersections_fixed += sir.intersections_found;
+    }
+    if sir.edges_split > 0 || sir.wires_rebuilt {
+        let wire_cfg = HealConfig::wire_reconnect_only(config.gap_tolerance);
+        heal_wire_passes(wire_key, face_key, reg, &wire_cfg, &[], report);
+    }
+    if sir.intersections_found > 0 {
+        let si_warnings = check_uv_self_intersection(face_key, reg);
+        if !si_warnings.is_empty() {
+            log::warn!(
+                "[BRep heal] FixSelfIntersection face {:?}: still self-intersecting after fix",
+                face_key
+            );
+            push_skip_face(report, face_key);
+            return false;
+        }
+    }
+    !reg.wires.get(wire_key).map(|w| w.edges.is_empty()).unwrap_or(true)
+}
+
 /// Run all healing passes on a shell.
 pub fn heal_shell(
     shell_key: ShellKey,
@@ -146,140 +437,32 @@ pub fn heal_shell(
     };
     let face_keys = shell.faces.clone();
 
-    // Fix edge curves BEFORE per-face loop (OCC: FixEdgeCurves runs before FixSelfIntersection)
-    if config.fix_edge_curves {
-        let adjusted = fix_edge_curves(shell_key, reg, config.gap_tolerance);
-        report.adjusted_edge_curves = adjusted;
-        if adjusted > 0 {
-            log::debug!("[BRep heal] FixEdgeCurves: adjusted {} edge(s)", adjusted);
-        }
-    }
-
-    // Single per-face traversal: all wire-level passes in one loop
     for (face_key, _) in &face_keys {
-        // Extract face data before any mutable registry access
-        let (outer_wire, seam_edges) = {
+        let (outer_wire, inner_wires, seam_edges) = {
             let face = match reg.faces.get(*face_key) {
                 Some(f) => f,
                 None => continue,
             };
-            (face.outer_wire, face.seam_edges.clone())
+            (face.outer_wire, face.inner_wires.clone(), face.seam_edges.clone())
         };
 
-        // Foundation: vertex connectivity at junctions
-        if config.fix_connected {
-            let cr = fix_connected_wire(outer_wire, reg, config.gap_tolerance);
-            report.merged_vertices += cr.merged_vertices;
-            if cr.merged_vertices > 0 {
-                log::debug!("[BRep heal] FixConnected face {:?}: merged {} verts", face_key, cr.merged_vertices);
+        let mut wire_keys = vec![outer_wire];
+        wire_keys.extend(inner_wires);
+
+        for wk in wire_keys {
+            if !heal_wire_passes(wk, *face_key, reg, config, &seam_edges, &mut report) {
+                push_skip_face(&mut report, *face_key);
+                log::warn!("[BRep heal] face {:?}: wire {:?} failed wire heal", face_key, wk);
+                break;
             }
         }
 
-        // Cleanup: remove small edges before reordering
-        if config.fix_small_edges {
-            let old_len = reg.wires.get(outer_wire).map(|w| w.edges.len()).unwrap_or(0);
-            if let Some(updated) = remove_small_edges(outer_wire, reg, &seam_edges, config.small_edge_min_length) {
-                if updated.len() != old_len {
-                    report.removed_small_edges += 1;
-                    log::debug!("[BRep heal] FixSmall face {:?}: {} edges remain", face_key, updated.len());
-                }
-            } else {
-                report.skip_face_keys.push(*face_key);
-                log::warn!("[BRep heal] FixSmall face {:?}: wire emptied, skipping", face_key);
-                continue;
-            }
+        if report.skip_faces_seen.contains(face_key) {
+            continue;
         }
 
-        if config.fix_reorder {
-            let wire = match reg.wires.get(outer_wire) {
-                Some(w) => w,
-                None => continue,
-            };
-            if let Some(reordered) = reorder_wire_edges(&wire.edges, reg) {
-                if let Some(w) = reg.wires.get_mut(outer_wire) {
-                    w.edges = reordered;
-                    report.reordered_wires += 1;
-                }
-            }
-        }
-
-        if config.uv_gap_tolerance > 0.0 {
-            let uv_closed = close_wire_gaps_2d(
-                outer_wire,
-                *face_key,
-                reg,
-                config.gap_tolerance,
-                config.uv_gap_tolerance,
-            );
-            if uv_closed > 0 {
-                report.closed_uv_gaps += uv_closed;
-                log::debug!("[BRep heal] FixGaps2d face {:?}: closed {} UV gap(s)", face_key, uv_closed);
-            }
-        }
-
-        if config.fix_shifted {
-            let sr = fix_shifted_pcurves(outer_wire, *face_key, reg);
-            report.shifted_pcurves += sr.shifts_applied;
-            if sr.shifts_applied > 0 {
-                log::debug!("[BRep heal] FixShifted face {:?}: {} pcurve shift(s) applied", face_key, sr.shifts_applied);
-            }
-        }
-
-        if config.fix_periodic_degenerated {
-            let pr = fix_periodic_degenerated(*face_key, reg);
-            report.periodic_degen_created += pr.pole_edges_created;
-            if pr.degeneracies_reconstructed > 0 {
-                log::debug!("[BRep heal] FixPeriodicDegenerated face {:?}: {} pole degeneracies", face_key, pr.degeneracies_reconstructed);
-            }
-        }
-
-        if config.fix_missing_seams {
-            report.added_seams += fix_missing_seams(reg, *face_key);
-        }
-
-        if config.fix_intersecting_wires {
-            let iwr = fix_intersecting_wires(*face_key, reg);
-            let total_fixes = iwr.inner_wires_trimmed + iwr.inner_wires_removed + iwr.inner_wires_merged;
-            report.inner_wires_fixed += total_fixes;
-            if total_fixes > 0 {
-                log::debug!("[BRep heal] FixIntersectingWires face {:?}: {} inner wire fix(es)", face_key, total_fixes);
-            }
-        }
-
-        if config.fix_lacking {
-            let lr = fix_lacking_edges(outer_wire, *face_key, reg, config.gap_tolerance, config.uv_gap_tolerance);
-            report.lacking_tolerance_fixes += lr.tolerance_fixes;
-            if lr.tolerance_fixes > 0 {
-                log::debug!("[BRep heal] FixLacking face {:?}: {} tolerance fix(es)", face_key, lr.tolerance_fixes);
-            }
-        }
-
-        if config.fix_self_intersection {
-            let sir = fix_self_intersecting_wire(outer_wire, *face_key, reg);
-            if sir.intersections_found > 0 {
-                report.self_intersections_fixed += sir.intersections_found;
-                log::debug!("[BRep heal] FixSelfIntersection face {:?}: {} intersections fixed", face_key, sir.intersections_found);
-                // Re-check after fix: if still self-intersecting, mark as unfixable
-                let si_warnings = check_uv_self_intersection(*face_key, reg);
-                if !si_warnings.is_empty() {
-                    log::warn!("[BRep heal] FixSelfIntersection face {:?}: still self-intersecting after fix, marking for skip", face_key);
-                    report.skip_face_keys.push(*face_key);
-                    continue;
-                }
-            }
-            if reg.wires.get(outer_wire).map(|w| w.edges.is_empty()).unwrap_or(false) {
-                report.skip_face_keys.push(*face_key);
-                continue;
-            }
-        }
-
-        if config.fix_degenerated {
-            let dr = fix_degenerated_edges(*face_key, reg);
-            report.degenerate_edges_created += dr.degenerate_edges_created;
-            if dr.degeneracies_found > 0 {
-                log::debug!("[BRep heal] FixDegenerated face {:?}: {} singularities, {} edges created",
-                    face_key, dr.degeneracies_found, dr.degenerate_edges_created);
-            }
+        if !heal_face_passes(*face_key, reg, config, &mut report) {
+            push_skip_face(&mut report, *face_key);
         }
     }
 
@@ -293,17 +476,12 @@ pub fn heal_shell(
     if config.fix_vertex_position {
         let vp_fixed = fix_vertex_positions(shell_key, reg, config.gap_tolerance);
         report.vertex_positions_fixed += vp_fixed;
-        if vp_fixed > 0 {
-            log::debug!("[BRep heal] FixVertexPosition: projected {} vertex/vertices", vp_fixed);
-        }
     }
 
     if config.fix_small_area {
         let small = fix_small_area(shell_key, reg);
         for fk in small {
-            if !report.skip_face_keys.contains(&fk) {
-                report.skip_face_keys.push(fk);
-            }
+            push_skip_face(&mut report, fk);
         }
     }
 
@@ -319,14 +497,14 @@ pub fn heal_shell(
     let check_report = check_shell(shell_key, reg);
     report.check_errors = check_report.errors.len();
     report.check_warnings = check_report.warnings.len();
-    for &fk in &check_report.failed_faces {
-        if !report.skip_face_keys.contains(&fk) {
-            report.skip_face_keys.push(fk);
-            log::warn!("[BRep heal] face {:?} failed topology check, skipping mesh", fk);
-        }
-    }
     for e in &check_report.errors {
-        log::warn!("[BRep check] {}", e);
+        log::debug!("[BRep check] {}", e);
+    }
+    if !check_report.errors.is_empty() {
+        log::info!(
+            "[BRep check] {} topology error(s) after heal pass",
+            check_report.errors.len()
+        );
     }
     for w in &check_report.warnings {
         log::debug!("[BRep check] {}", w);
@@ -372,4 +550,87 @@ fn fix_small_area(shell_key: ShellKey, reg: &BRepRegistry) -> Vec<FaceKey> {
         }
     }
     skip
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+    use crate::step::brep::topo::{BRepWire, Orientation};
+    use rc3d_core::math::Vec3;
+
+    #[test]
+    fn test_close_3d_gap_in_heal_shell() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = |a, b| CurveGeom::Line {
+            origin: a,
+            direction: b - a,
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
+        let gap_v = reg.vertices.insert(crate::step::brep::topo::BRepVertex {
+            position: Vec3::new(1.0, 0.00005, 0.0),
+            tolerance: 1e-6,
+        });
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
+        let e2_orient = if gap_v < v2 {
+            Orientation::Forward
+        } else {
+            Orientation::Reversed
+        };
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, e2_orient),
+            (e3, Orientation::Forward),
+            (e5, Orientation::Forward),
+        ];
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let mut cfg = HealConfig::default();
+        cfg.gap_tolerance = 1e-3;
+        cfg.fix_connected = false;
+        cfg.fix_reorder = false;
+        cfg.fix_small_edges = false;
+        cfg.fix_shifted = false;
+        cfg.fix_edge_curves = false;
+        cfg.fix_vertex_tolerance = false;
+        cfg.fix_small_area = false;
+        cfg.fix_vertex_position = false;
+        cfg.uv_gap_tolerance = 0.0;
+        cfg.fix_gaps_3d = true;
+        cfg.fix_orientation = false;
+        cfg.fix_missing_seams = false;
+        cfg.fix_self_intersection = false;
+        cfg.fix_degenerated = false;
+        cfg.fix_intersecting_wires = false;
+        cfg.fix_periodic_degenerated = false;
+        cfg.fix_lacking = false;
+        cfg.fix_split_face = false;
+        let report = heal_shell(sk, &mut reg, &cfg);
+        assert!(report.closed_gaps > 0 || report.merged_vertices > 0);
+    }
 }

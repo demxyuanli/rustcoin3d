@@ -31,7 +31,7 @@ impl StepImportOptions {
         Self {
             mode: StepImportMode::Strict,
             heal_level: HealLevel::Standard,
-            mesh_relative_deflection: 0.001,
+            mesh_relative_deflection: 0.0,
         }
     }
 
@@ -39,7 +39,7 @@ impl StepImportOptions {
         Self {
             mode: StepImportMode::Preview,
             heal_level: HealLevel::Standard,
-            mesh_relative_deflection: 0.001,
+            mesh_relative_deflection: 0.0,
         }
     }
 

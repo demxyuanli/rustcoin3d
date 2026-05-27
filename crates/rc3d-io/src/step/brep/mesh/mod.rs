@@ -32,6 +32,8 @@ use report::{
 
 /// UV grid resolution for closed analytic surfaces (sphere, torus).
 pub const MESH_CLOSED_SURFACE_SEGS: u32 = 64;
+/// Faces with fewer tris after CDT/surface fill are re-tessellated via parametric grid.
+const MIN_ADEQUATE_FACE_TRIS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct BRepMeshConfig {
@@ -51,7 +53,7 @@ impl Default for BRepMeshConfig {
             face: FaceFillConfig::default(),
             refine: RefineConfig::default(),
             optimize: OptimizeConfig::default(),
-            relative_deflection: 0.005,
+            relative_deflection: 0.0,
             same_parameter_tol: 1e-4,
         }
     }
@@ -152,9 +154,11 @@ pub fn mesh_brep_shell_with_report(
     }
 
     let mut face_infos: Vec<FaceWireInfo> = Vec::new();
+    let mut heal_skipped_faces: Vec<FaceKey> = Vec::new();
 
     for &(face_key, _orient) in &shell.faces {
         if skip_face_keys.contains(&face_key) {
+            heal_skipped_faces.push(face_key);
             continue;
         }
         let face = match reg.faces.get(face_key) {
@@ -307,12 +311,40 @@ pub fn mesh_brep_shell_with_report(
             }
         }
 
+        let mut used_parametric_grid = false;
+        if range.tri_count < MIN_ADEQUATE_FACE_TRIS {
+            if range.tri_count > 0 {
+                all_indices.truncate(range.first_tri * 4);
+                range.tri_count = 0;
+            }
+            let tris_before = all_indices.len() / 4;
+            mesh_parametric_grid(
+                face,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut pos_to_idx,
+                &mut all_indices,
+            );
+            let grid_tris = all_indices.len() / 4 - tris_before;
+            if grid_tris > 0 {
+                range.tri_count = grid_tris;
+                range.first_tri = tris_before;
+                used_parametric_grid = true;
+                report.grid_fallback_count += 1;
+                log::debug!(
+                    "[BRep mesh] face {:?}: parametric grid fallback ({} tris)",
+                    info.face_key,
+                    grid_tris
+                );
+            }
+        }
+
         report.faces.push(FaceMeshStats {
             face_key: info.face_key,
             tri_count: range.tri_count,
             uv_source: loops.uv_source,
             max_chord_error: range.max_chord_error,
-            grid_fallback: used_surface_fill,
+            grid_fallback: used_surface_fill || used_parametric_grid,
         });
 
         if range.tri_count > 0 {
@@ -325,6 +357,33 @@ pub fn mesh_brep_shell_with_report(
             );
             face_ranges.push(range);
             report.meshed_faces += 1;
+        }
+    }
+
+    for face_key in heal_skipped_faces {
+        let face = match reg.faces.get(face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+        let tris_before = all_indices.len() / 4;
+        mesh_parametric_grid(
+            face,
+            &mut global_vertices,
+            &mut global_normals,
+            &mut pos_to_idx,
+            &mut all_indices,
+        );
+        let tri_count = all_indices.len() / 4 - tris_before;
+        report.faces.push(FaceMeshStats {
+            face_key,
+            tri_count,
+            uv_source: UvSource::SurfaceFill,
+            max_chord_error: 0.0,
+            grid_fallback: tri_count > 0,
+        });
+        if tri_count > 0 {
+            report.meshed_faces += 1;
+            report.grid_fallback_count += 1;
         }
     }
 
@@ -449,8 +508,8 @@ fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
     removed
 }
 
-/// Tessellate a closed analytic surface face (VERTEX_LOOP, e.g. full sphere).
-fn mesh_closed_surface(
+/// UV parametric grid tessellation for any surface type (last-resort / closed faces).
+fn mesh_parametric_grid(
     face: &super::topo::BRepFace,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
@@ -460,74 +519,58 @@ fn mesh_closed_surface(
     const SEGS: u32 = MESH_CLOSED_SURFACE_SEGS;
     let pr = face.surface.param_range();
 
-    let insert_uv = |u: f32, v: f32,
-                     global_vertices: &mut Vec<Vec3>,
-                     global_normals: &mut Vec<Vec3>,
-                     pos_to_idx: &mut HashMap<[u32; 3], usize>,
-                     face: &super::topo::BRepFace|
-     -> i32 {
-        let pt = face.surface.d0_native(u, v);
-        let mut n = face.surface.normal_native(u, v);
-        if !face.same_sense {
-            n = -n;
-        }
-        let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-        let idx = *pos_to_idx.entry(hash).or_insert_with(|| {
-            let i = global_vertices.len();
-            global_vertices.push(pt);
-            global_normals.push(n);
-            i
-        });
-        idx as i32
-    };
-
-    let emit_tri = |i0: i32, i1: i32, i2: i32,
-                    global_vertices: &[Vec3],
-                    global_normals: &mut [Vec3],
-                    all_indices: &mut Vec<i32>| {
-        if i0 == i1 || i1 == i2 || i2 == i0 {
-            return;
-        }
-        all_indices.extend_from_slice(&[i0, i1, i2, -1]);
-        let p0 = global_vertices[i0 as usize];
-        let p1 = global_vertices[i1 as usize];
-        let p2 = global_vertices[i2 as usize];
-        let tri_n = (p1 - p0).cross(p2 - p0);
-        if tri_n.length() > 1e-10 {
-            let n = tri_n.normalize();
-            global_normals[i0 as usize] = global_normals[i0 as usize] + n;
-            global_normals[i1 as usize] = global_normals[i1 as usize] + n;
-            global_normals[i2 as usize] = global_normals[i2 as usize] + n;
-        }
-    };
-
-    match &face.surface {
-        SurfaceGeom::Sphere { .. }
-        | SurfaceGeom::Torus { .. }
-        | SurfaceGeom::Cylinder { .. }
-        | SurfaceGeom::Cone { .. } => {
-            for iu in 0..SEGS {
-                for iv in 0..SEGS {
-                    let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as f32 / SEGS as f32;
-                    let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as f32 / SEGS as f32;
-                    let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as f32 / SEGS as f32;
-                    let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as f32 / SEGS as f32;
-                    let a = insert_uv(u0, v0, global_vertices, global_normals, pos_to_idx, face);
-                    let b = insert_uv(u1, v0, global_vertices, global_normals, pos_to_idx, face);
-                    let c = insert_uv(u1, v1, global_vertices, global_normals, pos_to_idx, face);
-                    let d = insert_uv(u0, v1, global_vertices, global_normals, pos_to_idx, face);
-                    emit_tri(a, b, c, global_vertices, global_normals, all_indices);
-                    emit_tri(a, c, d, global_vertices, global_normals, all_indices);
+    for iu in 0..SEGS {
+        for iv in 0..SEGS {
+            let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as f32 / SEGS as f32;
+            let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as f32 / SEGS as f32;
+            let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as f32 / SEGS as f32;
+            let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as f32 / SEGS as f32;
+            let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+            let mut idx = [0i32; 4];
+            for (k, &(u, v)) in corners.iter().enumerate() {
+                let pt = face.surface.d0_native(u, v);
+                let mut n = face.surface.normal_native(u, v);
+                if !face.same_sense {
+                    n = -n;
+                }
+                let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                    let i = global_vertices.len();
+                    global_vertices.push(pt);
+                    global_normals.push(n);
+                    i
+                });
+                idx[k] = gi as i32;
+            }
+            for (i0, i1, i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
+                if i0 == i1 || i1 == i2 || i2 == i0 {
+                    continue;
+                }
+                all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+                let p0 = global_vertices[i0 as usize];
+                let p1 = global_vertices[i1 as usize];
+                let p2 = global_vertices[i2 as usize];
+                let tri_n = (p1 - p0).cross(p2 - p0);
+                if tri_n.length() > 1e-10 {
+                    let n = tri_n.normalize();
+                    global_normals[i0 as usize] = global_normals[i0 as usize] + n;
+                    global_normals[i1 as usize] = global_normals[i1 as usize] + n;
+                    global_normals[i2 as usize] = global_normals[i2 as usize] + n;
                 }
             }
         }
-        _ => {
-            eprintln!(
-                "[BRep mesh] closed surface {:?} not supported, skipping",
-                std::mem::discriminant(&face.surface)
-            );
-        }
     }
+}
+
+/// Tessellate a closed analytic surface face (VERTEX_LOOP, e.g. full sphere).
+fn mesh_closed_surface(
+    face: &super::topo::BRepFace,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    all_indices: &mut Vec<i32>,
+) {
+    mesh_parametric_grid(face, global_vertices, global_normals, pos_to_idx, all_indices);
 }
 
 #[cfg(test)]

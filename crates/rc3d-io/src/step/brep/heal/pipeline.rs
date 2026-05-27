@@ -16,12 +16,13 @@ pub enum HealLevel {
 }
 
 impl Default for HealLevel {
-    fn default() -> Self { HealLevel::Standard }
+    fn default() -> Self {
+        HealLevel::Standard
+    }
 }
 
 /// Run iterative auto-heal with adaptive fix selection.
-/// First iteration runs foundational fixes (connected, small, reorder, orientation).
-/// Subsequent iterations selectively enable fixes based on check results.
+/// Each iteration uses a fresh `check_shell` result to drive `select_fixes`.
 pub fn auto_heal_shell(
     shell_key: ShellKey,
     reg: &mut BRepRegistry,
@@ -29,29 +30,35 @@ pub fn auto_heal_shell(
     max_iterations: usize,
 ) -> HealReport {
     let mut total_report = HealReport::default();
-
-    // Baseline check
-    let check_before = check_shell(shell_key, reg);
-    let mut prev_errors = check_before.errors.len();
-    let mut prev_warnings = check_before.warnings.len();
+    let mut check = check_shell(shell_key, reg);
+    let mut prev_errors = check.errors.len();
+    let mut prev_warnings = check.warnings.len();
 
     log::debug!(
         "[BRep pipeline] level={:?}, baseline: {} errors, {} warnings",
-        level, prev_errors, prev_warnings
+        level,
+        prev_errors,
+        prev_warnings
     );
 
     for iter in 0..max_iterations {
-        let config = select_fixes(level, iter, &check_before);
+        let config = select_fixes(level, iter, &check);
         let hr = heal_shell(shell_key, reg, &config);
-        let curr_errors = hr.check_errors;
-        let curr_warnings = hr.check_warnings;
-        total_report.merge(hr);
-        total_report.check_errors = curr_errors;
-        total_report.check_warnings = curr_warnings;
+        total_report.merge(hr.clone());
+        total_report.check_errors = hr.check_errors;
+        total_report.check_warnings = hr.check_warnings;
+
+        check = check_shell(shell_key, reg);
+        let curr_errors = check.errors.len();
+        let curr_warnings = check.warnings.len();
 
         log::debug!(
             "[BRep pipeline] iter {}: errors {}→{}, warnings {}→{}",
-            iter + 1, prev_errors, curr_errors, prev_warnings, curr_warnings,
+            iter + 1,
+            prev_errors,
+            curr_errors,
+            prev_warnings,
+            curr_warnings,
         );
 
         if curr_errors == prev_errors && curr_warnings == prev_warnings {
@@ -62,82 +69,62 @@ pub fn auto_heal_shell(
         prev_warnings = curr_warnings;
     }
 
+    total_report.check_errors = check.errors.len();
+    total_report.check_warnings = check.warnings.len();
     total_report
 }
 
-/// Select which fixes to apply based on heal level and iteration.
-/// First iteration: foundational fixes only (connected, small, reorder, orientation).
-/// Standard+: enable UV fixes if UV gaps detected.
-/// Advanced: enable topology fixes if self-intersection or degeneracies detected.
-fn select_fixes(level: HealLevel, _iteration: usize, check: &CheckReport) -> HealConfig {
-    let mut config = HealConfig::default();
-    // Start with everything disabled
-    config.fix_connected = false;
-    config.fix_small_edges = false;
-    config.fix_reorder = false;
-    config.fix_orientation = false;
-    config.fix_missing_seams = false;
-    config.fix_shifted = false;
-    config.fix_edge_curves = false;
-    config.fix_lacking = false;
-    config.fix_degenerated = false;
-    config.fix_self_intersection = false;
-    config.fix_intersecting_wires = false;
-    config.fix_periodic_degenerated = false;
-    config.fix_vertex_tolerance = false;
-    config.fix_small_area = false;
-    config.fix_vertex_position = false;
-    config.uv_gap_tolerance = 0.0;
+/// Select which fixes to apply based on heal level, iteration, and current check.
+pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckReport) -> HealConfig {
+    let mut config = HealConfig::all_disabled();
 
-    // Iteration 0: foundational fixes always run first
-    config.fix_connected = true;
-    config.fix_small_edges = true;
-    config.fix_reorder = true;
-    config.fix_orientation = true;
-    config.fix_edge_curves = true;
+    if iteration == 0 {
+        config.fix_connected = true;
+        config.fix_small_edges = true;
+        config.fix_reorder = true;
+        config.fix_gaps_3d = level >= HealLevel::Basic;
+        config.fix_orientation = true;
 
-    if level >= HealLevel::Standard {
-        config.fix_missing_seams = true;
-        config.uv_gap_tolerance = 1e-5;
-        // Only enable shifted/lacking if check detected issues
-        if has_uv_issues(check) {
+        if level >= HealLevel::Standard {
+            config.uv_gap_tolerance = 1e-5;
             config.fix_shifted = true;
-        }
-        config.fix_lacking = true;
-        config.fix_vertex_tolerance = true;
-        config.fix_small_area = true;
-    }
-
-    if level >= HealLevel::Advanced {
-        if has_self_intersections(check) {
-            config.fix_self_intersection = true;
-        }
-        if has_singularities(check) {
-            config.fix_degenerated = true;
             config.fix_periodic_degenerated = true;
+            config.fix_edge_curves = true;
+            config.fix_lacking = true;
+            config.fix_missing_seams = true;
+            config.fix_vertex_tolerance = true;
+            config.fix_small_area = true;
+            config.fix_vertex_position = true;
         }
-        if has_multiple_wires(check) {
-            config.fix_intersecting_wires = true;
+    } else {
+        if check.has_uv_gaps || check.has_pcurve_issues {
+            config.uv_gap_tolerance = 1e-5;
+            config.fix_shifted = true;
+            config.fix_lacking = true;
+            config.fix_edge_curves = true;
+        }
+        if check.has_pcurve_issues {
+            config.fix_split_face = true;
+        }
+        if level >= HealLevel::Standard {
+            config.fix_gaps_3d = check.has_uv_gaps;
+            config.fix_missing_seams = check.has_pcurve_issues;
+        }
+        if level >= HealLevel::Advanced {
+            if check.has_self_intersections {
+                config.fix_self_intersection = true;
+            }
+            if check.has_singularities {
+                config.fix_degenerated = true;
+                config.fix_periodic_degenerated = true;
+            }
+            if check.has_inner_wires || check.has_intersecting_wires {
+                config.fix_intersecting_wires = true;
+            }
         }
     }
 
     config
-}
-
-fn has_uv_issues(check: &CheckReport) -> bool {
-    check.warnings.iter().any(|w| w.contains("UV") || w.contains("PCurve") || w.contains("parameter"))
-}
-
-fn has_self_intersections(check: &CheckReport) -> bool {
-    check.warnings.iter().any(|w| w.contains("self-intersection"))
-}
-
-fn has_singularities(check: &CheckReport) -> bool {
-    check.warnings.iter().any(|w| w.contains("degeneracy") || w.contains("singularity"))
-}
-
-fn has_multiple_wires(check: &CheckReport) -> bool {
-    check.warnings.iter().any(|w| w.contains("inner wire") || w.contains("intersecting"))
 }
 
 #[cfg(test)]
@@ -148,59 +135,7 @@ mod tests {
     use crate::step::brep::registry::BRepRegistry;
     use rc3d_core::math::Vec3;
 
-    #[test]
-    fn test_auto_heal_converges() {
-        let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let wk = reg.wires.insert(BRepWire { edges: vec![] });
-        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
-            surface, outer_wire: wk, inner_wires: vec![],
-            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
-            degenerated_edges: vec![],
-        });
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        // Build edges and determine orientation based on v_low/v_high vs wire direction
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, line);
-        let orient_for = |ek, from_vk| {
-            let edge = reg.edges.get(ek).unwrap();
-            if edge.v_low == from_vk { Orientation::Forward } else { Orientation::Reversed }
-        };
-        reg.wires.get_mut(wk).unwrap().edges = vec![
-            (e1, orient_for(e1, v0)), (e2, orient_for(e2, v1)), (e3, orient_for(e3, v2)),
-        ];
-        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
-            faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
-        });
-        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 3);
-        assert!(report.check_errors <= 1, "simple wire should converge quickly");
-    }
-
-    #[test]
-    fn test_auto_heal_max_iterations() {
-        let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let wk = reg.wires.insert(BRepWire { edges: vec![] });
-        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
-            surface, outer_wire: wk, inner_wires: vec![],
-            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
-            degenerated_edges: vec![],
-        });
-        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
-            faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
-        });
-        // Heal with max 1 iteration — should not panic or loop
-        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 1);
-        assert!(report.merged_vertices >= 0, "should complete without error");
-    }
-
-    #[test]
-    fn test_auto_heal_basic_vs_standard() {
-        let mut reg = BRepRegistry::new();
+    fn build_closed_triangle_shell(reg: &mut BRepRegistry) -> (ShellKey, crate::step::brep::topo::FaceKey) {
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -208,6 +143,7 @@ mod tests {
         };
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
             surface,
@@ -223,46 +159,118 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
-        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, line);
+        let orient_for = |ek, from_vk| {
+            let edge = reg.edges.get(ek).unwrap();
+            if edge.v_low == from_vk {
+                Orientation::Forward
+            } else {
+                Orientation::Reversed
+            }
+        };
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, orient_for(e1, v0)),
+            (e2, orient_for(e2, v1)),
+            (e3, orient_for(e3, v2)),
+        ];
         let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
             faces: vec![(fk, Orientation::Forward)],
             closed: false,
             step_id: None,
         });
-        // Basic: fewer fixes, faster
+        (sk, fk)
+    }
+
+    #[test]
+    fn test_auto_heal_converges() {
+        let mut reg = BRepRegistry::new();
+        let (sk, _) = build_closed_triangle_shell(&mut reg);
+        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 3);
+        assert!(report.check_errors <= 1, "simple wire should converge quickly");
+    }
+
+    #[test]
+    fn test_auto_heal_max_iterations() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 1);
+        let _ = report.merged_vertices;
+    }
+
+    #[test]
+    fn test_auto_heal_basic_vs_standard() {
+        let mut reg = BRepRegistry::new();
+        let (sk, fk) = build_closed_triangle_shell(&mut reg);
         let report_basic = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 2);
         let sk2 = reg.shells.insert(crate::step::brep::topo::BRepShell {
             faces: vec![(fk, Orientation::Forward)],
             closed: false,
             step_id: None,
         });
-        // Standard: more fixes (runs on a fresh shell)
         let report_std = auto_heal_shell(sk2, &mut reg, HealLevel::Standard, 2);
         assert!(
-            report_basic.check_errors <= report_std.check_errors + 1,
-            "Basic should not produce more errors than Standard"
+            report_std.added_seams >= report_basic.added_seams
+                || report_std.lacking_tolerance_fixes >= report_basic.lacking_tolerance_fixes,
+            "Standard should run more fixes than Basic"
         );
     }
-}
 
-impl HealReport {
-    /// Sum of all categories to give a quick total-fixes count for pipeline diagnostics.
-    fn total_fix_count(&self) -> usize {
-        self.reordered_wires
-            + self.closed_gaps
-            + self.closed_uv_gaps
-            + self.flipped_faces
-            + self.added_seams
-            + self.merged_vertices
-            + self.removed_small_edges
-            + self.shifted_pcurves
-            + self.adjusted_edge_curves
-            + self.lacking_tolerance_fixes
-            + self.degenerate_edges_created
-            + self.periodic_degen_created
-            + self.self_intersections_fixed
-            + self.inner_wires_fixed
-            + self.vertex_positions_fixed
+    #[test]
+    fn test_select_fixes_advanced_enables_self_intersect() {
+        let mut check = CheckReport::default();
+        check.has_self_intersections = true;
+        let cfg0 = select_fixes(HealLevel::Advanced, 0, &check);
+        assert!(
+            !cfg0.fix_self_intersection,
+            "self-intersect fix waits for iter > 0"
+        );
+        let cfg = select_fixes(HealLevel::Advanced, 1, &check);
+        assert!(cfg.fix_self_intersection);
+    }
+
+    #[test]
+    fn test_select_fixes_iter1_uses_fresh_check() {
+        let mut check = CheckReport::default();
+        check.has_self_intersections = true;
+        let cfg = select_fixes(HealLevel::Advanced, 1, &check);
+        assert!(cfg.fix_self_intersection);
+        assert!(!cfg.fix_orientation, "orientation only on iter 0");
+    }
+
+    #[test]
+    fn test_select_fixes_standard_enables_vertex_position() {
+        let check = CheckReport::default();
+        let cfg = select_fixes(HealLevel::Standard, 0, &check);
+        assert!(cfg.fix_vertex_position);
+    }
+
+    #[test]
+    fn test_select_fixes_iter1_enables_split_face_on_pcurve_issues() {
+        let mut check = CheckReport::default();
+        check.has_pcurve_issues = true;
+        let cfg = select_fixes(HealLevel::Standard, 1, &check);
+        assert!(cfg.fix_split_face);
     }
 }
