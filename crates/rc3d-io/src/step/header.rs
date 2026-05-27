@@ -6,6 +6,8 @@ pub struct HeaderInfo {
     pub file_description: Vec<String>,
     pub file_name: FileName,
     pub file_schema: Vec<String>,
+    /// Detected AP schema (e.g. "AP242", "AP203", "AP214") from FILE_SCHEMA.
+    pub ap_schema: Option<String>,
     pub extra: Vec<(String, String)>,
 }
 
@@ -65,6 +67,9 @@ pub fn parse_header(input: &str) -> Option<(HeaderInfo, &str)> {
             }
             "FILE_SCHEMA" => {
                 info.file_schema = parse_string_list(&args_str);
+                // Detect AP schema from first schema identifier
+                info.ap_schema = info.file_schema.first()
+                    .and_then(|s| extract_ap_schema(s));
             }
             _ => {
                 info.extra.push((keyword, args_str.to_string()));
@@ -198,6 +203,29 @@ fn strip_list_parens(s: &str) -> String {
     }
 }
 
+/// Extract the AP identifier from a FILE_SCHEMA identifier string.
+/// FILE_SCHEMA strings use the format: 'SCHEMA_NAME {{ version }}'
+pub(crate) fn extract_ap_schema(schema_str: &str) -> Option<String> {
+    let name = schema_str.split("{{").next()?.trim().trim_matches('\'');
+    let upper = name.to_uppercase();
+    for ap in &["AP242", "AP214", "AP203", "AP209", "AP210", "AP238"] {
+        if upper.contains(ap) {
+            return Some(ap.to_string());
+        }
+    }
+    // Fallback: check for well-known schema names
+    if upper.contains("AUTOMOTIVE_DESIGN") {
+        return Some("AP214".to_string());
+    }
+    if upper.contains("CONFIG_CONTROL_DESIGN") {
+        return Some("AP203".to_string());
+    }
+    if upper.contains("MANAGED_MODEL_BASED") {
+        return Some("AP242".to_string());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +265,35 @@ DATA;";
         let (header, _after) = parse_header(input).unwrap();
         assert!(header.file_description.is_empty());
         assert!(header.file_schema.is_empty());
+    }
+
+    #[test]
+    fn test_ap_schema_detection() {
+        let input = "HEADER;
+FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING {{ 1 0 10303 242 3 1 1 }}'));
+ENDSEC;
+DATA;";
+        let (header, _) = parse_header(input).unwrap();
+        assert_eq!(header.ap_schema.as_deref(), Some("AP242"));
+    }
+
+    #[test]
+    fn test_ap_schema_ap203() {
+        let input = "HEADER;
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;";
+        let (header, _) = parse_header(input).unwrap();
+        assert_eq!(header.ap_schema.as_deref(), Some("AP203"));
+    }
+
+    #[test]
+    fn test_ap_schema_ap214() {
+        let input = "HEADER;
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN {{ 1 0 10303 214 3 1 1 }}'));
+ENDSEC;
+DATA;";
+        let (header, _) = parse_header(input).unwrap();
+        assert_eq!(header.ap_schema.as_deref(), Some("AP214"));
     }
 }

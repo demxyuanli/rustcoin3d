@@ -82,4 +82,6 @@ pub struct StepImportReport {
     pub heal_check_errors: usize,
     pub unknown_entity_count: usize,
     pub continuity_defects: usize,
+    /// Detected AP schema (e.g. "AP242", "AP203", "AP214", or None if unrecognized).
+    pub ap_schema: Option<String>,
 }

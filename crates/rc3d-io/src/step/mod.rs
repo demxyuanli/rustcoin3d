@@ -122,6 +122,12 @@ fn exchange_to_scene_graph(
     let mut import_report = StepImportReport::default();
     import_report.skipped_parse_entities = exchange.diagnostics.skipped_entities.len();
     import_report.unknown_entity_count = exchange.diagnostics.unknown_entity_count;
+    if let Some(ref header) = exchange.header {
+        import_report.ap_schema = header.ap_schema.clone();
+        if let Some(ref ap) = import_report.ap_schema {
+            log::info!("[STEP] detected schema: {}", ap);
+        }
+    }
     if import_report.unknown_entity_count > 0 {
         log::warn!(
             "[STEP] {} unknown entity type(s) in file",
@@ -158,6 +164,17 @@ fn exchange_to_scene_graph(
     }
 
     let mut reg = brep_result.registry;
+    let g0_tol = topology::global_tolerance(&exchange.entities).max(1e-6);
+    for &sk in &brep_result.root_solids {
+        let shell_key = reg.solids.get(sk).map(|s| s.outer_shell);
+        if let Some(shell_key) = shell_key {
+            let n = brep::same_parameter::same_parameter_shell(&mut reg, shell_key, g0_tol);
+            if n > 0 {
+                log::debug!("[STEP] SameParameter: {} edge(s) on solid {:?}", n, sk);
+            }
+        }
+    }
+
     let shell_instances = assembly::extract_shell_instances(&exchange.entities);
     let shell_styles = assembly::extract_shell_styles(&exchange.entities);
 
@@ -184,7 +201,6 @@ fn exchange_to_scene_graph(
     import_report.heal_check_errors = total_heal.check_errors;
     log::info!("[STEP] healed: {:?}", total_heal);
 
-    let g0_tol = topology::global_tolerance(&exchange.entities);
     for &sk in &brep_result.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
             let defects = brep::heal::check_shell_continuity(
@@ -243,6 +259,11 @@ fn exchange_to_scene_graph(
             if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
                 continue;
             }
+            log::info!(
+                "[STEP] mesh: {} verts, {} tris",
+                base_mesh.vertices.len(),
+                base_mesh.indices.len() / 4,
+            );
 
             let base_offset = props_vertices.len() as i32;
             props_vertices.extend_from_slice(&base_mesh.vertices);
@@ -289,6 +310,9 @@ fn exchange_to_scene_graph(
                     comp,
                     NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
                 );
+                let vert_count = mesh.vertices.len();
+                let normal_count = mesh.normals.len();
+                let tri_count = mesh.indices.len() / 4;
                 graph.add_child(
                     comp,
                     NodeData::Coordinate3(Coordinate3Node {
@@ -301,12 +325,17 @@ fn exchange_to_scene_graph(
                         NodeData::Normal(NormalNode::from_vectors(mesh.normals)),
                     );
                 }
-                graph.add_child(
-                    comp,
-                    NodeData::IndexedFaceSet(IndexedFaceSetNode {
-                        coord_index: mesh.indices,
-                    }),
+                let ifs = IndexedFaceSetNode {
+                    coord_index: mesh.indices,
+                };
+                log::debug!(
+                    "[STEP] scene mesh: {} verts, {} normals, {} tris ({} KB indices)",
+                    vert_count,
+                    normal_count,
+                    tri_count,
+                    tri_count * 12 / 1024,
                 );
+                graph.add_child(comp, NodeData::IndexedFaceSet(ifs));
             }
         }
     }
@@ -350,7 +379,7 @@ fn exchange_to_scene_graph(
     }
 
     if let Some(root_entry) = graph.get_mut(root) {
-        root_entry.display_mode = Some(DisplayMode::ShadedWithEdges);
+        root_entry.display_mode = Some(DisplayMode::Shaded);
     }
     Ok(graph)
 }
