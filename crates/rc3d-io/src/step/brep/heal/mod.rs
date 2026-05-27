@@ -12,6 +12,9 @@ pub mod degenerated;
 pub mod periodic;
 pub mod self_intersect;
 pub mod intersecting_wires;
+pub mod continuity;
+pub mod vertex_position;
+pub mod pipeline;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
@@ -28,7 +31,9 @@ use degenerated::fix_degenerated_edges;
 use periodic::fix_periodic_degenerated;
 use self_intersect::fix_self_intersecting_wire;
 use intersecting_wires::fix_intersecting_wires;
+use vertex_position::fix_vertex_positions;
 pub use check::{check_shell, CheckReport};
+pub use pipeline::{auto_heal_shell, HealLevel};
 
 #[derive(Debug, Default)]
 pub struct HealReport {
@@ -47,6 +52,7 @@ pub struct HealReport {
     pub periodic_degen_created: usize,
     pub self_intersections_fixed: usize,
     pub inner_wires_fixed: usize,
+    pub vertex_positions_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
 }
@@ -67,6 +73,7 @@ impl HealReport {
         self.periodic_degen_created += other.periodic_degen_created;
         self.self_intersections_fixed += other.self_intersections_fixed;
         self.inner_wires_fixed += other.inner_wires_fixed;
+        self.vertex_positions_fixed += other.vertex_positions_fixed;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -90,6 +97,7 @@ pub struct HealConfig {
     pub fix_periodic_degenerated: bool,
     pub fix_self_intersection: bool,
     pub fix_intersecting_wires: bool,
+    pub fix_vertex_position: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -112,6 +120,7 @@ impl Default for HealConfig {
             fix_periodic_degenerated: true,
             fix_self_intersection: true,
             fix_intersecting_wires: true,
+            fix_vertex_position: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -283,6 +292,14 @@ pub fn heal_shell(
         let fixed = fix_vertex_tolerance(reg);
         if fixed > 0 {
             log::debug!("[BRep heal] fixed vertex tolerance on {} edges", fixed);
+        }
+    }
+
+    if config.fix_vertex_position {
+        let vp_fixed = fix_vertex_positions(shell_key, reg, config.gap_tolerance);
+        report.vertex_positions_fixed += vp_fixed;
+        if vp_fixed > 0 {
+            log::debug!("[BRep heal] FixVertexPosition: projected {} vertex/vertices", vp_fixed);
         }
     }
 

@@ -5,6 +5,7 @@ pub mod build;
 pub mod overlay;
 pub mod heal;
 pub mod mesh;
+pub mod properties;
 
 pub use overlay::build_edge_curves;
 pub use geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
@@ -15,3 +16,4 @@ pub use build::{
 };
 pub use mesh::report::deflection_from_report;
 pub use mesh::t4_quality::{DeflectionMetrics, HausdorffMetrics, deflection_within_band, hausdorff_meshes, measure_shell_deflection};
+pub use properties::{MeshProperties, compute_mesh_properties};
