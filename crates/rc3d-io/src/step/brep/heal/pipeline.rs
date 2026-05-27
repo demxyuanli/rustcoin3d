@@ -20,9 +20,9 @@ impl Default for HealLevel {
 }
 
 /// Run iterative auto-heal on a shell.
-/// Each iteration: heal → check → if no improvement → converged.
-/// Returns the accumulated HealReport for backward compatibility.
-/// Pipeline diagnostics are logged at debug level.
+/// Each iteration: heal_shell (includes check) → compare check results → repeat if improved.
+/// heal_shell already runs check_shell internally, so we reuse its report rather than
+/// calling check_shell again.
 pub fn auto_heal_shell(
     shell_key: ShellKey,
     reg: &mut BRepRegistry,
@@ -32,11 +32,8 @@ pub fn auto_heal_shell(
     let mut config = HealConfig::default();
     apply_level(&mut config, level);
 
-    // Baseline check
+    // Baseline check (only run once)
     let check_before = check_shell(shell_key, reg);
-    let check_before_count = check_before.errors.len() + check_before.warnings.len();
-
-    let mut total_report = HealReport::default();
     let mut prev_errors = check_before.errors.len();
     let mut prev_warnings = check_before.warnings.len();
 
@@ -45,32 +42,25 @@ pub fn auto_heal_shell(
         level, prev_errors, prev_warnings
     );
 
+    let mut total_report = HealReport::default();
+
     for iter in 0..max_iterations {
+        // heal_shell runs check_shell internally — reuse its results
         let hr = heal_shell(shell_key, reg, &config);
+        let curr_errors = hr.check_errors;
+        let curr_warnings = hr.check_warnings;
         total_report.merge(hr);
-
-        let check_after = check_shell(shell_key, reg);
-        let curr_errors = check_after.errors.len();
-        let curr_warnings = check_after.warnings.len();
-
-        log::debug!(
-            "[BRep pipeline] iter {}: errors {}→{}, warnings {}→{} ({} fixes)",
-            iter + 1,
-            prev_errors, curr_errors,
-            prev_warnings, curr_warnings,
-            total_report.total_fix_count(),
-        );
-
+        // check_errors/warnings represent the latest state, not cumulative
         total_report.check_errors = curr_errors;
         total_report.check_warnings = curr_warnings;
 
+        log::debug!(
+            "[BRep pipeline] iter {}: errors {}→{}, warnings {}→{}",
+            iter + 1, prev_errors, curr_errors, prev_warnings, curr_warnings,
+        );
+
         if curr_errors == prev_errors && curr_warnings == prev_warnings {
-            log::debug!(
-                "[BRep pipeline] converged after {} iteration(s), check delta: {}→{}",
-                iter + 1,
-                check_before_count,
-                curr_errors + curr_warnings,
-            );
+            log::debug!("[BRep pipeline] converged after {} iteration(s)", iter + 1);
             break;
         }
 

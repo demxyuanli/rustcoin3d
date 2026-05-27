@@ -19,7 +19,7 @@ pub mod pipeline;
 use super::topo::{ShellKey, FaceKey, Orientation};
 use super::registry::BRepRegistry;
 use reorder::reorder_wire_edges;
-use gap::{close_wire_gaps, close_wire_gaps_2d};
+use gap::close_wire_gaps_2d;
 use orient::fix_shell_orientation;
 use seam::fix_missing_seams;
 use connected::fix_connected_wire;
@@ -142,49 +142,40 @@ pub fn heal_shell(
         }
     };
 
-    if config.fix_connected {
-        for (face_key, _) in &face_keys {
+    // Single per-face traversal: all wire-level passes in one loop
+    for (face_key, _) in &face_keys {
+        // Extract face data before any mutable registry access
+        let (outer_wire, seam_edges) = {
             let face = match reg.faces.get(*face_key) {
                 Some(f) => f,
                 None => continue,
             };
-            let cr = fix_connected_wire(face.outer_wire, reg, config.gap_tolerance);
+            (face.outer_wire, face.seam_edges.clone())
+        };
+
+        // Foundation: vertex connectivity at junctions
+        if config.fix_connected {
+            let cr = fix_connected_wire(outer_wire, reg, config.gap_tolerance);
             report.merged_vertices += cr.merged_vertices;
             if cr.merged_vertices > 0 {
-                log::debug!(
-                    "[BRep heal] FixConnected face {:?}: merged {} verts, {} already connected",
-                    face_key, cr.merged_vertices, cr.already_connected
-                );
+                log::debug!("[BRep heal] FixConnected face {:?}: merged {} verts", face_key, cr.merged_vertices);
             }
         }
-    }
 
-    if config.fix_small_edges {
-        for (face_key, _) in &face_keys {
-            let face = match reg.faces.get(*face_key) {
-                Some(f) => f,
-                None => continue,
-            };
-            let seam_edges = face.seam_edges.clone();
-            let outer_wire = face.outer_wire;
+        // Cleanup: remove small edges before reordering
+        if config.fix_small_edges {
             let old_len = reg.wires.get(outer_wire).map(|w| w.edges.len()).unwrap_or(0);
             if let Some(updated) = remove_small_edges(outer_wire, reg, &seam_edges, config.small_edge_min_length) {
                 if updated.len() != old_len {
                     report.removed_small_edges += 1;
-                    log::debug!("[BRep heal] FixSmall face {:?}: removed small edges, {} remain", face_key, updated.len());
+                    log::debug!("[BRep heal] FixSmall face {:?}: {} edges remain", face_key, updated.len());
                 }
             } else {
                 report.skip_face_keys.push(*face_key);
-                log::warn!("[BRep heal] FixSmall face {:?}: wire emptied, marking for skip", face_key);
+                log::warn!("[BRep heal] FixSmall face {:?}: wire emptied, skipping", face_key);
+                continue;
             }
         }
-    }
-
-    for (face_key, _) in &face_keys {
-        let outer_wire = match reg.faces.get(*face_key) {
-            Some(f) => f.outer_wire,
-            None => continue,
-        };
 
         if config.fix_reorder {
             let wire = match reg.wires.get(outer_wire) {
@@ -197,11 +188,6 @@ pub fn heal_shell(
                     report.reordered_wires += 1;
                 }
             }
-        }
-
-        if config.gap_tolerance > 0.0 {
-            let closed = close_wire_gaps(outer_wire, reg, config.gap_tolerance);
-            report.closed_gaps += closed;
         }
 
         if config.uv_gap_tolerance > 0.0 {
