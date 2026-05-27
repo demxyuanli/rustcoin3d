@@ -18,9 +18,10 @@ use super::geom::SurfaceGeom;
 use crate::step::mesh_result::MeshResult;
 use edge_disc::{EdgeDiscConfig, EdgePolygon, discretize_all_edges};
 use face_fill::{
-    face_boundary_is_mixed, FaceFillConfig, FaceMeshRange, fill_trimmed, surface_fill_3d,
-    measure_face_chord_error,
+    face_boundary_is_mixed, fix_tri_winding, FaceFillConfig, FaceMeshRange, fill_trimmed,
+    surface_fill_3d, measure_face_chord_error,
 };
+use super::geom::SurfaceParamRange;
 use face_uv::{collect_face_loops, UvSource};
 use refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map, RefineConfig};
 use optimize::{OptimizeConfig, optimize_mesh};
@@ -312,7 +313,9 @@ pub fn mesh_brep_shell_with_report(
         }
 
         let mut used_parametric_grid = false;
-        if range.tri_count < MIN_ADEQUATE_FACE_TRIS {
+        let keep_trimmed_plane = range.tri_count > 0
+            && matches!(face.surface, SurfaceGeom::Plane { .. });
+        if range.tri_count < MIN_ADEQUATE_FACE_TRIS && !keep_trimmed_plane {
             if range.tri_count > 0 {
                 all_indices.truncate(range.first_tri * 4);
                 range.tri_count = 0;
@@ -320,6 +323,7 @@ pub fn mesh_brep_shell_with_report(
             let tris_before = all_indices.len() / 4;
             mesh_parametric_grid(
                 face,
+                loops.native_uv_bounds(),
                 &mut global_vertices,
                 &mut global_normals,
                 &mut pos_to_idx,
@@ -368,6 +372,7 @@ pub fn mesh_brep_shell_with_report(
         let tris_before = all_indices.len() / 4;
         mesh_parametric_grid(
             face,
+            None,
             &mut global_vertices,
             &mut global_normals,
             &mut pos_to_idx,
@@ -464,7 +469,7 @@ pub fn mesh_brep_shell_with_report(
         indices: all_indices,
         normals: global_normals,
     };
-    let culled = cull_degenerate_tris(&mut mesh.indices, &mesh.vertices);
+    let culled = { let _c = cull_degenerate_tris(&mut mesh.indices, &mesh.vertices); log::info!("[BRep mesh] culled {} degenerate tris, {} remain", _c, mesh.indices.len()/4); _c };
     if culled > 0 {
         log::debug!("[BRep mesh] culled {culled} degenerate triangle(s)");
         report.total_tris = mesh.indices.len() / 4;
@@ -511,20 +516,33 @@ fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
 /// UV parametric grid tessellation for any surface type (last-resort / closed faces).
 fn mesh_parametric_grid(
     face: &super::topo::BRepFace,
+    uv_bounds: Option<(f32, f32, f32, f32)>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
     all_indices: &mut Vec<i32>,
 ) {
-    const SEGS: u32 = MESH_CLOSED_SURFACE_SEGS;
-    let pr = face.surface.param_range();
+    let segs: u32 = match &face.surface {
+        SurfaceGeom::Plane { .. } => 2,
+        _ => MESH_CLOSED_SURFACE_SEGS,
+    };
+    let pr = if let Some((u_min, u_max, v_min, v_max)) = uv_bounds {
+        SurfaceParamRange {
+            u_min,
+            u_max,
+            v_min,
+            v_max,
+        }
+    } else {
+        face.surface.param_range()
+    };
 
-    for iu in 0..SEGS {
-        for iv in 0..SEGS {
-            let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as f32 / SEGS as f32;
-            let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as f32 / SEGS as f32;
-            let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as f32 / SEGS as f32;
-            let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as f32 / SEGS as f32;
+    for iu in 0..segs {
+        for iv in 0..segs {
+            let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as f32 / segs as f32;
+            let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as f32 / segs as f32;
+            let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as f32 / segs as f32;
+            let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as f32 / segs as f32;
             let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
             let mut idx = [0i32; 4];
             for (k, &(u, v)) in corners.iter().enumerate() {
@@ -542,10 +560,18 @@ fn mesh_parametric_grid(
                 });
                 idx[k] = gi as i32;
             }
-            for (i0, i1, i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
+            for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
                 if i0 == i1 || i1 == i2 || i2 == i0 {
                     continue;
                 }
+                fix_tri_winding(
+                    &mut i0,
+                    &mut i1,
+                    &mut i2,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
                 all_indices.extend_from_slice(&[i0, i1, i2, -1]);
                 let p0 = global_vertices[i0 as usize];
                 let p1 = global_vertices[i1 as usize];
@@ -570,7 +596,14 @@ fn mesh_closed_surface(
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
     all_indices: &mut Vec<i32>,
 ) {
-    mesh_parametric_grid(face, global_vertices, global_normals, pos_to_idx, all_indices);
+    mesh_parametric_grid(
+        face,
+        None,
+        global_vertices,
+        global_normals,
+        pos_to_idx,
+        all_indices,
+    );
 }
 
 #[cfg(test)]
