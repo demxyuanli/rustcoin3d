@@ -155,6 +155,28 @@ impl BRepRegistry {
     }
 }
 
+/// Lightweight wrapper for PCurve modification during healing (OCC equivalent).
+/// Enables batched PCurve edits with audit trail.
+#[derive(Debug, Clone)]
+pub struct PCurveEdit {
+    pub edge_key: super::topo::EdgeKey,
+    pub face_key: super::topo::FaceKey,
+    /// Replacement PCurve. None = remove existing.
+    pub new_pcurve: Option<super::geom::CurveGeom>,
+}
+
+impl BRepRegistry {
+    /// Apply a PCurveEdit to the registry. Returns the old PCurve if replaced.
+    pub fn apply_pcurve_edit(&mut self, edit: &PCurveEdit) -> Option<super::geom::CurveGeom> {
+        let ek = edit.edge_key;
+        let fk = edit.face_key;
+        match &edit.new_pcurve {
+            Some(pc) => self.set_pcurve(ek, fk, pc.clone()),
+            None => self.edges.get_mut(ek).and_then(|e| e.pcurves.remove(&fk)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

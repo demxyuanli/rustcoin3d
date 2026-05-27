@@ -3,6 +3,16 @@
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
+/// Represents an intersection point between two PCurve segments.
+#[derive(Debug, Clone)]
+pub struct IntersectionPoint {
+    pub ta: f32,       // parameter along segment_a (0..1)
+    pub tb: f32,       // parameter along segment_b (0..1)
+    pub uv: (f64, f64), // UV coordinates of intersection
+    pub edge_a: usize,  // index of first intersecting edge
+    pub edge_b: usize,  // index of second intersecting edge
+}
+
 #[derive(Debug, Default)]
 pub struct SelfIntersectReport {
     pub intersections_found: usize,
@@ -52,7 +62,7 @@ pub fn fix_self_intersecting_wire(
     }
 
     // Find non-adjacent intersections
-    let mut intersections: Vec<(usize, usize, f32, f32)> = Vec::new();
+    let mut intersections: Vec<IntersectionPoint> = Vec::new();
     for i in 0..n {
         for j in (i + 1)..n {
             // Skip adjacent and wrap-around-adjacent
@@ -70,7 +80,15 @@ pub fn fix_self_intersecting_wire(
                 if t < 1e-6 || t > 1.0 - 1e-6 || u < 1e-6 || u > 1.0 - 1e-6 {
                     continue;
                 }
-                intersections.push((i, j, t, u));
+                let uv_x = a0.0 + t * (a1.0 - a0.0);
+                let uv_y = a0.1 + t * (a1.1 - a0.1);
+                intersections.push(IntersectionPoint {
+                    ta: t,
+                    tb: u,
+                    uv: (uv_x as f64, uv_y as f64),
+                    edge_a: i,
+                    edge_b: j,
+                });
                 report.intersections_found += 1;
             }
         }
@@ -94,9 +112,9 @@ pub fn fix_self_intersecting_wire(
 
     // Collect split parameters per edge
     let mut edge_splits: Vec<Vec<f32>> = vec![Vec::new(); n];
-    for &(i, j, t, u) in &intersections {
-        edge_splits[i].push(t);
-        edge_splits[j].push(u);
+    for ip in &intersections {
+        edge_splits[ip.edge_a].push(ip.ta);
+        edge_splits[ip.edge_b].push(ip.tb);
     }
 
     // Sort and deduplicate split parameters

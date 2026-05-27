@@ -6,10 +6,26 @@ use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::FaceKey;
 use rc3d_core::math::Vec3;
 
+/// Descriptive info about a degenerated edge (OCC equivalent).
+#[derive(Debug, Clone)]
+pub struct DegeneratedEdgeInfo {
+    pub edge_key: crate::step::brep::topo::EdgeKey,
+    pub singularity_3d: Vec3,
+    pub singularity_uv: (f32, f32),
+    pub regular_vertex: crate::step::brep::topo::VertexKey,
+}
+
+impl DegeneratedEdgeInfo {
+    pub fn new(ek: crate::step::brep::topo::EdgeKey, sing_3d: Vec3, sing_uv: (f32, f32), reg_vk: crate::step::brep::topo::VertexKey) -> Self {
+        Self { edge_key: ek, singularity_3d: sing_3d, singularity_uv: sing_uv, regular_vertex: reg_vk }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DegeneratedReport {
     pub degeneracies_found: usize,
     pub degenerate_edges_created: usize,
+    pub degenerated_edge_infos: Vec<DegeneratedEdgeInfo>,
 }
 
 /// Detect surface singularities and create degenerated edges for a face.
@@ -81,6 +97,9 @@ pub fn fix_degenerated_edges(
                     let dek = reg.add_seam_edge(vk_regular, vk_sing, degen_curve, tolerance, face_key, degen_pc);
                     degen_edges.push(dek);
                     report.degenerate_edges_created += 1;
+                    report.degenerated_edge_infos.push(DegeneratedEdgeInfo::new(
+                        dek, singularity.point_3d, singularity.uv, vk_regular,
+                    ));
                     break;
                 }
             }
