@@ -41,10 +41,10 @@ pub struct PmiData {
 pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
     let mut pmi = PmiData::default();
 
-    for (_, record) in entities.iter() {
+    for (&eid, record) in entities.iter() {
         match record.entity_type {
             EntityType::DimensionalSize => {
-                if let Some(dim) = extract_dimension(&record.params, entities) {
+                if let Some(dim) = extract_dimension(eid, &record.params, entities) {
                     pmi.dimensions.push(dim);
                 }
             }
@@ -66,6 +66,7 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
 }
 
 fn extract_dimension(
+    entity_id: u64,
     params: &super::super::value::StepValue,
     entities: &EntityIndex,
 ) -> Option<PmiDimension> {
@@ -75,7 +76,8 @@ fn extract_dimension(
     //   nominal_value: DIMENSIONAL_CHARACTERISTIC or subtype
     let name = params.nth_param(1)
         .and_then(|v| v.as_string())
-        .unwrap_or_else(|| "".to_string());
+        .map(|s| s.to_string())
+        .unwrap_or_default();
     // Try to resolve nominal_value to get a numeric size
     let mut text = name;
     if let Some(nom_val) = params.nth_param(2) {
@@ -90,49 +92,97 @@ fn extract_dimension(
             }
         }
     }
-    // Default to a zero-length dimension at origin
-    Some(PmiDimension {
-        start: Vec3::ZERO,
-        end: Vec3::X * 1.0,
-        offset_dir: Vec3::Y,
-        text,
-    })
+    // Resolve ANNOTATION_OCCURRENCE to get reference points
+    let mut start = Vec3::ZERO;
+    let mut end = Vec3::new(1.0, 0.0, 0.0);
+
+    for (_, anno_rec) in entities.iter() {
+        if anno_rec.entity_type != EntityType::AnnotationOccurrence {
+            continue;
+        }
+        // ANNOTATION_OCCURRENCE(name, item, styled_item, ref_points?)
+        if let Some(item_id) = anno_rec.params.nth_param(1).and_then(|v| v.as_ref_id()) {
+            if item_id == entity_id {
+                if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
+                    let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
+                    let pts = resolve_pmi_points(&ref_ids, entities);
+                    if pts.len() >= 2 {
+                        start = pts[0];
+                        end = pts[1];
+                    } else if pts.len() == 1 {
+                        start = pts[0];
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    let offset_dir = Vec3::Y;
+    Some(PmiDimension { start, end, offset_dir, text })
 }
 
 fn extract_datum(
     params: &super::super::value::StepValue,
     entities: &EntityIndex,
 ) -> Option<PmiDatum> {
-    // DATUM(name, label, ...)
+    // DATUM(name, label, reference_list)
     let label = params.nth_param(1)
         .and_then(|v| v.as_string())
+        .map(|s| s.to_string())
         .unwrap_or_else(|| "DATUM".to_string());
-    // Try to find a referenced geometry to get origin/normal
+
     let mut origin = Vec3::ZERO;
     let mut normal = Vec3::Z;
+
+    // Walk: DATUM → DATUM_FEATURE → AXIS2_PLACEMENT_3D
+    // or: DATUM → AXIS2_PLACEMENT_3D directly
     if let Some(ref_list) = params.nth_param(2).and_then(|v| v.as_list()) {
         for rv in ref_list {
-            if let Some(id) = rv.as_ref_id() {
-                if let Some(rec) = entities.get(&id) {
-                    if rec.entity_type == super::super::entity_types::EntityType::Axis2Placement3D {
-                        if let Some(pt) = super::super::topology::resolve_point_from_placement(id, entities) {
-                            origin = pt;
+            if let Some(ref_id) = rv.as_ref_id() {
+                if let Some(rec) = entities.get(&ref_id) {
+                    match rec.entity_type {
+                        EntityType::DatumFeature => {
+                            // DATUM_FEATURE(name, label, geometry)
+                            if let Some(geom_id) = rec.params.nth_param(2).and_then(|v| v.as_ref_id()) {
+                                if let Some(geom_rec) = entities.get(&geom_id) {
+                                    if geom_rec.entity_type == EntityType::Axis2Placement3D {
+                                        if let Some((o, _, axis)) = super::super::topology::resolve_placement(
+                                            geom_id, entities
+                                        ) {
+                                            origin = o;
+                                            normal = axis;
+                                        }
+                                    }
+                                }
+                            }
                         }
+                        EntityType::Axis2Placement3D => {
+                            if let Some((o, _, axis)) = super::super::topology::resolve_placement(
+                                ref_id, entities
+                            ) {
+                                origin = o;
+                                normal = axis;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     }
+
     Some(PmiDatum { origin, normal, label })
 }
 
 fn extract_tolerance(
     params: &super::super::value::StepValue,
-    entities: &EntityIndex,
+    _entities: &EntityIndex,
 ) -> Option<PmiToleranceFrame> {
     // GEOMETRIC_TOLERANCE(name, name, ...)
     let text = params.nth_param(1)
         .and_then(|v| v.as_string())
+        .map(|s| s.to_string())
         .unwrap_or_else(|| "TOL".to_string());
     // Default origin at zero, no leader points
     Some(PmiToleranceFrame {
@@ -140,6 +190,27 @@ fn extract_tolerance(
         leader_points: vec![],
         text,
     })
+}
+
+/// Resolve a 3D point from a STEP entity reference (CARTESIAN_POINT or AXIS2_PLACEMENT_3D.origin).
+fn resolve_pmi_point(ref_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+    let rec = entities.get(&ref_id)?;
+    match rec.entity_type {
+        EntityType::CartesianPoint => {
+            let coords = rec.params.nth_param(1)?;
+            let list = coords.as_list()?;
+            let x = list.first().and_then(|v| v.as_real())? as f32;
+            let y = list.get(1).and_then(|v| v.as_real())? as f32;
+            let z = list.get(2).and_then(|v| v.as_real())? as f32;
+            Some(Vec3::new(x, y, z))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve first CARTESIAN_POINT from a list of entity references.
+fn resolve_pmi_points(ref_ids: &[u64], entities: &EntityIndex) -> Vec<Vec3> {
+    ref_ids.iter().filter_map(|&id| resolve_pmi_point(id, entities)).collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────
@@ -157,5 +228,28 @@ mod tests {
         assert!(pmi.dimensions.is_empty());
         assert!(pmi.datums.is_empty());
         assert!(pmi.tolerances.is_empty());
+    }
+
+    #[test]
+    fn test_extract_pmi_dimension_with_points() {
+        let input = "\
+ISO-10303-21;
+HEADER;
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('pt1', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('pt2', (10.0, 0.0, 0.0));
+#3 = DIMENSIONAL_CHARACTERISTIC_REPRESENTATION('', 10.0);
+#4 = DIMENSIONAL_SIZE('dist', '', #3);
+#5 = ANNOTATION_OCCURRENCE('', #4, $, (#1, #2));
+ENDSEC;
+END-ISO-10303-21;
+";
+        let ex = parser::parse_exchange(input).unwrap();
+        let pmi = extract_pmi(&ex.entities);
+        assert_eq!(pmi.dimensions.len(), 1);
+        let dim = &pmi.dimensions[0];
+        assert!((dim.start.x - 0.0).abs() < 1e-6);
+        assert!((dim.end.x - 10.0).abs() < 1e-6);
     }
 }

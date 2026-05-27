@@ -48,4 +48,12 @@ impl StepValue {
             _ => None,
         }
     }
+
+    pub fn as_string(&self) -> Option<&str> {
+        match self {
+            StepValue::String(s) => Some(s),
+            StepValue::Typed(_, inner) => inner.as_string(),
+            _ => None,
+        }
+    }
 }
