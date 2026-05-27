@@ -166,6 +166,12 @@ pub fn triangulate_uv_cdt_with_steiner(
         }
     }
 
+    // Degenerated edges (from surface singularities like sphere poles / cone apex)
+    // have zero-length UV PCurves (direction == Vec3::ZERO), making CDT constraint
+    // insertion meaningless. Skipped for now — future Phase 3 work will carry non-zero
+    // UV extent data through BRepFace for degenerated edge constraint insertion.
+    let _ = &face.degenerated_edges; // reserved for degenerated edge CDT constraints (Phase 3)
+
     let mut max_chord = 0.0f32;
     if config.enable_interior && config.deflection_interior > 0.0 {
         let min_sz = effective_min_size(config);
@@ -201,6 +207,12 @@ pub fn triangulate_uv_cdt_with_steiner(
                 let p1 = face.surface.d0_native(uv1.0, uv1.1);
                 let p2 = face.surface.d0_native(uv2.0, uv2.1);
 
+                // Skip triangles with zero 3D area (degenerated-edge vertices)
+                let area_3d = (p1 - p0).cross(p2 - p0).length();
+                if area_3d < 1e-12 {
+                    continue;
+                }
+
                 let mut tri_split = false;
                 for (a, b, uva, uvb) in [
                     (&p0, &p1, uv0, uv1),
@@ -223,8 +235,35 @@ pub fn triangulate_uv_cdt_with_steiner(
                     }
                 }
                 if tri_split {
-                    let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
-                    let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
+                    // Compute edge-midpoint deflections; split at the worst-deviated edge
+                    let devs = [
+                        ((p0 + p1) * 0.5
+                            - face
+                                .surface
+                                .d0_native((uv0.0 + uv1.0) * 0.5, (uv0.1 + uv1.1) * 0.5))
+                            .length(),
+                        ((p1 + p2) * 0.5
+                            - face
+                                .surface
+                                .d0_native((uv1.0 + uv2.0) * 0.5, (uv1.1 + uv2.1) * 0.5))
+                            .length(),
+                        ((p2 + p0) * 0.5
+                            - face
+                                .surface
+                                .d0_native((uv2.0 + uv0.0) * 0.5, (uv2.1 + uv0.1) * 0.5))
+                            .length(),
+                    ];
+                    let worst = devs
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                        .unwrap()
+                        .0;
+                    let (cu, cv) = match worst {
+                        0 => ((uv0.0 + uv1.0) * 0.5, (uv0.1 + uv1.1) * 0.5),
+                        1 => ((uv1.0 + uv2.0) * 0.5, (uv1.1 + uv2.1) * 0.5),
+                        _ => ((uv2.0 + uv0.0) * 0.5, (uv2.1 + uv0.1) * 0.5),
+                    };
                     splits.push((cu as f64, cv as f64));
                 }
             }
