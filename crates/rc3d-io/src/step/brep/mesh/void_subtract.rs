@@ -92,6 +92,7 @@ pub fn subtract_void_meshes(
     }
 
     let cell_size_inv = 1.0 / cell_size;
+    let max_x = grid.keys().map(|k| k.0).max().unwrap_or(i32::MIN);
     let mut kept_vertices = Vec::new();
     let mut kept_normals = Vec::new();
     let mut kept_indices = Vec::new();
@@ -113,7 +114,7 @@ pub fn subtract_void_meshes(
             (v0.z + v1.z + v2.z) / 3.0,
         );
 
-        let inside = point_inside_void_mesh(&centroid, &void_tris, &grid, cell_size_inv);
+        let inside = point_inside_void_mesh(&centroid, &void_tris, &grid, cell_size_inv, max_x);
         if inside {
             removed += 1;
         } else {
@@ -149,12 +150,11 @@ fn point_inside_void_mesh(
     void_tris: &[[Vec3; 3]],
     grid: &std::collections::HashMap<(i32, i32, i32), Vec<usize>>,
     cell_size_inv: f32,
+    max_x: i32,
 ) -> bool {
     let cx = (point.x * cell_size_inv).floor() as i32;
     let cy = (point.y * cell_size_inv).floor() as i32;
     let cz = (point.z * cell_size_inv).floor() as i32;
-
-    let max_x = grid.keys().map(|k| k.0).max().unwrap_or(i32::MIN);
 
     let mut seen = std::collections::HashSet::<usize>::new();
     // DDA walk along +X through grid cells
