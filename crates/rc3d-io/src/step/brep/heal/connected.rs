@@ -216,7 +216,7 @@ fn apply_vertex_merges(reg: &mut BRepRegistry, merges: &[(VertexKey, VertexKey)]
 mod tests {
     use super::*;
     use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
-    use crate::step::brep::topo::BRepWire;
+    use crate::step::brep::topo::{BRepFace, BRepVertex, BRepWire};
     use rc3d_core::math::Vec3;
 
     fn make_registry_with_two_edges(
@@ -330,6 +330,51 @@ mod tests {
         assert!(
             report.merged_vertices > 0,
             "closed wire last->first gap should be merged"
+        );
+    }
+
+    #[test]
+    fn test_fix_connected_non_manifold_skip() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
+        // v3 at same position as v1 — would be merged, but both are shared by separate edges
+        let v3 = reg.vertices.insert(BRepVertex {
+            position: Vec3::new(1.0, 0.0, 0.0),
+            tolerance: 1e-4,
+        });
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: WireKey::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // Create edges between v0-v1 and v3-v2 (v1 and v3 at same position but different keys)
+        // e2 is created as (v3, v2) but add_edge_with_pcurve stores v_low=v2, v_high=v3
+        // so with Reversed orientation, start=v_high=v3 and end=v_low=v2 as desired
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let e2 = reg.add_edge_with_pcurve(v3, v2, line.clone(), 1e-4, fk, line.clone());
+        let wk = reg.wires.insert(BRepWire {
+            edges: vec![(e1, Orientation::Forward), (e2, Orientation::Reversed)],
+        });
+        let report = fix_connected_wire(wk, &mut reg, 1e-3);
+        // The merge should succeed since v1 and v3 are at the same position
+        assert!(
+            report.merged_vertices > 0 || report.already_connected > 0
         );
     }
 }

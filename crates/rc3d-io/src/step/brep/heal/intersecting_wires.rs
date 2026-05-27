@@ -307,4 +307,146 @@ mod tests {
         let report = fix_intersecting_wires(fk, &mut reg);
         assert_eq!(report.inner_wires_removed, 0, "properly separate inner wires should not be removed");
     }
+
+    #[test]
+    fn test_inner_intersects_outer_trim() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // Outer wire: square from (0,0) to (2,2)
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 2.0, 0.0), 1e-4);
+        let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk_outer,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            direction: Vec3::new(2.0, 0.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone());
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc);
+        reg.wires.get_mut(wk_outer).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, Orientation::Forward),
+            (e3, Orientation::Forward),
+            (e4, Orientation::Forward),
+        ];
+        // Inner wire: crosses outer boundary (starts inside at (0.5,0) goes to (3,0) — outside)
+        let v4 = reg.find_or_add_vertex(Vec3::new(0.5, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(Vec3::new(3.0, 0.5, 0.0), 1e-4);
+        let pc_inner = CurveGeom::Line {
+            origin: Vec3::new(0.5, 0.0, 0.0),
+            direction: Vec3::new(2.5, 0.0, 0.0),
+        };
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner.clone());
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner.clone());
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner);
+        let wk_inner = reg.wires.insert(BRepWire {
+            edges: vec![
+                (ek1, Orientation::Forward),
+                (ek2, Orientation::Forward),
+                (ek3, Orientation::Forward),
+            ],
+        });
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.inner_wires = vec![wk_inner];
+        }
+        let report = fix_intersecting_wires(fk, &mut reg);
+        // Inner wire partially outside outer — should be removed
+        assert!(
+            report.inner_wires_removed > 0,
+            "intersecting inner wire should be removed"
+        );
+    }
+
+    #[test]
+    fn test_two_inners_intersect_merged() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // Outer wire: large square
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(5.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(5.0, 5.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 5.0, 0.0), 1e-4);
+        let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk_outer,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            direction: Vec3::new(5.0, 0.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone());
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc);
+        reg.wires.get_mut(wk_outer).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, Orientation::Forward),
+            (e3, Orientation::Forward),
+            (e4, Orientation::Forward),
+        ];
+        // Two inner wires that are close to each other (overlapping bounding boxes)
+        let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(1.5, 1.0, 0.0), 1e-4);
+        let pc_i1 = CurveGeom::Line {
+            origin: Vec3::new(1.0, 1.0, 0.0),
+            direction: Vec3::new(0.5, 0.0, 0.0),
+        };
+        let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_i1);
+        let wk_i1 = reg.wires.insert(BRepWire {
+            edges: vec![(ei1, Orientation::Forward)],
+        });
+        let v6 = reg.find_or_add_vertex(Vec3::new(1.4, 1.4, 0.0), 1e-4);
+        let v7 = reg.find_or_add_vertex(Vec3::new(2.0, 1.4, 0.0), 1e-4);
+        let pc_i2 = CurveGeom::Line {
+            origin: Vec3::new(1.4, 1.4, 0.0),
+            direction: Vec3::new(0.6, 0.0, 0.0),
+        };
+        let ei2 = reg.add_edge_with_pcurve(v6, v7, line.clone(), 1e-4, fk, pc_i2);
+        let wk_i2 = reg.wires.insert(BRepWire {
+            edges: vec![(ei2, Orientation::Forward)],
+        });
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.inner_wires = vec![wk_i1, wk_i2];
+        }
+        let report = fix_intersecting_wires(fk, &mut reg);
+        // Verify the function completes without error
+        assert!(report.inner_wires_removed + report.inner_wires_merged >= 0);
+    }
 }

@@ -85,4 +85,41 @@ mod tests {
         let adjusted = fix_vertex_positions(sk, &mut reg, 1e-4);
         assert!(adjusted > 0, "off-surface vertex should be projected back");
     }
+
+    #[test]
+    fn test_fix_vertex_no_projection() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+        };
+        // Vertex at origin (center of sphere) — project() may fail or return degenerate result
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let adjusted = fix_vertex_positions(sk, &mut reg, 1e-4);
+        // Should not panic even if vertex at center has degenerate projection
+        assert!(adjusted >= 0, "should handle vertices with no valid projection");
+    }
 }

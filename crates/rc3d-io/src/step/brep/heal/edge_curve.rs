@@ -268,4 +268,67 @@ mod tests {
         let adjusted = fix_edge_curves(sk, &mut reg, 1e-3);
         assert!(adjusted > 0, "circle edge with offset endpoint should be adjusted");
     }
+
+    #[test]
+    fn test_fix_bspline_translate() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.5, 0.0), 1e-4);
+        // BSpline curve: control points intentionally offset from vertices
+        let bspline = CurveGeom::BSpline {
+            degree: 2,
+            control_points: vec![
+                Vec3::new(0.0, 0.1, 0.0),   // offset from v0
+                Vec3::new(0.5, 0.3, 0.0),
+                Vec3::new(1.0, 0.6, 0.0),   // offset from v1
+            ],
+            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            weights: None,
+        };
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        // Insert edge directly to bypass normalize_edge_curve_to_vertices
+        let ek = reg.edges.insert(BRepEdge {
+            curve: bspline,
+            tolerance: 1e-4,
+            v_low: v0.min(v1),
+            v_high: v0.max(v1),
+            pcurves: {
+                let mut m = HashMap::new();
+                m.insert(
+                    fk,
+                    CurveGeom::Line {
+                        origin: Vec3::ZERO,
+                        direction: Vec3::X,
+                    },
+                );
+                m
+            },
+        });
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let adjusted = fix_edge_curves(sk, &mut reg, 1e-3);
+        assert!(
+            adjusted > 0,
+            "BSpline with offset control points should be adjusted"
+        );
+    }
 }

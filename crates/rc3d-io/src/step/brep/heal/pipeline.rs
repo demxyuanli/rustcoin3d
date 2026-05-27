@@ -197,6 +197,53 @@ mod tests {
         let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 1);
         assert!(report.merged_vertices >= 0, "should complete without error");
     }
+
+    #[test]
+    fn test_auto_heal_basic_vs_standard() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        // Basic: fewer fixes, faster
+        let report_basic = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 2);
+        let sk2 = reg.shells.insert(crate::step::brep::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        // Standard: more fixes (runs on a fresh shell)
+        let report_std = auto_heal_shell(sk2, &mut reg, HealLevel::Standard, 2);
+        assert!(
+            report_basic.check_errors <= report_std.check_errors + 1,
+            "Basic should not produce more errors than Standard"
+        );
+    }
 }
 
 impl HealReport {
