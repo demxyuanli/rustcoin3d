@@ -292,6 +292,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
 
         let n = fix_missing_seams(&mut reg, face_key);
@@ -321,6 +322,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
 
         let z0 = 0.0f32;

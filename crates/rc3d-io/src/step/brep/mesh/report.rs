@@ -150,6 +150,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
         let edges_data = [
             (Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)),

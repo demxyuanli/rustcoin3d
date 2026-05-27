@@ -43,6 +43,8 @@ pub struct BRepFace {
     pub seam_edges: Vec<EdgeKey>,
     /// Surface color from STYLED_ITEM, if present in the STEP file.
     pub color: Option<[f32; 3]>,
+    /// Degenerated edges at surface singularities (Phase 2+).
+    pub degenerated_edges: Vec<EdgeKey>,
 }
 
 #[derive(Debug, Clone)]

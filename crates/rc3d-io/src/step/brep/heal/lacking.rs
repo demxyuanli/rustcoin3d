@@ -99,6 +99,7 @@ mod tests {
             inner_wires: vec![],
             same_sense: true, tolerance: 1e-4,
             seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
         });
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);

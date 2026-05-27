@@ -149,6 +149,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };

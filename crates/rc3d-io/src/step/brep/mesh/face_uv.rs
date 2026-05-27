@@ -323,6 +323,72 @@ fn rebuild_loop_uv_from_3d(
     }
 }
 
+fn unwrap_loop_periodic(boundary: &mut [UvVertex], u_period: Option<f32>, v_period: Option<f32>) {
+    if boundary.len() < 2 {
+        return;
+    }
+    for i in 1..boundary.len() {
+        let prev = boundary[i - 1].uv;
+        let mut cur = boundary[i].uv;
+        if let Some(pu) = u_period {
+            while cur.0 - prev.0 > pu * 0.5 {
+                cur.0 -= pu;
+            }
+            while prev.0 - cur.0 > pu * 0.5 {
+                cur.0 += pu;
+            }
+        }
+        if let Some(pv) = v_period {
+            while cur.1 - prev.1 > pv * 0.5 {
+                cur.1 -= pv;
+            }
+            while prev.1 - cur.1 > pv * 0.5 {
+                cur.1 += pv;
+            }
+        }
+        boundary[i].uv = cur;
+    }
+}
+
+pub fn unwrap_periodic_uv_loops(loops: &mut FaceUvLoops, surface: &SurfaceGeom) {
+    let u_period = surface.native_u_period();
+    let v_period = surface.native_v_period();
+    if u_period.is_none() && v_period.is_none() {
+        return;
+    }
+    unwrap_loop_periodic(&mut loops.outer.boundary, u_period, v_period);
+    for inner in &mut loops.inners {
+        unwrap_loop_periodic(&mut inner.boundary, u_period, v_period);
+    }
+}
+
+/// Rebuild loop UV from 3D surface projection with periodic unwrap.
+pub fn loops_native_surface_uv(
+    loops: &FaceUvLoops,
+    face: &BRepFace,
+    global_vertices: &[Vec3],
+) -> FaceUvLoops {
+    let inv_tol = face.tolerance.max(1e-3);
+    let mut out = loops.clone();
+    rebuild_loop_uv_from_3d(&mut out.outer, &face.surface, global_vertices, inv_tol);
+    ensure_loop_orientation(&mut out.outer.boundary, false);
+    let mut inners = Vec::new();
+    for inner in &loops.inners {
+        let mut hole = inner.clone();
+        rebuild_loop_uv_from_3d(&mut hole, &face.surface, global_vertices, inv_tol);
+        ensure_loop_orientation(&mut hole.boundary, true);
+        if hole.boundary.len() >= 3 {
+            inners.push(hole);
+        }
+    }
+    out.inners = inners;
+    unwrap_periodic_uv_loops(&mut out, &face.surface);
+    if out.uv_source != UvSource::Pcurve {
+        out.uv_source = UvSource::Synthetic;
+    }
+    out
+}
+
 /// Fallback UV from a 3D orthonormal frame fitted to the loop (trim-only; not surface params).
 fn rebuild_loop_uv_local_frame(
     loop_data: &mut UvLoop,
@@ -461,6 +527,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
 
         let mut edge_keys = Vec::new();

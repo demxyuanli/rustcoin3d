@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use rc3d_core::math::Vec3;
 
 use super::face_cdt::triangulate_uv_cdt_with_steiner;
-use super::face_uv::FaceUvLoops;
+use super::face_uv::{FaceUvLoops, loops_native_surface_uv};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::topo::{BRepFace, FaceKey};
 
@@ -108,11 +108,27 @@ pub fn fill_trimmed(
         }
     }
 
+    let is_plane = matches!(face.surface, SurfaceGeom::Plane { .. });
+    let work_loops = if is_plane {
+        loops.clone()
+    } else {
+        loops_native_surface_uv(loops, face, global_vertices)
+    };
+
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
 
     // --- Primary: CDT + insert-time Steiner refinement ---
+    let fill_cfg = if is_plane {
+        config.clone()
+    } else {
+        FaceFillConfig {
+            enable_interior: false,
+            max_adapt_iterations: 0,
+            ..config.clone()
+        }
+    };
     let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
-        loops, face, global_vertices, global_normals, pos_to_idx, config,
+        &work_loops, face, global_vertices, global_normals, pos_to_idx, &fill_cfg,
     );
     for chunk in tris_flat.chunks(3) {
         if chunk.len() != 3 {
@@ -124,11 +140,11 @@ pub fn fill_trimmed(
     // --- Fallback: earcut if CDT produced no triangles ---
     if tris.is_empty() {
         let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
-        for v in &loops.outer.boundary {
+        for v in &work_loops.outer.boundary {
             earcut_verts.push((v.global_idx, v.uv));
         }
         let mut hole_indices = Vec::new();
-        for inner in &loops.inners {
+        for inner in &work_loops.inners {
             hole_indices.push(earcut_verts.len());
             for v in &inner.boundary {
                 earcut_verts.push((v.global_idx, v.uv));
@@ -173,8 +189,8 @@ pub fn fill_trimmed(
             }
         }
 
-        if tris.is_empty() {
-            tris = fan_triangulate_outer(loops);
+        if tris.is_empty() && is_plane {
+            tris = fan_triangulate_outer(&work_loops);
         }
 
         if tris.is_empty() {
@@ -812,6 +828,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         };
         let mut verts: Vec<Vec3> = vec![
             Vec3::new(0.0, 0.0, 0.0),

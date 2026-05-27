@@ -103,6 +103,7 @@ pub fn build_brep_with_options(
                 tolerance: tol,
                 seam_edges: vec![],
                 color: None,
+            degenerated_edges: vec![],
             });
 
             // ── Pass 2: Build edges with PCURVEs for this face ──

@@ -269,6 +269,38 @@ pub fn mesh_brep_shell_with_report(
         if used_surface_fill {
             report.grid_fallback_count += 1;
         }
+
+        if range.tri_count == 0 && !used_surface_fill {
+            let mut boundary_ordered = Vec::new();
+            for &(ek, ref pis) in &info.wire_edges {
+                for &pi in pis {
+                    if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
+                        if boundary_ordered.last() != Some(&gi) {
+                            boundary_ordered.push(gi);
+                        }
+                    }
+                }
+            }
+            if boundary_ordered.len() >= 2
+                && boundary_ordered.first() == boundary_ordered.last()
+            {
+                boundary_ordered.pop();
+            }
+            range = surface_fill_3d(
+                info.face_key,
+                &boundary_ordered,
+                face,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            if range.tri_count > 0 {
+                report.grid_fallback_count += 1;
+            }
+        }
+
         report.faces.push(FaceMeshStats {
             face_key: info.face_key,
             tri_count: range.tri_count,
@@ -499,6 +531,7 @@ mod mesh_integration {
                 tolerance: 1e-4,
                 seam_edges: vec![],
                 color: None,
+            degenerated_edges: vec![],
             })
         };
         let edges_data = [

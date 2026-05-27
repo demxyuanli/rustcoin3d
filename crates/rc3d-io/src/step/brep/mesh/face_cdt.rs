@@ -8,37 +8,48 @@ use rc3d_core::utils::hash::f32x3_quantized_bits;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 use super::face_fill::{effective_min_size, FaceFillConfig};
-use super::face_uv::{point_in_trim, FaceUvLoops};
+use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::topo::BRepFace;
 
+fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
+    ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
+}
+
 fn insert_uv(
     cdt: &mut ConstrainedDelaunayTriangulation<Point2<f64>>,
-    uv: (f32, f32),
+    mut uv: (f32, f32),
     gi: usize,
     handles: &mut Vec<spade::handles::FixedVertexHandle>,
-    uv_to_gi: &mut HashMap<(u64, u64), usize>,
+    handle_gi: &mut Vec<usize>,
     uv_to_handle: &mut HashMap<(u64, u64), usize>,
 ) -> Option<spade::handles::FixedVertexHandle> {
-    let key = ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64);
-    if let Some(&hi) = uv_to_handle.get(&key) {
-        return Some(handles[hi]);
+    for bump in 0..32usize {
+        let key = uv_quant_key(uv);
+        if let Some(&hi) = uv_to_handle.get(&key) {
+            if handle_gi[hi] == gi {
+                return Some(handles[hi]);
+            }
+            uv.0 += 1e-5 * (bump as f32 + 1.0);
+            continue;
+        }
+        let pt = Point2::new(uv.0 as f64, uv.1 as f64);
+        let Ok(h) = cdt.insert(pt) else {
+            return None;
+        };
+        let hi = handles.len();
+        handles.push(h);
+        handle_gi.push(gi);
+        uv_to_handle.insert(key, hi);
+        return Some(h);
     }
-    let pt = Point2::new(uv.0 as f64, uv.1 as f64);
-    let Ok(h) = cdt.insert(pt) else {
-        return None;
-    };
-    let hi = handles.len();
-    handles.push(h);
-    uv_to_gi.insert(key, gi);
-    uv_to_handle.insert(key, hi);
-    Some(h)
+    None
 }
 
 fn extract_cdt_triangles(
     cdt: &ConstrainedDelaunayTriangulation<Point2<f64>>,
     handles: &[spade::handles::FixedVertexHandle],
-    uv_to_gi: &HashMap<(u64, u64), usize>,
+    handle_gi: &[usize],
     filter: impl Fn(f32, f32) -> bool,
 ) -> Vec<usize> {
     let mut tris = Vec::new();
@@ -51,33 +62,32 @@ fn extract_cdt_triangles(
         if verts.len() != 3 {
             continue;
         }
+        let i0 = verts[0];
+        let i1 = verts[1];
+        let i2 = verts[2];
+        if i0 >= handle_gi.len() || i1 >= handle_gi.len() || i2 >= handle_gi.len() {
+            continue;
+        }
         let uv0 = (
-            cdt.vertex(handles[verts[0]]).position().x as f32,
-            cdt.vertex(handles[verts[0]]).position().y as f32,
+            cdt.vertex(handles[i0]).position().x as f32,
+            cdt.vertex(handles[i0]).position().y as f32,
         );
         let uv1 = (
-            cdt.vertex(handles[verts[1]]).position().x as f32,
-            cdt.vertex(handles[verts[1]]).position().y as f32,
+            cdt.vertex(handles[i1]).position().x as f32,
+            cdt.vertex(handles[i1]).position().y as f32,
         );
         let uv2 = (
-            cdt.vertex(handles[verts[2]]).position().x as f32,
-            cdt.vertex(handles[verts[2]]).position().y as f32,
+            cdt.vertex(handles[i2]).position().x as f32,
+            cdt.vertex(handles[i2]).position().y as f32,
         );
         let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
         let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
         if !filter(cu, cv) {
             continue;
         }
-        let key0 = ((uv0.0 * 1e6).round() as u64, (uv0.1 * 1e6).round() as u64);
-        let key1 = ((uv1.0 * 1e6).round() as u64, (uv1.1 * 1e6).round() as u64);
-        let key2 = ((uv2.0 * 1e6).round() as u64, (uv2.1 * 1e6).round() as u64);
-        if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
-            (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
-        {
-            tris.push(gi0);
-            tris.push(gi1);
-            tris.push(gi2);
-        }
+        tris.push(handle_gi[i0]);
+        tris.push(handle_gi[i1]);
+        tris.push(handle_gi[i2]);
     }
     tris
 }
@@ -96,14 +106,12 @@ pub fn triangulate_uv_cdt_with_steiner(
         return (Vec::new(), 0.0);
     }
 
-    // Build initial CDT
     let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
         ConstrainedDelaunayTriangulation::new();
     let mut handles: Vec<spade::handles::FixedVertexHandle> = Vec::new();
-    let mut uv_to_gi: HashMap<(u64, u64), usize> = HashMap::new();
+    let mut handle_gi: Vec<usize> = Vec::new();
     let mut uv_to_handle: HashMap<(u64, u64), usize> = HashMap::new();
 
-    // Insert outer boundary (duplicate UV reuses handles)
     let mut outer_handles = Vec::new();
     for v in &loops.outer.boundary {
         let Some(h) = insert_uv(
@@ -111,7 +119,7 @@ pub fn triangulate_uv_cdt_with_steiner(
             v.uv,
             v.global_idx,
             &mut handles,
-            &mut uv_to_gi,
+            &mut handle_gi,
             &mut uv_to_handle,
         ) else {
             return (Vec::new(), 0.0);
@@ -128,7 +136,6 @@ pub fn triangulate_uv_cdt_with_steiner(
         let _ = cdt.try_add_constraint(a, b);
     }
 
-    // Insert inner boundaries with constraints
     for inner in &loops.inners {
         let mut inner_handles = Vec::new();
         for v in &inner.boundary {
@@ -137,7 +144,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 v.uv,
                 v.global_idx,
                 &mut handles,
-                &mut uv_to_gi,
+                &mut handle_gi,
                 &mut uv_to_handle,
             ) else {
                 return (Vec::new(), 0.0);
@@ -159,7 +166,6 @@ pub fn triangulate_uv_cdt_with_steiner(
         }
     }
 
-    // Steiner insertion loop (OCC BRepMesh_Delaun node insertion)
     let mut max_chord = 0.0f32;
     if config.enable_interior && config.deflection_interior > 0.0 {
         let min_sz = effective_min_size(config);
@@ -209,7 +215,6 @@ pub fn triangulate_uv_cdt_with_steiner(
                     if dev > config.deflection_interior && edge_len > min_sz {
                         tri_split = true;
                     }
-                    // Angular deflection
                     let na = face.surface.normal_native(uva.0, uva.1);
                     let nb = face.surface.normal_native(uvb.0, uvb.1);
                     let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
@@ -226,7 +231,6 @@ pub fn triangulate_uv_cdt_with_steiner(
             if splits.is_empty() {
                 break;
             }
-            // Dedup and insert Steiner points
             let mut dedup = HashSet::new();
             for (u, v) in splits {
                 let key = ((u * 1e4) as u64, (v * 1e4) as u64);
@@ -251,14 +255,13 @@ pub fn triangulate_uv_cdt_with_steiner(
                     (u as f32, v as f32),
                     gi,
                     &mut handles,
-                    &mut uv_to_gi,
+                    &mut handle_gi,
                     &mut uv_to_handle,
                 );
             }
         }
     }
 
-    // Extract triangles inside trim domain
     let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
     let inner_uv: Vec<Vec<(f32, f32)>> = loops
         .inners
@@ -266,11 +269,16 @@ pub fn triangulate_uv_cdt_with_steiner(
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
         .collect();
 
-    let mut tris = extract_cdt_triangles(&cdt, &handles, &uv_to_gi, |cu, cv| {
-        point_in_trim(cu, cv, &outer_uv, &inner_uv)
-    });
-    if tris.is_empty() {
-        tris = extract_cdt_triangles(&cdt, &handles, &uv_to_gi, |_, _| true);
+    let use_trim = loops.uv_source == UvSource::Pcurve;
+    let mut tris = if use_trim {
+        extract_cdt_triangles(&cdt, &handles, &handle_gi, |cu, cv| {
+            point_in_trim(cu, cv, &outer_uv, &inner_uv)
+        })
+    } else {
+        extract_cdt_triangles(&cdt, &handles, &handle_gi, |_, _| true)
+    };
+    if tris.is_empty() && use_trim {
+        tris = extract_cdt_triangles(&cdt, &handles, &handle_gi, |_, _| true);
     }
 
     (tris, max_chord)
@@ -294,6 +302,7 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
         tolerance: 1e-4,
         seam_edges: vec![],
         color: None,
+            degenerated_edges: vec![],
     };
     let mut verts = Vec::new();
     let mut norms = Vec::new();
@@ -328,12 +337,8 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         };
-        // Four points on a sphere radius=10 at equator band (v-native ≈ PI/2)
-        // Native UV: Sphere::native_uv_to_d0 maps u→u/TAU, v→v/PI
-        // u=0, v≈PI/2 → d0(0, 0.5) = (10, 0, 0)
-        // u≈PI/2, v≈PI/2 → d0(0.25, 0.5) = (0, 10, 0)
-        // Below equator: v≈PI/2+1 → d0(0.25, (PI/2+1)/PI) = (0, ~5.4, ~-8.4)
         let outer = UvLoop {
             boundary: vec![
                 UvVertex { global_idx: 0, uv: (0.0, 1.5708) },
@@ -436,6 +441,57 @@ mod tests {
             let in_hole = c.0 > 3.5 && c.0 < 6.5 && c.1 > 3.5 && c.1 < 6.5;
             assert!(!in_hole, "triangle centroid {:?} should not lie in hole", c);
             assert!(point_in_trim(c.0, c.1, &outer_uv, &inner_uv));
+        }
+    }
+
+    #[test]
+    fn distinct_3d_points_with_same_uv_get_distinct_handles() {
+        let outer = UvLoop {
+            boundary: vec![
+                UvVertex { global_idx: 0, uv: (1.0, 1.0) },
+                UvVertex { global_idx: 1, uv: (1.0, 1.0) },
+                UvVertex { global_idx: 2, uv: (2.0, 1.0) },
+                UvVertex { global_idx: 3, uv: (2.0, 2.0) },
+            ],
+        };
+        let loops = FaceUvLoops { outer, inners: vec![], uv_source: UvSource::Synthetic };
+        let face = BRepFace {
+            surface: SurfaceGeom::Plane {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                u_dir: Vec3::X,
+            },
+            outer_wire: Default::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        };
+        let mut verts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 1.0, 0.0),
+        ];
+        let mut norms = vec![Vec3::Z; 4];
+        let mut pos_map = HashMap::new();
+        for (i, v) in verts.iter().enumerate() {
+            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+        }
+        let config = FaceFillConfig {
+            enable_interior: false,
+            ..Default::default()
+        };
+        let (tris, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config,
+        );
+        assert!(!tris.is_empty());
+        for chunk in tris.chunks(3) {
+            assert_ne!(chunk[0], chunk[1]);
+            assert_ne!(chunk[1], chunk[2]);
+            assert_ne!(chunk[2], chunk[0]);
         }
     }
 }

@@ -124,6 +124,7 @@ mod tests {
             tolerance: 1e-4,
             seam_edges: vec![],
             color: None,
+            degenerated_edges: vec![],
         });
         // Insert edge directly to bypass normalize_edge_curve_to_vertices
         let ek = reg.edges.insert(BRepEdge {
