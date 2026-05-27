@@ -3,6 +3,7 @@
 use super::super::entity_types::EntityType;
 use super::super::parser::EntityIndex;
 use rc3d_core::math::Vec3;
+use rc3d_scene::node_data::GdtSymbol;
 
 /// Linear dimension with start/end points and offset direction.
 #[derive(Debug, Clone)]
@@ -53,7 +54,14 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
                     pmi.datums.push(datum);
                 }
             }
-            EntityType::GeometricTolerance => {
+            EntityType::GeometricTolerance
+            | EntityType::FlatnessTolerance
+            | EntityType::PositionTolerance
+            | EntityType::ProfileTolerance
+            | EntityType::ParallelismTolerance
+            | EntityType::PerpendicularityTolerance
+            | EntityType::RunoutTolerance
+            | EntityType::StraightnessTolerance => {
                 if let Some(tol) = extract_tolerance(&record.params, entities) {
                     pmi.tolerances.push(tol);
                 }
@@ -190,6 +198,20 @@ fn extract_tolerance(
         leader_points: vec![],
         text,
     })
+}
+
+/// Map an EntityType to the corresponding GD&T symbol.
+fn gdt_symbol_for_entity(entity_type: EntityType) -> GdtSymbol {
+    match entity_type {
+        EntityType::FlatnessTolerance | EntityType::GeometricTolerance => GdtSymbol::Flatness,
+        EntityType::PositionTolerance => GdtSymbol::Position,
+        EntityType::ProfileTolerance => GdtSymbol::ProfileOfSurface,
+        EntityType::ParallelismTolerance => GdtSymbol::Parallelism,
+        EntityType::PerpendicularityTolerance => GdtSymbol::Perpendicularity,
+        EntityType::RunoutTolerance => GdtSymbol::CircularRunout,
+        EntityType::StraightnessTolerance => GdtSymbol::Straightness,
+        _ => GdtSymbol::Flatness,
+    }
 }
 
 /// Resolve a 3D point from a STEP entity reference (CARTESIAN_POINT or AXIS2_PLACEMENT_3D.origin).
