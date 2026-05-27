@@ -14,6 +14,7 @@ pub mod self_intersect;
 pub mod intersecting_wires;
 pub mod continuity;
 pub mod vertex_position;
+pub mod split_face;
 pub mod pipeline;
 
 use super::topo::{ShellKey, FaceKey, Orientation};
@@ -32,6 +33,7 @@ use periodic::fix_periodic_degenerated;
 use self_intersect::fix_self_intersecting_wire;
 use intersecting_wires::fix_intersecting_wires;
 use vertex_position::fix_vertex_positions;
+use split_face::fix_split_face;
 pub use check::{check_shell, check_uv_self_intersection, CheckReport};
 pub use pipeline::{auto_heal_shell, HealLevel};
 
@@ -53,6 +55,7 @@ pub struct HealReport {
     pub self_intersections_fixed: usize,
     pub inner_wires_fixed: usize,
     pub vertex_positions_fixed: usize,
+    pub split_faces_created: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
 }
@@ -74,6 +77,7 @@ impl HealReport {
         self.self_intersections_fixed += other.self_intersections_fixed;
         self.inner_wires_fixed += other.inner_wires_fixed;
         self.vertex_positions_fixed += other.vertex_positions_fixed;
+        self.split_faces_created += other.split_faces_created;
         self.skip_face_keys.extend(other.skip_face_keys);
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
@@ -98,6 +102,7 @@ pub struct HealConfig {
     pub fix_self_intersection: bool,
     pub fix_intersecting_wires: bool,
     pub fix_vertex_position: bool,
+    pub fix_split_face: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -121,6 +126,7 @@ impl Default for HealConfig {
             fix_self_intersection: true,
             fix_intersecting_wires: true,
             fix_vertex_position: true,
+            fix_split_face: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -305,6 +311,11 @@ pub fn heal_shell(
 
     if config.fix_orientation {
         report.flipped_faces = fix_shell_orientation(shell_key, reg);
+    }
+
+    if config.fix_split_face {
+        let sr = fix_split_face(shell_key, reg);
+        report.split_faces_created += sr.faces_created;
     }
 
     let check_report = check_shell(shell_key, reg);
