@@ -68,9 +68,13 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
             | EntityType::PerpendicularityTolerance
             | EntityType::RunoutTolerance
             | EntityType::StraightnessTolerance => {
-                if let Some(tol) = extract_tolerance(eid, record.entity_type, &record.params, entities) {
+                if let Some(tol) = extract_tolerance(eid, record.entity_type, &record.name, &record.params, entities) {
                     pmi.tolerances.push(tol);
                 }
+            }
+            EntityType::DatumReferenceElement => {
+                // Resolved via DATUM_SYSTEM chain during tolerance extraction.
+                // Registered here to avoid Unknown classification.
             }
             _ => {}
         }
@@ -116,7 +120,8 @@ fn extract_dimension(
         }
         // ANNOTATION_OCCURRENCE(name, item, styled_item, ref_points?)
         if let Some(item_id) = anno_rec.params.nth_param(1).and_then(|v| v.as_ref_id()) {
-            if item_id == entity_id {
+            let actual_id = unwrap_styled_item(item_id, entities);
+            if actual_id == entity_id {
                 if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
                     let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
                     let pts = resolve_pmi_points(&ref_ids, entities);
@@ -192,6 +197,7 @@ fn extract_datum(
 fn extract_tolerance(
     entity_id: u64,
     entity_type: EntityType,
+    entity_name: &str,
     params: &super::super::value::StepValue,
     entities: &EntityIndex,
 ) -> Option<PmiToleranceFrame> {
@@ -202,12 +208,9 @@ fn extract_tolerance(
 
     let mut origin = Vec3::ZERO;
     let mut leader_points = vec![];
-    let mut value = 0.0f32;
-    let diameter = false;
-    let datum_primary: Option<String> = None;
-    let datum_secondary: Option<String> = None;
 
     // Resolve tolerance value from DIMENSIONAL_CHARACTERISTIC_REPRESENTATION
+    let mut value = 0.0f32;
     if let Some(nom_val) = params.nth_param(2) {
         if let Some(id) = nom_val.as_ref_id() {
             if let Some(rec) = entities.get(&id) {
@@ -218,6 +221,14 @@ fn extract_tolerance(
         }
     }
 
+    // Resolve datum references via DATUM_SYSTEM chain
+    let datum_labels = resolve_datum_labels(params, entities);
+    let datum_primary = datum_labels.first().cloned();
+    let datum_secondary = datum_labels.get(1).cloned();
+
+    // Detect diameter modifier: check tolerance_shape or magnitude entity
+    let diameter = resolve_diameter_modifier(params, entities);
+
     // Resolve position: search ANNOTATION_OCCURRENCE for anchor points
     for (_, anno_rec) in entities.iter() {
         if anno_rec.entity_type != EntityType::AnnotationOccurrence {
@@ -225,7 +236,9 @@ fn extract_tolerance(
         }
         // ANNOTATION_OCCURRENCE(name, item, styled_item, ref_points?)
         if let Some(item_id) = anno_rec.params.nth_param(1).and_then(|v| v.as_ref_id()) {
-            if item_id != entity_id {
+            // Handle STYLED_ITEM indirection
+            let actual_id = unwrap_styled_item(item_id, entities);
+            if actual_id != entity_id {
                 continue;
             }
             if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
@@ -244,7 +257,7 @@ fn extract_tolerance(
         origin,
         leader_points,
         text,
-        symbol: gdt_symbol_for_entity(entity_type),
+        symbol: gdt_symbol_for_entity(entity_type, entity_name),
         value,
         diameter,
         datum_primary,
@@ -253,17 +266,97 @@ fn extract_tolerance(
     })
 }
 
+/// If `id` points to a STYLED_ITEM, return the inner item ref. Otherwise return `id`.
+fn unwrap_styled_item(id: u64, entities: &EntityIndex) -> u64 {
+    if let Some(rec) = entities.get(&id) {
+        if rec.entity_type == EntityType::StyledItem {
+            // STYLED_ITEM(name, styles, item)
+            if let Some(inner) = rec.params.nth_param(2).and_then(|v| v.as_ref_id()) {
+                return inner;
+            }
+        }
+    }
+    id
+}
+
+/// Walk DATUM_SYSTEM → DATUM_REFERENCE_COMPARTMENT → DATUM_REFERENCE_ELEMENT chain
+/// to extract datum labels for a tolerance.
+fn resolve_datum_labels(params: &super::super::value::StepValue, entities: &EntityIndex) -> Vec<String> {
+    let datum_system_id = match params.nth_param(3).and_then(|v| v.as_ref_id()) {
+        Some(id) => id,
+        None => return vec![],
+    };
+    let ds_rec = match entities.get(&datum_system_id) {
+        Some(r) => r,
+        None => return vec![],
+    };
+    let compartments = match ds_rec.params.nth_param(1).and_then(|v| v.as_list()) {
+        Some(l) => l,
+        None => return vec![],
+    };
+    let mut labels = Vec::new();
+    for comp_val in compartments {
+        let comp_id = match comp_val.as_ref_id() {
+            Some(id) => id,
+            None => continue,
+        };
+        let comp_rec = match entities.get(&comp_id) {
+            Some(r) => r,
+            None => continue,
+        };
+        let dre_list = match comp_rec.params.nth_param(1).and_then(|v| v.as_list()) {
+            Some(l) => l,
+            None => continue,
+        };
+        for dre_val in dre_list {
+            let dre_id = match dre_val.as_ref_id() {
+                Some(id) => id,
+                None => continue,
+            };
+            let dre_rec = match entities.get(&dre_id) {
+                Some(r) => r,
+                None => continue,
+            };
+            if let Some(label) = dre_rec.params.nth_param(1).and_then(|v| v.as_string()) {
+                labels.push(label.to_string());
+            }
+        }
+    }
+    labels
+}
+
+/// Check if the tolerance has a diameter modifier (e.g. ⊘ 0.05).
+fn resolve_diameter_modifier(params: &super::super::value::StepValue, entities: &EntityIndex) -> bool {
+    // Check tolerance_shape reference at params[3] or params[4]
+    for i in 3..=4 {
+        if let Some(id) = params.nth_param(i).and_then(|v| v.as_ref_id()) {
+            if let Some(rec) = entities.get(&id) {
+                // TOLERANCE_SHAPE or similar may have diameter attribute
+                if let Some(dia_param) = rec.params.nth_param(0) {
+                    if dia_param.as_ref_id().is_some() {
+                        // If first param is a ref (not a name string), it might indicate diameter
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Map an EntityType to the corresponding GD&T symbol.
 /// Returns None for unrecognized types — callers must handle fallback explicitly.
-fn gdt_symbol_for_entity(entity_type: EntityType) -> Option<GdtSymbol> {
-    match entity_type {
-        EntityType::FlatnessTolerance => Some(GdtSymbol::Flatness),
-        EntityType::PositionTolerance => Some(GdtSymbol::Position),
-        EntityType::ProfileTolerance => Some(GdtSymbol::ProfileOfSurface),
-        EntityType::ParallelismTolerance => Some(GdtSymbol::Parallelism),
-        EntityType::PerpendicularityTolerance => Some(GdtSymbol::Perpendicularity),
-        EntityType::RunoutTolerance => Some(GdtSymbol::CircularRunout),
-        EntityType::StraightnessTolerance => Some(GdtSymbol::Straightness),
+fn gdt_symbol_for_entity(entity_type: EntityType, entity_name: &str) -> Option<GdtSymbol> {
+    match (entity_type, entity_name) {
+        (EntityType::FlatnessTolerance, _) => Some(GdtSymbol::Flatness),
+        (EntityType::PositionTolerance, _) => Some(GdtSymbol::Position),
+        (EntityType::ProfileTolerance, "LINE_PROFILE_TOLERANCE") => Some(GdtSymbol::ProfileOfLine),
+        (EntityType::ProfileTolerance, _) => Some(GdtSymbol::ProfileOfSurface),
+        (EntityType::ParallelismTolerance, _) => Some(GdtSymbol::Parallelism),
+        (EntityType::PerpendicularityTolerance, _) => Some(GdtSymbol::Perpendicularity),
+        (EntityType::RunoutTolerance, "TOTAL_RUNOUT_TOLERANCE") => Some(GdtSymbol::TotalRunout),
+        (EntityType::RunoutTolerance, _) => Some(GdtSymbol::CircularRunout),
+        (EntityType::StraightnessTolerance, _) => Some(GdtSymbol::Straightness),
         _ => None,
     }
 }
