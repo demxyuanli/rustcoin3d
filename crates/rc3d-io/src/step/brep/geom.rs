@@ -8,7 +8,7 @@ use crate::step::geom::find_span;
 
 /// Build perpendicular axes (x_dir, y_dir) from a direction vector,
 /// forming a right-handed orthonormal basis (x_dir, y_dir, axis).
-fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
+pub fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
     let a = axis.normalize();
     let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
     let y_dir = a.cross(ref_dir).normalize();
@@ -546,6 +546,73 @@ impl CurveGeom {
 
 /// Rebuild edge curve so `t=0` / `t=1` match canonical B-Rep vertex positions.
 ///
+/// For Circle/Ellipse curves, find angular parameters matching vertex positions.
+fn trim_circle_to_vertices(
+    curve: &CurveGeom, p_lo: Vec3, p_hi: Vec3, _match_tol: f32,
+) -> Option<CurveGeom> {
+    match curve {
+        CurveGeom::Circle { center, axis, radius } => {
+            let a0 = circle_angle_geom(center, *axis, *radius, p_lo)?;
+            let a1 = circle_angle_geom(center, *axis, *radius, p_hi)?;
+            let (t_min, t_max) = normalize_arc_params(a0, a1);
+            Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
+        }
+        CurveGeom::Ellipse { center, axis, semi_major, .. } => {
+            let a0 = circle_angle_geom(center, *axis, *semi_major, p_lo)?;
+            let a1 = circle_angle_geom(center, *axis, *semi_major, p_hi)?;
+            let (t_min, t_max) = normalize_arc_params(a0, a1);
+            Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
+        }
+        CurveGeom::Trimmed { basis, .. } => trim_circle_to_vertices(basis, p_lo, p_hi, _match_tol),
+        _ => None,
+    }
+}
+
+/// Compute angular parameter [0,TAU) of a point on a circle/ellipse.
+fn circle_angle_geom(center: &Vec3, axis: Vec3, radius: f32, point: Vec3) -> Option<f32> {
+    let a = axis.normalize();
+    let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let x = ref_dir - a * ref_dir.dot(a);
+    if x.length_squared() < 1e-12 { return None; }
+    let x = x.normalize(); let y = a.cross(x);
+    let rel = point - *center;
+    let proj = rel - a * rel.dot(a);
+    let dist = proj.length();
+    if (dist - radius).abs() > radius * 0.1 && (dist - radius).abs() > 0.5 { return None; }
+    let u = f32::atan2(proj.dot(y), proj.dot(x));
+    Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
+}
+
+/// Clamp arc params to [0,TAU) with correct t_min < t_max ordering.
+fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
+    let diff = a1 - a0;
+    if diff.abs() > std::f32::consts::PI {
+        if a0 < a1 { (a1 - std::f32::consts::TAU, a0) }
+        else { (a0 - std::f32::consts::TAU, a1) }
+    } else { (a0.min(a1), a0.max(a1)) }
+}
+
+/// Find the parameter t∈[0,1] on a curve closest to the target point.
+fn find_param_on_curve(curve: &CurveGeom, target: Vec3) -> f32 {
+    let n = 24;
+    let mut best_t = 0.0f32; let mut best_d2 = f32::MAX;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let d2 = (curve.d0(t) - target).length_squared();
+        if d2 < best_d2 { best_d2 = d2; best_t = t; }
+    }
+    let mut step = 1.0 / (n as f32 * 2.0);
+    for _ in 0..3 {
+        for &dt in &[-step, step] {
+            let t = (best_t + dt).clamp(0.0, 1.0);
+            let d2 = (curve.d0(t) - target).length_squared();
+            if d2 < best_d2 { best_d2 = d2; best_t = t; }
+        }
+        step *= 0.5;
+    }
+    best_t
+}
+
 /// STEP `LINE` entities often reference a unit `VECTOR`; the actual edge span is
 /// defined by `VERTEX_POINT` coordinates, not vector magnitude.
 pub fn normalize_edge_curve_to_vertices(
@@ -557,25 +624,31 @@ pub fn normalize_edge_curve_to_vertices(
     let chord = p_hi - p_lo;
     let len = chord.length();
     if len < tol {
-        return CurveGeom::Line {
-            origin: p_lo,
-            direction: Vec3::X,
-        };
-    }
-
-    let match_tol = tol.max(1e-6) * 10.0;
-    let c0 = curve.d0(0.0);
-    let c1 = curve.d0(1.0);
-    let fwd = (c0 - p_lo).length() <= match_tol && (c1 - p_hi).length() <= match_tol;
-    if fwd {
+        // Closed curve (full circle etc.) — keep original geometry.
         return curve;
     }
 
-    // Analytic curve endpoints reversed or wrong length — chord between vertices.
-    CurveGeom::Line {
-        origin: p_lo,
-        direction: chord,
+    // Match heal's gap_tolerance. Add length component for long revolution arcs.
+    let match_tol = (tol.max(1e-4) * 100.0).max(len * 0.005).max(0.01);
+    let c0 = curve.d0(0.0);
+    let c1 = curve.d0(1.0);
+    if (c0 - p_lo).length() <= match_tol && (c1 - p_hi).length() <= match_tol { return curve; }
+    if (c0 - p_hi).length() <= match_tol && (c1 - p_lo).length() <= match_tol { return curve; }
+
+    // Circle/Ellipse: find angular parameters matching vertices.
+    if let Some(t) = trim_circle_to_vertices(&curve, p_lo, p_hi, match_tol) { return t; }
+
+    // Generic: trim curve to correct parameter range.
+    let t_lo = find_param_on_curve(&curve, p_lo);
+    let t_hi = find_param_on_curve(&curve, p_hi);
+    if (curve.d0(t_lo) - p_lo).length() <= match_tol && (curve.d0(t_hi) - p_hi).length() <= match_tol {
+        let (t_min, t_max) = (t_lo.min(t_hi), t_lo.max(t_hi));
+        return CurveGeom::Trimmed { basis: Box::new(curve), t_min, t_max };
     }
+
+    // Keep original geometry — PCurve on each face provides correct surface trajectory.
+    // Replacing with a straight line destroys geometric fidelity.
+    curve
 }
 
 // ── SurfaceGeom ────────────────────────────────────────────
@@ -1463,6 +1536,114 @@ impl SurfaceGeom {
             grid.push(row);
         }
         grid
+    }
+
+    /// Generatrix curve parameter in [0,1] for a 3D point on a revolution surface.
+    pub fn revolution_generatrix_u_at(&self, point: Vec3) -> Option<f32> {
+        let SurfaceGeom::Revolution { generatrix, .. } = self else { return None; };
+        Some(Self::find_closest_t_on_curve(generatrix, point))
+    }
+
+    /// Revolution native (u,v): u=generatrix parameter, v=axis angle in radians [0,TAU].
+    pub fn revolution_native_uv_at(&self, point: Vec3) -> Option<(f32, f32)> {
+        let SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } = self else { return None; };
+        let axis = axis_dir.normalize();
+        let rel = point - *axis_origin;
+        let radial = rel - axis * rel.dot(axis);
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        let angle = if radial.length_squared() < 1e-12 { 0.0f32 }
+        else { let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+            if u_raw < 0.0 { u_raw + std::f32::consts::TAU } else { u_raw } };
+        let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
+        let u = Self::find_closest_t_on_curve(generatrix, unrotated);
+        Some((u, angle))
+    }
+
+    /// Partial derivatives at native STEP parameters: (∂S/∂u, ∂S/∂v) in 3D.
+    pub fn d1_native(&self, u: f32, v: f32) -> (Vec3, Vec3) {
+        let (un, vn) = self.native_uv_to_d0(u, v);
+        let (su, sv) = self.d1(un, vn);
+        match self {
+            SurfaceGeom::Plane { .. } | SurfaceGeom::Extrusion { .. } => (su, sv),
+            SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => { (su / std::f32::consts::TAU, sv) }
+            SurfaceGeom::Sphere { .. } => { (su / std::f32::consts::TAU, sv / std::f32::consts::PI) }
+            SurfaceGeom::Torus { .. } => { (su / std::f32::consts::TAU, sv / std::f32::consts::TAU) }
+            SurfaceGeom::BSpline(_) => { let pr = self.param_range(); (su / pr.u_span(), sv / pr.v_span()) }
+            SurfaceGeom::Revolution { .. } => { (su, sv / std::f32::consts::TAU) }
+            SurfaceGeom::Offset { basis, .. } => basis.d1_native(u, v),
+        }
+    }
+
+    /// Adaptive parameter-space subdivision for structured interior grid generation.
+    pub fn parameter_division(
+        &self, range: (f32, f32, f32, f32), tol: f32,
+    ) -> (Vec<f32>, Vec<f32>) {
+        // Offset-of-Revolution: delegate to basis Revolution (much faster).
+        if let SurfaceGeom::Offset { basis, .. } = self {
+            if matches!(basis.as_ref(), SurfaceGeom::Revolution { .. }) {
+                return basis.parameter_division(range, tol);
+            }
+        }
+        let (u_min, u_max, v_min, v_max) = range;
+        let mut u_divs = vec![u_min, u_max];
+        let mut v_divs = vec![v_min, v_max];
+        let (min_u, min_v) = match self {
+            SurfaceGeom::Sphere { .. } | SurfaceGeom::Torus { .. } => (8, 8),
+            SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => (8, 4),
+            SurfaceGeom::BSpline(_) => (4, 4),
+            _ => (2, 2),
+        };
+        for i in 1..min_u { u_divs.push(u_min + (u_max - u_min) * i as f32 / min_u as f32); }
+        for j in 1..min_v { v_divs.push(v_min + (v_max - v_min) * j as f32 / min_v as f32); }
+        u_divs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        u_divs.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+        v_divs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v_divs.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+        let max_depth = 4;
+        for _ in 0..max_depth {
+            let mut new_u = Vec::new(); let mut new_v = Vec::new(); let mut any = false;
+            for i in 0..u_divs.len().saturating_sub(1) {
+                let u0 = u_divs[i]; let u1 = u_divs[i + 1];
+                for j in 0..v_divs.len().saturating_sub(1) {
+                    let v0 = v_divs[j]; let v1 = v_divs[j + 1];
+                    let p00 = self.d0_native(u0, v0); let p01 = self.d0_native(u0, v1);
+                    let p10 = self.d0_native(u1, v0); let p11 = self.d0_native(u1, v1);
+                    let pc = self.d0_native((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+                    let bilin = (p00 + p01 + p10 + p11) * 0.25;
+                    if (pc - bilin).length() > tol {
+                        let delu = ((p00 + p01) * 0.5 - self.d0_native(u0, (v0 + v1) * 0.5)).length()
+                            + ((p10 + p11) * 0.5 - self.d0_native(u1, (v0 + v1) * 0.5)).length();
+                        let delv = ((p00 + p10) * 0.5 - self.d0_native((u0 + u1) * 0.5, v0)).length()
+                            + ((p01 + p11) * 0.5 - self.d0_native((u0 + u1) * 0.5, v1)).length();
+                        if delu > delv * 2.0 { new_u.push((u0 + u1) * 0.5); any = true; }
+                        else if delv > delu * 2.0 { new_v.push((v0 + v1) * 0.5); any = true; }
+                        else { new_u.push((u0 + u1) * 0.5); new_v.push((v0 + v1) * 0.5); any = true; }
+                    }
+                }
+            }
+            if !any { break; }
+            u_divs.append(&mut new_u); v_divs.append(&mut new_v);
+            u_divs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            u_divs.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+            v_divs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            v_divs.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+        }
+        (u_divs, v_divs)
+    }
+
+    /// Check if a revolution PCurve UV matches the 3D point within tolerance.
+    pub fn revolution_pcurve_matches_3d(&self, pt: Vec3, u: f32, v: f32, tol: f32) -> bool {
+        (pt - self.d0_native(u, v)).length() <= tol
+    }
+
+    /// Revolution PCurve UV canonicalization for periodic matching.
+    pub fn revolution_canonicalize_pcurve_uv(&self, u: f32, v: f32) -> (f32, f32) {
+        if !matches!(self, SurfaceGeom::Revolution { .. }) { return (u, v); }
+        const TAU: f32 = std::f32::consts::TAU;
+        let mut uc = u;
+        while uc < 0.0 { uc += TAU; }
+        while uc >= TAU { uc -= TAU; }
+        (uc, v)
     }
 }
 

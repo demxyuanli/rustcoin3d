@@ -263,3 +263,85 @@ fn append_closed_polyline_chain(chain: &[Vec3], points: &mut Vec<Vec3>, indices:
     indices.push(last);
     indices.push(base);
 }
+
+/// Build a mesh wireframe overlay from triangulated face data.
+/// Each triangle edge is emitted as a line segment for visual debugging.
+pub fn build_mesh_wireframe(
+    graph: &mut SceneGraph,
+    root: rc3d_core::NodeId,
+    vertices: &[Vec3],
+    indices: &[i32],
+) {
+    if vertices.is_empty() || indices.is_empty() {
+        return;
+    }
+
+    let mut line_points: Vec<Vec3> = Vec::new();
+    let mut line_indices: Vec<i32> = Vec::new();
+
+    for chunk in indices.chunks(4) {
+        if chunk.len() < 3 {
+            continue;
+        }
+        let i0 = chunk[0];
+        let i1 = chunk[1];
+        let i2 = chunk[2];
+        if i0 < 0 || i1 < 0 || i2 < 0 {
+            continue;
+        }
+        let v0 = i0 as usize;
+        let v1 = i1 as usize;
+        let v2 = i2 as usize;
+        if v0 >= vertices.len() || v1 >= vertices.len() || v2 >= vertices.len() {
+            continue;
+        }
+
+        let base = line_points.len() as i32;
+        line_points.push(vertices[v0]);
+        line_points.push(vertices[v1]);
+        line_points.push(vertices[v2]);
+
+        line_indices.push(base);
+        line_indices.push(base + 1);
+        line_indices.push(base + 1);
+        line_indices.push(base + 2);
+        line_indices.push(base + 2);
+        line_indices.push(base);
+    }
+
+    if line_points.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "[STEP] mesh wireframe overlay: {} segments, {} points",
+        line_indices.len() / 2,
+        line_points.len()
+    );
+
+    let sep = graph.add_child(root, rc3d_scene::NodeData::Separator(SeparatorNode));
+    if let Some(entry) = graph.get_mut(sep) {
+        entry.name = Some("MeshWireframe".to_string());
+    }
+
+    let xform = graph.add_child(
+        sep,
+        rc3d_scene::NodeData::Transform(TransformNode::default()),
+    );
+    let annot = graph.add_child(
+        xform,
+        rc3d_scene::NodeData::Annotation(AnnotationNode),
+    );
+    graph.add_child(
+        annot,
+        rc3d_scene::NodeData::Coordinate3(Coordinate3Node { point: line_points }),
+    );
+    graph.add_child(
+        annot,
+        rc3d_scene::NodeData::IndexedLineSet(IndexedLineSetNode {
+            coord_index: line_indices,
+            line_width: 1.0,
+            color: [0.0, 1.0, 0.3, 0.4],
+        }),
+    );
+}

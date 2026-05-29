@@ -2,12 +2,13 @@ pub mod geom;
 pub mod topo;
 pub mod registry;
 pub mod build;
+pub mod same_parameter;
 pub mod overlay;
 pub mod heal;
 pub mod mesh;
 pub mod properties;
 
-pub use overlay::build_edge_curves;
+pub use overlay::{build_edge_curves, build_mesh_wireframe};
 pub use geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
 pub use topo::{Orientation, BRepVertex, BRepEdge, BRepWire, BRepFace, BRepShell, BRepSolid};
 pub use registry::BRepRegistry;

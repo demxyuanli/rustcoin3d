@@ -92,6 +92,8 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_edge_curves = true;
             config.fix_lacking = true;
             config.fix_missing_seams = true;
+            config.fix_natural_bound = true;
+            config.fix_reversed_2d = true;
             config.fix_vertex_tolerance = true;
             config.fix_small_area = true;
             config.fix_vertex_position = true;

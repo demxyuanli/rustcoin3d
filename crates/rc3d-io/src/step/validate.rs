@@ -252,8 +252,14 @@ fn check_cartesian_point_constraints(id: u64, params: &StepValue, report: &mut V
 }
 
 /// AXIS2_PLACEMENT_3D must have three mutually perpendicular directions.
-fn check_axis2_placement_3d_constraints(id: u64, _params: &StepValue, entities: &EntityIndex, report: &mut ValidationReport) {
+fn check_axis2_placement_3d_constraints(id: u64, params: &StepValue, entities: &EntityIndex, report: &mut ValidationReport) {
     use super::topology::resolve_placement;
+
+    // Skip perpendicularity check if ref_direction param was omitted ($) — many CAD
+    // systems export AXIS2_PLACEMENT_3D with $ for ref_direction, and resolve_placement
+    // returns a synthetic default X axis that won't pass a strict perpendicularity check.
+    let ref_dir_omitted = params.nth_param(3).map_or(true, |v| matches!(v, StepValue::Omitted));
+
     if let Some(placement) = resolve_placement(id, entities) {
         let (_, x_axis, z_axis) = placement;
 
@@ -267,8 +273,8 @@ fn check_axis2_placement_3d_constraints(id: u64, _params: &StepValue, entities: 
             });
         }
 
-        // Check x_axis is normalized
-        if (x_axis.length() - 1.0).abs() > 1e-6 {
+        // Check x_axis is normalized (only if ref_direction was explicitly provided)
+        if !ref_dir_omitted && (x_axis.length() - 1.0).abs() > 1e-6 {
             report.schema_violations.push(SchemaViolation {
                 entity_id: id,
                 entity_name: "AXIS2_PLACEMENT_3D".to_string(),
@@ -277,17 +283,19 @@ fn check_axis2_placement_3d_constraints(id: u64, _params: &StepValue, entities: 
             });
         }
 
-        // Check axis and ref_dir are perpendicular (dot product ≈ 0)
-        let dot = z_axis.dot(x_axis);
-        if dot.abs() > 1e-6 {
-            report.schema_violations.push(SchemaViolation {
-                entity_id: id,
-                entity_name: "AXIS2_PLACEMENT_3D".to_string(),
-                constraint: "WR3".to_string(),
-                description: format!(
-                    "Axis and ref direction are not perpendicular (dot = {:.6})", dot
-                ),
-            });
+        // Check axis and ref_dir are perpendicular (skip if ref_dir was omitted)
+        if !ref_dir_omitted {
+            let dot = z_axis.dot(x_axis);
+            if dot.abs() > 1e-6 {
+                report.schema_violations.push(SchemaViolation {
+                    entity_id: id,
+                    entity_name: "AXIS2_PLACEMENT_3D".to_string(),
+                    constraint: "WR3".to_string(),
+                    description: format!(
+                        "Axis and ref direction are not perpendicular (dot = {:.6})", dot
+                    ),
+                });
+            }
         }
     }
 }

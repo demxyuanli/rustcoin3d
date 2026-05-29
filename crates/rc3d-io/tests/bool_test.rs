@@ -22,7 +22,10 @@ fn make_face_3d(pts_3d: &[(f32, f32, f32)]) -> StepFace {
         }
     }).collect();
     StepFace {
-        bounds: vec![StepLoop { edges }],
+        bounds: vec![StepLoop {
+            edges,
+            vertex_loop_point: None,
+        }],
         surface_id: None,
         same_sense: true,
         face_id: None,

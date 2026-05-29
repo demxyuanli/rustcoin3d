@@ -1,4 +1,4 @@
-//! Curved surface tessellation via UV sampling.
+//! Legacy curved surface tessellation via UV sampling. Prefer `brep::mesh` for new imports.
 
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
@@ -615,8 +615,7 @@ fn estimate_extrusion_revolution_samples(
         // Resolve the actual rotation axis from AXIS2_PLACEMENT_3D / AXIS1_PLACEMENT
         let axis_id = geom::nth_ref(&surface.params, 2);
         let (axis_origin, axis_dir) = axis_id
-            .and_then(|id| topology::resolve_placement(id, entities))
-            .map(|(origin, _x, z)| (origin, z))
+            .and_then(|id| topology::resolve_sweep_axis(id, entities))
             .unwrap_or((Vec3::ZERO, Vec3::Z));
         let axis = axis_dir.normalize();
         // Compute perpendicular distance from each curve point to the rotation axis
@@ -1243,24 +1242,10 @@ fn face_normal_at_point(
             if len > 1e-6 { Some(radial / len) } else { Some(Vec3::Z) }
         }
         EntityType::SurfaceOfRevolution => {
-            // Normal is perpendicular to revolution axis and radial direction
             let _profile_id = geom::nth_ref(&surface.params, 1)?;
             let axis_entity_id = geom::nth_ref(&surface.params, 2)?;
-
-            // Get axis direction - handle both AXIS1_PLACEMENT and AXIS2_PLACEMENT_3D
-            let z_axis = if let Some(record) = entities.get(&axis_entity_id) {
-                if record.name == "AXIS1_PLACEMENT" {
-                    // AXIS1_PLACEMENT('', location, direction)
-                    let direction_id = geom::nth_ref(&record.params, 2)?;
-                    topology::resolve_direction(direction_id, entities)?
-                } else {
-                    // AXIS2_PLACEMENT_3D - use resolve_placement
-                    let (_, _, z) = topology::resolve_placement(axis_entity_id, entities)?;
-                    z
-                }
-            } else {
-                return None;
-            };
+            let (_, axis_dir) = topology::resolve_sweep_axis(axis_entity_id, entities)?;
+            let z_axis = axis_dir;
 
             let axis_point = point - z_axis * (point - Vec3::ZERO).dot(z_axis);
             let radial = point - axis_point;

@@ -1,9 +1,9 @@
 //! Degenerated edge detection at surface singularities (OCC ShapeFix_Face::FixDegenerated).
-//! Phase 2 handles detection and entity creation. Phase 3 handles CDT integration.
 
+use super::curve_trim::{add_degenerated_edge_at_pole, split_edge_at_params};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::FaceKey;
+use crate::step::brep::topo::{FaceKey, Orientation};
 use rc3d_core::math::Vec3;
 
 /// Descriptive info about a degenerated edge (OCC equivalent).
@@ -60,49 +60,89 @@ pub fn fix_degenerated_edges(
     let mut degen_edges = Vec::new();
 
     for singularity in &singularities {
-        // For each wire edge that passes near the singularity in UV space,
-        // check if we should create a degenerated edge
-        for &(ek, _) in &wire_edges {
-            let edge = match reg.edges.get(ek) {
-                Some(e) => e,
-                None => continue,
-            };
-            let pc = match edge.pcurves.get(&face_key) {
-                Some(p) => p,
-                None => continue,
+        for &(ek, orient) in &wire_edges {
+            let (tolerance, pc) = {
+                let edge = match reg.edges.get(ek) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let pc = match edge.pcurves.get(&face_key) {
+                    Some(p) => p.clone(),
+                    None => continue,
+                };
+                (edge.tolerance, pc)
             };
 
-            for t in [0.0, 0.5, 1.0] {
+            let mut best_t = None;
+            let mut best_dist = f32::MAX;
+            for s in 0..=16 {
+                let t = s as f32 / 16.0;
                 let uv = pc.d0(t);
-                let dist_uv = ((uv.x - singularity.uv.0).powi(2) + (uv.y - singularity.uv.1).powi(2)).sqrt();
-                if dist_uv < 1e-4 {
-                    // Find the other (regular) endpoint of this edge
-                    let other_t = if t < 0.5 { 1.0 } else { 0.0 };
-                    let regular_uv = pc.d0(other_t);
-                    let regular_3d = edge.curve.d0(other_t);
-
-                    // Create degenerated edge with real UV extent:
-                    // PCurve goes from the regular vertex's UV to the singularity UV
-                    let vk_sing = reg.find_or_add_vertex(singularity.point_3d, tolerance);
-                    let vk_regular = reg.find_or_add_vertex(regular_3d, tolerance);
-
-                    let degen_curve = crate::step::brep::geom::CurveGeom::Line {
-                        origin: regular_3d,
-                        direction: singularity.point_3d - regular_3d,
-                    };
-                    let degen_pc = crate::step::brep::geom::CurveGeom::Line {
-                        origin: Vec3::new(regular_uv.x, regular_uv.y, 0.0),
-                        direction: Vec3::new(singularity.uv.0 - regular_uv.x, singularity.uv.1 - regular_uv.y, 0.0),
-                    };
-                    let dek = reg.add_seam_edge(vk_regular, vk_sing, degen_curve, tolerance, face_key, degen_pc);
-                    degen_edges.push(dek);
-                    report.degenerate_edges_created += 1;
-                    report.degenerated_edge_infos.push(DegeneratedEdgeInfo::new(
-                        dek, singularity.point_3d, singularity.uv, vk_regular,
-                    ));
-                    break;
+                let dist = ((uv.x - singularity.uv.0).powi(2)
+                    + (uv.y - singularity.uv.1).powi(2))
+                .sqrt();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_t = Some(t);
                 }
             }
+
+            let Some(t_sing) = best_t else { continue };
+            if best_dist > 1e-3 {
+                continue;
+            }
+
+            let pole_vk = reg.find_or_add_vertex(singularity.point_3d, tolerance);
+            let uv_sing = pc.d0(t_sing);
+            let uv_other = pc.d0(if t_sing < 0.5 { 1.0 } else { 0.0 });
+
+            let split_parts = if t_sing > 1e-4 && t_sing < 1.0 - 1e-4 {
+                split_edge_at_params(ek, face_key, orient, &[t_sing], reg)
+            } else {
+                vec![(ek, orient)]
+            };
+
+            let dek = add_degenerated_edge_at_pole(
+                pole_vk,
+                (uv_other.x, uv_other.y),
+                (uv_sing.x, uv_sing.y),
+                singularity.point_3d,
+                tolerance,
+                face_key,
+                reg,
+            );
+            degen_edges.push(dek);
+            report.degenerate_edges_created += 1;
+            report.degenerated_edge_infos.push(DegeneratedEdgeInfo::new(
+                dek,
+                singularity.point_3d,
+                singularity.uv,
+                pole_vk,
+            ));
+
+            if split_parts.len() > 1 {
+                if let Some(wire) = reg.wires.get_mut(outer_wire) {
+                    let mut rebuilt = Vec::new();
+                    for &(wek, worient) in &wire.edges {
+                        if wek == ek {
+                            rebuilt.extend(split_parts.clone());
+                            rebuilt.push((dek, Orientation::Forward));
+                        } else {
+                            rebuilt.push((wek, worient));
+                        }
+                    }
+                    wire.edges = rebuilt;
+                }
+            } else if let Some(wire) = reg.wires.get_mut(outer_wire) {
+                let idx = wire
+                    .edges
+                    .iter()
+                    .position(|&(wek, _)| wek == ek)
+                    .unwrap_or(wire.edges.len());
+                wire.edges.insert(idx + 1, (dek, Orientation::Forward));
+            }
+
+            break;
         }
     }
 
@@ -238,6 +278,10 @@ mod tests {
         let face = reg.faces.get(fk).unwrap();
         for &dek in &face.degenerated_edges {
             let edge = reg.edges.get(dek).unwrap();
+            assert_eq!(
+                edge.v_low, edge.v_high,
+                "OCC degenerated edge should have v_low == v_high"
+            );
             let pc = edge.pcurves.values().next().unwrap();
             let uv0 = pc.d0(0.0);
             let uv1 = pc.d0(1.0);

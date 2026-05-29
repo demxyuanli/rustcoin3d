@@ -234,6 +234,7 @@ pub fn preset_for_import_viewer_panel() -> PanelPreset {
         channel_a_weight: 0.0,
         channel_b_weight: 0.0,
         channel_c_weight: 0.0,
+        show_brep_edges: false,
         ..Default::default()
     };
     PanelPreset {

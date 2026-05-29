@@ -150,7 +150,10 @@ fn split_face_by_curve(
 
     let mut new_face = face.clone();
     if !new_edges.is_empty() {
-        new_face.bounds.push(StepLoop { edges: new_edges });
+        new_face.bounds.push(StepLoop {
+            edges: new_edges,
+            vertex_loop_point: None,
+        });
     }
 
     Some(vec![new_face])

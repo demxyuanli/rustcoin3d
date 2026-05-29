@@ -5,14 +5,14 @@ use crate::step::brep::topo::{EdgeKey, Orientation, WireKey};
 
 /// Remove edges whose 3D curve length is below `min_length`.
 ///
-/// Seam edges (listed in face.seam_edges) are never removed — they may be
-/// zero-length in 3D but have non-zero extent in UV parameter space.
+/// Seam and degenerated edges are never removed — they may be zero-length in 3D
+/// but are required for closed parametric faces (VERTEX_LOOP, poles).
 ///
 /// Returns the updated edge list, or None if the wire should be removed entirely.
 pub fn remove_small_edges(
     wire_key: WireKey,
     reg: &mut BRepRegistry,
-    face_seam_edges: &[EdgeKey],
+    protected_edges: &[EdgeKey],
     min_length: f32,
 ) -> Option<Vec<(EdgeKey, Orientation)>> {
     let edges: Vec<(EdgeKey, Orientation)> = {
@@ -23,12 +23,16 @@ pub fn remove_small_edges(
     if edges.is_empty() {
         return Some(edges);
     }
+    // Keep single-edge wires (e.g. circular plane boundary from STEP) — do not invalidate the wire.
+    if edges.len() == 1 {
+        return Some(edges);
+    }
 
     let mut keep: Vec<bool> = vec![true; edges.len()];
     let mut removed = 0usize;
 
     for (i, &(ek, _)) in edges.iter().enumerate() {
-        if face_seam_edges.contains(&ek) {
+        if protected_edges.contains(&ek) {
             continue;
         }
 
@@ -55,8 +59,11 @@ pub fn remove_small_edges(
         }
     }
 
-    if result.len() < 2 {
+    if result.is_empty() {
         return None;
+    }
+    if result.len() == 1 {
+        return Some(result);
     }
 
     if let Some(wire) = reg.wires.get_mut(wire_key) {
@@ -139,6 +146,15 @@ mod tests {
         let result = remove_small_edges(wire_key, &mut reg, &[edge_keys[0]], 1e-6);
         let edges = result.unwrap();
         assert_eq!(edges.len(), 1, "seam edge should not be removed even if zero-length");
+    }
+
+    #[test]
+    fn test_single_edge_wire_preserved() {
+        let mut reg = BRepRegistry::new();
+        let (wire_key, _edge_keys, _fk) = make_wire_with_edges(&mut reg, &[0.0]);
+        let result = remove_small_edges(wire_key, &mut reg, &[], 1e-3);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
     }
 
     #[test]

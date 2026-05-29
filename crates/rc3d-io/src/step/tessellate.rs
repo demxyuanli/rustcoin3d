@@ -1,4 +1,6 @@
-//! Face tessellation: convert step faces to triangle meshes.
+//! Legacy face tessellation (UV sampling).
+//!
+//! **Deprecated**: new code should use `brep::build_brep` + `brep::mesh::mesh_brep_shell`.
 
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;

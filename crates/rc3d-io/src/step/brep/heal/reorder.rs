@@ -15,11 +15,16 @@ pub fn reorder_wire_edges(
     // We approximate using edge curve endpoints
     let n = edges.len();
     let mut endpoints: Vec<Option<(u64, u64)>> = vec![None; n]; // (start_hash, end_hash)
-    for (i, (ek, _)) in edges.iter().enumerate() {
+    for (i, (ek, orient)) in edges.iter().enumerate() {
         if let Some(edge) = reg.edges.get(*ek) {
-            let p0 = reg.vertices.get(edge.v_low).map(|v| v.position);
-            let p1 = reg.vertices.get(edge.v_high).map(|v| v.position);
-            if let (Some(p0), Some(p1)) = (p0, p1) {
+            let (p0, p1) = if *orient == Orientation::Forward {
+                (edge.v_low, edge.v_high)
+            } else {
+                (edge.v_high, edge.v_low)
+            };
+            let pos0 = reg.vertices.get(p0).map(|v| v.position);
+            let pos1 = reg.vertices.get(p1).map(|v| v.position);
+            if let (Some(p0), Some(p1)) = (pos0, pos1) {
                 let h0 = quantize(p0);
                 let h1 = quantize(p1);
                 endpoints[i] = Some((h0, h1));

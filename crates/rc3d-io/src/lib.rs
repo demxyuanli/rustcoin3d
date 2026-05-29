@@ -10,9 +10,10 @@ pub use gltf::{parse_gltf_file, GltfError};
 pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
 pub use step::{
-    decode_step_bytes, parse_step, parse_step_file, parse_step_file_with_options,
-    parse_step_with_options, write_step_file, write_step_entities_file, StepError, StepImportMode,
-    StepImportOptions, StepImportReport,
+    decode_step_bytes, import_step_file_with_options, import_step_with_options, parse_step,
+    parse_step_file, parse_step_file_with_options, parse_step_with_options, write_step_file,
+    write_step_entities_file, AdapterMode, StepError, StepImportMode, StepImportOptions,
+    StepImportReport, StepImportResult,
 };
 pub use step::write::{write_step_from_entities, write_step_from_graph};
 pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};

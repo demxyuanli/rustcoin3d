@@ -292,11 +292,9 @@ fn eval_revolution(
     let curve_id = nth_ref(params, 1)?;
     let axis_placement_id = nth_ref(params, 2);
 
-    // Default to Z-axis through origin
-    let (origin, _x_axis, z_axis) = axis_placement_id
-        .and_then(|id| topology::resolve_placement(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-    let axis = z_axis.normalize();
+    let (origin, axis) = axis_placement_id
+        .and_then(|id| topology::resolve_sweep_axis(id, entities))
+        .unwrap_or((Vec3::ZERO, Vec3::Z));
 
     // Sample the generatrix curve
     let curve_pts = sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.1);

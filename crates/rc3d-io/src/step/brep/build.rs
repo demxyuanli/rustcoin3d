@@ -20,8 +20,10 @@ use crate::step::topology;
 use crate::step::nurbs::NurbsSurface;
 use super::registry::BRepRegistry;
 use super::topo::*;
-use super::geom::{CurveGeom, SurfaceGeom};
+use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
 use super::geom::normalize_edge_curve_to_vertices;
+use super::heal::curve_trim::add_degenerated_edge_at_pole;
+use super::mesh::diagnostic::{agent_debug_log, agent_debug_enabled};
 use rc3d_core::math::Vec3;
 
 #[derive(Debug, Default, Clone)]
@@ -58,153 +60,309 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
     })
 }
 
+struct ShellBuildCtx<'a> {
+    reg: &'a mut BRepRegistry,
+    entities: &'a EntityIndex,
+    tol: f32,
+    face_colors: &'a std::collections::HashMap<u64, [f32; 3]>,
+    options: &'a BRepBuildOptions,
+    skipped_faces: &'a mut usize,
+    skipped_edges: &'a mut usize,
+}
+
+fn resolve_face_surface(
+    face_data: &topology::StepFace,
+    entities: &EntityIndex,
+    options: &BRepBuildOptions,
+    skipped_faces: &mut usize,
+) -> Option<SurfaceGeom> {
+    if let Some(sid) = face_data.surface_id {
+        if let Some(surface) = build_surface(sid, entities) {
+            return Some(surface);
+        }
+        if options.allow_geometry_fallback {
+            let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
+            log::warn!(
+                "[BRep] build_surface failed for #{} ({}), falling back to Plane from face edges",
+                sid, surf_name
+            );
+            Some(fallback_plane_from_face(face_data))
+        } else {
+            *skipped_faces += 1;
+            None
+        }
+    } else if options.allow_geometry_fallback {
+        log::warn!("[BRep] face #{:?} has no surface reference, falling back to Plane from face edges",
+            face_data.face_id);
+        Some(fallback_plane_from_face(face_data))
+    } else {
+        *skipped_faces += 1;
+        None
+    }
+}
+
+/// Build a fallback plane from face edge vertices when the original surface cannot be resolved.
+/// Uses Newell's method for an approximate normal and the vertex centroid as origin.
+fn fallback_plane_from_face(face_data: &topology::StepFace) -> SurfaceGeom {
+    let mut points: Vec<Vec3> = Vec::new();
+    for bloop in &face_data.bounds {
+        for edge in &bloop.edges {
+            points.push(edge.start);
+            points.push(edge.end);
+        }
+    }
+    if points.is_empty() {
+        return SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+    }
+
+    // Centroid
+    let inv_n = 1.0 / points.len() as f32;
+    let origin = Vec3::new(
+        points.iter().map(|p| p.x).sum::<f32>() * inv_n,
+        points.iter().map(|p| p.y).sum::<f32>() * inv_n,
+        points.iter().map(|p| p.z).sum::<f32>() * inv_n,
+    );
+
+    // Approximate normal via Newell's method (robust for non-planar polygons)
+    let mut normal = Vec3::ZERO;
+    for i in 0..points.len() {
+        let j = (i + 1) % points.len();
+        normal.x += (points[i].y - points[j].y) * (points[i].z + points[j].z);
+        normal.y += (points[i].z - points[j].z) * (points[i].x + points[j].x);
+        normal.z += (points[i].x - points[j].x) * (points[i].y + points[j].y);
+    }
+    let normal_len = normal.length();
+    let normal = if normal_len > 1e-10 { normal / normal_len } else { Vec3::Z };
+
+    // u_dir from first edge direction
+    let u_dir = if points.len() >= 2 {
+        let d = points[1] - points[0];
+        let dl = d.length();
+        if dl > 1e-10 { d / dl } else { Vec3::X }
+    } else {
+        Vec3::X
+    };
+    let (u_dir, _v_dir) = plane_tangent_basis(normal, u_dir);
+
+    SurfaceGeom::Plane { origin, normal, u_dir }
+}
+
+fn resolve_edge_curve(
+    edge_data: &topology::StepEdge,
+    entities: &EntityIndex,
+    options: &BRepBuildOptions,
+    skipped_edges: &mut usize,
+) -> Option<CurveGeom> {
+    if let Some(curve) = build_curve(edge_data.curve_id, entities) {
+        return Some(curve);
+    }
+    if options.allow_geometry_fallback {
+        let dir = edge_data.end - edge_data.start;
+        let d = if dir.length() > 1e-10 { dir } else { Vec3::X };
+        Some(CurveGeom::Line {
+            origin: edge_data.start,
+            direction: d,
+        })
+    } else {
+        *skipped_edges += 1;
+        None
+    }
+}
+
+/// Build one BRep shell from a STEP shell (faces, wires, edges).
+fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut ShellBuildCtx<'_>) -> Option<ShellKey> {
+    let mut face_keys = Vec::new();
+
+    for face_data in &shell.faces {
+        let surface = resolve_face_surface(
+            face_data,
+            ctx.entities,
+            ctx.options,
+            ctx.skipped_faces,
+        )?;
+        let surface_id = face_data.surface_id;
+
+        let temp_wire = ctx.reg.wires.insert(BRepWire { edges: vec![] });
+        let face_key = ctx.reg.faces.insert(BRepFace {
+            surface: surface.clone(),
+            outer_wire: temp_wire,
+            inner_wires: vec![],
+            same_sense: face_data.same_sense,
+            tolerance: ctx.tol,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+
+        let mut wire_keys = Vec::new();
+
+        for bloop in &face_data.bounds {
+            if let Some(anchor) = bloop.vertex_loop_point {
+                let wk = build_vertex_loop_wire(anchor, &surface, face_key, ctx);
+                wire_keys.push(wk);
+                continue;
+            }
+
+            let mut loop_edges = Vec::new();
+
+            for edge_data in &bloop.edges {
+                let curve = match resolve_edge_curve(
+                    edge_data,
+                    ctx.entities,
+                    ctx.options,
+                    ctx.skipped_edges,
+                ) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                let v_start = ctx.reg.find_or_add_vertex(edge_data.start, ctx.tol);
+                let v_end = ctx.reg.find_or_add_vertex(edge_data.end, ctx.tol);
+
+                let (v0, v1) = if edge_data.reversed {
+                    (v_end, v_start)
+                } else {
+                    (v_start, v_end)
+                };
+
+                let (v_lo, v_hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                let p_lo = ctx.reg.vertices.get(v_lo).unwrap().position;
+                let p_hi = ctx.reg.vertices.get(v_hi).unwrap().position;
+                let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, ctx.tol);
+
+                let pcurve = resolve_edge_pcurve(
+                    &curve,
+                    &surface,
+                    edge_data.curve_id,
+                    surface_id,
+                    ctx.entities,
+                    ctx.tol,
+                );
+
+                let ek = ctx.reg.add_edge_with_pcurve(v0, v1, curve, ctx.tol, face_key, pcurve);
+                let (v_lo_key, _v_hi_key) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                let wire_orient = if v0 == v_lo_key {
+                    Orientation::Forward
+                } else {
+                    Orientation::Reversed
+                };
+                loop_edges.push((ek, wire_orient));
+            }
+
+            if !loop_edges.is_empty() {
+                let wk = ctx.reg.wires.insert(BRepWire { edges: loop_edges });
+                wire_keys.push(wk);
+            }
+        }
+
+        if wire_keys.is_empty() {
+            *ctx.skipped_faces += 1;
+            continue;
+        }
+
+        if let Some(face) = ctx.reg.faces.get_mut(face_key) {
+            if let Some(&outer) = wire_keys.first() {
+                face.outer_wire = outer;
+                face.inner_wires = if wire_keys.len() > 1 {
+                    wire_keys[1..].to_vec()
+                } else {
+                    vec![]
+                };
+            }
+            if let Some(fid) = face_data.face_id {
+                if let Some(&rgb) = ctx.face_colors.get(&fid) {
+                    face.color = Some(rgb);
+                }
+            }
+        }
+
+        face_keys.push((face_key, Orientation::Forward));
+    }
+
+    if face_keys.is_empty() {
+        return None;
+    }
+
+    Some(ctx.reg.shells.insert(BRepShell {
+        faces: face_keys,
+        closed: shell.faces.len() >= 4,
+        step_id: Some(shell.id),
+    }))
+}
+
+/// OCC StepToTopoDS_TranslateVertexLoop: wire with one degenerated edge at the loop vertex.
+fn build_vertex_loop_wire(
+    anchor: Vec3,
+    surface: &SurfaceGeom,
+    face_key: FaceKey,
+    ctx: &mut ShellBuildCtx<'_>,
+) -> WireKey {
+    let vk = ctx.reg.find_or_add_vertex(anchor, ctx.tol);
+    let inv_tol = ctx.tol.max(1e-3);
+    let uv = surface
+        .project(anchor)
+        .or_else(|| surface.inverse_native_uv(anchor, inv_tol))
+        .unwrap_or((0.0, 0.0));
+    let ek = add_degenerated_edge_at_pole(vk, uv, uv, anchor, ctx.tol, face_key, ctx.reg);
+    if let Some(face) = ctx.reg.faces.get_mut(face_key) {
+        if !face.degenerated_edges.contains(&ek) {
+            face.degenerated_edges.push(ek);
+        }
+    }
+    ctx.reg.wires.insert(BRepWire {
+        edges: vec![(ek, Orientation::Forward)],
+    })
+}
+
 /// Build a full B-Rep with import strictness options.
 pub fn build_brep_with_options(
     entities: &EntityIndex,
-    _options: &BRepBuildOptions,
+    options: &BRepBuildOptions,
 ) -> Result<BRepBuildResult, StepError> {
     let mut reg = BRepRegistry::new();
 
-    // Collect shells from the STEP file
-    let shells = topology::collect_shells(entities);
-    if shells.is_empty() {
+    let solid_models = topology::collect_solid_models(entities);
+    if solid_models.is_empty() {
         return Err(StepError::NoGeometry);
     }
 
     let tol = topology::global_tolerance(entities);
-
-    // Extract per-face colors from STYLED_ITEM entities
     let face_colors = topology::collect_face_colors(entities);
-
-    let mut shell_keys = Vec::new();
-
-    for shell in &shells {
-        let mut face_keys = Vec::new();
-
-        for face_data in &shell.faces {
-            // ── Pass 1: Build the surface ──────────────────
-            let surface = if let Some(sid) = face_data.surface_id {
-                build_surface(sid, entities).unwrap_or_else(|| {
-                    let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
-                    eprintln!("[BRep] WARNING: build_surface failed for #{} ({}), falling back to Plane", sid, surf_name);
-                    SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
-                })
-            } else {
-                SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X }
-            };
-
-            // ── Create placeholder face first (to get a FaceKey for PCURVE registration) ──
-            let temp_wire = reg.wires.insert(BRepWire { edges: vec![] });
-            let face_key = reg.faces.insert(BRepFace {
-                surface: surface.clone(),
-                outer_wire: temp_wire,
-                inner_wires: vec![],
-                same_sense: face_data.same_sense,
-                tolerance: tol,
-                seam_edges: vec![],
-                color: None,
-            degenerated_edges: vec![],
-            });
-
-            // ── Pass 2: Build edges with PCURVEs for this face ──
-            let mut wire_keys = Vec::new();
-
-            for bloop in &face_data.bounds {
-                let mut loop_edges = Vec::new();
-
-                for edge_data in &bloop.edges {
-                    // Build the 3D curve, falling back to LINE from edge endpoints
-                    let curve = build_curve(edge_data.curve_id, entities)
-                        .unwrap_or_else(|| {
-                            let dir = edge_data.end - edge_data.start;
-                            let d = if dir.length() > 1e-10 { dir } else { Vec3::X };
-                            CurveGeom::Line { origin: edge_data.start, direction: d }
-                        });
-
-                    // Find or create vertices
-                    let v_start = reg.find_or_add_vertex(edge_data.start, tol);
-                    let v_end = reg.find_or_add_vertex(edge_data.end, tol);
-
-                    let (v0, v1) = if edge_data.reversed {
-                        (v_end, v_start)
-                    } else {
-                        (v_start, v_end)
-                    };
-
-                    let (v_lo, v_hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-                    let p_lo = reg.vertices.get(v_lo).unwrap().position;
-                    let p_hi = reg.vertices.get(v_hi).unwrap().position;
-                    let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tol);
-
-                    let pcurve = resolve_edge_pcurve(
-                        &curve,
-                        &surface,
-                        edge_data.curve_id,
-                        face_data.surface_id,
-                        entities,
-                        tol,
-                    );
-
-                    let ek = reg.add_edge_with_pcurve(
-                        v0, v1, curve, tol, face_key, pcurve,
-                    );
-                    // Mesh params run v_low→v_high; wire may traverse the opposite direction.
-                    let (v_lo_key, _v_hi_key) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-                    let wire_orient = if v0 == v_lo_key {
-                        Orientation::Forward
-                    } else {
-                        Orientation::Reversed
-                    };
-                    loop_edges.push((ek, wire_orient));
-                }
-
-                // Build wire from loop edges
-                if !loop_edges.is_empty() {
-                    let wk = reg.wires.insert(BRepWire { edges: loop_edges });
-                    wire_keys.push(wk);
-                }
-            }
-
-            // ── Update the face with correct wires ──
-            if let Some(face) = reg.faces.get_mut(face_key) {
-                if let Some(&outer) = wire_keys.first() {
-                    face.outer_wire = outer;
-                    face.inner_wires = if wire_keys.len() > 1 {
-                        wire_keys[1..].to_vec()
-                    } else {
-                        vec![]
-                    };
-                }
-                // Apply face color from STYLED_ITEM if available
-                if let Some(fid) = face_data.face_id {
-                    if let Some(&rgb) = face_colors.get(&fid) {
-                        face.color = Some(rgb);
-                    }
-                }
-            }
-
-            face_keys.push((face_key, Orientation::Forward));
-        }
-
-        // ── Pass 3: Build shell ──
-        if !face_keys.is_empty() {
-            let sk = reg.shells.insert(BRepShell {
-                faces: face_keys,
-                closed: shell.faces.len() >= 4, // heuristic: 4+ faces likely closed
-                step_id: Some(shell.id),
-            });
-            shell_keys.push(sk);
-        }
-    }
-
-    // ── Pass 4: Assemble root solids ──
+    let mut skipped_faces = 0usize;
+    let mut skipped_edges = 0usize;
     let mut root_solids = Vec::new();
-    for sk in shell_keys {
+
+    for model in &solid_models {
+        let mut ctx = ShellBuildCtx {
+            reg: &mut reg,
+            entities,
+            tol,
+            face_colors: &face_colors,
+            options,
+            skipped_faces: &mut skipped_faces,
+            skipped_edges: &mut skipped_edges,
+        };
+
+        let outer_shell = match build_shell_from_step(&model.outer, &mut ctx) {
+            Some(sk) => sk,
+            None => continue,
+        };
+
+        let void_shells: Vec<ShellKey> = model
+            .voids
+            .iter()
+            .filter_map(|void_shell| build_shell_from_step(void_shell, &mut ctx))
+            .collect();
+
         let solid_key = reg.solids.insert(BRepSolid {
-            outer_shell: sk,
-            void_shells: vec![],
+            outer_shell,
+            void_shells,
         });
         root_solids.push(solid_key);
+    }
+
+    if root_solids.is_empty() {
+        return Err(StepError::NoGeometry);
     }
 
     let void_shell_count = root_solids
@@ -217,8 +375,8 @@ pub fn build_brep_with_options(
         registry: reg,
         root_solids,
         build_report: BRepBuildReport {
-            skipped_faces: 0,
-            skipped_edges: 0,
+            skipped_faces,
+            skipped_edges,
             void_shell_count,
         },
     })
@@ -307,8 +465,7 @@ fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceGeom>
             let axis_id = geom::nth_ref(&record.params, 2);
             let generatrix = build_curve(curve_id, entities)?;
             let (axis_origin, axis_dir) = axis_id
-                .and_then(|id| topology::resolve_placement(id, entities))
-                .map(|(o, _x, z)| (o, z))
+                .and_then(|id| topology::resolve_sweep_axis(id, entities))
                 .unwrap_or((Vec3::ZERO, Vec3::Z));
             Some(SurfaceGeom::Revolution {
                 generatrix: Box::new(generatrix),
@@ -331,13 +488,17 @@ fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceGeom>
             let basis_id = geom::nth_ref(&record.params, 1)?;
             build_surface(basis_id, entities)
         }
-        // AP242 supertypes — won't appear directly, log if encountered
+        // AP242 supertypes — unwrap to underlying surface when referenced directly
         "ELEMENTARY_SURFACE" | "SWEPT_SURFACE" => {
-            log::warn!(
-                "[BRep] build_surface: supertype '{}' for #{} should not appear directly in STEP data",
-                record.name, surface_id
-            );
-            None
+            if let Some(basis_id) = geom::nth_ref(&record.params, 1) {
+                build_surface(basis_id, entities)
+            } else {
+                log::warn!(
+                    "[BRep] build_surface: supertype '{}' for #{} has no basis surface",
+                    record.name, surface_id
+                );
+                None
+            }
         }
         _ => None,
     }
@@ -481,7 +642,7 @@ fn resolve_vector_magnitude(vec_id: u64, entities: &EntityIndex) -> Option<Vec3>
 // ── Curve building ────────────────────────────────────────────────
 
 /// Build a 3D CurveGeom from a STEP curve entity.
-fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
+pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
     let record = entities.get(&curve_id)?;
     match record.name.as_str() {
         "LINE" => {
@@ -506,6 +667,14 @@ fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::Ellipse { center, axis, semi_major, semi_minor })
+        }
+        "HYPERBOLA" | "PARABOLA" => {
+            let pts = geom::sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 1e-4);
+            if pts.len() >= 2 {
+                Some(CurveGeom::Polyline { points: pts })
+            } else {
+                None
+            }
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
             build_bspline_3d(record, entities)
@@ -569,8 +738,11 @@ fn build_bspline_3d(
     record: &EntityRecord,
     entities: &EntityIndex,
 ) -> Option<CurveGeom> {
-    let degree = geom::nth_int(&record.params, 1).unwrap_or(2) as usize;
-    let cp_ids = geom::nth_list_refs(&record.params, 2)?;
+    // Subsuper entities (merged BOUNDED_CURVE+B_SPLINE_CURVE+...) have no entity name
+    // as params[0], so all indices are offset by 1 vs normal entities.
+    let off: usize = if geom::nth_int(&record.params, 0).is_some() { 0 } else { 1 };
+    let degree = geom::nth_int(&record.params, off).unwrap_or(2) as usize;
+    let cp_ids = geom::nth_list_refs(&record.params, off + 1)?;
 
     let control_points: Vec<Vec3> = cp_ids.iter()
         .filter_map(|&id| topology::resolve_point(id, entities))
@@ -586,12 +758,11 @@ fn build_bspline_3d(
     let knots = if record.name == "B_SPLINE_CURVE_WITH_KNOTS"
         || record.name == "RATIONAL_B_SPLINE_CURVE"
     {
-        // B_SPLINE_CURVE_WITH_KNOTS layout (after name):
-        // [1]=degree, [2]=ctrl_pts, [3]=curve_form, [4]=closed, [5]=self_intersect,
-        // [6]=knot_multiplicities, [7]=knots, [8]=knot_spec
-        // RATIONAL_B_SPLINE_CURVE appends weights after [8]
-        let mults = geom::nth_list_ints(&record.params, 6);
-        let knot_vals = geom::nth_list_reals(&record.params, 7);
+        // Normal layout (after name): [off+0]=degree, [off+1]=ctrl_pts,
+        // [off+5]=knot_multiplicities, [off+6]=knots
+        // RATIONAL_B_SPLINE_CURVE appends weights after knot_spec
+        let mults = geom::nth_list_ints(&record.params, off + 5);
+        let knot_vals = geom::nth_list_reals(&record.params, off + 6);
         let mut knots = Vec::new();
         if !mults.is_empty() && !knot_vals.is_empty() {
             for (i, &m) in mults.iter().enumerate() {
@@ -645,8 +816,9 @@ fn build_bspline_2d(
     record: &EntityRecord,
     entities: &EntityIndex,
 ) -> Option<CurveGeom> {
-    let degree = geom::nth_int(&record.params, 1).unwrap_or(2) as usize;
-    let cp_ids = geom::nth_list_refs(&record.params, 2)?;
+    let off: usize = if geom::nth_int(&record.params, 0).is_some() { 0 } else { 1 };
+    let degree = geom::nth_int(&record.params, off).unwrap_or(2) as usize;
+    let cp_ids = geom::nth_list_refs(&record.params, off + 1)?;
 
     let control_points: Vec<Vec3> = cp_ids
         .iter()
@@ -664,8 +836,8 @@ fn build_bspline_2d(
     let knots = if record.name == "B_SPLINE_CURVE_WITH_KNOTS"
         || record.name == "RATIONAL_B_SPLINE_CURVE"
     {
-        let mults = geom::nth_list_ints(&record.params, 6);
-        let knot_vals = geom::nth_list_reals(&record.params, 7);
+        let mults = geom::nth_list_ints(&record.params, off + 5);
+        let knot_vals = geom::nth_list_reals(&record.params, off + 6);
         let mut knots = Vec::new();
         if !mults.is_empty() && !knot_vals.is_empty() {
             for (i, &m) in mults.iter().enumerate() {
@@ -757,38 +929,99 @@ fn resolve_edge_pcurve(
     entities: &EntityIndex,
     tol: f32,
 ) -> CurveGeom {
-    let step_pc = surface_id.and_then(|sid| build_pcurve_for_face(edge_curve_id, sid, entities));
+    let step_pcs = surface_id
+        .map(|sid| collect_pcurves_for_face(edge_curve_id, sid, entities))
+        .unwrap_or_default();
 
     let match_tol = pcurve_match_tol(curve, tol);
 
-    if let Some(ref pc) = step_pc {
+    for (idx, pc) in step_pcs.iter().enumerate() {
         if validate_pcurve_on_surface(curve, pc, surface, match_tol, false) {
+            if agent_debug_enabled() {
+                agent_debug_log(
+                    "A",
+                    "build.rs:resolve_edge_pcurve",
+                    "pcurve_path",
+                    &format!(r#"{{"edge":{edge_curve_id},"path":"step_ok","idx":{idx}}}"#),
+                );
+            }
             return pc.clone();
         }
         if validate_pcurve_on_surface(curve, pc, surface, match_tol, true) {
+            if agent_debug_enabled() {
+                agent_debug_log(
+                    "A",
+                    "build.rs:resolve_edge_pcurve",
+                    "pcurve_path",
+                    &format!(r#"{{"edge":{edge_curve_id},"path":"step_reversed","idx":{idx}}}"#),
+                );
+            }
             return reverse_pcurve(pc);
         }
+    }
+    if !step_pcs.is_empty() {
         log::debug!(
             "[BRep] STEP PCURVE rejected for edge #{}, trying synthetic",
             edge_curve_id
         );
+        if agent_debug_enabled() {
+            agent_debug_log(
+                "A",
+                "build.rs:resolve_edge_pcurve",
+                "pcurve_path",
+                &format!(r#"{{"edge":{edge_curve_id},"path":"step_rejected"}}"#),
+            );
+        }
     }
 
     if let Some(syn) = build_synthetic_pcurve(curve, surface, match_tol) {
         if validate_pcurve_on_surface(curve, &syn, surface, match_tol, false) {
+            if agent_debug_enabled() {
+                agent_debug_log(
+                    "B",
+                    "build.rs:resolve_edge_pcurve",
+                    "pcurve_path",
+                    &format!(r#"{{"edge":{edge_curve_id},"path":"synthetic_ok"}}"#),
+                );
+            }
             return syn;
         }
     }
 
     let fb = build_parametric_fallback_pcurve(curve, surface, match_tol);
     if validate_pcurve_on_surface(curve, &fb, surface, match_tol, false) {
+        if agent_debug_enabled() {
+            agent_debug_log(
+                "B",
+                "build.rs:resolve_edge_pcurve",
+                "pcurve_path",
+                &format!(r#"{{"edge":{edge_curve_id},"path":"fallback_ok"}}"#),
+            );
+        }
         return fb;
     }
 
-    if let Some(ref pc) = step_pc {
+    if let Some(pc) = step_pcs.first() {
         if !pcurve_uv_is_degenerate(pc) {
+            if agent_debug_enabled() {
+                agent_debug_log(
+                    "A",
+                    "build.rs:resolve_edge_pcurve",
+                    "pcurve_path",
+                    &format!(r#"{{"edge":{edge_curve_id},"path":"step_force"}}"#),
+                );
+            }
             return pc.clone();
         }
+    }
+    if agent_debug_enabled() {
+        let deg = pcurve_uv_is_degenerate(&fb);
+        agent_debug_log(
+            "B",
+            "build.rs:resolve_edge_pcurve",
+            "pcurve_path",
+            &format!(r#"{{"edge":{edge_curve_id},"path":"fallback_force","degenerate":{deg}}}"#),
+        );
     }
     fb
 }
@@ -819,32 +1052,62 @@ fn validate_pcurve_on_surface(
     true
 }
 
+fn pcurve_uv_native_candidates(surface: &SurfaceGeom, u: f32, v: f32) -> Vec<(f32, f32)> {
+    let mut out = vec![(u, v)];
+    if matches!(surface, SurfaceGeom::Revolution { .. }) {
+        const TAU: f32 = std::f32::consts::TAU;
+        if u <= 1.0 + 1e-4 {
+            out.push((u * TAU, v));
+        }
+        if u >= TAU * 0.25 {
+            let un = u / TAU;
+            if (un - u).abs() > 1e-6 {
+                out.push((un, v));
+            }
+        }
+    }
+    out
+}
+
 fn pcurve_uv_matches_3d(
     surface: &SurfaceGeom,
     p3: Vec3,
     uv: Vec3,
     match_tol: f32,
 ) -> bool {
-    let u = uv.x;
-    let v = uv.y;
-    if (p3 - surface.d0_native(u, v)).length() <= match_tol {
-        return true;
-    }
-    if let Some(period_u) = surface.native_u_period() {
-        for shift in [-1.0f32, 1.0] {
-            if (p3 - surface.d0_native(u + shift * period_u, v)).length() <= match_tol {
-                return true;
+    for (u, v) in pcurve_uv_native_candidates(surface, uv.x, uv.y) {
+        if (p3 - surface.d0_native(u, v)).length() <= match_tol {
+            return true;
+        }
+        if let Some(period_u) = surface.native_u_period() {
+            for shift in [-1.0f32, 1.0] {
+                if (p3 - surface.d0_native(u + shift * period_u, v)).length() <= match_tol {
+                    return true;
+                }
             }
         }
-    }
-    if let Some(period_v) = surface.native_v_period() {
-        for shift in [-1.0f32, 1.0] {
-            if (p3 - surface.d0_native(u, v + shift * period_v)).length() <= match_tol {
-                return true;
+        if let Some(period_v) = surface.native_v_period() {
+            for shift in [-1.0f32, 1.0] {
+                if (p3 - surface.d0_native(u, v + shift * period_v)).length() <= match_tol {
+                    return true;
+                }
             }
         }
     }
     false
+}
+
+/// Map a 3D edge sample to native surface UV (Revolution uses analytic inverse).
+fn sample_3d_to_native_uv(surface: &SurfaceGeom, p3: Vec3, inv_tol: f32) -> (f32, f32) {
+    if let SurfaceGeom::Revolution { .. } = surface {
+        if let Some(uv) = surface.revolution_native_uv_at(p3) {
+            return uv;
+        }
+    }
+    surface
+        .inverse_native_uv_build(p3, inv_tol)
+        .or_else(|| surface.project(p3))
+        .unwrap_or((0.0, 0.0))
 }
 
 fn reverse_pcurve(pcurve: &CurveGeom) -> CurveGeom {
@@ -882,56 +1145,105 @@ fn build_parametric_fallback_pcurve(
     for i in 0..=n {
         let t = i as f32 / n as f32;
         let p3 = curve.d0(t);
-        let (u, v) = surface
-            .inverse_native_uv_build(p3, inv_tol)
-            .or_else(|| surface.project(p3))
-            .unwrap_or((t, 0.0));
+        let (u, v) = sample_3d_to_native_uv(surface, p3, inv_tol);
         uv_points.push(Vec3::new(u, v, 0.0));
     }
     CurveGeom::Polyline { points: uv_points }
 }
 
-/// Resolve the 2D PCURVE for an edge on a specific face's surface.
-///
-/// Walks: EDGE_CURVE → SURFACE_CURVE → PCURVE list → match by basis_surface → 2D curve
-fn build_pcurve_for_face(
-    edge_curve_id: u64,
-    surface_id: u64,
-    entities: &EntityIndex,
-) -> Option<CurveGeom> {
-    let edge_rec = entities.get(&edge_curve_id)?;
+/// Preferred PCURVE list index from SURFACE_CURVE / SEAM_CURVE master_rep (.PCURVE_S1. → 0).
+fn pcurve_master_list_index(sc_rec: &EntityRecord) -> usize {
+    match sc_rec.params.nth_param(3) {
+        Some(StepValue::Enum(s)) => {
+            if s.contains("PCURVE_S2") {
+                1
+            } else if s.contains("PCURVE_S3") {
+                2
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
 
+fn surface_curve_record<'a>(
+    edge_curve_id: u64,
+    entities: &'a EntityIndex,
+) -> Option<&'a EntityRecord> {
+    let edge_rec = entities.get(&edge_curve_id)?;
     let sc_id = if edge_rec.name == "EDGE_CURVE" {
-        geom::nth_ref(&edge_rec.params, 3)? // curve geometry reference
+        geom::nth_ref(&edge_rec.params, 3)?
     } else {
         edge_curve_id
     };
-
     let sc_rec = entities.get(&sc_id)?;
     if sc_rec.name != "SURFACE_CURVE"
         && sc_rec.name != "SEAM_CURVE"
         && sc_rec.name != "INTERSECTION_CURVE"
     {
-        // No PCURVE available: standalone 3D curve. Return None so the caller
-        // falls back to the default PCURVE.
         return None;
     }
+    Some(sc_rec)
+}
 
-    // Find matching PCURVE: params[2] = pcurve list
-    let pcurve_list = sc_rec.params.nth_param(2)?.as_list()?;
-    for item in pcurve_list {
-        let pcurve_id = item.as_ref_id()?;
-        let prec = entities.get(&pcurve_id)?;
-        if prec.name == "PCURVE" || prec.name == "DEFINITIONAL_REPRESENTATION" {
-            let basis_surface = geom::nth_ref(&prec.params, 1)?;
-            if basis_surface == surface_id {
-                // Found matching PCURVE: resolve its 2D curve
-                let curve_ref = geom::nth_ref(&prec.params, 2)?;
-                return build_2d_curve(curve_ref, entities);
+/// All PCurves on `surface_id`, master_rep first (OCC SEAM_CURVE u=0 / u=2pi sheets).
+fn collect_pcurves_for_face(
+    edge_curve_id: u64,
+    surface_id: u64,
+    entities: &EntityIndex,
+) -> Vec<CurveGeom> {
+    let sc_rec = match surface_curve_record(edge_curve_id, entities) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let pcurve_list = match sc_rec.params.nth_param(2).and_then(|v| v.as_list()) {
+        Some(list) => list,
+        None => {
+            if let Some(pid) = geom::nth_ref(&sc_rec.params, 2) {
+                if let Some(c) = resolve_pcurve_on_surface(pid, surface_id, entities) {
+                    return vec![c];
+                }
             }
+            return Vec::new();
+        }
+    };
+
+    let mut matched = Vec::new();
+    for item in pcurve_list {
+        let Some(pcurve_id) = item.as_ref_id() else {
+            continue;
+        };
+        if let Some(c) = resolve_pcurve_on_surface(pcurve_id, surface_id, entities) {
+            matched.push(c);
         }
     }
-    None
+    if matched.is_empty() {
+        return matched;
+    }
+    let master = pcurve_master_list_index(sc_rec);
+    if master < matched.len() && master > 0 {
+        let preferred = matched.remove(master);
+        matched.insert(0, preferred);
+    }
+    matched
+}
+
+fn resolve_pcurve_on_surface(
+    pcurve_id: u64,
+    surface_id: u64,
+    entities: &EntityIndex,
+) -> Option<CurveGeom> {
+    let prec = entities.get(&pcurve_id)?;
+    if prec.name != "PCURVE" && prec.name != "DEFINITIONAL_REPRESENTATION" {
+        return None;
+    }
+    let basis_surface = geom::nth_ref(&prec.params, 1)?;
+    if basis_surface != surface_id {
+        return None;
+    }
+    let curve_ref = geom::nth_ref(&prec.params, 2)?;
+    build_2d_curve(curve_ref, entities)
 }
 
 /// Build a 2D CurveGeom from a STEP curve entity in UV space.
@@ -1072,17 +1384,106 @@ fn build_synthetic_pcurve(
 ) -> Option<CurveGeom> {
     let n = PCURVE_POLYLINE_SAMPLES;
     let inv_tol = (match_tol * 5.0).max(0.5);
+
+    // Revolution isoparameter lines: per-sample UV can coincide; interpolate between endpoints.
+    if let SurfaceGeom::Revolution { .. } = surface {
+        let p0 = curve.d0(0.0);
+        let p1 = curve.d0(1.0);
+        if let (Some(uv0), Some(uv1)) = (
+            surface.revolution_native_uv_at(p0),
+            surface.revolution_native_uv_at(p1),
+        ) {
+            let du = uv1.0 - uv0.0;
+            let dv = uv1.1 - uv0.1;
+            if du * du + dv * dv > 1e-12 {
+                let mut uv_points = Vec::with_capacity(n as usize + 1);
+                for i in 0..=n {
+                    let t = i as f32 / n as f32;
+                    let u = uv0.0 + du * t;
+                    let v = uv0.1 + dv * t;
+                    uv_points.push(Vec3::new(u, v, 0.0));
+                }
+                return Some(CurveGeom::Polyline { points: uv_points });
+            }
+            if let (Some(u0), Some(u1)) = (
+                surface.revolution_generatrix_u_at(p0),
+                surface.revolution_generatrix_u_at(p1),
+            ) {
+                let du_g = u1 - u0;
+                if du_g.abs() > 1e-6 {
+                    let v0 = uv0.1;
+                    let v1 = uv1.1;
+                    let mut uv_points = Vec::with_capacity(n as usize + 1);
+                    for i in 0..=n {
+                        let t = i as f32 / n as f32;
+                        let p3 = curve.d0(t);
+                        let u = u0 + du_g * t;
+                        let v = surface
+                            .revolution_native_uv_at(p3)
+                            .map(|(_, v)| v)
+                            .unwrap_or(v0 + (v1 - v0) * t);
+                        uv_points.push(Vec3::new(u, v, 0.0));
+                    }
+                    return Some(CurveGeom::Polyline { points: uv_points });
+                }
+            }
+        }
+        let mut uv_points = Vec::with_capacity(n as usize + 1);
+        let mut all_same = true;
+        let mut first: Option<Vec3> = None;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let p3 = curve.d0(t);
+            let u = surface.revolution_generatrix_u_at(p3).unwrap_or(t);
+            let v = surface
+                .revolution_native_uv_at(p3)
+                .map(|(_, v)| v)
+                .unwrap_or(0.0);
+            let uv = Vec3::new(u, v, 0.0);
+            if let Some(f) = first {
+                if (uv - f).length_squared() > 1e-12 {
+                    all_same = false;
+                }
+            } else {
+                first = Some(uv);
+            }
+            uv_points.push(uv);
+        }
+        if !all_same && uv_points.len() >= 2 {
+            return Some(CurveGeom::Polyline { points: uv_points });
+        }
+        let edge_len = (p1 - p0).length();
+        if edge_len > 1e-6 {
+            let v0 = surface
+                .revolution_native_uv_at(p0)
+                .map(|(_, v)| v)
+                .unwrap_or(0.0);
+            let v1 = surface
+                .revolution_native_uv_at(p1)
+                .map(|(_, v)| v)
+                .unwrap_or(v0);
+            let mut uv_points = Vec::with_capacity(n as usize + 1);
+            for i in 0..=n {
+                let t = i as f32 / n as f32;
+                uv_points.push(Vec3::new(t, v0 + (v1 - v0) * t, 0.0));
+            }
+            return Some(CurveGeom::Polyline { points: uv_points });
+        }
+    }
+
     let mut uv_points = Vec::with_capacity(n as usize + 1);
     let mut map_failures = 0usize;
     for i in 0..=n {
         let t = i as f32 / n as f32;
         let p3 = curve.d0(t);
-        match surface.inverse_native_uv_build(p3, inv_tol) {
-            Some((u, v)) => uv_points.push(Vec3::new(u, v, 0.0)),
-            None => {
-                map_failures += 1;
-            }
+        let mapped = surface.revolution_native_uv_at(p3)
+            .or_else(|| surface.inverse_native_uv_build(p3, inv_tol))
+            .or_else(|| surface.project(p3));
+        if mapped.is_none() {
+            map_failures += 1;
         }
+        let (u, v) = sample_3d_to_native_uv(surface, p3, inv_tol);
+        uv_points.push(Vec3::new(u, v, 0.0));
     }
     if uv_points.len() < 2 {
         return None;
@@ -1402,6 +1803,39 @@ mod tests {
     }
 
     #[test]
+    fn test_build_surface_revolution_axis1() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (5.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (5.0, 0.0, 10.0));
+#4 = DIRECTION('', (0.0, 0.0, 1.0));
+#5 = AXIS1_PLACEMENT('', #1, #4);
+#10 = B_SPLINE_CURVE_WITH_KNOTS('', 1, (#2, #3), .UNSPECIFIED., .F., .F., (2, 2), (0., 1.), .PIECEWISE_BEZIER_KNOTS.);
+#20 = SURFACE_OF_REVOLUTION('', #10, #5);\
+",
+        );
+        let surface = build_surface(20, &entities).unwrap();
+        match &surface {
+            SurfaceGeom::Revolution {
+                generatrix,
+                axis_origin,
+                axis_dir,
+            } => {
+                assert!(matches!(generatrix.as_ref(), CurveGeom::BSpline { .. }));
+                assert!((axis_origin.x).abs() < 1e-4);
+                assert!((axis_dir.z - 1.0).abs() < 1e-4);
+                // Native (u,v): u = generatrix parameter, v = axis angle in radians.
+                let p0 = surface.d0_native(0.0, 0.0);
+                assert!((p0 - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-3);
+                let p90 = surface.d0_native(0.0, std::f32::consts::FRAC_PI_2);
+                assert!((p90 - Vec3::new(0.0, 5.0, 0.0)).length() < 1e-2);
+            }
+            _ => panic!("expected Revolution"),
+        }
+    }
+
+    #[test]
     fn test_build_surface_revolution() {
         let entities = make_entities(
             "\
@@ -1504,5 +1938,102 @@ mod tests {
             Err(StepError::NoGeometry) => {}
             other => panic!("expected NoGeometry, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_build_brep_with_void_shells() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#5 = CARTESIAN_POINT('', (2.0, 2.0, 0.0));
+#6 = CARTESIAN_POINT('', (8.0, 2.0, 0.0));
+#7 = CARTESIAN_POINT('', (8.0, 8.0, 0.0));
+#8 = CARTESIAN_POINT('', (2.0, 8.0, 0.0));
+#10 = EDGE_CURVE('', #1, #2, #20, .T.);
+#11 = EDGE_CURVE('', #2, #3, #20, .T.);
+#12 = EDGE_CURVE('', #3, #4, #20, .T.);
+#13 = EDGE_CURVE('', #4, #1, #20, .T.);
+#14 = EDGE_LOOP('', (#10, #11, #12, #13));
+#15 = FACE_OUTER_BOUND('', #14, .T.);
+#16 = FACE_SURFACE('', (#15));
+#17 = CLOSED_SHELL('', (#16));
+#30 = EDGE_CURVE('', #5, #6, #20, .T.);
+#31 = EDGE_CURVE('', #6, #7, #20, .T.);
+#32 = EDGE_CURVE('', #7, #8, #20, .T.);
+#33 = EDGE_CURVE('', #8, #5, #20, .T.);
+#34 = EDGE_LOOP('', (#30, #31, #32, #33));
+#35 = FACE_OUTER_BOUND('', #34, .T.);
+#36 = FACE_SURFACE('', (#35));
+#37 = CLOSED_SHELL('', (#36));
+#18 = BREP_WITH_VOIDS('', #17, (#37));
+#20 = LINE('', #1, #2);\
+",
+        );
+        let result = build_brep(&entities).expect("build with void");
+        assert_eq!(result.build_report.void_shell_count, 1);
+        let solid = result
+            .registry
+            .solids
+            .get(result.root_solids[0])
+            .expect("solid");
+        assert_eq!(solid.void_shells.len(), 1);
+    }
+
+    #[test]
+    fn test_strict_skips_missing_surface() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#10 = EDGE_CURVE('', #1, #2, #20, .T.);
+#11 = EDGE_CURVE('', #2, #3, #20, .T.);
+#12 = EDGE_CURVE('', #3, #4, #20, .T.);
+#13 = EDGE_CURVE('', #4, #1, #20, .T.);
+#14 = EDGE_LOOP('', (#10, #11, #12, #13));
+#15 = FACE_OUTER_BOUND('', #14, .T.);
+#16 = FACE_SURFACE('', (#15), #999);
+#17 = CLOSED_SHELL('', (#16));
+#18 = MANIFOLD_SOLID_BREP('', #17);
+#20 = LINE('', #1, #2);\
+",
+        );
+        let strict = BRepBuildOptions {
+            allow_geometry_fallback: false,
+        };
+        let result = build_brep_with_options(&entities, &strict);
+        assert!(result.is_err() || result.unwrap().build_report.skipped_faces >= 1);
+    }
+
+    #[test]
+    fn test_preview_fallback_missing_surface() {
+        let entities = make_entities(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#10 = EDGE_CURVE('', #1, #2, #20, .T.);
+#11 = EDGE_CURVE('', #2, #3, #20, .T.);
+#12 = EDGE_CURVE('', #3, #4, #20, .T.);
+#13 = EDGE_CURVE('', #4, #1, #20, .T.);
+#14 = EDGE_LOOP('', (#10, #11, #12, #13));
+#15 = FACE_OUTER_BOUND('', #14, .T.);
+#16 = FACE_SURFACE('', (#15), #999);
+#17 = CLOSED_SHELL('', (#16));
+#18 = MANIFOLD_SOLID_BREP('', #17);
+#20 = LINE('', #1, #2);\
+",
+        );
+        let preview = BRepBuildOptions {
+            allow_geometry_fallback: true,
+        };
+        let result = build_brep_with_options(&entities, &preview).expect("preview fallback");
+        assert_eq!(result.build_report.skipped_faces, 0);
+        assert!(!result.root_solids.is_empty());
     }
 }

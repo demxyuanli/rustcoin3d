@@ -19,7 +19,7 @@ pub struct BRepRegistry {
     /// Spatial hash → VertexKey for O(1) vertex deduplication.
     pub vertex_hash_index: HashMap<[u32; 3], VertexKey>,
     /// Ordered endpoint pair → EdgeKey for O(1) edge deduplication.
-    pub edge_hash_index: HashMap<(VertexKey, VertexKey), EdgeKey>,
+    pub edge_hash_index: HashMap<(VertexKey, VertexKey), Vec<EdgeKey>>,
 }
 
 impl BRepRegistry {
@@ -67,15 +67,27 @@ impl BRepRegistry {
         pcurve: CurveGeom,
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
-        if let Some(&ek) = self.edge_hash_index.get(&(v_lo, v_hi)) {
-            if let Some(edge) = self.edges.get_mut(ek) {
-                edge.pcurves.insert(face, pcurve);
-            }
-            return ek;
-        }
         let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
         let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
         let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance);
+
+        // Check existing edges between same vertices — only reuse if curves match.
+        let mid_new = curve.d0(0.5);
+        let chord_len = (p_hi - p_lo).length().max(tolerance);
+        if let Some(existing) = self.edge_hash_index.get(&(v_lo, v_hi)) {
+            for &ek in existing {
+                let edge_mid = self.edges.get(ek).map(|e| e.curve.d0(0.5)).unwrap_or(Vec3::ZERO);
+                let mid_dist = (mid_new - edge_mid).length();
+                // Curves match if midpoints are close relative to chord length
+                if mid_dist <= chord_len * 0.01 + tolerance * 10.0 {
+                    if let Some(edge) = self.edges.get_mut(ek) {
+                        edge.pcurves.insert(face, pcurve);
+                    }
+                    return ek;
+                }
+            }
+        }
+        // No matching curve — create a new edge
         let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
@@ -87,7 +99,7 @@ impl BRepRegistry {
                 m
             },
         });
-        self.edge_hash_index.insert((v_lo, v_hi), ek);
+        self.edge_hash_index.entry((v_lo, v_hi)).or_default().push(ek);
         ek
     }
 

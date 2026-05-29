@@ -17,6 +17,8 @@ pub mod vertex_position;
 pub mod split_face;
 pub mod pipeline;
 pub mod curve_trim;
+pub mod natural_bound;
+pub mod reversed2d;
 
 use std::collections::HashSet;
 
@@ -37,6 +39,8 @@ use self_intersect::fix_self_intersecting_wire;
 use intersecting_wires::fix_intersecting_wires;
 use vertex_position::fix_vertex_positions;
 use split_face::fix_split_face;
+use natural_bound::fix_add_natural_bound;
+use reversed2d::fix_reversed_2d;
 pub use check::{check_shell, check_uv_self_intersection, CheckReport};
 pub use continuity::check_shell_continuity;
 pub use pipeline::{auto_heal_shell, HealLevel};
@@ -60,6 +64,8 @@ pub struct HealReport {
     pub inner_wires_fixed: usize,
     pub vertex_positions_fixed: usize,
     pub split_faces_created: usize,
+    pub natural_bounds_added: usize,
+    pub reversed_2d_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
     skip_faces_seen: HashSet<FaceKey>,
@@ -85,6 +91,8 @@ impl Default for HealReport {
             inner_wires_fixed: 0,
             vertex_positions_fixed: 0,
             split_faces_created: 0,
+            natural_bounds_added: 0,
+            reversed_2d_fixed: 0,
             check_errors: 0,
             check_warnings: 0,
             skip_faces_seen: HashSet::new(),
@@ -110,6 +118,8 @@ impl HealReport {
         self.inner_wires_fixed += other.inner_wires_fixed;
         self.vertex_positions_fixed += other.vertex_positions_fixed;
         self.split_faces_created += other.split_faces_created;
+        self.natural_bounds_added += other.natural_bounds_added;
+        self.reversed_2d_fixed += other.reversed_2d_fixed;
         for fk in other.skip_face_keys {
             push_skip_face(self, fk);
         }
@@ -144,6 +154,8 @@ pub struct HealConfig {
     pub fix_intersecting_wires: bool,
     pub fix_vertex_position: bool,
     pub fix_split_face: bool,
+    pub fix_natural_bound: bool,
+    pub fix_reversed_2d: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -170,6 +182,8 @@ impl HealConfig {
             fix_intersecting_wires: false,
             fix_vertex_position: false,
             fix_split_face: false,
+            fix_natural_bound: false,
+            fix_reversed_2d: false,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 0.0,
         }
@@ -207,6 +221,8 @@ impl Default for HealConfig {
             fix_intersecting_wires: true,
             fix_vertex_position: true,
             fix_split_face: true,
+            fix_natural_bound: true,
+            fix_reversed_2d: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -365,6 +381,18 @@ fn heal_face_passes(
         report.inner_wires_fixed += total_fixes;
     }
 
+    if config.fix_natural_bound {
+        if fix_add_natural_bound(reg, face_key) {
+            report.natural_bounds_added += 1;
+        }
+    }
+
+    if config.fix_reversed_2d {
+        if fix_reversed_2d(reg, face_key) {
+            report.reversed_2d_fixed += 1;
+        }
+    }
+
     if config.fix_missing_seams {
         report.added_seams += fix_missing_seams(reg, face_key);
     }
@@ -384,6 +412,14 @@ fn heal_lacking_on_wire(
     config: &HealConfig,
     report: &mut HealReport,
 ) -> bool {
+    if reg
+        .wires
+        .get(wire_key)
+        .map(|w| w.edges.is_empty())
+        .unwrap_or(true)
+    {
+        return true;
+    }
     let lr = fix_lacking_edges(
         wire_key,
         face_key,
@@ -402,6 +438,14 @@ fn heal_self_intersect_on_wire(
     config: &HealConfig,
     report: &mut HealReport,
 ) -> bool {
+    if reg
+        .wires
+        .get(wire_key)
+        .map(|w| w.edges.is_empty())
+        .unwrap_or(true)
+    {
+        return true;
+    }
     let sir = fix_self_intersecting_wire(wire_key, face_key, reg);
     if sir.intersections_found > 0 {
         report.self_intersections_fixed += sir.intersections_found;
@@ -438,19 +482,25 @@ pub fn heal_shell(
     let face_keys = shell.faces.clone();
 
     for (face_key, _) in &face_keys {
-        let (outer_wire, inner_wires, seam_edges) = {
+        let (outer_wire, inner_wires, protected_edges) = {
             let face = match reg.faces.get(*face_key) {
                 Some(f) => f,
                 None => continue,
             };
-            (face.outer_wire, face.inner_wires.clone(), face.seam_edges.clone())
+            let mut protected = face.seam_edges.clone();
+            for &ek in &face.degenerated_edges {
+                if !protected.contains(&ek) {
+                    protected.push(ek);
+                }
+            }
+            (face.outer_wire, face.inner_wires.clone(), protected)
         };
 
         let mut wire_keys = vec![outer_wire];
         wire_keys.extend(inner_wires);
 
         for wk in wire_keys {
-            if !heal_wire_passes(wk, *face_key, reg, config, &seam_edges, &mut report) {
+            if !heal_wire_passes(wk, *face_key, reg, config, &protected_edges, &mut report) {
                 push_skip_face(&mut report, *face_key);
                 log::warn!("[BRep heal] face {:?}: wire {:?} failed wire heal", face_key, wk);
                 break;
@@ -544,7 +594,10 @@ fn fix_small_area(shell_key: ShellKey, reg: &BRepRegistry) -> Vec<FaceKey> {
             skip.push(face_key);
             continue;
         };
-        if wire.edges.is_empty() && face.seam_edges.is_empty() {
+        if wire.edges.is_empty()
+            && face.seam_edges.is_empty()
+            && face.degenerated_edges.is_empty()
+        {
             log::warn!("[BRep heal] face {:?} has zero area, marking for skip", face_key);
             skip.push(face_key);
         }

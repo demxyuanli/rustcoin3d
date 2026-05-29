@@ -13,28 +13,11 @@ use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::BRepFace;
 
-/// Cap Steiner splits per iteration to avoid CDT blow-up on bad trim domains.
-const MAX_SPLITS_PER_ITER: usize = 256;
-
 /// Hard cap on CDT vertices per face (boundary + Steiner).
 const MAX_CDT_VERTICES: usize = 4096;
 
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
-}
-
-/// Estimate chord deviation at a UV point by sampling the surface.
-fn chord_dev_at(u: f32, v: f32, surface: &SurfaceGeom) -> f32 {
-    let p = surface.d0_native(u, v);
-    let eps = 1e-5;
-    let pu = surface.d0_native(u + eps, v);
-    let pv = surface.d0_native(u, v + eps);
-    // Approximate deviation as the distance from point to tangent plane at midpoint
-    let du = pu - p;
-    let dv = pv - p;
-    let normal = du.cross(dv).normalize();
-    let mid = surface.d0_native(u + eps * 0.5, v + eps * 0.5);
-    (mid - p).dot(normal).abs()
 }
 
 fn insert_uv(
@@ -242,13 +225,85 @@ pub fn triangulate_uv_cdt_with_steiner(
 
     let mut max_chord = 0.0f32;
     if config.enable_interior && config.deflection_interior > 0.0 {
+        // Structured interior grid (Truck-style parameter_division) replaces edge-midpoint Steiner.
+        let u_min = loops.outer.boundary.iter().map(|v| v.uv.0).fold(f32::INFINITY, f32::min);
+        let u_max = loops.outer.boundary.iter().map(|v| v.uv.0).fold(f32::MIN, f32::max);
+        let v_min = loops.outer.boundary.iter().map(|v| v.uv.1).fold(f32::INFINITY, f32::min);
+        let v_max = loops.outer.boundary.iter().map(|v| v.uv.1).fold(f32::MIN, f32::max);
+        let range = (u_min, u_max, v_min, v_max);
+        let (u_divs, v_divs) = face.surface.parameter_division(range, config.deflection_interior);
+
+        let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+        let inner_uv: Vec<Vec<(f32, f32)>> = loops
+            .inners
+            .iter()
+            .map(|l| l.boundary.iter().map(|v| v.uv).collect())
+            .collect();
+
+        let u_span = (u_max - u_min).abs();
+        let v_span = (v_max - v_min).abs();
+        let u_eps = (u_span * 1e-7).max(1e-6);
+        let v_eps = (v_span * 1e-7).max(1e-6);
+
+        let mut inserted = 0usize;
+        for u in &u_divs {
+            for v in &v_divs {
+                if handles.len() >= MAX_CDT_VERTICES {
+                    break;
+                }
+                // Skip boundary-adjacent points that would duplicate existing vertices
+                let on_boundary = loops.outer.boundary.iter().any(|vb| {
+                    (vb.uv.0 - u).abs() < u_eps && (vb.uv.1 - v).abs() < v_eps
+                }) || loops.inners.iter().any(|inner| {
+                    inner.boundary.iter().any(|vb| {
+                        (vb.uv.0 - u).abs() < u_eps && (vb.uv.1 - v).abs() < v_eps
+                    })
+                });
+                if on_boundary {
+                    continue;
+                }
+                if point_in_trim(*u, *v, &outer_uv, &inner_uv) {
+                    let pt_3d = face.surface.d0_native(*u, *v);
+                    let hash = f32x3_quantized_bits([pt_3d.x, pt_3d.y, pt_3d.z]);
+                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                        let i = global_vertices.len();
+                        global_vertices.push(pt_3d);
+                        let mut n = face.surface.normal_native(*u, *v);
+                        if !face.same_sense {
+                            n = -n;
+                        }
+                        global_normals.push(n);
+                        i
+                    });
+                    if insert_uv(
+                        &mut cdt,
+                        (*u, *v),
+                        gi,
+                        &mut handles,
+                        &mut handle_gi,
+                        &mut uv_to_handle,
+                    )
+                    .is_some()
+                    {
+                        inserted += 1;
+                    }
+                }
+            }
+        }
+        log::debug!(
+            "[BRep mesh] structured grid inserted {} interior points (uv_divs={}x{})",
+            inserted,
+            u_divs.len(),
+            v_divs.len()
+        );
+
+        // Light-weight post-check: if any interior triangle edge still deviates
+        // significantly from the surface, insert the surface-projected midpoint.
+        // Uses cheap d0_native(uv_mid) for deviation pre-check; only calls the
+        // expensive project(mid_3d) when a split is actually needed.
         let min_sz = effective_min_size(config);
-        for _iter in 0..config.max_adapt_iterations {
+        for _iter in 0..1 {
             if handles.len() >= MAX_CDT_VERTICES {
-                log::warn!(
-                    "[BRep mesh] CDT vertex cap ({}) reached, stopping Steiner refinement",
-                    MAX_CDT_VERTICES
-                );
                 break;
             }
             let mut splits: Vec<(f64, f64)> = Vec::new();
@@ -281,78 +336,46 @@ pub fn triangulate_uv_cdt_with_steiner(
                 let p0 = face.surface.d0_native(uv0.0, uv0.1);
                 let p1 = face.surface.d0_native(uv1.0, uv1.1);
                 let p2 = face.surface.d0_native(uv2.0, uv2.1);
-
-                // Skip triangles with zero 3D area (degenerated-edge vertices)
                 let area_3d = (p1 - p0).cross(p2 - p0).length();
                 if area_3d < 1e-12 {
                     continue;
                 }
 
-                let mut tri_split = false;
                 for (a, b, uva, uvb) in [
                     (&p0, &p1, uv0, uv1),
                     (&p1, &p2, uv1, uv2),
                     (&p2, &p0, uv2, uv0),
                 ] {
                     let edge_len = (*a - *b).length();
-                    let mid_uv = ((uva.0 + uvb.0) * 0.5, (uva.1 + uvb.1) * 0.5);
-                    let on_surf = face.surface.d0_native(mid_uv.0, mid_uv.1);
-                    let dev = ((*a + *b) * 0.5 - on_surf).length();
+                    if edge_len <= min_sz {
+                        continue;
+                    }
+                    let mid_3d = (*a + *b) * 0.5;
+                    let uv_mid = ((uva.0 + uvb.0) * 0.5, (uva.1 + uvb.1) * 0.5);
+                    let surf_mid = face.surface.d0_native(uv_mid.0, uv_mid.1);
+                    let dev = (mid_3d - surf_mid).length();
                     max_chord = max_chord.max(dev);
-                    if dev > config.deflection_interior && edge_len > min_sz {
-                        tri_split = true;
+                    let mut needs_split = false;
+                    if dev > config.deflection_interior {
+                        needs_split = true;
                     }
                     let na = face.surface.normal_native(uva.0, uva.1);
                     let nb = face.surface.normal_native(uvb.0, uvb.1);
                     let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
-                    if angle > config.angular_deflection && edge_len > min_sz {
-                        tri_split = true;
+                    if angle > config.angular_deflection {
+                        needs_split = true;
                     }
-                }
-                if tri_split {
-                    // Compute edge-midpoint deflections; split at the worst-deviated edge
-                    let devs = [
-                        ((p0 + p1) * 0.5
-                            - face
-                                .surface
-                                .d0_native((uv0.0 + uv1.0) * 0.5, (uv0.1 + uv1.1) * 0.5))
-                            .length(),
-                        ((p1 + p2) * 0.5
-                            - face
-                                .surface
-                                .d0_native((uv1.0 + uv2.0) * 0.5, (uv1.1 + uv2.1) * 0.5))
-                            .length(),
-                        ((p2 + p0) * 0.5
-                            - face
-                                .surface
-                                .d0_native((uv2.0 + uv0.0) * 0.5, (uv2.1 + uv0.1) * 0.5))
-                            .length(),
-                    ];
-                    let worst = devs
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .unwrap()
-                        .0;
-                    let (cu, cv) = match worst {
-                        0 => ((uv0.0 + uv1.0) * 0.5, (uv0.1 + uv1.1) * 0.5),
-                        1 => ((uv1.0 + uv2.0) * 0.5, (uv1.1 + uv2.1) * 0.5),
-                        _ => ((uv2.0 + uv0.0) * 0.5, (uv2.1 + uv0.1) * 0.5),
-                    };
-                    splits.push((cu as f64, cv as f64));
+                    if needs_split {
+                        if let Some((u, v)) = face.surface.project(mid_3d) {
+                            if point_in_trim(u, v, &outer_uv, &inner_uv) {
+                                splits.push((u as f64, v as f64));
+                            }
+                        }
+                    }
                 }
             }
             if splits.is_empty() {
                 break;
-            }
-            // Sort by descending chord error: refine worst triangles first
-            splits.sort_unstable_by(|(u1, v1), (u2, v2)| {
-                let d1 = chord_dev_at(*u1 as f32, *v1 as f32, &face.surface);
-                let d2 = chord_dev_at(*u2 as f32, *v2 as f32, &face.surface);
-                d2.partial_cmp(&d1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            if splits.len() > MAX_SPLITS_PER_ITER {
-                splits.truncate(MAX_SPLITS_PER_ITER);
             }
             let mut dedup = HashSet::new();
             for (u, v) in splits {
@@ -448,6 +471,7 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
 mod tests {
     use super::*;
     use super::super::face_uv::{UvLoop, UvSource, UvVertex};
+    use crate::step::brep::geom::CurveGeom;
 
     #[test]
     fn steiner_split_on_curved_surface() {
@@ -617,4 +641,201 @@ mod tests {
             assert_ne!(chunk[2], chunk[0]);
         }
     }
+
+    #[test]
+    fn test_steiner_edge_midpoint() {
+        let surface = SurfaceGeom::Sphere {
+            center: Vec3::ZERO,
+            radius: 10.0,
+        };
+        let face = BRepFace {
+            surface: surface.clone(),
+            outer_wire: Default::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        };
+        let outer = UvLoop {
+            boundary: vec![
+                UvVertex { global_idx: 0, uv: (0.0, 1.5708) },
+                UvVertex { global_idx: 1, uv: (1.5708, 1.5708) },
+                UvVertex { global_idx: 2, uv: (1.5708, 2.5708) },
+                UvVertex { global_idx: 3, uv: (0.0, 2.5708) },
+            ],
+        };
+        let loops = FaceUvLoops {
+            outer,
+            inners: vec![],
+            uv_source: UvSource::Pcurve,
+        };
+        let mut verts = vec![
+            surface.d0_native(0.0, 1.5708),
+            surface.d0_native(1.5708, 1.5708),
+            surface.d0_native(1.5708, 2.5708),
+            surface.d0_native(0.0, 2.5708),
+        ];
+        let mut norms = vec![Vec3::Z; 4];
+        let mut pos_map = HashMap::new();
+        for (i, v) in verts.iter().enumerate() {
+            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+        }
+        let config = FaceFillConfig {
+            enable_interior: true,
+            deflection_interior: 0.05,
+            min_size: 0.01,
+            max_adapt_iterations: 4,
+            ..Default::default()
+        };
+        let before = verts.len();
+        let (tris, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config, None,
+        );
+        assert!(verts.len() > before, "Steiner should add interior vertices");
+        assert!(!tris.is_empty());
+    }
+
+    #[test]
+    fn test_cdt_degenerated_sphere_constraint() {
+        use crate::step::brep::registry::BRepRegistry;
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+        };
+        let pole = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
+        let equator_key = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let equator_pos = reg.vertices[equator_key].position;
+        let fk = reg.faces.insert(BRepFace {
+            surface: surface.clone(),
+            outer_wire: Default::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let degen_pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, 1.5, 0.0),
+            direction: Vec3::new(0.0, -0.5, 0.0),
+        };
+        let degen_curve = CurveGeom::Line {
+            origin: Vec3::new(1.0, 0.0, 0.0),
+            direction: Vec3::new(-1.0, 0.0, 1.0),
+        };
+        let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, degen_pc);
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.degenerated_edges.push(dek);
+        }
+        let outer = UvLoop {
+            boundary: vec![
+                UvVertex { global_idx: 0, uv: (0.0, 1.4) },
+                UvVertex { global_idx: 1, uv: (1.0, 1.4) },
+                UvVertex { global_idx: 2, uv: (1.0, 1.6) },
+                UvVertex { global_idx: 3, uv: (0.0, 1.6) },
+            ],
+        };
+        let loops = FaceUvLoops {
+            outer,
+            inners: vec![],
+            uv_source: UvSource::Pcurve,
+        };
+        let face = reg.faces.get(fk).unwrap().clone();
+        let mut verts = vec![
+            surface.d0_native(0.0, 1.4),
+            surface.d0_native(1.0, 1.4),
+            surface.d0_native(1.0, 1.6),
+            surface.d0_native(0.0, 1.6),
+            equator_pos,
+        ];
+        let mut norms = vec![Vec3::Z; verts.len()];
+        let mut pos_map = HashMap::new();
+        for (i, v) in verts.iter().enumerate() {
+            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+        }
+        let (tris, _) = triangulate_uv_cdt_with_steiner(
+            &loops,
+            &face,
+            &mut verts,
+            &mut norms,
+            &mut pos_map,
+            &FaceFillConfig::default(),
+            Some(&reg),
+        );
+        assert!(!tris.is_empty(), "CDT with degenerated constraint should produce tris");
+    }
+
+    #[test]
+    fn test_cdt_degenerated_cone() {
+        use crate::step::brep::registry::BRepRegistry;
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Cone {
+            apex: Vec3::ZERO,
+            axis: Vec3::Z,
+            semi_angle: 0.463648f32,
+            radius_at_apex: 0.0,
+        };
+        let apex = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let fk = reg.faces.insert(BRepFace {
+            surface: surface.clone(),
+            outer_wire: Default::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let degen_pc = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.5, 0.0),
+            direction: Vec3::new(0.0, 0.5, 0.0),
+        };
+        let degen_curve = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::Z,
+        };
+        let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, degen_pc);
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.degenerated_edges.push(dek);
+        }
+        let outer = UvLoop {
+            boundary: vec![
+                UvVertex { global_idx: 0, uv: (0.0, 0.2) },
+                UvVertex { global_idx: 1, uv: (1.0, 0.2) },
+                UvVertex { global_idx: 2, uv: (1.0, 0.4) },
+                UvVertex { global_idx: 3, uv: (0.0, 0.4) },
+            ],
+        };
+        let loops = FaceUvLoops {
+            outer,
+            inners: vec![],
+            uv_source: UvSource::Pcurve,
+        };
+        let face = reg.faces.get(fk).unwrap().clone();
+        let mut verts = vec![
+            surface.d0_native(0.0, 0.2),
+            surface.d0_native(1.0, 0.2),
+            surface.d0_native(1.0, 0.4),
+            surface.d0_native(0.0, 0.4),
+        ];
+        let mut norms = vec![Vec3::Z; verts.len()];
+        let mut pos_map = HashMap::new();
+        for (i, v) in verts.iter().enumerate() {
+            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+        }
+        let (tris, _) = triangulate_uv_cdt_with_steiner(
+            &loops,
+            &face,
+            &mut verts,
+            &mut norms,
+            &mut pos_map,
+            &FaceFillConfig::default(),
+            Some(&reg),
+        );
+        assert!(!tris.is_empty(), "cone CDT with apex degenerated edge should produce tris");
+    }
+
 }

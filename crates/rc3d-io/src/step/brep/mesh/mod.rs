@@ -21,11 +21,17 @@ use crate::step::mesh_result::MeshResult;
 use edge_disc::{EdgeDiscConfig, EdgePolygon, discretize_all_edges};
 use face_fill::{
     face_boundary_is_mixed, fix_tri_winding, FaceFillConfig, FaceMeshRange, fill_trimmed,
-    mesh_revolution_native_grid, mesh_ruled_two_wire_edges, surface_fill_3d,
+    mesh_plane_fan_3d, mesh_plane_fan_wire_polygons, mesh_revolution_native_grid,
+    mesh_ruled_two_wire_edges, mesh_ruled_wire_polygons_3d, surface_fill_3d,
     measure_face_chord_error,
 };
 use super::geom::SurfaceParamRange;
-use face_uv::{collect_face_loops, loops_native_surface_uv, point_in_trim, FaceUvLoops, UvSource};
+use face_uv::{
+    collect_face_loops, loops_from_boundary_indices, loops_from_wire_edges,
+    loops_native_surface_uv, point_in_trim, repair_plane_loop_uv,
+    revolution_loops_from_wire_edges, signed_area_2d, unwrap_periodic_uv_loops,
+    FaceUvLoops, UvSource,
+};
 use refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map, RefineConfig};
 use optimize::{OptimizeConfig, optimize_mesh};
 use same_param::apply_same_parameter;
@@ -47,6 +53,50 @@ fn min_adequate_trim_tris(surface: &SurfaceGeom) -> usize {
     }
 }
 
+fn outer_uv_signed_area(loops: &FaceUvLoops) -> f64 {
+    let uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    signed_area_2d(&uv)
+}
+
+fn uv_loop_is_degenerate(loops: &FaceUvLoops) -> bool {
+    loops.outer.boundary.len() < 3 || outer_uv_signed_area(loops).abs() <= 1e-6
+}
+
+fn enrich_loops_from_wire_edges(
+    face_key: FaceKey,
+    face: &super::topo::BRepFace,
+    _loops: &FaceUvLoops,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    global_vertices: &[Vec3],
+) -> Option<FaceUvLoops> {
+    if wire_edges.is_empty() { return None; }
+    let inv_tol = face.tolerance.max(1e-3);
+    let mut enriched = loops_from_wire_edges(face_key, &face.surface, inv_tol, wire_edges, edge_polygons, edge_boundary_idx, global_vertices)?;
+    unwrap_periodic_uv_loops(&mut enriched, &face.surface);
+    if matches!(face.surface, SurfaceGeom::Plane { .. }) {
+        repair_plane_loop_uv(&mut enriched.outer, face, global_vertices);
+        if !uv_loop_is_degenerate(&enriched) { return Some(enriched); }
+    } else if enriched.uv_source == UvSource::Pcurve && !uv_loop_is_degenerate(&enriched) {
+        return Some(enriched);
+    }
+    let native = loops_native_surface_uv(&enriched, face, global_vertices);
+    if !uv_loop_is_degenerate(&native) { Some(native) }
+    else if !uv_loop_is_degenerate(&enriched) { Some(enriched) }
+    else { None }
+}
+
+fn revolution_prefers_ruled_first(
+    face: &super::topo::BRepFace, mesh_loops: &FaceUvLoops, wire_edges: &[(EdgeKey, Vec<usize>)],
+) -> bool {
+    if wire_edges.len() != 2 { return false; }
+    if !matches!(face.surface, SurfaceGeom::Revolution { .. } | SurfaceGeom::Offset { .. }) { return false; }
+    if uv_loop_is_degenerate(mesh_loops) { return true; }
+    let outer_uv: Vec<(f32, f32)> = mesh_loops.outer.boundary.iter().map(|v| (v.uv.0, v.uv.1)).collect();
+    signed_area_2d(&outer_uv).abs() <= 1e-6
+}
+
 /// True when UV bounds cover most of the native period (untrimmed analytic sheet).
 fn uv_bounds_span_untrimmed_period(
     surface: &SurfaceGeom,
@@ -56,6 +106,23 @@ fn uv_bounds_span_untrimmed_period(
     let du = (bounds.1 - bounds.0) / (pr.u_max - pr.u_min).max(1e-6);
     let dv = (bounds.3 - bounds.2) / (pr.v_max - pr.v_min).max(1e-6);
     du > 0.85 && dv > 0.85
+}
+
+/// Revolution trim fallback: use native U from loop UV and V from axis-angle sampling when boundary V is degenerate.
+fn revolution_fallback_uv_bounds(
+    loops: &face_uv::FaceUvLoops,
+    face: &super::topo::BRepFace,
+    global_vertices: &[Vec3],
+) -> Option<(f32, f32, f32, f32)> {
+    let (u0, u1, v0, v1) = loops.native_uv_bounds()?;
+    if (u1 - u0).abs() < 1e-6 {
+        return None;
+    }
+    if (v1 - v0).abs() >= 1e-5 {
+        return Some((u0, u1, v0, v1));
+    }
+    let (rv0, rv1) = loops.revolution_v_bounds_from_3d(face, global_vertices)?;
+    Some((u0, u1, rv0, rv1))
 }
 
 fn allows_trimmed_uv_grid(
@@ -82,6 +149,9 @@ fn allows_trimmed_uv_grid(
         SurfaceGeom::Revolution { .. }
             | SurfaceGeom::Cone { .. }
             | SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Sphere { .. }
+            | SurfaceGeom::Torus { .. }
+            | SurfaceGeom::Extrusion { .. }
             | SurfaceGeom::Offset { .. }
             | SurfaceGeom::BSpline(_)
             | SurfaceGeom::Plane { .. }
@@ -331,6 +401,7 @@ pub fn mesh_brep_shell_with_report(
             report.faces.push(FaceMeshStats {
                 face_key: info.face_key,
                 tri_count,
+                first_tri: tris_before,
                 uv_source: UvSource::SurfaceFill,
                 max_chord_error: 0.0,
                 grid_fallback: false,
@@ -351,10 +422,11 @@ pub fn mesh_brep_shell_with_report(
         );
 
         if collect_diag && !info.wire_edges.is_empty() {
+            let we_orient: Vec<_> = info.wire_edges.iter().map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone())).collect();
             wire_diag.extend(format_wire_loop_lines(
                 info.face_key,
                 &loops,
-                &info.wire_edges,
+                &we_orient,
                 &edge_boundary_idx,
                 &global_vertices,
             ));
@@ -399,6 +471,24 @@ pub fn mesh_brep_shell_with_report(
 
         let tris_before_face = all_indices.len() / 4;
         let chord_reject = (scaled_config.face.deflection_interior * 10.0).max(0.05);
+
+        // Revolution/Offset faces: try UV loop reconstruction for CDT
+        let mut mesh_loops = loops.clone();
+        if matches!(face.surface, SurfaceGeom::Revolution { .. } | SurfaceGeom::Offset { .. })
+            && uv_loop_is_degenerate(&mesh_loops)
+            && boundary_ordered.len() >= 3
+        {
+            let syn = loops_from_boundary_indices(&boundary_ordered, face, &global_vertices);
+            if let Some(s) = syn {
+                if !uv_loop_is_degenerate(&s) {
+                    mesh_loops = s;
+                    algo = FaceMeshAlgo::TrimmedCdt;
+                }
+            }
+        }
+        if !uv_loop_is_degenerate(&mesh_loops) && mesh_loops.is_fillable() {
+            algo = FaceMeshAlgo::TrimmedCdt;
+        }
 
         let mut range = match algo {
             FaceMeshAlgo::SurfaceFill3d | FaceMeshAlgo::ClosedParametric if mixed_boundary => {
@@ -542,18 +632,18 @@ pub fn mesh_brep_shell_with_report(
         }
 
         if range.tri_count < min_adequate_trim_tris(&face.surface) && info.wire_edges.len() == 2 {
-            if range.tri_count > 0 {
-                all_indices.truncate(range.first_tri * 4);
-            }
             let segs = parametric_grid_segs(face, &scaled_config.face);
+            let we_orient: Vec<_> = info
+                .wire_edges
+                .iter()
+                .map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone()))
+                .collect();
+            let mut upgraded = false;
             if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
                 let uv_bounds = grid_loops
                     .revolution_native_uv_bounds_from_boundary(face, &global_vertices)
                     .or_else(|| {
-                        let (u0, u1, _v0, _v1) = grid_loops.native_uv_bounds()?;
-                        let (rv0, rv1) =
-                            grid_loops.revolution_v_bounds_from_3d(face, &global_vertices)?;
-                        Some((u0, u1, rv0, rv1))
+                        revolution_fallback_uv_bounds(&grid_loops, face, &global_vertices)
                     });
                 if let Some(bounds) = uv_bounds {
                     let native = mesh_revolution_native_grid(
@@ -567,7 +657,32 @@ pub fn mesh_brep_shell_with_report(
                         &mut all_indices,
                     );
                     if native.tri_count > 0 {
+                        if range.tri_count > 0 {
+                            all_indices.truncate(range.first_tri * 4);
+                        }
                         range = native;
+                        upgraded = true;
+                    }
+                }
+                if !upgraded {
+                    let ruled = mesh_ruled_two_wire_edges(
+                        info.face_key,
+                        face,
+                        &we_orient,
+                        &edge_boundary_idx,
+                        &mut global_vertices,
+                        &mut global_normals,
+                        &mut all_indices,
+                        &mut pos_to_idx,
+                        segs,
+                        segs,
+                    );
+                    if ruled.tri_count > 0 {
+                        if range.tri_count > 0 {
+                            all_indices.truncate(range.first_tri * 4);
+                        }
+                        range = ruled;
+                        upgraded = true;
                     }
                 }
             } else if matches!(
@@ -577,7 +692,7 @@ pub fn mesh_brep_shell_with_report(
                 let ruled = mesh_ruled_two_wire_edges(
                     info.face_key,
                     face,
-                    &info.wire_edges,
+                    &we_orient,
                     &edge_boundary_idx,
                     &mut global_vertices,
                     &mut global_normals,
@@ -587,6 +702,9 @@ pub fn mesh_brep_shell_with_report(
                     segs,
                 );
                 if ruled.tri_count > 0 {
+                    if range.tri_count > 0 {
+                        all_indices.truncate(range.first_tri * 4);
+                    }
                     range = ruled;
                 }
             }
@@ -596,7 +714,9 @@ pub fn mesh_brep_shell_with_report(
             && allows_trimmed_uv_grid(reg, face, &grid_loops, &global_vertices)
         {
             let mut uv_bounds = grid_loops
-                .native_uv_bounds()
+                .revolution_native_uv_bounds_from_boundary(face, &global_vertices)
+                .or_else(|| revolution_fallback_uv_bounds(&grid_loops, face, &global_vertices))
+                .or_else(|| grid_loops.native_uv_bounds())
                 .or_else(|| grid_loops.uv_bounds_from_projection(face, &global_vertices));
             if let (Some((u0, u1, v0, v1)), Some((rv0, rv1))) = (
                 uv_bounds,
@@ -609,11 +729,9 @@ pub fn mesh_brep_shell_with_report(
                 }
             }
             if let Some(uv_bounds) = uv_bounds {
-                if range.tri_count > 0 {
-                    all_indices.truncate(range.first_tri * 4);
-                }
-                let tris_before = all_indices.len() / 4;
-                range.first_tri = tris_before;
+                let saved_first = range.first_tri;
+                let saved_count = range.tri_count;
+                let append_start_tri = all_indices.len() / 4;
                 mesh_trimmed_uv_grid(
                     face,
                     &grid_loops,
@@ -624,8 +742,8 @@ pub fn mesh_brep_shell_with_report(
                     &mut pos_to_idx,
                     &mut all_indices,
                 );
-                range.tri_count = all_indices.len() / 4 - tris_before;
-                if range.tri_count == 0 {
+                let mut new_tris = all_indices.len() / 4 - append_start_tri;
+                if new_tris == 0 {
                     let wire_len = reg
                         .wires
                         .get(face.outer_wire)
@@ -641,10 +759,17 @@ pub fn mesh_brep_shell_with_report(
                             &mut pos_to_idx,
                             &mut all_indices,
                         );
-                        range.tri_count = all_indices.len() / 4 - tris_before;
+                        new_tris = all_indices.len() / 4 - append_start_tri;
                     }
                 }
-                if range.tri_count > 0 {
+                if new_tris > 0 {
+                    if saved_count > 0 {
+                        all_indices.drain(saved_first * 4..append_start_tri * 4);
+                        range.first_tri = saved_first;
+                    } else {
+                        range.first_tri = append_start_tri;
+                    }
+                    range.tri_count = all_indices.len() / 4 - range.first_tri;
                     used_parametric_grid = true;
                     report.grid_fallback_count += 1;
                     log::debug!(
@@ -686,9 +811,29 @@ pub fn mesh_brep_shell_with_report(
             }
         }
 
+        if range.tri_count == 0 && boundary_ordered.len() >= 3 {
+            let sf = surface_fill_3d(
+                info.face_key,
+                &boundary_ordered,
+                face,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            if sf.tri_count > 0 {
+                range = sf;
+                range.face_key = info.face_key;
+                used_surface_fill = true;
+                report.grid_fallback_count += 1;
+            }
+        }
+
         report.faces.push(FaceMeshStats {
             face_key: info.face_key,
             tri_count: range.tri_count,
+            first_tri: range.first_tri,
             uv_source: loops.uv_source,
             max_chord_error: range.max_chord_error,
             grid_fallback: used_surface_fill || used_parametric_grid,
@@ -726,6 +871,7 @@ pub fn mesh_brep_shell_with_report(
         report.faces.push(FaceMeshStats {
             face_key,
             tri_count,
+            first_tri: tris_before,
             uv_source: UvSource::SurfaceFill,
             max_chord_error: 0.0,
             grid_fallback: tri_count > 0,
@@ -743,7 +889,9 @@ pub fn mesh_brep_shell_with_report(
                 Some(f) => f,
                 None => continue,
             };
-            let adj_start = ((range.first_tri as isize + tri_offset) * 4) as usize;
+            let adj_start_raw = (range.first_tri as isize + tri_offset) * 4;
+            if adj_start_raw < 0 { tri_offset -= adj_start_raw / 4; continue; }
+            let adj_start = adj_start_raw as usize;
             let adj_end = adj_start + range.tri_count * 4;
             let (local_mesh, local_to_global) = extract_face_mesh_with_map(
                 &global_vertices,
@@ -904,8 +1052,26 @@ fn parametric_grid_segs(face: &super::topo::BRepFace, config: &FaceFillConfig) -
             let circ = 2.0 * std::f32::consts::PI * radius_at_apex.max(1e-6);
             ((circ / defl).ceil() as u32).clamp(8, 128)
         }
-        _ => MESH_CLOSED_SURFACE_SEGS,
+        SurfaceGeom::Revolution { generatrix, .. } => {
+            let max_r = generatrix_max_radius(generatrix);
+            let circ = 2.0 * std::f32::consts::PI * max_r;
+            ((circ / defl).ceil() as u32).clamp(8, 64)
+        }
+        SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. } => 24,
+        _ => 24,
     }
+}
+
+/// Estimate max radius of a revolution generatrix curve.
+fn generatrix_max_radius(curve: &super::geom::CurveGeom) -> f32 {
+    let n = 16;
+    let mut max_r2 = 0.0f32;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let p = curve.d0(t);
+        max_r2 = max_r2.max(p.x * p.x + p.y * p.y);
+    }
+    max_r2.sqrt().max(1.0)
 }
 
 /// Parametric grid over the boundary UV bounding box (no trim test; for 2-edge revolution patches).

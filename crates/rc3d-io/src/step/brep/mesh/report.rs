@@ -12,6 +12,7 @@ use crate::step::brep::topo::{FaceKey, ShellKey};
 pub struct FaceMeshStats {
     pub face_key: FaceKey,
     pub tri_count: usize,
+    pub first_tri: usize,
     pub uv_source: UvSource,
     pub max_chord_error: f32,
     pub grid_fallback: bool,
@@ -104,8 +105,9 @@ pub fn apply_relative_deflection(config: &mut BRepMeshConfig, shell_diag: f32) {
         return;
     }
     let rel = shell_diag * config.relative_deflection;
-    config.edge.deflection = config.edge.deflection.min(rel);
-    config.face.deflection_interior = config.face.deflection_interior.min(rel);
+    config.edge.deflection = rel;
+    config.face.deflection_interior = rel;
+    config.edge.relative_deflection = true;
 }
 
 /// T4 deflection from per-face `max_chord_error` (matches `adapt_tris_to_deflection` guarantee).
@@ -187,20 +189,38 @@ mod tests {
     }
 
     #[test]
-    fn relative_deflection_scales_down_for_small_shell() {
+    fn relative_deflection_scales_with_shell_diag() {
         let (reg, shell_key) = tiny_plane_shell();
         let diag = shell_bbox_diagonal(shell_key, &reg);
         assert!(diag > 0.0 && diag < 2.0, "expected ~sqrt(2), got {diag}");
 
         let mut config = BRepMeshConfig::default();
         config.relative_deflection = 0.01;
-        let base_edge = config.edge.deflection;
         apply_relative_deflection(&mut config, diag);
+        let expected = diag * 0.01;
         assert!(
-            config.edge.deflection <= base_edge,
-            "small shell relative deflection should not increase deflection: {} vs {}",
-            config.edge.deflection,
-            base_edge,
+            (config.edge.deflection - expected).abs() < 1e-6,
+            "edge deflection should equal shell_diag * factor"
+        );
+        assert!(config.edge.relative_deflection);
+    }
+
+    #[test]
+    fn relative_deflection_shell_and_edge_mode() {
+        let (reg_small, sk_small) = tiny_plane_shell();
+        let diag_small = shell_bbox_diagonal(sk_small, &reg_small);
+        let mut cfg_small = BRepMeshConfig::default();
+        cfg_small.relative_deflection = 0.005;
+        apply_relative_deflection(&mut cfg_small, diag_small);
+
+        let mut reg_large = BRepRegistry::new();
+        let mut cfg_large = BRepMeshConfig::default();
+        cfg_large.relative_deflection = 0.005;
+        apply_relative_deflection(&mut cfg_large, diag_small * 10.0);
+
+        assert!(
+            cfg_large.edge.deflection > cfg_small.edge.deflection,
+            "larger shell should yield larger absolute deflection"
         );
     }
 }

@@ -1,7 +1,8 @@
 //! Multi-wire intersection detection and repair (OCC ShapeFix_Face::FixIntersectingWires).
 
+use super::curve_trim::split_edge_at_params;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{FaceKey, WireKey};
+use crate::step::brep::topo::{FaceKey, Orientation, WireKey};
 
 #[derive(Debug, Default)]
 pub struct IntersectingWiresReport {
@@ -56,15 +57,16 @@ pub fn fix_intersecting_wires(
         }
 
         if inside_count < total {
-            // Partially intersecting — trim (simplified: remove if mostly outside)
             if inside_count < total / 2 {
-                log::warn!("[BRep heal] FixIntersectingWires face {:?}: inner wire {:?} partially outside, removing",
-                    face_key, inner_wk);
+                log::warn!(
+                    "[BRep heal] FixIntersectingWires face {:?}: inner wire {:?} partially outside, removing",
+                    face_key, inner_wk
+                );
                 report.inner_wires_removed += 1;
                 continue;
-            } else {
-                log::debug!("[BRep heal] FixIntersectingWires face {:?}: inner wire {:?} mostly inside, keeping",
-                    face_key, inner_wk);
+            }
+            if trim_inner_wire_at_outer(inner_wk, &outer_poly, face_key, reg) {
+                report.inner_wires_trimmed += 1;
             }
         }
 
@@ -85,6 +87,124 @@ pub fn fix_intersecting_wires(
     }
 
     report
+}
+
+/// Read-only detection: inner wires outside/intersecting outer or each other.
+pub fn detect_intersecting_wires(face_key: FaceKey, reg: &BRepRegistry) -> bool {
+    let (outer_wk, inner_wks) = {
+        let Some(face) = reg.faces.get(face_key) else {
+            return false;
+        };
+        if face.inner_wires.is_empty() {
+            return false;
+        }
+        (face.outer_wire, face.inner_wires.clone())
+    };
+
+    let outer_poly = match collect_wire_uv_polygon(outer_wk, face_key, reg) {
+        Some(p) if p.len() >= 3 => p,
+        _ => return false,
+    };
+
+    for &inner_wk in &inner_wks {
+        let inner_poly = match collect_wire_uv_polygon(inner_wk, face_key, reg) {
+            Some(p) if p.len() >= 3 => p,
+            _ => continue,
+        };
+
+        let inside_count = inner_poly
+            .iter()
+            .filter(|&&(u, v)| point_in_polygon_winding(u, v, &outer_poly))
+            .count();
+        if inside_count < inner_poly.len() {
+            return true;
+        }
+    }
+
+    for i in 0..inner_wks.len() {
+        for j in (i + 1)..inner_wks.len() {
+            if wires_intersect_2d(inner_wks[i], inner_wks[j], face_key, reg) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn segment_intersection_2d(
+    a0: (f32, f32),
+    a1: (f32, f32),
+    b0: (f32, f32),
+    b1: (f32, f32),
+) -> Option<(f32, f32)> {
+    let da = (a1.0 - a0.0, a1.1 - a0.1);
+    let db = (b1.0 - b0.0, b1.1 - b0.1);
+    let det = da.0 * db.1 - da.1 * db.0;
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let d0 = (b0.0 - a0.0, b0.1 - a0.1);
+    let t = (d0.0 * db.1 - d0.1 * db.0) / det;
+    let u = (d0.0 * da.1 - d0.1 * da.0) / det;
+    if t > 1e-6 && t < 1.0 - 1e-6 && u > 1e-6 && u < 1.0 - 1e-6 {
+        Some((t, u))
+    } else {
+        None
+    }
+}
+
+/// Split inner wire edges at intersections with the outer boundary polygon.
+fn trim_inner_wire_at_outer(
+    inner_wk: WireKey,
+    outer_poly: &[(f32, f32)],
+    face_key: FaceKey,
+    reg: &mut BRepRegistry,
+) -> bool {
+    let edges: Vec<(crate::step::brep::topo::EdgeKey, Orientation)> = {
+        let Some(wire) = reg.wires.get(inner_wk) else {
+            return false;
+        };
+        wire.edges.clone()
+    };
+    let mut trimmed = false;
+    let mut new_edges = edges.clone();
+    for (i, &(ek, orient)) in edges.iter().enumerate() {
+        let edge = match reg.edges.get(ek) {
+            Some(e) => e,
+            None => continue,
+        };
+        let pc = match edge.pcurves.get(&face_key) {
+            Some(p) => p,
+            None => continue,
+        };
+        let uv0 = pc.d0(0.0);
+        let uv1 = pc.d0(1.0);
+        let a0 = (uv0.x, uv0.y);
+        let a1 = (uv1.x, uv1.y);
+        let mut splits = Vec::new();
+        let n = outer_poly.len();
+        for j in 0..n {
+            let k = (j + 1) % n;
+            if let Some((t, _u)) = segment_intersection_2d(a0, a1, outer_poly[j], outer_poly[k]) {
+                splits.push(t);
+            }
+        }
+        if splits.is_empty() {
+            continue;
+        }
+        let parts = split_edge_at_params(ek, face_key, orient, &splits, reg);
+        if parts.len() > 1 {
+            new_edges.splice(i..i + 1, parts);
+            trimmed = true;
+        }
+    }
+    if trimmed {
+        if let Some(wire) = reg.wires.get_mut(inner_wk) {
+            wire.edges = new_edges;
+        }
+    }
+    trimmed
 }
 
 fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<Vec<(f32, f32)>> {
@@ -259,6 +379,50 @@ mod tests {
         }
         let report = fix_intersecting_wires(fk, &mut reg);
         assert!(report.inner_wires_removed > 0, "inner wire outside outer should be removed");
+    }
+
+    #[test]
+    fn test_detect_intersecting_wires_before_fix() {
+        let mut reg = BRepRegistry::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc2 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
+        let pc3 = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-1.0, 0.0, 0.0) };
+        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 1.0, 0.0), direction: Vec3::new(0.0, -1.0, 0.0) };
+        let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            surface, outer_wire: wk_outer, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4);
+        reg.wires.get_mut(wk_outer).unwrap().edges = vec![
+            (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
+        ];
+        let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
+        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(10.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(11.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
+        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(11.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
+        let wk_inner = reg.wires.insert(BRepWire { edges: vec![
+            (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
+        ]});
+        if let Some(face) = reg.faces.get_mut(fk) {
+            face.inner_wires = vec![wk_inner];
+        }
+        assert!(detect_intersecting_wires(fk, &reg));
     }
 
     #[test]

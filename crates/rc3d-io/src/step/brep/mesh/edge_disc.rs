@@ -54,6 +54,20 @@ pub fn discretize_all_edges(
 }
 
 /// Discretize a single edge: PCurve-on-surface (preferred) + per-face UV params.
+/// Estimate arc length of a curve by sampling.
+fn estimate_curve_length(curve: &super::super::geom::CurveGeom) -> f32 {
+    let n = 64;
+    let mut total = 0.0f32;
+    let mut prev = curve.d0(0.0);
+    for i in 1..=n {
+        let t = i as f32 / n as f32;
+        let p = curve.d0(t);
+        total += (p - prev).length();
+        prev = p;
+    }
+    total
+}
+
 pub fn discretize_edge(
     ek: EdgeKey,
     reg: &BRepRegistry,
@@ -64,9 +78,15 @@ pub fn discretize_edge(
         None => return EdgePolygon { params_3d: vec![], params_2d: HashMap::new() },
     };
 
+    let chord_len = (edge.curve.d0(1.0) - edge.curve.d0(0.0)).length();
+    // For closed curves (circles etc.), chord is zero; use arc length estimate.
+    let curve_len = if chord_len < 1e-10 {
+        estimate_curve_length(&edge.curve).max(1.0)
+    } else {
+        chord_len
+    };
     let effective_deflection = if config.relative_deflection {
-        let len = (edge.curve.d0(1.0) - edge.curve.d0(0.0)).length();
-        len * config.deflection
+        curve_len * config.deflection
     } else {
         config.deflection
     };
@@ -207,14 +227,10 @@ fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> 
 }
 
 fn eval_pcurve_on_surface_d1(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
-    const EPS: f32 = 1e-5;
-    let t0 = (t - EPS).max(0.0);
-    let t1 = (t + EPS).min(1.0);
-    if t1 - t0 < 1e-12 {
-        return Vec3::ZERO;
-    }
-    (eval_pcurve_on_surface(pcurve, surface, t1) - eval_pcurve_on_surface(pcurve, surface, t0))
-        / (t1 - t0)
+    let uv = pcurve.d0(t);
+    let duv = pcurve.d1(t);
+    let (su, sv) = surface.d1_native(uv.x, uv.y);
+    su * duv.x + sv * duv.y
 }
 
 /// Adaptive sampling via PCurve composed with surface evaluator.

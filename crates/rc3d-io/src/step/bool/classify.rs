@@ -2,6 +2,8 @@
 //!
 //! Determines whether a face (or face region) is inside, outside,
 //! or on the boundary of another solid.
+//!
+//! Target solid meshing uses the OCC-aligned B-Rep pipeline (`build_brep` + `mesh_brep_shell`).
 
 use rc3d_core::math::Vec3;
 use super::super::parser::EntityIndex;
@@ -20,6 +22,52 @@ pub struct ClassifiedFace {
     pub class: RegionClass,
 }
 
+fn mesh_target_solids_brep(entities: &EntityIndex) -> super::super::tessellate::MeshResult {
+    use super::super::brep::{build_brep_with_options, BRepBuildOptions};
+    use super::super::brep::mesh::{mesh_brep_shell, BRepMeshConfig};
+    use super::super::import_options::StepImportOptions;
+
+    let mut out = super::super::tessellate::MeshResult::default();
+    let import_opts = StepImportOptions::default();
+    let build_opts = BRepBuildOptions::from_import(&import_opts);
+    let brep = match build_brep_with_options(entities, &build_opts) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let mesh_cfg = BRepMeshConfig::default();
+    for &sk in &brep.root_solids {
+        let shell_key = match brep.registry.solids.get(sk) {
+            Some(s) => s.outer_shell,
+            None => continue,
+        };
+        let part = mesh_brep_shell(shell_key, &brep.registry, &mesh_cfg, &[]);
+        append_brep_mesh(&mut out, &part);
+    }
+    out
+}
+
+fn append_brep_mesh(
+    dst: &mut super::super::tessellate::MeshResult,
+    src: &super::super::mesh_result::MeshResult,
+) {
+    let base = dst.vertices.len() as i32;
+    dst.vertices.extend_from_slice(&src.vertices);
+    if src.normals.len() == src.vertices.len() {
+        dst.normals.extend_from_slice(&src.normals);
+    } else {
+        dst.normals.resize(dst.vertices.len(), rc3d_core::math::Vec3::Z);
+    }
+    for chunk in src.indices.chunks(4) {
+        if chunk.len() < 3 {
+            continue;
+        }
+        dst.indices.push(chunk[0] + base);
+        dst.indices.push(chunk[1] + base);
+        dst.indices.push(chunk[2] + base);
+        dst.indices.push(chunk.get(3).copied().unwrap_or(-1));
+    }
+}
+
 /// Classify each face relative to the target solid using ray casting.
 pub fn classify_faces(
     faces: &[StepFace],
@@ -31,12 +79,13 @@ pub fn classify_faces(
     // For faces without: use edge-loop fallback triangulation.
     let target_faces: Vec<StepFace> = target_shells.iter()
         .flat_map(|s| s.faces.iter().cloned()).collect();
-    let mut target_mesh = super::super::tessellate::tessellate_faces(
-        &target_faces, target_entities,
-    );
+    let legacy_mesh =
+        super::super::tessellate::tessellate_faces(&target_faces, target_entities);
+    let mut target_mesh = mesh_target_solids_brep(target_entities);
+    if target_mesh.indices.len() / 4 < legacy_mesh.indices.len() / 4 {
+        target_mesh = legacy_mesh;
+    }
 
-    // If tessellation produced no vertices (e.g., no surface data),
-    // build mesh directly from edge-loop polygon triangulation
     if target_mesh.vertices.is_empty() && !target_faces.is_empty() {
         target_mesh = build_mesh_from_edge_loops(&target_faces, target_entities);
     }

@@ -11,6 +11,12 @@ pub struct CheckReport {
     pub warnings: Vec<String>,
     /// Faces that failed validation and should not be meshed.
     pub failed_faces: Vec<FaceKey>,
+    pub has_uv_gaps: bool,
+    pub has_pcurve_issues: bool,
+    pub has_self_intersections: bool,
+    pub has_singularities: bool,
+    pub has_inner_wires: bool,
+    pub has_intersecting_wires: bool,
 }
 
 impl CheckReport {
@@ -21,6 +27,13 @@ impl CheckReport {
     pub fn merge(&mut self, other: CheckReport) {
         self.errors.extend(other.errors);
         self.warnings.extend(other.warnings);
+        self.failed_faces.extend(other.failed_faces);
+        self.has_uv_gaps |= other.has_uv_gaps;
+        self.has_pcurve_issues |= other.has_pcurve_issues;
+        self.has_self_intersections |= other.has_self_intersections;
+        self.has_singularities |= other.has_singularities;
+        self.has_inner_wires |= other.has_inner_wires;
+        self.has_intersecting_wires |= other.has_intersecting_wires;
     }
 }
 
@@ -44,7 +57,18 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepRegistry) -> CheckReport {
 
     for &(face_key, _) in &shell.faces {
         let si_warnings = check_uv_self_intersection(face_key, reg);
+        if !si_warnings.is_empty() {
+            report.has_self_intersections = true;
+        }
         report.warnings.extend(si_warnings);
+        if let Some(face) = reg.faces.get(face_key) {
+            if !face.inner_wires.is_empty() {
+                report.has_inner_wires = true;
+                if super::intersecting_wires::detect_intersecting_wires(face_key, reg) {
+                    report.has_intersecting_wires = true;
+                }
+            }
+        }
     }
 
     report
@@ -70,8 +94,14 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
         }
     };
 
-    if wire.edges.is_empty() && face.seam_edges.is_empty() {
-        report.errors.push(format!("face {:?} has zero area (empty wire, no seams)", face_key));
+    if wire.edges.is_empty()
+        && face.seam_edges.is_empty()
+        && face.degenerated_edges.is_empty()
+    {
+        report.errors.push(format!(
+            "face {:?} has zero area (empty wire, no seams, no degenerated edges)",
+            face_key
+        ));
         return;
     }
 
@@ -104,6 +134,7 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
         last_v = Some(v_end);
 
         if edge.pcurves.get(&face_key).is_none() && !face.seam_edges.contains(&ek) {
+            report.has_pcurve_issues = true;
             report.warnings.push(format!(
                 "face {:?} edge {:?} has no PCURVE",
                 face_key, ek
@@ -121,6 +152,7 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
                     face_key, gap
                 ));
             } else {
+                report.has_uv_gaps = true;
                 report.warnings.push(format!(
                     "face {:?} outer wire not closed (gap {:.6} within tol {:.6})",
                     face_key, gap, tol
@@ -154,10 +186,18 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
     }
 
     // Surface singularity detection
-    report.warnings.extend(check_surface_singularities(face_key, reg));
+    let singularity_warnings = check_surface_singularities(face_key, reg);
+    if !singularity_warnings.is_empty() {
+        report.has_singularities = true;
+    }
+    report.warnings.extend(singularity_warnings);
 
     // Parameter range validity
-    report.warnings.extend(check_parameter_range(face_key, reg));
+    let param_warnings = check_parameter_range(face_key, reg);
+    if !param_warnings.is_empty() {
+        report.has_pcurve_issues = true;
+    }
+    report.warnings.extend(param_warnings);
 
     // Wire orientation consistency
     report.warnings.extend(check_wire_orientation(face_key, reg));

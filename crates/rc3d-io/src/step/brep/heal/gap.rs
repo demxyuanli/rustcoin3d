@@ -5,11 +5,12 @@ use super::super::registry::BRepRegistry;
 use rc3d_core::math::Vec3;
 
 /// Close gaps between consecutive wire edges by merging nearby vertices.
-/// Returns number of gaps closed.
+/// When `closed` is false (open wire), the last→first pair is skipped.
 pub fn close_wire_gaps(
     wire_key: WireKey,
     reg: &mut BRepRegistry,
     tolerance: f32,
+    closed: bool,
 ) -> usize {
     let edges = {
         let wire = match reg.wires.get(wire_key) {
@@ -21,17 +22,18 @@ pub fn close_wire_gaps(
 
     if edges.len() <= 1 { return 0; }
 
-    let mut closed = 0;
+    let mut gaps_closed = 0;
     let n = edges.len();
+    let limit = if closed { n } else { n.saturating_sub(1) };
 
-    for i in 0..n {
+    for i in 0..limit {
         let j = (i + 1) % n;
-        let (ek_i, _) = edges[i];
-        let (ek_j, _) = edges[j];
+        let (ek_i, orient_i) = edges[i];
+        let (ek_j, orient_j) = edges[j];
 
         let (end_vk_i, start_vk_j) = match (
-            get_endpoint_vertex(ek_i, reg, false),
-            get_endpoint_vertex(ek_j, reg, true),
+            get_oriented_endpoint(ek_i, orient_i, false, reg),
+            get_oriented_endpoint(ek_j, orient_j, true, reg),
         ) {
             (Some(vi), Some(vj)) => (vi, vj),
             _ => continue,
@@ -49,17 +51,24 @@ pub fn close_wire_gaps(
             if gap > 0.0 && gap < tolerance {
                 // Merge: replace start_vk_j with end_vk_i across all edges
                 merge_vertex_references(reg, end_vk_i, start_vk_j);
-                closed += 1;
+                gaps_closed += 1;
             }
         }
     }
 
-    closed
+    gaps_closed
 }
 
-fn get_endpoint_vertex(ek: EdgeKey, reg: &BRepRegistry, is_start: bool) -> Option<VertexKey> {
+fn get_oriented_endpoint(
+    ek: EdgeKey,
+    orient: Orientation,
+    is_start: bool,
+    reg: &BRepRegistry,
+) -> Option<VertexKey> {
     let edge = reg.edges.get(ek)?;
-    Some(if is_start { edge.v_low } else { edge.v_high })
+    let forward = orient == Orientation::Forward;
+    let at_start = is_start == forward;
+    Some(if at_start { edge.v_low } else { edge.v_high })
 }
 
 /// Replace all references to `replace` vertex with `keep` across all edges,
@@ -98,7 +107,7 @@ pub fn close_wire_gaps_2d(
     }
 
     let n = edges.len();
-    let mut closed = 0usize;
+    let mut gaps_closed = 0usize;
 
     for i in 0..n {
         let j = if i + 1 < n { i + 1 } else { 0 };
@@ -107,8 +116,8 @@ pub fn close_wire_gaps_2d(
 
         // Check 3D connectivity
         let (end_i_3d, start_j_3d) = match (
-            get_oriented_endpoint(ek_i, orient_i, false, reg),
-            get_oriented_endpoint(ek_j, orient_j, true, reg),
+            oriented_endpoint_position(ek_i, orient_i, false, reg),
+            oriented_endpoint_position(ek_j, orient_j, true, reg),
         ) {
             (Some(pe), Some(ps)) => (pe, ps),
             _ => continue,
@@ -130,27 +139,23 @@ pub fn close_wire_gaps_2d(
                     let du = u2 - u1;
                     let dv = v2 - v1;
                     *pc = translate_pcurve_endpoint(pc, du, dv);
-                    closed += 1;
+                    gaps_closed += 1;
                 }
             }
         }
     }
 
-    closed
+    gaps_closed
 }
 
 /// Get the 3D position of an edge's start or end, accounting for orientation.
-fn get_oriented_endpoint(
+fn oriented_endpoint_position(
     ek: EdgeKey,
     orient: Orientation,
     is_start: bool,
     reg: &BRepRegistry,
 ) -> Option<Vec3> {
-    let edge = reg.edges.get(ek)?;
-    let vk = match (orient, is_start) {
-        (Orientation::Forward, true) | (Orientation::Reversed, false) => edge.v_low,
-        _ => edge.v_high,
-    };
+    let vk = get_oriented_endpoint(ek, orient, is_start, reg)?;
     reg.vertices.get(vk).map(|v| v.position)
 }
 
@@ -194,5 +199,102 @@ fn translate_pcurve_endpoint(
             semi_minor: *semi_minor,
         },
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::step::brep::geom::CurveGeom;
+    use crate::step::brep::geom::SurfaceGeom;
+    use crate::step::brep::topo::{BRepFace, BRepVertex, BRepWire};
+    use rc3d_core::math::Vec3;
+
+    #[test]
+    fn test_close_3d_gap_merges_nearby_vertices() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let gap_v = reg.vertices.insert(BRepVertex {
+            position: Vec3::new(1.0, 0.00005, 0.0),
+            tolerance: 1e-6,
+        });
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                u_dir: Vec3::X,
+            },
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = |a, b| CurveGeom::Line {
+            origin: a,
+            direction: b - a,
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::X, Vec3::Y));
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, Orientation::Forward),
+        ];
+        let closed = close_wire_gaps(wk, &mut reg, 1e-3, false);
+        assert!(closed > 0, "expected 3D gap merge, got {closed}");
+    }
+
+    #[test]
+    fn test_close_3d_gap_quad_wire() {
+        let mut reg = BRepRegistry::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let gap_v = reg.vertices.insert(BRepVertex {
+            position: Vec3::new(1.0, 0.00005, 0.0),
+            tolerance: 1e-6,
+        });
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                u_dir: Vec3::X,
+            },
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = |a, b| CurveGeom::Line {
+            origin: a,
+            direction: b - a,
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
+        let e2_orient = if gap_v < v2 {
+            Orientation::Forward
+        } else {
+            Orientation::Reversed
+        };
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
+        reg.wires.get_mut(wk).unwrap().edges = vec![
+            (e1, Orientation::Forward),
+            (e2, e2_orient),
+            (e3, Orientation::Forward),
+            (e5, Orientation::Forward),
+        ];
+        let closed = close_wire_gaps(wk, &mut reg, 1e-3, false);
+        assert!(closed > 0, "quad wire 3D gap merge, got {closed}");
     }
 }

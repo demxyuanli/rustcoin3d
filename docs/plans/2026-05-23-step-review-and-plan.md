@@ -498,3 +498,43 @@ enum TrimSegment {
 
 1. `dimensioned_part.stp`: 带尺寸标注的零件
 2. `toleranced_part.stp`: 带公差标注的零件
+
+---
+
+## 八、OCC 对齐状态（2026-05-27 更新）
+
+**主路径**（`parse_step`）：`build_brep` → `same_parameter_shell` → `auto_heal_shell` → `mesh_brep_shell`（不再依赖 legacy `tessellate_faces` 作为主入口）。
+
+| OCCT 阶段 | 本仓库 | 状态 |
+|-----------|--------|------|
+| `StepToTopoDS_TranslateVertexLoop` | `topology.rs` + `build_vertex_loop_wire` 退化边 | Done |
+| `ShapeFix_Face::FixMissingSeam` | `heal/seam.rs`，seam 进 outer wire | Done |
+| `ShapeFix_Face::FixAddNaturalBound` | `heal/natural_bound.rs` | Done (Plane/Cylinder/Cone) |
+| `ShapeFix_Face::FixReversed2d` | `heal/reversed2d.rs` | Done |
+| `BRepLib::SameParameter` | `brep/same_parameter.rs` + mesh `same_param` | Partial（tolerance 回写 + 网格 snap） |
+| `BRepMesh_MeshAlgoFactory` | `mesh/algo_factory.rs` | Partial（Plane/Sphere/Cylinder 走 TrimmedCdt） |
+| `BRepMesh` DeflectionInterior | `face_fill` + `parametric_grid_segs` | Partial（已移除 MIN_ADEQUATE 盲 grid） |
+| Legacy `tessellate.rs` | 标记 deprecated；bool `classify` 改用 B-Rep mesh | Done |
+
+**仍为非 OCC 的遗留回退**：`mesh_parametric_grid` 仅在 CDT/surface_fill 完全失败且 UV 域有效时作裁剪网格；`heal_skipped_faces` 仍可能走 grid；`mesh_closed_surface` 用于空 wire 闭合面。
+
+**过时描述**：下文“无 PCURVE / 固定 UV 网格 / tessellate 主路径”等条目以本节与代码为准。
+
+---
+
+## 九、Gap Closure（2026-05-27）
+
+| 任务 | 状态 |
+|------|------|
+| P0-1 void 壳体接入 `build_brep` | Done |
+| P0-2 `allow_geometry_fallback` Strict 语义 | Done |
+| P0-3 `skipped_faces/edges` 统计 | Done |
+| P0-4 `has_intersecting_wires` 检测 | Done |
+| P0-5 pipeline 启用 vertex/split 修复 | Done |
+| P0-6 闭合曲面 mesh 类型扩展 | Done |
+| P1 continuity/properties import 接线 | Done |
+| P1 relative deflection via `StepImportOptions` | Done |
+| P1 Hyperbola/Parabola build 曲线 | Done |
+| P1 Unknown 实体统计 | Done |
+| P1 XML STEP 路由 | Done |
+| P2 AP 模式 / void mesh 布尔减 / PMI | Backlog |

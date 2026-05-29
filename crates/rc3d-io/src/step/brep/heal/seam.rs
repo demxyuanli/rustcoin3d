@@ -23,18 +23,10 @@ pub fn fix_missing_seams(reg: &mut BRepRegistry, face_key: FaceKey) -> usize {
 
     let mut added = 0usize;
 
-    // Idempotency: if seams were already fixed, skip.
-    if !reg
-        .faces
-        .get(face_key)
-        .map(|f| f.seam_edges.is_empty())
-        .unwrap_or(true)
-    {
-        return 0;
-    }
-
-    if wire_empty {
-        added += add_vertex_loop_seams(reg, face_key, &surface, tolerance);
+    if wire_needs_vertex_loop_seam(reg, face_key) {
+        if !wire_has_parametric_seam(reg, face_key) {
+            added += add_vertex_loop_seams(reg, face_key, &surface, tolerance);
+        }
     } else {
         added += fix_trimmed_periodic_seam(reg, face_key, &surface, tolerance);
     }
@@ -71,16 +63,66 @@ fn add_vertex_loop_seams(
         _ => {}
     }
 
-    // VERTEX_LOOP faces keep empty wires — mesh_closed_surface handles the
-    // full parametric surface via analytic UV grid. Only trimmed periodic faces
-    // get seam edges inserted into wires (see fix_trimmed_periodic_seam below).
     let count = added.len();
     if count > 0 {
         if let Some(face) = reg.faces.get_mut(face_key) {
             face.seam_edges.extend(added.iter().copied());
+            let wire_key = face.outer_wire;
+            if let Some(w) = reg.wires.get_mut(wire_key) {
+                for &ek in &added {
+                    if !w.edges.iter().any(|(e, _)| *e == ek) {
+                        w.edges.push((ek, Orientation::Forward));
+                    }
+                }
+            }
         }
     }
     count
+}
+
+/// Empty wire, degenerate-only wire, or degenerate + already-inserted seam (OCCT VERTEX_LOOP path).
+fn wire_needs_vertex_loop_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return false,
+    };
+    let wire = match reg.wires.get(face.outer_wire) {
+        Some(w) => w,
+        None => return false,
+    };
+    if wire.edges.is_empty() {
+        return true;
+    }
+    wire.edges.iter().all(|&(ek, _)| {
+        let Some(e) = reg.edges.get(ek) else {
+            return false;
+        };
+        e.v_low == e.v_high || face.seam_edges.contains(&ek)
+    })
+}
+
+fn wire_has_parametric_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return false,
+    };
+    let wire = match reg.wires.get(face.outer_wire) {
+        Some(w) => w,
+        None => return false,
+    };
+    wire.edges.iter().any(|&(ek, _)| {
+        if face.seam_edges.contains(&ek) {
+            return reg
+                .edges
+                .get(ek)
+                .map(|e| e.v_low != e.v_high)
+                .unwrap_or(false);
+        }
+        reg.edges
+            .get(ek)
+            .map(|e| e.v_low != e.v_high)
+            .unwrap_or(false)
+    })
 }
 
 /// Insert u=period seam when a trimmed periodic face wire does not touch the seam.

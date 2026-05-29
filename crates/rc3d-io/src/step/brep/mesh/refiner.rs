@@ -197,8 +197,11 @@ pub fn extract_face_mesh_with_map(
     range_start: usize,
     range_end: usize,
 ) -> (MeshResult, HashMap<usize, usize>) {
+    if range_start >= range_end || range_start >= all_indices.len() {
+        return (MeshResult::default(), HashMap::new());
+    }
     let start = range_start;
-    let end = range_end;
+    let end = range_end.min(all_indices.len());
     let mut vertices = Vec::new();
     let mut normals = Vec::new();
     let mut local_to_global: HashMap<usize, usize> = HashMap::new();

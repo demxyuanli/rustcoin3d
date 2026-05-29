@@ -5,11 +5,16 @@ use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
 
+use super::edge_disc::EdgePolygon;
 use super::face_cdt::triangulate_uv_cdt_with_steiner;
-use super::face_uv::{split_boundary_chains_at_3d_jumps, FaceUvLoops, loops_native_surface_uv};
-use crate::step::brep::geom::SurfaceGeom;
+use super::face_uv::{
+    ensure_loop_orientation, rebuild_loop_uv_local_frame, revolution_u_span_collapsed,
+    split_boundary_chains_at_3d_jumps, unwrap_periodic_uv_loops, FaceUvLoops,
+    loops_native_surface_uv,
+};
+use crate::step::brep::geom::{plane_tangent_basis, SurfaceGeom};
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{BRepFace, FaceKey};
+use crate::step::brep::topo::{BRepFace, EdgeKey, FaceKey};
 
 #[derive(Debug, Clone)]
 pub struct FaceFillConfig {
@@ -42,6 +47,7 @@ impl Default for FaceFillConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct FaceMeshRange {
     pub face_key: FaceKey,
     pub first_tri: usize,
@@ -297,6 +303,27 @@ fn triangulate_loops_cdt(
     (tris, max_chord_error)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn try_cdt_or_earcut(
+    work_loops: &FaceUvLoops,
+    face: &BRepFace,
+    reg: &BRepRegistry,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    fill_cfg: &FaceFillConfig,
+) -> (Vec<(i32, i32, i32)>, f32) {
+    triangulate_loops_cdt(
+        work_loops,
+        face,
+        reg,
+        global_vertices,
+        global_normals,
+        pos_to_idx,
+        fill_cfg,
+    )
+}
+
 fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
     let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
@@ -372,7 +399,7 @@ fn emit_filtered_triangles(
         {
             continue;
         }
-        fix_winding(
+        fix_tri_winding(
             &mut i0,
             &mut i1,
             &mut i2,
@@ -393,7 +420,7 @@ fn emit_filtered_triangles(
             if tri_max_edge_len(i0, i1, i2, global_vertices) > max_edge * 1.25 {
                 continue;
             }
-            fix_winding(
+            fix_tri_winding(
                 &mut i0,
                 &mut i1,
                 &mut i2,
@@ -470,6 +497,809 @@ fn fan_triangulate_outer(loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
 
 /// CDT-first triangulation with Steiner refinement, earcut as ultimate fallback.
 #[allow(clippy::too_many_arguments)]
+fn polyline_surface_uv(surface: &SurfaceGeom, indices: &[usize], verts: &[Vec3]) -> Vec<(f32, f32)> {
+    let tol = 1e-3;
+    indices
+        .iter()
+        .filter_map(|&gi| verts.get(gi))
+        .filter_map(|pt| {
+            if matches!(surface, SurfaceGeom::Revolution { .. }) {
+                surface.revolution_native_uv_at(*pt)
+            } else {
+                surface
+                    .project(*pt)
+                    .or_else(|| surface.inverse_native_uv(*pt, tol))
+            }
+        })
+        .collect()
+}
+
+/// Interpolate native U at a fixed revolution angle V along one wire's projected samples.
+fn u_at_v_on_wire(samples: &[(f32, f32)], v: f32) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    if samples.len() == 1 {
+        return samples[0].0;
+    }
+    let mut sorted: Vec<(f32, f32)> = samples.to_vec();
+    sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    if v <= sorted[0].1 {
+        return sorted[0].0;
+    }
+    if v >= sorted[sorted.len() - 1].1 {
+        return sorted[sorted.len() - 1].0;
+    }
+    for w in sorted.windows(2) {
+        let (u0, v0) = w[0];
+        let (u1, v1) = w[1];
+        if v >= v0 && v <= v1 {
+            let t = if (v1 - v0).abs() > 1e-12 {
+                (v - v0) / (v1 - v0)
+            } else {
+                0.0
+            };
+            return u0 * (1.0 - t) + u1 * t;
+        }
+    }
+    sorted[0].0
+}
+
+/// Interpolate native V at a fixed generatrix U along one wire's projected samples.
+fn v_at_u_on_wire(samples: &[(f32, f32)], u: f32) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    if samples.len() == 1 {
+        return samples[0].1;
+    }
+    let mut sorted: Vec<(f32, f32)> = samples.to_vec();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if u <= sorted[0].0 {
+        return sorted[0].1;
+    }
+    if u >= sorted[sorted.len() - 1].0 {
+        return sorted[sorted.len() - 1].1;
+    }
+    for w in sorted.windows(2) {
+        let (u0, v0) = w[0];
+        let (u1, v1) = w[1];
+        if u >= u0 && u <= u1 {
+            let t = if (u1 - u0).abs() > 1e-12 {
+                (u - u0) / (u1 - u0)
+            } else {
+                0.0
+            };
+            return v0 * (1.0 - t) + v1 * t;
+        }
+    }
+    sorted[0].1
+}
+
+fn revolution_ruled_grid(
+    face: &BRepFace,
+    curves: [&[usize]; 2],
+    global_vertices: &[Vec3],
+    nu: usize,
+    nv: usize,
+) -> Option<Vec<Vec<(Vec3, Vec3)>>> {
+    let uv0 = polyline_surface_uv(&face.surface, curves[0], global_vertices);
+    let uv1 = polyline_surface_uv(&face.surface, curves[1], global_vertices);
+    if uv0.len() < 2 || uv1.len() < 2 {
+        return None;
+    }
+    let u_min = uv0
+        .iter()
+        .chain(uv1.iter())
+        .map(|p| p.0)
+        .fold(f32::INFINITY, f32::min);
+    let u_max = uv0
+        .iter()
+        .chain(uv1.iter())
+        .map(|p| p.0)
+        .fold(f32::MIN, f32::max);
+    let v_min = uv0
+        .iter()
+        .chain(uv1.iter())
+        .map(|p| p.1)
+        .fold(f32::INFINITY, f32::min);
+    let v_max = uv0
+        .iter()
+        .chain(uv1.iter())
+        .map(|p| p.1)
+        .fold(f32::MIN, f32::max);
+    let du = u_max - u_min;
+    let dv = v_max - v_min;
+    let mut grid = vec![vec![(Vec3::ZERO, Vec3::Y); nv + 1]; nu + 1];
+    // Same azimuth on both wires (or UV collapsed): 3D strip + project, not native UV tensor.
+    if dv < 1e-4 || du < 1e-6 {
+        for i in 0..=nu {
+            let t = i as f32 / nu as f32;
+            let p0 = sample_polyline(curves[0], global_vertices, t);
+            let p1 = sample_polyline(curves[1], global_vertices, t);
+            for j in 0..=nv {
+                let s = j as f32 / nv as f32;
+                let pm = p0 * (1.0 - s) + p1 * s;
+                let pt = pm;
+                let mut n = face
+                    .surface
+                    .revolution_native_uv_at(pm)
+                    .map(|(u, v)| face.surface.normal_native(u, v))
+                    .unwrap_or(Vec3::Y);
+                if n.length_squared() < 1e-12 {
+                    n = Vec3::Y;
+                }
+                if !face.same_sense {
+                    n = -n;
+                }
+                grid[i][j] = (pt, n);
+            }
+        }
+        return Some(grid);
+    }
+    if dv > du * 1.5 {
+        // Two circular wires: sweep U between wires at each native V.
+        for j in 0..=nv {
+            let v = v_min + dv * j as f32 / nv as f32;
+            let u0 = u_at_v_on_wire(&uv0, v);
+            let u1 = u_at_v_on_wire(&uv1, v);
+            for i in 0..=nu {
+                let t = i as f32 / nu as f32;
+                let u = u0 * (1.0 - t) + u1 * t;
+                let pt = face.surface.d0_native(u, v);
+                let mut n = face.surface.normal_native(u, v);
+                if !face.same_sense {
+                    n = -n;
+                }
+                grid[i][j] = (pt, n);
+            }
+        }
+    } else {
+        // Two profile wires: sweep V between wires at each native U.
+        for i in 0..=nu {
+            let u = u_min + du * i as f32 / nu as f32;
+            let v0 = v_at_u_on_wire(&uv0, u);
+            let v1 = v_at_u_on_wire(&uv1, u);
+            for j in 0..=nv {
+                let s = j as f32 / nv as f32;
+                let v = v0 * (1.0 - s) + v1 * s;
+                let pt = face.surface.d0_native(u, v);
+                let mut n = face.surface.normal_native(u, v);
+                if !face.same_sense {
+                    n = -n;
+                }
+                grid[i][j] = (pt, n);
+            }
+        }
+    }
+    Some(grid)
+}
+
+fn resample_uv_polyline(uvs: &[(f32, f32)], samples: usize) -> Vec<(f32, f32)> {
+    if uvs.is_empty() || samples == 0 {
+        return Vec::new();
+    }
+    if uvs.len() == 1 {
+        return vec![uvs[0]; samples + 1];
+    }
+    let mut out = Vec::with_capacity(samples + 1);
+    for i in 0..=samples {
+        let t = i as f32 / samples as f32;
+        let f = t * (uvs.len() - 1) as f32;
+        let k = f.floor() as usize;
+        let j = (k + 1).min(uvs.len() - 1);
+        let u = f - k as f32;
+        let (a, b) = (uvs[k], uvs[j]);
+        out.push((a.0 * (1.0 - u) + b.0 * u, a.1 * (1.0 - u) + b.1 * u));
+    }
+    out
+}
+
+/// Ruled quad strip in surface (u,v): OCC-style ruled patch, not 3D linear blend.
+pub fn mesh_ruled_two_wire_edges(
+    face_key: FaceKey,
+    face: &BRepFace,
+    wire_edges: &[(EdgeKey, crate::step::brep::topo::Orientation, Vec<usize>)],
+    edge_boundary_idx: &std::collections::HashMap<(EdgeKey, usize), usize>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    segs_u: u32,
+    segs_v: u32,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    let mut boundary_global = HashSet::new();
+    if wire_edges.len() != 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global,
+            max_chord_error: 0.0,
+        };
+    }
+
+    let mut curves: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for (side, &(ek, _orient, ref pis)) in wire_edges.iter().enumerate() {
+        for &pi in pis {
+            if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
+                if curves[side].last() != Some(&gi) {
+                    curves[side].push(gi);
+                }
+                boundary_global.insert(gi);
+            }
+        }
+    }
+    if curves[0].len() < 2 || curves[1].len() < 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global,
+            max_chord_error: 0.0,
+        };
+    }
+
+    let nu = segs_u.max(2) as usize;
+    let nv = segs_v.max(2) as usize;
+
+    let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
+    let rev_grid = if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+        revolution_ruled_grid(face, [&curves[0], &curves[1]], global_vertices, nu, nv)
+    } else {
+        None
+    };
+
+    if let Some(ref rg) = rev_grid {
+        for (i, row) in rg.iter().enumerate() {
+            for (j, &(pt, n)) in row.iter().enumerate() {
+                let idx = global_vertices.len();
+                global_vertices.push(pt);
+                global_normals.push(n);
+                grid[i][j] = idx;
+            }
+        }
+    } else {
+        let uv0 = polyline_surface_uv(&face.surface, &curves[0], global_vertices);
+        let uv1 = polyline_surface_uv(&face.surface, &curves[1], global_vertices);
+        let use_native_uv = uv0.len() >= 2 && uv1.len() >= 2;
+        let resampled = if use_native_uv {
+            Some((
+                resample_uv_polyline(&uv0, nu),
+                resample_uv_polyline(&uv1, nu),
+            ))
+        } else {
+            None
+        };
+        for i in 0..=nu {
+            for j in 0..=nv {
+                let s = j as f32 / nv as f32;
+                let (pt, n) = if let Some((ref r0, ref r1)) = resampled {
+                    let (u0, v0) = r0[i];
+                    let (u1, v1) = r1[i];
+                    let u = u0 * (1.0 - s) + u1 * s;
+                    let v = v0 * (1.0 - s) + v1 * s;
+                    let pt = face.surface.d0_native(u, v);
+                    let mut n = face.surface.normal_native(u, v);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    (pt, n)
+                } else {
+                    let t = i as f32 / nu as f32;
+                    let p0 = sample_polyline(&curves[0], global_vertices, t);
+                    let p1 = sample_polyline(&curves[1], global_vertices, t);
+                    let pt = p0 * (1.0 - s) + p1 * s;
+                    (pt, Vec3::Z)
+                };
+                let gi = if use_native_uv {
+                    let idx = global_vertices.len();
+                    global_vertices.push(pt);
+                    global_normals.push(n);
+                    idx
+                } else {
+                    let hash = rc3d_core::utils::hash::f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                    *pos_to_idx.entry(hash).or_insert_with(|| {
+                        let idx = global_vertices.len();
+                        global_vertices.push(pt);
+                        global_normals.push(n);
+                        idx
+                    })
+                };
+                grid[i][j] = gi;
+            }
+        }
+    }
+
+    for i in 0..nu {
+        for j in 0..nv {
+            let i00 = grid[i][j] as i32;
+            let i10 = grid[i + 1][j] as i32;
+            let i11 = grid[i + 1][j + 1] as i32;
+            let i01 = grid[i][j + 1] as i32;
+            for (mut a, mut b, mut c) in [(i00, i10, i11), (i00, i11, i01)] {
+                if a == b || b == c || c == a {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[a, b, c, -1]);
+                accumulate_normals(a, b, c, global_vertices, global_normals);
+            }
+        }
+    }
+
+    let tri_count = all_indices.len() / 4 - first_tri;
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count,
+        boundary_global,
+        max_chord_error: 0.0,
+    }
+}
+
+/// Ruled strip using raw edge polygon 3D samples (avoids boundary pool dedup collapsing wires).
+pub fn mesh_ruled_wire_polygons_3d(
+    face_key: FaceKey,
+    face: &BRepFace,
+    wire_edges: &[(EdgeKey, crate::step::brep::topo::Orientation, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    segs_u: u32,
+    segs_v: u32,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    if wire_edges.len() != 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    for (side, &(ek, _orient, ref pis)) in wire_edges.iter().enumerate() {
+        let Some(poly) = edge_polygons.get(&ek) else {
+            return FaceMeshRange {
+                face_key,
+                first_tri,
+                tri_count: 0,
+                boundary_global: HashSet::new(),
+                max_chord_error: 0.0,
+            };
+        };
+        for &pi in pis {
+            let Some(&(_, pt)) = poly.params_3d.get(pi) else {
+                continue;
+            };
+            if curves[side]
+                .last()
+                .map(|p| (*p - pt).length_squared() > 1e-14)
+                .unwrap_or(true)
+            {
+                curves[side].push(pt);
+            }
+        }
+    }
+    if curves[0].len() < 2 || curves[1].len() < 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let sample_curve = |c: &[Vec3], t: f32| -> Vec3 {
+        if c.len() == 1 {
+            return c[0];
+        }
+        let f = t * (c.len() - 1) as f32;
+        let i = f.floor() as usize;
+        let j = (i + 1).min(c.len() - 1);
+        let u = f - i as f32;
+        c[i].lerp(c[j], u)
+    };
+    // If the two curves are nearly coincident, the ruled strip has zero width -> all degenerate.
+    let n_samples = curves[0].len().max(curves[1].len()).max(2);
+    let max_separation = (0..n_samples)
+        .map(|i| {
+            let t = i as f32 / (n_samples - 1) as f32;
+            let a = sample_curve(&curves[0], t);
+            let b = sample_curve(&curves[1], t);
+            (a - b).length_squared()
+        })
+        .fold(0.0f32, f32::max);
+    if max_separation < 1e-6 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let nu = segs_u.max(2) as usize;
+    let nv = segs_v.max(2) as usize;
+    let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
+    for i in 0..=nu {
+        let t = i as f32 / nu as f32;
+        let p0 = sample_curve(&curves[0], t);
+        let p1 = sample_curve(&curves[1], t);
+        for j in 0..=nv {
+            let s = j as f32 / nv as f32;
+            let pt = p0 * (1.0 - s) + p1 * s;
+            let mut n = match &face.surface {
+                SurfaceGeom::Revolution { .. } => face
+                    .surface
+                    .revolution_native_uv_at(pt)
+                    .map(|(u, v)| face.surface.normal_native(u, v))
+                    .unwrap_or_else(|| {
+                        let e0 = p1 - p0;
+                        let e1 = pt - p0;
+                        e0.cross(e1)
+                    }),
+                _ => {
+                    let e0 = p1 - p0;
+                    let e1 = pt - p0;
+                    e0.cross(e1)
+                }
+            };
+            if n.length_squared() < 1e-12 {
+                n = Vec3::Y;
+            } else {
+                n = n.normalize();
+            }
+            if !face.same_sense {
+                n = -n;
+            }
+            let idx = global_vertices.len();
+            global_vertices.push(pt);
+            if global_normals.len() < global_vertices.len() {
+                global_normals.resize(global_vertices.len(), n);
+            }
+            global_normals[idx] = n;
+            grid[i][j] = idx;
+        }
+    }
+    for i in 0..nu {
+        for j in 0..nv {
+            let i00 = grid[i][j] as i32;
+            let i10 = grid[i + 1][j] as i32;
+            let i11 = grid[i + 1][j + 1] as i32;
+            let i01 = grid[i][j + 1] as i32;
+            for (mut a, mut b, mut c) in [(i00, i10, i11), (i00, i11, i01)] {
+                if a == b || b == c || c == a {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[a, b, c, -1]);
+                accumulate_normals(a, b, c, global_vertices, global_normals);
+            }
+        }
+    }
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count: all_indices.len() / 4 - first_tri,
+        boundary_global: HashSet::new(),
+        max_chord_error: 0.0,
+    }
+}
+
+/// Plane cap fan from wire edge polygon samples (distinct 3D ring).
+pub fn mesh_plane_fan_wire_polygons(
+    face_key: FaceKey,
+    face: &BRepFace,
+    wire_edges: &[(EdgeKey, crate::step::brep::topo::Orientation, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+) -> FaceMeshRange {
+    let SurfaceGeom::Plane { normal, u_dir, .. } = &face.surface else {
+        return FaceMeshRange {
+            face_key,
+            first_tri: all_indices.len() / 4,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    };
+    let first_tri = all_indices.len() / 4;
+    let n = normal.normalize();
+    let mut ring: Vec<Vec3> = Vec::new();
+    for &(ek, _orient, ref pis) in wire_edges {
+        let Some(poly) = edge_polygons.get(&ek) else {
+            continue;
+        };
+        for &pi in pis {
+            let Some(&(_, pt)) = poly.params_3d.get(pi) else {
+                continue;
+            };
+            if ring
+                .last()
+                .map(|p| (*p - pt).length_squared() > 1e-12)
+                .unwrap_or(true)
+            {
+                ring.push(pt);
+            }
+        }
+    }
+    if ring.len() >= 2 && (ring[0] - ring[ring.len() - 1]).length_squared() < 1e-12 {
+        ring.pop();
+    }
+    if ring.len() < 3 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let mut center = Vec3::ZERO;
+    for p in &ring {
+        center += *p;
+    }
+    center /= ring.len() as f32;
+    let (u_axis, v_axis) = plane_tangent_basis(n, *u_dir);
+    let mut order: Vec<usize> = (0..ring.len()).collect();
+    order.sort_by(|&a, &b| {
+        let da = ring[a] - center;
+        let db = ring[b] - center;
+        let aa = f32::atan2(da.dot(v_axis), da.dot(u_axis));
+        let ab = f32::atan2(db.dot(v_axis), db.dot(u_axis));
+        aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut idx_ring: Vec<usize> = Vec::new();
+    for &i in &order {
+        let pt = ring[i];
+        let gi = global_vertices.len();
+        global_vertices.push(pt);
+        idx_ring.push(gi);
+    }
+    let center_idx = global_vertices.len();
+    global_vertices.push(center);
+    let mut normal_vec = n;
+    if idx_ring.len() >= 2 {
+        let e0 = global_vertices[idx_ring[0]] - center;
+        let e1 = global_vertices[idx_ring[1]] - center;
+        if e0.cross(e1).dot(n) < 0.0 {
+            normal_vec = -n;
+        }
+    }
+    if global_normals.len() < global_vertices.len() {
+        global_normals.resize(global_vertices.len(), normal_vec);
+    }
+    global_normals[center_idx] = normal_vec;
+    for i in 0..idx_ring.len() {
+        let i0 = idx_ring[i];
+        let i1 = idx_ring[(i + 1) % idx_ring.len()];
+        if face.same_sense {
+            all_indices.extend_from_slice(&[center_idx as i32, i0 as i32, i1 as i32, -1]);
+        } else {
+            all_indices.extend_from_slice(&[center_idx as i32, i1 as i32, i0 as i32, -1]);
+        }
+    }
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count: all_indices.len() / 4 - first_tri,
+        boundary_global: idx_ring.iter().copied().collect(),
+        max_chord_error: 0.0,
+    }
+}
+
+/// Fill a revolution face in native (u,v) on the analytic surface (vertices stay on-surface).
+/// Prefer `mesh_trimmed_uv_grid` + CDT; kept for tests and future closed patches.
+#[allow(clippy::too_many_arguments)]
+pub fn mesh_revolution_native_grid(
+    face_key: FaceKey,
+    face: &BRepFace,
+    uv_bounds: (f32, f32, f32, f32),
+    segs_u: u32,
+    segs_v: u32,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    let (u_min, u_max, v_min, v_max) = uv_bounds;
+    if (u_max - u_min).abs() < 1e-6 || (v_max - v_min).abs() < 1e-5 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    // Avoid ring-only mesh when native U is degenerate but V spans (use ruled path instead).
+    if (u_max - u_min).abs() < 1e-4 && (v_max - v_min).abs() > 1e-3 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let nu = segs_u.max(2) as usize;
+    let nv = segs_v.max(2) as usize;
+    let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
+
+    for i in 0..=nu {
+        let u = u_min + (u_max - u_min) * i as f32 / nu as f32;
+        for j in 0..=nv {
+            let v = v_min + (v_max - v_min) * j as f32 / nv as f32;
+            let pt = face.surface.d0_native(u, v);
+            let mut n = face.surface.normal_native(u, v);
+            if !face.same_sense {
+                n = -n;
+            }
+            let gi = global_vertices.len();
+            global_vertices.push(pt);
+            global_normals.push(n);
+            grid[i][j] = gi;
+        }
+    }
+
+    for i in 0..nu {
+        for j in 0..nv {
+            let i00 = grid[i][j] as i32;
+            let i10 = grid[i + 1][j] as i32;
+            let i11 = grid[i + 1][j + 1] as i32;
+            let i01 = grid[i][j + 1] as i32;
+            for (mut a, mut b, mut c) in [(i00, i10, i11), (i00, i11, i01)] {
+                if a == b || b == c || c == a {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[a, b, c, -1]);
+                accumulate_normals(a, b, c, global_vertices, global_normals);
+            }
+        }
+    }
+
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count: all_indices.len() / 4 - first_tri,
+        boundary_global: HashSet::new(),
+        max_chord_error: 0.0,
+    }
+}
+
+fn sample_polyline(indices: &[usize], verts: &[Vec3], t: f32) -> Vec3 {
+    if indices.is_empty() {
+        return Vec3::ZERO;
+    }
+    if indices.len() == 1 {
+        return verts[indices[0]];
+    }
+    let f = t * (indices.len() - 1) as f32;
+    let i = f.floor() as usize;
+    let j = (i + 1).min(indices.len() - 1);
+    let u = f - i as f32;
+    verts[indices[i]].lerp(verts[indices[j]], u)
+}
+
+/// Fan triangulation in 3D when plane UV trim loops collapse (duplicate/coincident UV).
+pub fn mesh_plane_fan_3d(
+    face_key: FaceKey,
+    boundary_ordered: &[usize],
+    face: &BRepFace,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+) -> FaceMeshRange {
+    let SurfaceGeom::Plane { normal, u_dir, .. } = &face.surface else {
+        return FaceMeshRange {
+            face_key,
+            first_tri: all_indices.len() / 4,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    };
+    let first_tri = all_indices.len() / 4;
+    let n = normal.normalize();
+    let mut ring: Vec<usize> = Vec::new();
+    let tol_sq = 1e-10f32;
+    for &gi in boundary_ordered {
+        if ring.last() == Some(&gi) {
+            continue;
+        }
+        if let Some(&last) = ring.last() {
+            if let (Some(a), Some(b)) = (global_vertices.get(last), global_vertices.get(gi)) {
+                if (*a - *b).length_squared() < tol_sq {
+                    continue;
+                }
+            }
+        }
+        ring.push(gi);
+    }
+    if ring.len() >= 2 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    if ring.len() < 3 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let mut center = Vec3::ZERO;
+    for &gi in &ring {
+        if let Some(p) = global_vertices.get(gi) {
+            center += *p;
+        }
+    }
+    center /= ring.len() as f32;
+    let center_idx = global_vertices.len();
+    global_vertices.push(center);
+    let (_, v_axis) = crate::step::brep::geom::plane_tangent_basis(n, *u_dir);
+    let mut normal_vec = n;
+    if v_axis.length_squared() > 1e-12 {
+        let e0 = global_vertices[ring[0]] - center;
+        let e1 = global_vertices[ring[1]] - center;
+        let cross = e0.cross(e1);
+        if cross.dot(n) < 0.0 {
+            normal_vec = -n;
+        }
+    }
+    if global_normals.len() < global_vertices.len() {
+        global_normals.resize(global_vertices.len(), normal_vec);
+    } else {
+        global_normals[center_idx] = normal_vec;
+    }
+    let same_sense = face.same_sense;
+    for i in 0..ring.len() {
+        let i0 = ring[i];
+        let i1 = ring[(i + 1) % ring.len()];
+        if same_sense {
+            all_indices.extend_from_slice(&[center_idx as i32, i0 as i32, i1 as i32, -1]);
+        } else {
+            all_indices.extend_from_slice(&[center_idx as i32, i1 as i32, i0 as i32, -1]);
+        }
+    }
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count: all_indices.len() / 4 - first_tri,
+        boundary_global: ring.iter().copied().collect(),
+        max_chord_error: 0.0,
+    }
+}
+
 pub fn fill_trimmed(
     face_key: FaceKey,
     loops: &FaceUvLoops,
@@ -493,38 +1323,61 @@ pub fn fill_trimmed(
     }
 
     let is_plane = matches!(face.surface, SurfaceGeom::Plane { .. });
-    let work_loops = if is_plane {
+    let is_revolution = matches!(face.surface, SurfaceGeom::Revolution { .. });
+    let prefer_closed_cdt = matches!(
+        &face.surface,
+        SurfaceGeom::Revolution { .. }
+            | SurfaceGeom::BSpline(_)
+            | SurfaceGeom::Offset { .. }
+            | SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Cone { .. }
+    );
+    let revolution_uv_ok = is_revolution
+        && loops
+            .native_uv_bounds()
+            .map(|(u0, u1, _, _)| !revolution_u_span_collapsed(u1 - u0))
+            .unwrap_or(false);
+    let mut work_loops = if is_plane {
+        loops.clone()
+    } else if revolution_uv_ok {
         loops.clone()
     } else {
         loops_native_surface_uv(loops, face, global_vertices)
     };
 
-    let mut tris: Vec<(i32, i32, i32)> = Vec::new();
-    let mut max_chord_error = 0.0f32;
-
-    let fill_cfg = if is_plane {
-        config.clone()
-    } else {
-        FaceFillConfig {
-            enable_interior: false,
-            max_adapt_iterations: 0,
-            ..config.clone()
+    if is_plane && !work_loops.is_valid() {
+        rebuild_loop_uv_local_frame(
+            &mut work_loops.outer,
+            global_vertices,
+            Some(&face.surface),
+        );
+        for inner in &mut work_loops.inners {
+            rebuild_loop_uv_local_frame(inner, global_vertices, Some(&face.surface));
         }
-    };
+        ensure_loop_orientation(&mut work_loops.outer.boundary, false);
+        for inner in &mut work_loops.inners {
+            ensure_loop_orientation(&mut inner.boundary, true);
+        }
+    }
+
+    let fill_cfg = config.clone();
 
     let (chains, long_count) = split_boundary_chains_at_3d_jumps(
         &work_loops.outer.boundary,
         global_vertices,
         8.0,
     );
-    let use_segmentation = !is_plane && chains.len() >= 2 && long_count >= 2;
+    let use_segmentation =
+        !is_plane && !prefer_closed_cdt && chains.len() >= 2 && long_count >= 2;
 
-    if use_segmentation {
+    let (mut tris, mut max_chord_error) = if use_segmentation {
+        let mut seg_tris = Vec::new();
         for chain in &chains {
-            tris.extend(triangulate_open_chain_uv(chain, global_vertices));
+            seg_tris.extend(triangulate_open_chain_uv(chain, global_vertices));
         }
+        (seg_tris, 0.0f32)
     } else {
-        let (cdt_tris, chord) = triangulate_loops_cdt(
+        try_cdt_or_earcut(
             &work_loops,
             face,
             reg,
@@ -532,17 +1385,15 @@ pub fn fill_trimmed(
             global_normals,
             pos_to_idx,
             &fill_cfg,
-        );
-        tris = cdt_tris;
-        max_chord_error = chord;
-    }
+        )
+    };
 
     if tris.is_empty() {
         tris = triangulate_loops_earcut_fallback(&work_loops);
     }
 
     if tris.is_empty() && use_segmentation {
-        let (cdt_tris, chord) = triangulate_loops_cdt(
+        let (cdt_tris, chord) = try_cdt_or_earcut(
             &work_loops,
             face,
             reg,
@@ -698,13 +1549,14 @@ pub fn surface_fill_3d(
             .collect();
 
         if boundary_uvs.len() >= 3 {
-            let loops = super::face_uv::FaceUvLoops {
+            let mut loops = super::face_uv::FaceUvLoops {
                 outer: super::face_uv::UvLoop {
                     boundary: boundary_uvs,
                 },
                 inners: vec![],
                 uv_source: super::face_uv::UvSource::SurfaceFill,
             };
+            unwrap_periodic_uv_loops(&mut loops, &face.surface);
 
             log::debug!(
                 "[BRep mesh] face {:?}: UV CDT + Steiner ({} boundary UVs)",
@@ -727,7 +1579,7 @@ pub fn surface_fill_3d(
                     if i0 == i1 || i1 == i2 || i2 == i0 {
                         continue;
                     }
-                    fix_winding(
+                    fix_tri_winding(
                         &mut i0, &mut i1, &mut i2,
                         global_vertices,
                         &face.surface,
@@ -1081,20 +1933,30 @@ pub fn measure_face_chord_error(
     let end = start + range.tri_count * 4;
     let mut max_chord = 0.0f32;
     let slice = all_indices.get(start..end.min(all_indices.len()));
-    if let Some(tris) = slice {
-        for chunk in tris.chunks(4) {
-            if chunk.len() < 3 {
-                continue;
-            }
-            max_chord = max_chord.max(tri_max_chord_error(
-                chunk[0],
-                chunk[1],
-                chunk[2],
-                global_vertices,
-                &face.surface,
-                inv_tol,
-            ));
+    let Some(tris) = slice else { return max_chord; };
+    // For large faces, sample at most MAX_CHORD_SAMPLES evenly-spaced
+    // triangles to avoid O(tri_count) surface_point_deviation calls.
+    const MAX_CHORD_SAMPLES: usize = 256;
+    let tri_count = tris.len() / 4;
+    let step = if tri_count > MAX_CHORD_SAMPLES {
+        (tri_count / MAX_CHORD_SAMPLES).max(1)
+    } else {
+        1
+    };
+    for ti in (0..tri_count).step_by(step) {
+        let ci = ti * 4;
+        let chunk = &tris[ci..(ci + 4).min(tris.len())];
+        if chunk.len() < 3 {
+            continue;
         }
+        max_chord = max_chord.max(tri_max_chord_error(
+            chunk[0],
+            chunk[1],
+            chunk[2],
+            global_vertices,
+            &face.surface,
+            inv_tol,
+        ));
     }
     max_chord
 }
@@ -1146,7 +2008,7 @@ fn tri_max_chord_error(
     max_dev
 }
 
-fn fix_winding(
+pub(crate) fn fix_tri_winding(
     i0: &mut i32,
     i1: &mut i32,
     i2: &mut i32,

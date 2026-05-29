@@ -17,6 +17,8 @@ pub struct StepFace {
 #[derive(Debug, Clone)]
 pub struct StepLoop {
     pub edges: Vec<StepEdge>,
+    /// Set for STEP `VERTEX_LOOP`: anchor point (OCC degenerated-edge wire).
+    pub vertex_loop_point: Option<Vec3>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,8 +237,7 @@ fn resolve_bound(bound_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
 fn resolve_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
     let record = entities.get(&loop_id)?;
     match record.name.as_str() {
-        // Full sphere / closed surface with no edge boundary (OCC convention)
-        "VERTEX_LOOP" => Some(StepLoop { edges: vec![] }),
+        "VERTEX_LOOP" => resolve_vertex_loop(loop_id, entities),
         "EDGE_LOOP" | "POLY_LOOP" => resolve_edge_loop(loop_id, entities),
         _ => None,
     }
@@ -260,7 +261,28 @@ fn resolve_edge_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
             edges.push(edge);
         }
     }
-    if edges.is_empty() { None } else { Some(StepLoop { edges }) }
+    if edges.is_empty() {
+        None
+    } else {
+        Some(StepLoop {
+            edges,
+            vertex_loop_point: None,
+        })
+    }
+}
+
+/// VERTEX_LOOP: (name, #loop_vertex) where loop_vertex is VERTEX_POINT.
+fn resolve_vertex_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
+    let record = entities.get(&loop_id)?;
+    if record.name != "VERTEX_LOOP" {
+        return None;
+    }
+    let vertex_id = nth_ref(&record.params, 1)?;
+    let anchor = resolve_point(vertex_id, entities)?;
+    Some(StepLoop {
+        edges: vec![],
+        vertex_loop_point: Some(anchor),
+    })
 }
 
 fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
@@ -286,7 +308,10 @@ fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
             tolerance: tol,
         });
     }
-    Some(StepLoop { edges })
+    Some(StepLoop {
+        edges,
+        vertex_loop_point: None,
+    })
 }
 
 fn resolve_edge(edge_id: u64, entities: &EntityIndex) -> Option<StepEdge> {
@@ -341,6 +366,27 @@ pub fn resolve_point(point_id: u64, entities: &EntityIndex) -> Option<Vec3> {
         coords[1].as_real()? as f32,
         coords[2].as_real()? as f32,
     ))
+}
+
+/// AXIS1_PLACEMENT: rotation axis as (origin, unit direction).
+pub fn resolve_axis1_placement(place_id: u64, entities: &EntityIndex) -> Option<(Vec3, Vec3)> {
+    let record = entities.get(&place_id)?;
+    if record.name != "AXIS1_PLACEMENT" {
+        return None;
+    }
+    let origin_id = nth_ref(&record.params, 1)?;
+    let axis_id = nth_ref(&record.params, 2)?;
+    let origin = resolve_point(origin_id, entities)?;
+    let axis = resolve_direction(axis_id, entities).unwrap_or(Vec3::Z);
+    Some((origin, axis.normalize()))
+}
+
+/// Sweep/revolution axis from AXIS1_PLACEMENT or AXIS2_PLACEMENT_3D (Z axis).
+pub fn resolve_sweep_axis(place_id: u64, entities: &EntityIndex) -> Option<(Vec3, Vec3)> {
+    if let Some((origin, axis)) = resolve_axis1_placement(place_id, entities) {
+        return Some((origin, axis));
+    }
+    resolve_placement(place_id, entities).map(|(origin, _, z)| (origin, z.normalize()))
 }
 
 pub fn resolve_placement(point_id: u64, entities: &EntityIndex) -> Option<(Vec3, Vec3, Vec3)> {
@@ -704,5 +750,45 @@ mod tests {
         // Should extract outer shell #17 from BREP_WITH_VOIDS #18
         assert!(!shells.is_empty());
         assert!(shells.iter().any(|s| s.id == 17));
+    }
+
+    #[test]
+    fn test_brep_with_voids_extracts_void_shells() {
+        let entities = make_exchange(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#5 = CARTESIAN_POINT('', (2.0, 2.0, 0.0));
+#6 = CARTESIAN_POINT('', (8.0, 2.0, 0.0));
+#7 = CARTESIAN_POINT('', (8.0, 8.0, 0.0));
+#8 = CARTESIAN_POINT('', (2.0, 8.0, 0.0));
+#10 = EDGE_CURVE('', #1, #2, #20, .T.);
+#11 = EDGE_CURVE('', #2, #3, #20, .T.);
+#12 = EDGE_CURVE('', #3, #4, #20, .T.);
+#13 = EDGE_CURVE('', #4, #1, #20, .T.);
+#14 = EDGE_LOOP('', (#10, #11, #12, #13));
+#15 = FACE_OUTER_BOUND('', #14, .T.);
+#16 = FACE_SURFACE('', (#15));
+#17 = CLOSED_SHELL('', (#16));
+#30 = EDGE_CURVE('', #5, #6, #20, .T.);
+#31 = EDGE_CURVE('', #6, #7, #20, .T.);
+#32 = EDGE_CURVE('', #7, #8, #20, .T.);
+#33 = EDGE_CURVE('', #8, #5, #20, .T.);
+#34 = EDGE_LOOP('', (#30, #31, #32, #33));
+#35 = FACE_OUTER_BOUND('', #34, .T.);
+#36 = FACE_SURFACE('', (#35));
+#37 = CLOSED_SHELL('', (#36));
+#18 = BREP_WITH_VOIDS('', #17, (#37));
+#20 = LINE('', #1, #2);\
+",
+        );
+
+        let models = collect_solid_models(&entities);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].outer.id, 17);
+        assert_eq!(models[0].voids.len(), 1);
+        assert_eq!(models[0].voids[0].id, 37);
     }
 }

@@ -220,98 +220,39 @@ impl AssemblyTransform {
 pub type ShellTransformMap = HashMap<u64, AssemblyTransform>;
 pub type ShellInstanceList = Vec<(u64, AssemblyTransform)>;
 
+/// Cached NAUO / PDS / SRR assembly links (build once per import).
+pub struct AssemblyContext {
+    graph: AssemblyGraph,
+}
+
+impl AssemblyContext {
+    pub fn build(entities: &EntityIndex) -> Self {
+        Self {
+            graph: AssemblyGraph::from_entities(entities),
+        }
+    }
+
+    pub fn shell_instances(&self, entities: &EntityIndex) -> ShellInstanceList {
+        let mut instances = ShellInstanceList::new();
+        for (&pd_id, shape_ids) in &self.graph.shapes {
+            let xform = self.graph.accumulate(pd_id);
+            for &sid in shape_ids {
+                for shell_id in find_shells_in_representation(sid, entities) {
+                    instances.push((shell_id, xform.clone()));
+                }
+            }
+        }
+        instances
+    }
+
+    pub fn assembly_tree(&self, entities: &EntityIndex) -> super::tree::AssemblyTree {
+        build_assembly_tree_with_graph(&self.graph, entities)
+    }
+}
+
 /// All (shell_id, world transform) pairs — supports repeated assembly instances.
 pub fn extract_shell_instances(entities: &EntityIndex) -> ShellInstanceList {
-    let mut graph = AssemblyGraph::default();
-
-    // Pass 1: collect data using entity IDs
-    // Track SHAPE_REPRESENTATION_RELATIONSHIP for geometry resolution
-    let mut shape_repr_links: HashMap<u64, u64> = HashMap::new(); // linked_rep → geometry_rep
-
-    for (&entity_id, record) in entities.iter() {
-        // SHAPE_REPRESENTATION_RELATIONSHIP: links axis SR to geometry ABREP
-        if record.name == "SHAPE_REPRESENTATION_RELATIONSHIP" {
-            let rep1 = geom::nth_ref(&record.params, 2);
-            let rep2 = geom::nth_ref(&record.params, 3);
-            if let (Some(r1), Some(r2)) = (rep1, rep2) {
-                let target = entities.get(&r2).map(|r| r.entity_type).unwrap_or(EntityType::Unknown);
-                if target == EntityType::AdvancedBrepShapeRepresentation {
-                    shape_repr_links.insert(r1, r2);
-                } else {
-                    shape_repr_links.insert(r2, r1);
-                }
-            }
-            continue;
-        }
-        match record.entity_type {
-            EntityType::ItemDefinedTransformation => {
-                let placement_id = geom::nth_ref(&record.params, 2);
-                let pd_id = geom::nth_ref(&record.params, 3);
-                if let (Some(pid), Some(pdid)) = (placement_id, pd_id) {
-                    if let Some(xform) = resolve_placement_transform(pid, entities) {
-                        graph.idt_transforms.insert(pdid, xform);
-                    }
-                }
-            }
-            EntityType::NextAssemblyUsageOccurrence => {
-                let relating = geom::nth_ref(&record.params, 3)
-                    .or_else(|| geom::nth_ref(&record.params, 1));
-                let related = geom::nth_ref(&record.params, 4)
-                    .or_else(|| geom::nth_ref(&record.params, 2));
-                let ap203_xform = geom::nth_ref(&record.params, 4)
-                    .and_then(|tid| resolve_placement_transform(tid, entities));
-                if let (Some(parent), Some(child)) = (relating, related) {
-                    let xform = graph.idt_transforms.get(&child).cloned()
-                        .or(ap203_xform)
-                        .unwrap_or_default();
-                    graph.parent_child.entry(parent).or_default()
-                        .push((child, xform));
-                }
-            }
-            EntityType::ProductDefinitionShape => {
-                // PDS: AP242 (name,$,#product_def); AP203 (name,#product_def,desc)
-                let pd_id = geom::nth_ref(&record.params, 2)
-                    .or_else(|| geom::nth_ref(&record.params, 1));
-                if let Some(pid) = pd_id {
-                    // Map product_def_id → PDS entity_id for SDR lookup
-                    graph.prod_to_pds.insert(pid, entity_id);
-                }
-            }
-            EntityType::ShapeDefinitionRepresentation => {
-                // SDR: (#pds_entity, #shape_repr) — params[0] references PDS entity
-                let pds_entity = geom::nth_ref(&record.params, 0);
-                let shape_repr = geom::nth_ref(&record.params, 1);
-                if let (Some(pds), Some(sr)) = (pds_entity, shape_repr) {
-                    graph.pds_to_shape.insert(pds, sr);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Build reverse index for O(1) parent lookup in accumulate()
-    graph.build_reverse_index();
-
-    // Pass 2: build product_def → shape_repr chain, resolve through SRR→ABREP links
-    for (&prod_def, &pds_entity) in &graph.prod_to_pds {
-        if let Some(&shape_repr) = graph.pds_to_shape.get(&pds_entity) {
-            // Follow SRR links to find actual geometry representation
-            let geometry_repr = shape_repr_links.get(&shape_repr).copied().unwrap_or(shape_repr);
-            graph.shapes.entry(prod_def).or_default().push(geometry_repr);
-        }
-    }
-
-    let mut instances = ShellInstanceList::new();
-    for (&pd_id, shape_ids) in &graph.shapes {
-        let xform = graph.accumulate(pd_id);
-        for &sid in shape_ids {
-            for shell_id in find_shells_in_representation(sid, entities) {
-                instances.push((shell_id, xform.clone()));
-            }
-        }
-    }
-
-    instances
+    AssemblyContext::build(entities).shell_instances(entities)
 }
 
 /// Last occurrence wins per shell id (legacy API).
@@ -331,9 +272,96 @@ struct AssemblyGraph {
     prod_to_pds: HashMap<u64, u64>,
     pds_to_shape: HashMap<u64, u64>,
     shapes: HashMap<u64, Vec<u64>>,
+    /// Axis/placement SR → geometry ABREP (from SHAPE_REPRESENTATION_RELATIONSHIP).
+    shape_repr_links: HashMap<u64, u64>,
 }
 
 impl AssemblyGraph {
+    fn from_entities(entities: &EntityIndex) -> Self {
+        let mut graph = Self::default();
+
+        for (&entity_id, record) in entities.iter() {
+            if record.name == "SHAPE_REPRESENTATION_RELATIONSHIP" {
+                let rep1 = geom::nth_ref(&record.params, 2);
+                let rep2 = geom::nth_ref(&record.params, 3);
+                if let (Some(r1), Some(r2)) = (rep1, rep2) {
+                    let target = entities
+                        .get(&r2)
+                        .map(|r| r.entity_type)
+                        .unwrap_or(EntityType::Unknown);
+                    if target == EntityType::AdvancedBrepShapeRepresentation {
+                        graph.shape_repr_links.insert(r1, r2);
+                    } else {
+                        graph.shape_repr_links.insert(r2, r1);
+                    }
+                }
+                continue;
+            }
+            match record.entity_type {
+                EntityType::ItemDefinedTransformation => {
+                    let placement_id = geom::nth_ref(&record.params, 2);
+                    let pd_id = geom::nth_ref(&record.params, 3);
+                    if let (Some(pid), Some(pdid)) = (placement_id, pd_id) {
+                        if let Some(xform) = resolve_placement_transform(pid, entities) {
+                            graph.idt_transforms.insert(pdid, xform);
+                        }
+                    }
+                }
+                EntityType::NextAssemblyUsageOccurrence => {
+                    let relating = geom::nth_ref(&record.params, 3)
+                        .or_else(|| geom::nth_ref(&record.params, 1));
+                    let related = geom::nth_ref(&record.params, 4)
+                        .or_else(|| geom::nth_ref(&record.params, 2));
+                    let ap203_xform = geom::nth_ref(&record.params, 4)
+                        .and_then(|tid| resolve_placement_transform(tid, entities));
+                    if let (Some(parent), Some(child)) = (relating, related) {
+                        let xform = graph
+                            .idt_transforms
+                            .get(&child)
+                            .cloned()
+                            .or(ap203_xform)
+                            .unwrap_or_default();
+                        graph
+                            .parent_child
+                            .entry(parent)
+                            .or_default()
+                            .push((child, xform));
+                    }
+                }
+                EntityType::ProductDefinitionShape => {
+                    let pd_id = geom::nth_ref(&record.params, 2)
+                        .or_else(|| geom::nth_ref(&record.params, 1));
+                    if let Some(pid) = pd_id {
+                        graph.prod_to_pds.insert(pid, entity_id);
+                    }
+                }
+                EntityType::ShapeDefinitionRepresentation => {
+                    let pds_entity = geom::nth_ref(&record.params, 0);
+                    let shape_repr = geom::nth_ref(&record.params, 1);
+                    if let (Some(pds), Some(sr)) = (pds_entity, shape_repr) {
+                        graph.pds_to_shape.insert(pds, sr);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        graph.build_reverse_index();
+
+        for (&prod_def, &pds_entity) in &graph.prod_to_pds {
+            if let Some(&shape_repr) = graph.pds_to_shape.get(&pds_entity) {
+                let geometry_repr = graph
+                    .shape_repr_links
+                    .get(&shape_repr)
+                    .copied()
+                    .unwrap_or(shape_repr);
+                graph.shapes.entry(prod_def).or_default().push(geometry_repr);
+            }
+        }
+
+        graph
+    }
+
     fn accumulate(&self, pd_id: u64) -> AssemblyTransform {
         let mut chain = Vec::new();
         let mut current = pd_id;
@@ -447,6 +475,13 @@ fn extract_shells_from_brep(brep_id: u64, entities: &EntityIndex) -> Vec<u64> {
 
 /// Build the full assembly tree (preserves hierarchy, not just flattened transforms).
 pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree {
+    AssemblyContext::build(entities).assembly_tree(entities)
+}
+
+fn build_assembly_tree_with_graph(
+    graph: &AssemblyGraph,
+    entities: &EntityIndex,
+) -> super::tree::AssemblyTree {
     use super::tree::{AssemblyNode, AssemblyTree};
     let mut nodes = Vec::new();
     let mut pd_to_node: HashMap<u64, usize> = HashMap::new();
@@ -481,7 +516,7 @@ pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree 
         }
     }
 
-    // Pass 2: build parent-child links from NAUO
+    // Pass 2: parent-child from NAUO; local transform = NAUO link (parent PD → child PD).
     for (_, record) in entities.iter() {
         if record.entity_type == EntityType::NextAssemblyUsageOccurrence {
             let relating = geom::nth_ref(&record.params, 3)
@@ -489,10 +524,9 @@ pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree 
             let related = geom::nth_ref(&record.params, 4)
                 .or_else(|| geom::nth_ref(&record.params, 2));
 
-            if let (Some(parent), Some(child)) = (relating, related) {
-                // Resolve through PRODUCT_DEFINITION -> PRODUCT_DEFINITION_FORMATION -> PRODUCT
-                let parent_prod = resolve_pd_to_product(parent, entities);
-                let child_prod = resolve_pd_to_product(child, entities);
+            if let (Some(parent_pd), Some(child_pd)) = (relating, related) {
+                let parent_prod = resolve_pd_to_product(parent_pd, entities);
+                let child_prod = resolve_pd_to_product(child_pd, entities);
 
                 if let (Some(pi), Some(ci)) = (
                     parent_prod.and_then(|p| pd_to_node.get(&p)),
@@ -501,84 +535,47 @@ pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree 
                     if !nodes[*pi].children.contains(ci) && *pi != *ci {
                         nodes[*pi].children.push(*ci);
                     }
-                }
-            }
-        }
-    }
-
-    // Pass 3: attach shell IDs via the transform map
-    let shell_xforms = extract_shell_transforms(entities);
-    // Walk each product node and find shells owned through
-    // ProductDefinitionShape -> ShapeDefinitionRepresentation -> ShapeRepresentation
-    let mut pd_to_pds: HashMap<u64, u64> = HashMap::new();
-    let mut pds_to_sr: HashMap<u64, u64> = HashMap::new();
-
-    for (&eid, record) in entities.iter() {
-        if record.entity_type == EntityType::ProductDefinitionShape {
-            let pd_id = geom::nth_ref(&record.params, 2)
-                .or_else(|| geom::nth_ref(&record.params, 1));
-            if let Some(pid) = pd_id {
-                pd_to_pds.insert(pid, eid);
-            }
-        }
-        if record.entity_type == EntityType::ShapeDefinitionRepresentation {
-            let pds_entity = geom::nth_ref(&record.params, 0);
-            let shape_repr = geom::nth_ref(&record.params, 1);
-            if let (Some(pds), Some(sr)) = (pds_entity, shape_repr) {
-                pds_to_sr.insert(pds, sr);
-            }
-        }
-    }
-
-    // Map product_definition -> shape_representation
-    let mut sr_to_shells: HashMap<u64, Vec<u64>> = HashMap::new();
-    for (_, record) in entities.iter() {
-        if record.entity_type == EntityType::ProductDefinition {
-            let formation_ref = record.params.nth_param(2)
-                .and_then(|v| v.as_ref_id());
-            if let Some(fid) = formation_ref {
-                if let Some(&pds_id) = pd_to_pds.get(&fid) {
-                    if let Some(&sr_id) = pds_to_sr.get(&pds_id) {
-                        let shells = find_shells_in_representation(sr_id, entities);
-                        if !shells.is_empty() {
-                            sr_to_shells.insert(sr_id, shells);
-                        }
+                    if let Some(local) = graph
+                        .parent_child
+                        .get(&parent_pd)
+                        .and_then(|kids| kids.iter().find(|(c, _)| *c == child_pd))
+                        .map(|(_, x)| x.matrix)
+                    {
+                        nodes[*ci].transform = local;
                     }
                 }
             }
         }
     }
 
-    // Attach shells to product nodes
-    for (_, record) in entities.iter() {
-        if record.entity_type == EntityType::ProductDefinition {
-            let formation_ref = record.params.nth_param(2)
-                .and_then(|v| v.as_ref_id());
-            if let Some(fid) = formation_ref {
-                if let (Some(&pds_id), Some(prod_id)) = (
-                    pd_to_pds.get(&fid),
-                    resolve_pd_to_product_by_formation(fid, entities),
-                ) {
-                    if let (Some(&sr_id), Some(&node_idx)) = (
-                        pds_to_sr.get(&pds_id),
-                        pd_to_node.get(&prod_id),
-                    ) {
-                        if let Some(shells) = sr_to_shells.get(&sr_id) {
-                            nodes[node_idx].shells.extend(shells);
-                        }
-                    }
-                }
+    // Pass 3: shells via PDS/SDR/SRR; root-only parts get accumulated placement when still identity.
+    for (&pd_id, shape_reprs) in &graph.shapes {
+        let record = match entities.get(&pd_id) {
+            Some(r) if r.entity_type == EntityType::ProductDefinition => r,
+            _ => continue,
+        };
+        let formation_id = match geom::nth_ref(&record.params, 2) {
+            Some(id) => id,
+            None => continue,
+        };
+        let prod_id = match resolve_pd_to_product_by_formation(formation_id, entities) {
+            Some(id) => id,
+            None => continue,
+        };
+        let node_idx = match pd_to_node.get(&prod_id) {
+            Some(&idx) => idx,
+            None => continue,
+        };
+        for &sr_id in shape_reprs {
+            let shells = find_shells_in_representation(sr_id, entities);
+            if !shells.is_empty() {
+                nodes[node_idx].shells.extend(shells);
             }
         }
-    }
-
-    // Also attach shells from shell_xforms for any nodes that didn't get shells via the chain
-    for (&shell_id, xform) in &shell_xforms {
-        if let Some(root) = pd_to_node.values().next() {
-            let node = &mut nodes[*root];
-            if node.shells.is_empty() {
-                node.shells.push(shell_id);
-                node.transform = xform.matrix;
+        if nodes[node_idx].transform == Mat4::IDENTITY {
+            let world = graph.accumulate(pd_id).matrix;
+            if world != Mat4::IDENTITY {
+                nodes[node_idx].transform = world;
             }
         }
     }
@@ -591,32 +588,20 @@ pub fn build_assembly_tree(entities: &EntityIndex) -> super::tree::AssemblyTree 
 
 /// Resolve a PRODUCT_DEFINITION ID to its PRODUCT ID.
 fn resolve_pd_to_product(pd_id: u64, entities: &EntityIndex) -> Option<u64> {
-    for (_, record) in entities.iter() {
-        if record.entity_type == EntityType::ProductDefinition {
-            // PRODUCT_DEFINITION(id, description, formation_ref)
-            let id = geom::nth_ref(&record.params, 0)?;
-            if id == pd_id {
-                let formation_id = geom::nth_ref(&record.params, 2)?;
-                return resolve_pd_to_product_by_formation(formation_id, entities);
-            }
-        }
+    let record = entities.get(&pd_id)?;
+    if record.entity_type != EntityType::ProductDefinition {
+        return None;
     }
-    None
+    let formation_id = geom::nth_ref(&record.params, 2)?;
+    resolve_pd_to_product_by_formation(formation_id, entities)
 }
 
 fn resolve_pd_to_product_by_formation(formation_id: u64, entities: &EntityIndex) -> Option<u64> {
-    for (_, record) in entities.iter() {
-        if record.entity_type == EntityType::ProductDefinitionFormation {
-            let id = geom::nth_ref(&record.params, 0)
-                .or_else(|| record.params.nth_param(0).and_then(|v| v.as_ref_id()))?;
-            if id == formation_id {
-                // PRODUCT_DEFINITION_FORMATION(id, description, product_ref)
-                return geom::nth_ref(&record.params, 2)
-                    .or_else(|| geom::nth_ref(&record.params, 3));
-            }
-        }
+    let record = entities.get(&formation_id)?;
+    if record.entity_type != EntityType::ProductDefinitionFormation {
+        return None;
     }
-    None
+    geom::nth_ref(&record.params, 2).or_else(|| geom::nth_ref(&record.params, 3))
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -706,5 +691,91 @@ mod tests {
         let graph = AssemblyGraph::default();
         let result = graph.accumulate(1);
         assert!((result.matrix - Mat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
+    }
+
+    #[test]
+    fn axis2_placement_golden_mat4() {
+        // Column-basis placement: columns are X, Y, Z axes; translation in column 3 (w).
+        // transform_point(p) = matrix * (p,1) — same as SceneGraph mesh path.
+        let text = "ISO-10303-21;\nHEADER;ENDSEC;\nDATA;\n\
+#10=CARTESIAN_POINT('',(1.,2.,3.));\n\
+#11=DIRECTION('',(0.,0.,1.));\n\
+#12=DIRECTION('',(1.,0.,0.));\n\
+#1=AXIS2_PLACEMENT_3D('',#10,#11,#12);\n\
+ENDSEC;\nEND-ISO-10303-21;\n";
+        let ex = super::super::parser::parse_exchange(text).unwrap();
+        let xform = resolve_placement_transform(1, &ex.entities).expect("AXIS2_PLACEMENT_3D");
+        let world = xform.transform_point(Vec3::ZERO);
+        assert!((world.x - 1.0).abs() < 1e-5, "origin.x");
+        assert!((world.y - 2.0).abs() < 1e-5, "origin.y");
+        assert!((world.z - 3.0).abs() < 1e-5, "origin.z");
+        let unit_x = xform.transform_point(Vec3::X) - world;
+        assert!((unit_x.x - 1.0).abs() < 1e-5 && unit_x.y.abs() < 1e-5);
+    }
+
+    #[test]
+    fn item_defined_transformation_compose_order() {
+        // accumulate(): chain root→leaf, then compose in rev order → M = T_parent * T_child.
+        let mut graph = AssemblyGraph::default();
+        graph.parent_child.insert(100, vec![(1, make_xform(10.0, 0.0, 0.0))]);
+        graph.parent_child.insert(200, vec![(100, make_xform(1.0, 0.0, 0.0))]);
+        graph.build_reverse_index();
+        let result = graph.accumulate(1);
+        let (_, _, trans) = result.matrix.to_scale_rotation_translation();
+        assert!(
+            (trans.x - 11.0).abs() < 1e-5,
+            "expected parent*child translation (11,0,0), got {:?}",
+            trans
+        );
+    }
+
+    #[test]
+    fn assembly_tree_flatten_matches_shell_instances() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/cs.step");
+        if !path.exists() {
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let ex = super::super::parser::parse_exchange(&text).unwrap();
+        let ctx = super::AssemblyContext::build(&ex.entities);
+        let instances = ctx.shell_instances(&ex.entities);
+        let tree = ctx.assembly_tree(&ex.entities);
+        let flat = tree.flatten_shells();
+        assert!(!instances.is_empty() && !flat.is_empty());
+        for (shell_id, world) in flat {
+            let inst = instances
+                .iter()
+                .find(|(id, _)| *id == shell_id)
+                .map(|(_, x)| x.matrix)
+                .expect("shell in flatten must exist in instances");
+            let delta = (world.w_axis - inst.w_axis).truncate();
+            assert!(
+                delta.length() < 1e-3,
+                "shell #{shell_id} world mismatch: tree {:?} vs instance {:?}",
+                world.w_axis,
+                inst.w_axis
+            );
+        }
+    }
+
+    #[test]
+    fn cs_step_assembly_nodes_carry_shells() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/cs.step");
+        if !path.exists() {
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let ex = super::super::parser::parse_exchange(&text).unwrap();
+        let tree = super::build_assembly_tree(&ex.entities);
+        let with_shells: usize = tree.nodes.iter().filter(|n| !n.shells.is_empty()).count();
+        assert!(
+            with_shells >= 2,
+            "Cube+Sphere should attach shells to product nodes, got {with_shells}: {:?}",
+            tree.nodes
+                .iter()
+                .map(|n| (&n.name, n.shells.len()))
+                .collect::<Vec<_>>()
+        );
     }
 }

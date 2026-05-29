@@ -1,7 +1,9 @@
 //! UV boundary self-intersection repair (OCC ShapeFix_Wire::FixSelfIntersection).
 
+use super::curve_trim::split_edge_at_params;
+use super::reorder::reorder_wire_edges;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
+use crate::step::brep::topo::{EdgeKey, FaceKey, Orientation, WireKey};
 
 /// Represents an intersection point between two PCurve segments.
 #[derive(Debug, Clone)]
@@ -117,164 +119,54 @@ pub fn fix_self_intersecting_wire(
         edge_splits[ip.edge_b].push(ip.tb);
     }
 
-    // Sort and deduplicate split parameters
+    // Split edges at intersection parameters using trimmed sub-curves
     let mut new_edges: Vec<(EdgeKey, Orientation)> = Vec::new();
     for (i, _) in edges.iter().enumerate() {
-        let splits = &mut edge_splits[i];
+        let splits = &edge_splits[i];
+        let (ek, orient) = edges[i];
         if splits.is_empty() {
             new_edges.push(edges[i]);
             continue;
         }
-        splits.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        splits.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-
-        let (ek, orient) = edges[i];
-        // Clone edge data before mutable registry access
-        let (curve, tolerance, pcurve) = {
-            let edge = match reg.edges.get(ek) {
-                Some(e) => e,
-                None => continue,
-            };
-            (edge.curve.clone(), edge.tolerance, edge.pcurves.get(&face_key).cloned())
-        };
-        let pcurve = match pcurve {
-            Some(pc) => pc,
-            None => continue,
-        };
-
-        // Split at each parameter
-        let mut t_prev = 0.0f32;
-        let endpoint_t = [&splits[..], &[1.0f32]].concat();
-        for &t in endpoint_t.iter() {
-            // Skip segments shorter than threshold in both parameter and UV space
-            if t - t_prev < 1e-6 {
-                t_prev = t;
-                continue;
-            }
-            let uv_start = pcurve.d0(t_prev);
-            let uv_end = pcurve.d0(t);
-            let uv_len = ((uv_start.x - uv_end.x).powi(2) + (uv_start.y - uv_end.y).powi(2)).sqrt();
-            if uv_len < 1e-6 {
-                t_prev = t;
-                continue;
-            }
-            let v_start = reg.find_or_add_vertex(curve.d0(t_prev), 1e-4);
-            let v_end = reg.find_or_add_vertex(curve.d0(t), 1e-4);
-            let ek_new = reg.add_edge_with_pcurve(
-                v_start,
-                v_end,
-                curve.clone(),
-                tolerance,
-                face_key,
-                pcurve.clone(),
-            );
-            new_edges.push((ek_new, orient));
-            report.edges_split += 1;
-            t_prev = t;
-        }
+        let mut split_params = splits.clone();
+        split_params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        split_params.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        let parts = split_edge_at_params(ek, face_key, orient, &split_params, reg);
+        report.edges_split += parts.len().saturating_sub(1);
+        new_edges.extend(parts);
     }
 
-    // Build new wire by connecting split segments via shared vertices.
-    // Each split segment is a directed edge from v_start to v_end.
-    // After splitting, the wire should form a valid traversal through
-    // the intersection points. We reorder the new edges by endpoint matching
-    // (same algorithm as reorder_wire_edges in reorder.rs).
-    let ordered = reorder_by_endpoints(&new_edges, reg);
-    if ordered.len() >= 3 {
+    if let Some(ordered) = reorder_wire_edges(&new_edges, reg) {
+        if ordered.len() >= 3 {
+            if let Some(wire) = reg.wires.get_mut(wire_key) {
+                wire.edges = ordered;
+                report.wires_rebuilt = true;
+            }
+        } else {
+            log::warn!(
+                "[BRep heal] FixSelfIntersection face {:?}: wire too short after split",
+                face_key
+            );
+            if let Some(wire) = reg.wires.get_mut(wire_key) {
+                wire.edges.clear();
+            }
+        }
+    } else if new_edges.len() >= 3 {
         if let Some(wire) = reg.wires.get_mut(wire_key) {
-            wire.edges = ordered;
+            wire.edges = new_edges;
             report.wires_rebuilt = true;
         }
     } else {
-        log::warn!("[BRep heal] FixSelfIntersection face {:?}: wire too short after split, marking failed", face_key);
+        log::warn!(
+            "[BRep heal] FixSelfIntersection face {:?}: could not reorder split wire",
+            face_key
+        );
         if let Some(wire) = reg.wires.get_mut(wire_key) {
             wire.edges.clear();
         }
     }
 
     report
-}
-
-/// Reorder edges into a connected chain by matching endpoints.
-/// Uses the same algorithm as heal::reorder::reorder_wire_edges.
-fn reorder_by_endpoints(
-    edges: &[(EdgeKey, Orientation)],
-    reg: &BRepRegistry,
-) -> Vec<(EdgeKey, Orientation)> {
-    if edges.len() <= 1 {
-        return edges.to_vec();
-    }
-    let n = edges.len();
-    let mut used = vec![false; n];
-    let mut result = Vec::with_capacity(n);
-
-    // Start from the first edge
-    used[0] = true;
-    result.push(edges[0]);
-
-    for _ in 1..n {
-        let last = result.last().unwrap();
-        let last_end_vk = get_end_vertex(last.0, last.1, reg);
-
-        let mut found = false;
-        for (j, &(ek, orient)) in edges.iter().enumerate() {
-            if used[j] {
-                continue;
-            }
-            let v_start = get_start_vertex(ek, orient, reg);
-            if v_start == last_end_vk {
-                used[j] = true;
-                result.push((ek, orient));
-                found = true;
-                break;
-            }
-            // Also try reversed: check if this edge's end matches our end
-            let v_end = get_end_vertex(ek, orient, reg);
-            if v_end == last_end_vk {
-                // Insert with reversed orientation
-                let rev_orient = if orient == Orientation::Forward {
-                    Orientation::Reversed
-                } else {
-                    Orientation::Forward
-                };
-                used[j] = true;
-                result.push((ek, rev_orient));
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            // Try matching any remaining edge's start to a previous start
-            for (j, &(ek, orient)) in edges.iter().enumerate() {
-                if used[j] {
-                    continue;
-                }
-                used[j] = true;
-                result.push((ek, orient));
-                break;
-            }
-        }
-    }
-
-    result
-}
-
-fn get_start_vertex(ek: EdgeKey, orient: Orientation, reg: &BRepRegistry) -> Option<VertexKey> {
-    let edge = reg.edges.get(ek)?;
-    if orient == Orientation::Reversed {
-        Some(edge.v_high)
-    } else {
-        Some(edge.v_low)
-    }
-}
-
-fn get_end_vertex(ek: EdgeKey, orient: Orientation, reg: &BRepRegistry) -> Option<VertexKey> {
-    let edge = reg.edges.get(ek)?;
-    if orient == Orientation::Reversed {
-        Some(edge.v_low)
-    } else {
-        Some(edge.v_high)
-    }
 }
 
 /// Compute intersection of two 2D segments. Returns (t_a, t_b) where intersection = a0 + t*(a1-a0).

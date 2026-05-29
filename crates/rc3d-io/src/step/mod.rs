@@ -1,5 +1,10 @@
 pub mod value;
 pub mod entity_types;
+pub mod adapter;
+pub mod primary_keyword;
+pub mod model;
+pub mod part21;
+pub mod schema;
 pub mod pmi;
 pub mod parser;
 pub mod geom;
@@ -23,15 +28,24 @@ pub mod refine;
 pub mod mesh_result;
 pub mod import_options;
 
-pub use import_options::{StepImportMode, StepImportOptions, StepImportReport};
+pub use import_options::{
+    StepImportMode, StepImportOptions, StepImportReport, StepImportResult,
+};
+pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::NodeId;
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{
-    Coordinate3Node, IndexedFaceSetNode, MaterialNode, NormalNode, SeparatorNode,
+    Coordinate3Node, IndexedFaceSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
 };
+use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::topo::SolidKey;
+use crate::step::brep::mesh::BRepMeshConfig;
+use crate::step::brep::heal::HealReport;
+use crate::step::mesh_result::MeshResult;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
@@ -76,19 +90,50 @@ pub fn parse_step_file(path: &Path) -> Result<SceneGraph, StepError> {
     parse_step_file_with_options(path, &StepImportOptions::default())
 }
 
+pub fn import_step_file_with_options(
+    path: &Path,
+    options: &StepImportOptions,
+) -> Result<StepImportResult, StepError> {
+    use std::io::Read;
+
+    let file_len = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+
+    let is_xml = {
+        let mut file = std::fs::File::open(path)?;
+        let mut head = [0u8; 64];
+        let n = file.read(&mut head)?;
+        let head = decode_step_bytes(&head[..n]);
+        let trimmed = head.trim();
+        trimmed.starts_with("<?xml") || trimmed.starts_with("<iso_10303_28")
+    };
+
+    if is_xml {
+        let bytes = std::fs::read(path)?;
+        let text = decode_step_bytes(&bytes);
+        let exchange = parser::Exchange {
+            header: None,
+            entities: xml::parse_xml_step(&text).map_err(StepError::Parse)?,
+            diagnostics: parser::ParseDiagnostics::default(),
+            part21_stats: None,
+            schema_violations: Vec::new(),
+        };
+        exchange_to_import_result(exchange, options)
+    } else if file_len > LARGE_STEP_BYTES {
+        let exchange = parser::parse_step_from_file_with_options(path, options)
+            .map_err(StepError::Parse)?;
+        exchange_to_import_result(exchange, options)
+    } else {
+        let bytes = std::fs::read(path)?;
+        let text = decode_step_bytes(&bytes);
+        import_step_with_options(&text, options)
+    }
+}
+
 pub fn parse_step_file_with_options(
     path: &Path,
     options: &StepImportOptions,
 ) -> Result<SceneGraph, StepError> {
-    let bytes = std::fs::read(path)?;
-    if bytes.len() > LARGE_STEP_BYTES {
-        let exchange = parser::parse_step_from_file_with_options(path, options)
-            .map_err(StepError::Parse)?;
-        exchange_to_scene_graph(exchange, options)
-    } else {
-        let text = decode_step_bytes(&bytes);
-        parse_step_with_options(&text, options)
-    }
+    Ok(import_step_file_with_options(path, options)?.graph)
 }
 
 /// Parse STEP text into a SceneGraph using the OCC-aligned B-Rep pipeline.
@@ -96,10 +141,10 @@ pub fn parse_step(input: &str) -> Result<SceneGraph, StepError> {
     parse_step_with_options(input, &StepImportOptions::default())
 }
 
-pub fn parse_step_with_options(
+pub fn import_step_with_options(
     input: &str,
     options: &StepImportOptions,
-) -> Result<SceneGraph, StepError> {
+) -> Result<StepImportResult, StepError> {
     let trimmed = input.trim();
     let exchange = if trimmed.starts_with("<?xml") || trimmed.starts_with("<iso_10303_28") {
         let entities = xml::parse_xml_step(trimmed).map_err(StepError::Parse)?;
@@ -107,17 +152,26 @@ pub fn parse_step_with_options(
             header: None,
             entities,
             diagnostics: parser::ParseDiagnostics::default(),
+            part21_stats: None,
+            schema_violations: Vec::new(),
         }
     } else {
         parser::parse_exchange_with_options(trimmed, options).map_err(StepError::Parse)?
     };
-    exchange_to_scene_graph(exchange, options)
+    exchange_to_import_result(exchange, options)
 }
 
-fn exchange_to_scene_graph(
-    exchange: parser::Exchange,
+pub fn parse_step_with_options(
+    input: &str,
     options: &StepImportOptions,
 ) -> Result<SceneGraph, StepError> {
+    Ok(import_step_with_options(input, options)?.graph)
+}
+
+fn exchange_to_import_result(
+    exchange: parser::Exchange,
+    options: &StepImportOptions,
+) -> Result<StepImportResult, StepError> {
     let mut import_report = StepImportReport::default();
     import_report.skipped_parse_entities = exchange.diagnostics.skipped_entities.len();
     import_report.unknown_entity_count = exchange.diagnostics.unknown_entity_count;
@@ -126,6 +180,24 @@ fn exchange_to_scene_graph(
         if let Some(ref ap) = import_report.ap_schema {
             log::info!("[STEP] detected schema: {}", ap);
         }
+    }
+    if let Some(ref stats) = exchange.part21_stats {
+        import_report.data_section_count = stats.data_section_count;
+        import_report.complex_external_count = stats.complex_external_count;
+    }
+    import_report.schema_violations = exchange.schema_violations.len();
+    if options.strict_schema && !exchange.schema_violations.is_empty() {
+        let msg: Vec<String> = exchange
+            .schema_violations
+            .iter()
+            .take(8)
+            .map(|v| format!("#{} {} {}: {}", v.entity_id, v.entity_name, v.constraint, v.description))
+            .collect();
+        return Err(StepError::Validation(format!(
+            "schema: {} violation(s): {}",
+            exchange.schema_violations.len(),
+            msg.join("; ")
+        )));
     }
     if import_report.unknown_entity_count > 0 {
         log::warn!(
@@ -174,15 +246,22 @@ fn exchange_to_scene_graph(
         }
     }
 
-    let shell_instances = assembly::extract_shell_instances(&exchange.entities);
+    let assembly_ctx = assembly::AssemblyContext::build(&exchange.entities);
+    let shell_instances = assembly_ctx.shell_instances(&exchange.entities);
     let shell_styles = assembly::extract_shell_styles(&exchange.entities);
 
-    let assembly_tree = assembly::build_assembly_tree(&exchange.entities);
-    if !assembly_tree.nodes.is_empty() && assembly_tree.nodes.iter().any(|n| !n.shells.is_empty()) {
+    let assembly_tree = assembly_ctx.assembly_tree(&exchange.entities);
+    let assembly_geom_nodes = assembly_tree
+        .nodes
+        .iter()
+        .filter(|n| !n.shells.is_empty())
+        .count();
+    import_report.assembly_node_count = assembly_geom_nodes;
+    if !assembly_tree.nodes.is_empty() && assembly_geom_nodes > 0 {
         log::info!(
             "[STEP] assembly tree: {} nodes, {} with geometry",
             assembly_tree.nodes.len(),
-            assembly_tree.nodes.iter().filter(|n| !n.shells.is_empty()).count(),
+            assembly_geom_nodes,
         );
     }
 
@@ -247,114 +326,125 @@ fn exchange_to_scene_graph(
     let mut any_geom = false;
     let mut props_vertices: Vec<Vec3> = Vec::new();
     let mut props_indices: Vec<i32> = Vec::new();
-    for &sk in &brep_result.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            let base_mesh = brep::mesh::mesh_brep_shell(
-                solid.outer_shell,
-                &reg,
-                &mesh_config,
-                &total_heal.skip_face_keys,
-            );
-            if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
-                continue;
-            }
-            // Subtract void shells from mesh
-            let void_meshes: Vec<_> = solid.void_shells.iter().map(|&vk| {
-                brep::mesh::mesh_brep_shell(
-                    vk,
-                    &reg,
-                    &mesh_config,
-                    &total_heal.skip_face_keys,
-                )
-            }).collect();
-            let void_result = brep::mesh::void_subtract::subtract_void_meshes(
-                &base_mesh, &void_meshes,
-            );
-            if void_result.removed_tris > 0 {
-                log::info!(
-                    "[STEP] void subtraction: removed {} tris, kept {}",
-                    void_result.removed_tris,
-                    void_result.mesh.indices.len() / 4,
-                );
-            }
-            let final_mesh = void_result.mesh;
+    let use_assembly_hierarchy = assembly_geom_nodes > 1;
+    let scene_parent = if use_assembly_hierarchy {
+        graph.add_child(root, NodeData::Separator(SeparatorNode))
+    } else {
+        root
+    };
+
+    let mut emit_solid_to =
+        |graph: &mut SceneGraph,
+         parent: NodeId,
+         sk: SolidKey,
+         xform: &assembly::AssemblyTransform,
+         any_geom: &mut bool| {
+            let Some(solid) = reg.solids.get(sk) else {
+                return;
+            };
+            let Some(final_mesh) =
+                mesh_solid_shell(sk, solid.outer_shell, &reg, &mesh_config, &total_heal)
+            else {
+                return;
+            };
             log::info!(
                 "[STEP] mesh: {} verts, {} tris",
                 final_mesh.vertices.len(),
                 final_mesh.indices.len() / 4,
             );
-
-            let base_offset = props_vertices.len() as i32;
-            props_vertices.extend_from_slice(&final_mesh.vertices);
-            for chunk in final_mesh.indices.chunks(4) {
-                if chunk.len() >= 3 {
-                    props_indices.extend_from_slice(&[
-                        chunk[0] + base_offset,
-                        chunk[1] + base_offset,
-                        chunk[2] + base_offset,
-                        -1,
-                    ]);
-                }
-            }
-
+            append_props_mesh(&final_mesh, &mut props_vertices, &mut props_indices);
             let shell_step_id = reg
                 .shells
                 .get(solid.outer_shell)
                 .and_then(|s| s.step_id);
-
             let shell_color = shell_step_id
                 .and_then(|sid| shell_styles.get(&sid))
                 .map(|style| [style.diffuse.x, style.diffuse.y, style.diffuse.z]);
+            let mut mesh = final_mesh;
+            apply_mesh_transform(&mut mesh, xform);
+            *any_geom = true;
+            let comp = graph.add_child(parent, NodeData::Separator(SeparatorNode));
+            graph.add_child(
+                comp,
+                NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
+            );
+            add_mesh_nodes(graph, comp, &mesh);
+        };
 
-            let mut instances: Vec<&assembly::AssemblyTransform> = shell_step_id
-                .map(|sid| {
-                    shell_instances
-                        .iter()
-                        .filter(|(id, _)| *id == sid)
-                        .map(|(_, xform)| xform)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if instances.is_empty() {
-                instances.push(&default_xform);
+    if use_assembly_hierarchy {
+        let mut emitted = std::collections::HashSet::new();
+        assembly_tree.walk(&mut |node, world, depth| {
+            if node.shells.is_empty() {
+                return;
             }
-
-            for xform in instances {
-                let mut mesh = final_mesh.clone();
-                apply_mesh_transform(&mut mesh, xform);
-                any_geom = true;
-
-                let comp = graph.add_child(root, NodeData::Separator(SeparatorNode));
-                graph.add_child(
-                    comp,
-                    NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
+            let part = graph.add_child(scene_parent, NodeData::Separator(SeparatorNode));
+            graph.add_child(part, NodeData::Transform(transform_node_from_mat4(*world)));
+            log::debug!(
+                "[STEP] assembly part '{}' depth {} shells={}",
+                node.name,
+                depth,
+                node.shells.len()
+            );
+            // Mesh stays in component-local B-Rep coords; part Transform applies world (NAUO chain).
+            let mesh_local = assembly::AssemblyTransform::default();
+            for &shell_step_id in &node.shells {
+                if let Some(sk) =
+                    solid_for_shell_step_id(&reg, &brep_result.root_solids, shell_step_id)
+                {
+                    if emitted.insert(sk) {
+                        emit_solid_to(&mut graph, part, sk, &mesh_local, &mut any_geom);
+                    }
+                }
+            }
+        });
+        for &sk in &brep_result.root_solids {
+            if !emitted.contains(&sk) {
+                emit_solid_to(&mut graph, scene_parent, sk, &default_xform, &mut any_geom);
+            }
+        }
+    } else {
+        for &sk in &brep_result.root_solids {
+            if let Some(solid) = reg.solids.get(sk) {
+                let final_mesh = match mesh_solid_shell(sk, solid.outer_shell, &reg, &mesh_config, &total_heal) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                log::info!(
+                    "[STEP] mesh: {} verts, {} tris",
+                    final_mesh.vertices.len(),
+                    final_mesh.indices.len() / 4,
                 );
-                let vert_count = mesh.vertices.len();
-                let normal_count = mesh.normals.len();
-                let tri_count = mesh.indices.len() / 4;
-                graph.add_child(
-                    comp,
-                    NodeData::Coordinate3(Coordinate3Node {
-                        point: mesh.vertices,
-                    }),
-                );
-                if !mesh.normals.is_empty() {
+                append_props_mesh(&final_mesh, &mut props_vertices, &mut props_indices);
+                let shell_step_id = reg
+                    .shells
+                    .get(solid.outer_shell)
+                    .and_then(|s| s.step_id);
+                let shell_color = shell_step_id
+                    .and_then(|sid| shell_styles.get(&sid))
+                    .map(|style| [style.diffuse.x, style.diffuse.y, style.diffuse.z]);
+                let mut instances: Vec<&assembly::AssemblyTransform> = shell_step_id
+                    .map(|sid| {
+                        shell_instances
+                            .iter()
+                            .filter(|(id, _)| *id == sid)
+                            .map(|(_, xform)| xform)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if instances.is_empty() {
+                    instances.push(&default_xform);
+                }
+                for xform in instances {
+                    let mut mesh = final_mesh.clone();
+                    apply_mesh_transform(&mut mesh, xform);
+                    any_geom = true;
+                    let comp = graph.add_child(root, NodeData::Separator(SeparatorNode));
                     graph.add_child(
                         comp,
-                        NodeData::Normal(NormalNode::from_vectors(mesh.normals)),
+                        NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
                     );
+                    add_mesh_nodes(&mut graph, comp, &mesh);
                 }
-                let ifs = IndexedFaceSetNode {
-                    coord_index: mesh.indices,
-                };
-                log::debug!(
-                    "[STEP] scene mesh: {} verts, {} normals, {} tris ({} KB indices)",
-                    vert_count,
-                    normal_count,
-                    tri_count,
-                    tri_count * 12 / 1024,
-                );
-                graph.add_child(comp, NodeData::IndexedFaceSet(ifs));
             }
         }
     }
@@ -390,6 +480,16 @@ fn exchange_to_scene_graph(
         &mesh_config,
     );
 
+    // Mesh wireframe overlay for debugging degenerate faces
+    if !props_vertices.is_empty() && !props_indices.is_empty() {
+        brep::overlay::build_mesh_wireframe(
+            &mut graph,
+            root,
+            &props_vertices,
+            &props_indices,
+        );
+    }
+
     if import_report.skipped_parse_entities > 0
         || import_report.skipped_faces > 0
         || import_report.skipped_edges > 0
@@ -417,10 +517,16 @@ fn exchange_to_scene_graph(
     if let Some(root_entry) = graph.get_mut(root) {
         root_entry.display_mode = Some(DisplayMode::Shaded);
     }
-    Ok(graph)
+
+    Ok(StepImportResult {
+        graph,
+        report: import_report,
+        assembly_tree,
+        entities: exchange.entities,
+    })
 }
 
-fn apply_mesh_transform(mesh: &mut mesh_result::MeshResult, xform: &assembly::AssemblyTransform) {
+fn apply_mesh_transform(mesh: &mut MeshResult, xform: &assembly::AssemblyTransform) {
     for v in &mut mesh.vertices {
         *v = xform.transform_point(*v);
     }
@@ -430,5 +536,105 @@ fn apply_mesh_transform(mesh: &mut mesh_result::MeshResult, xform: &assembly::As
         if len > 1e-10 {
             *n = t * (1.0 / len);
         }
+    }
+}
+
+fn solid_for_shell_step_id(
+    reg: &BRepRegistry,
+    root_solids: &[SolidKey],
+    shell_step_id: u64,
+) -> Option<SolidKey> {
+    for &sk in root_solids {
+        let solid = reg.solids.get(sk)?;
+        let sid = reg.shells.get(solid.outer_shell)?.step_id?;
+        if sid == shell_step_id {
+            return Some(sk);
+        }
+    }
+    None
+}
+
+fn mesh_solid_shell(
+    sk: SolidKey,
+    outer_shell: crate::step::brep::topo::ShellKey,
+    reg: &BRepRegistry,
+    mesh_config: &BRepMeshConfig,
+    heal: &HealReport,
+) -> Option<MeshResult> {
+    let solid = reg.solids.get(sk)?;
+    let base_mesh = brep::mesh::mesh_brep_shell(outer_shell, reg, mesh_config, &heal.skip_face_keys);
+    if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
+        return None;
+    }
+    let void_meshes: Vec<_> = solid
+        .void_shells
+        .iter()
+        .map(|&vk| brep::mesh::mesh_brep_shell(vk, reg, mesh_config, &heal.skip_face_keys))
+        .collect();
+    let void_result =
+        brep::mesh::void_subtract::subtract_void_meshes(&base_mesh, &void_meshes);
+    if void_result.removed_tris > 0 {
+        log::info!(
+            "[STEP] void subtraction: removed {} tris, kept {}",
+            void_result.removed_tris,
+            void_result.mesh.indices.len() / 4,
+        );
+    }
+    Some(void_result.mesh)
+}
+
+fn append_props_mesh(mesh: &MeshResult, props_vertices: &mut Vec<Vec3>, props_indices: &mut Vec<i32>) {
+    let base_offset = props_vertices.len() as i32;
+    props_vertices.extend_from_slice(&mesh.vertices);
+    for chunk in mesh.indices.chunks(4) {
+        if chunk.len() >= 3 {
+            props_indices.extend_from_slice(&[
+                chunk[0] + base_offset,
+                chunk[1] + base_offset,
+                chunk[2] + base_offset,
+                -1,
+            ]);
+        }
+    }
+}
+
+fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: &MeshResult) {
+    let vert_count = mesh.vertices.len();
+    let normal_count = mesh.normals.len();
+    let tri_count = mesh.indices.len() / 4;
+    graph.add_child(
+        comp,
+        NodeData::Coordinate3(Coordinate3Node {
+            point: mesh.vertices.clone(),
+        }),
+    );
+    if !mesh.normals.is_empty() {
+        graph.add_child(
+            comp,
+            NodeData::Normal(NormalNode::from_vectors(mesh.normals.clone())),
+        );
+    }
+    graph.add_child(
+        comp,
+        NodeData::IndexedFaceSet(IndexedFaceSetNode {
+            coord_index: mesh.indices.clone(),
+        }),
+    );
+    log::debug!(
+        "[STEP] scene mesh: {} verts, {} normals, {} tris ({} KB indices)",
+        vert_count,
+        normal_count,
+        tri_count,
+        tri_count * 12 / 1024,
+    );
+}
+
+/// Scene graph transform from assembly world matrix (translation + rotation; unit scale).
+fn transform_node_from_mat4(m: Mat4) -> TransformNode {
+    TransformNode {
+        translation: Vec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z),
+        rotation: m,
+        scale: Vec3::ONE,
+        center: Vec3::ZERO,
     }
 }
