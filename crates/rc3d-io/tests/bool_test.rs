@@ -80,13 +80,6 @@ fn test_boxes_intersection() {
     let shell_b = make_box_shell(0.0, 0.0, 0.0, 2.0, 2.0, 2.0);
     let entities = EntityIndex::new();
 
-    // Debug: check tessellation produces valid mesh
-    let test_faces: Vec<_> = shell_b.faces.iter().cloned().collect();
-    let debug_mesh = rc3d_io::step::tessellate::tessellate_faces(&test_faces, &entities);
-    eprintln!("Target mesh B: {} verts, {} indices ({} tris)",
-        debug_mesh.vertices.len(), debug_mesh.indices.len(),
-        debug_mesh.indices.len() / 4);
-
     let result = boolean(&[shell_a], &[shell_b], &entities, &entities, BoolOp::Intersection);
     assert!(!result.is_empty, "intersection of contained boxes should not be empty");
     let fc: usize = result.shells.iter().map(|s| s.faces.len()).sum();
