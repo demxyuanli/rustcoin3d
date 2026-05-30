@@ -105,12 +105,16 @@ fn parse_subsuper_external_prefix<'a>(
     if rest.starts_with(';') {
         rest = &rest[1..];
     }
-    sort_records_alphabetically(&mut records);
+    // Keep original STEP order — the last record is the most-derived subtype.
+    // Alphabetical sorting (removed) causes supertypes like "SURFACE" to be
+    // selected as the primary record instead of concrete types like
+    // "B_SPLINE_SURFACE_WITH_KNOTS".
+    let leaf_index = records.len().saturating_sub(1);
     Ok((
         StepInstance {
             id,
             records,
-            mapping: ComplexMapping::External,
+            mapping: ComplexMapping::Internal { leaf_index },
         },
         rest,
     ))
@@ -142,10 +146,6 @@ fn parse_subsuper_internal<'a>(
         },
         rest,
     ))
-}
-
-fn sort_records_alphabetically(records: &mut [Record]) {
-    records.sort_by(|a, b| a.keyword.cmp(&b.keyword));
 }
 
 fn extract_keyword_param_pairs(inner: &str, at: Span) -> ParseResult<Vec<Record>> {

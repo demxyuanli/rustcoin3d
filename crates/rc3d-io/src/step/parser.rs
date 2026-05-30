@@ -214,10 +214,9 @@ mod tests {
         ))
         .unwrap();
         let e = ex.entities.get(&1).unwrap();
-        // Neither SUPER1, SUPER2, nor ENTITY is in PRIORITY_TYPES.
-        // External mapping sorts alphabetically: [ENTITY, SUPER1, SUPER2].
-        // Leaf (last) = SUPER2, which has no params → fallback to leaf.
-        assert_eq!(e.name, "SUPER2");
+        // Records are in original STEP order: [SUPER1, SUPER2, ENTITY].
+        // Leaf (last) = ENTITY (most-derived concrete type with params).
+        assert_eq!(e.name, "ENTITY");
     }
 
     #[test]

@@ -118,7 +118,6 @@ fn select_primary_record_structured(
     if pairs.len() == 1 {
         return Ok((0, pairs[0].0.clone()));
     }
-    // Trust the parser's leaf_index (most-derived subtype in STEP ordering).
     let idx = leaf_index.min(pairs.len() - 1);
     Ok((idx, pairs[idx].0.clone()))
 }

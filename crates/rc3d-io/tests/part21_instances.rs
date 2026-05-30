@@ -47,7 +47,7 @@ CURVE()\n\
 fn parse_subsuper_format1_external() {
     let input = "#1 = (LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.MILLI.,.METRE.))ENTITY(1.0, 2.0);";
     let (inst, rest) = parse_instance(input).unwrap();
-    assert_eq!(inst.mapping, ComplexMapping::External);
+    assert_eq!(inst.mapping, ComplexMapping::Internal { leaf_index: inst.records.len().saturating_sub(1) });
     assert!(inst.records.len() >= 3);
     assert!(rest.trim().is_empty() || rest.trim().starts_with('#'));
 }
