@@ -26,7 +26,6 @@ use crate::step::value::StepValue;
 use crate::step::StepError;
 use crate::step::geom;
 use crate::step::topology;
-use crate::step::nurbs::NurbsSurface;
 use super::registry::BRepRegistry;
 use super::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
