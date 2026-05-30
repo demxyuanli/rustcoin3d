@@ -534,6 +534,55 @@ impl CurveGeom {
         cross_mag / (d1_len * d1_len * d1_len)
     }
 
+    /// Combined position, first, and second derivative in one call.
+    /// For BSpline curves, this avoids 3× redundant Cox-de Boor evaluation
+    /// vs calling `d0`, `d1`, `d2` separately.
+    pub fn d012(&self, t: f32) -> (Vec3, Vec3, Vec3) {
+        match self {
+            CurveGeom::BSpline { degree, control_points, knots, weights } => {
+                bspline_d012(*degree, control_points, knots, weights.as_deref(), t)
+            }
+            CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
+                let theta = t * std::f32::consts::TAU;
+                let twopi = std::f32::consts::TAU;
+                let (c, s) = (theta.cos(), theta.sin());
+                let d0 = *x_dir * (*radius * c) + *y_dir * (*radius * s);
+                let d1 = twopi * *radius * (-s * *x_dir + c * *y_dir);
+                let d2 = -(twopi * twopi) * *radius * (c * *x_dir + s * *y_dir);
+                (d0, d1, d2)
+            }
+            CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let theta = t * std::f32::consts::TAU;
+                let twopi = std::f32::consts::TAU;
+                let (c, s) = (theta.cos(), theta.sin());
+                let d0 = *x_dir * (*semi_major * c) + *y_dir * (*semi_minor * s);
+                let d1 = twopi * (-*semi_major * s * *x_dir + *semi_minor * c * *y_dir);
+                let d2 = -(twopi * twopi) * (*semi_major * c * *x_dir + *semi_minor * s * *y_dir);
+                (d0, d1, d2)
+            }
+            CurveGeom::Line { origin, direction } => {
+                (*origin + *direction * t, *direction, Vec3::ZERO)
+            }
+            CurveGeom::Trimmed { basis, t_min, t_max } => {
+                let (t_eval, dt) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
+                let (d0, d1, d2) = basis.d012(t_eval);
+                (d0, d1 * dt, d2 * (dt * dt))
+            }
+            CurveGeom::Composite { segments, cached_lengths } => {
+                if let Some((idx, t_local, w)) = find_composite_segment(segments, cached_lengths, t) {
+                    let (seg, rev) = &segments[idx];
+                    let t_eval = if *rev { 1.0 - t_local } else { t_local };
+                    let (d0, d1, d2) = seg.d012(t_eval);
+                    let scale = if *rev { -1.0 / w } else { 1.0 / w };
+                    (d0, d1 * scale, d2 / (w * w))
+                } else {
+                    (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+                }
+            }
+            CurveGeom::Polyline { .. } => (self.d0(t), self.d1(t), self.d2(t)),
+        }
+    }
+
     /// Adaptive chordal arc length between t0 and t1.
     /// Uses `sample_adaptive` and sums chord lengths of the result points.
     pub fn arc_length(&self, t0: f32, t1: f32) -> f32 {

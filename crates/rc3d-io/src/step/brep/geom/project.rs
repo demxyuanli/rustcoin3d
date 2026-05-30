@@ -22,10 +22,10 @@ pub fn project_point_on_curve(
     curve: &CurveGeom,
     target: Vec3,
 ) -> Vec<(f32, f32)> {
-    const SEEDS: usize = 8;
+    const SEEDS: usize = 4;
     const MAX_RESULTS: usize = 3;
 
-    // Seed points: uniform + endpoints
+    // Seed points: uniform + endpoints (6 total, down from 10)
     let mut seeds: Vec<f32> = Vec::with_capacity(SEEDS + 2);
     seeds.push(0.0);
     for i in 0..SEEDS {
@@ -68,9 +68,7 @@ fn newton_curve(curve: &CurveGeom, target: Vec3, mut t: f32) -> Option<(f32, f32
     const TOL_DT: f32 = 1e-12;
 
     for _ in 0..MAX_ITER {
-        let c = curve.d0(t);
-        let c1 = curve.d1(t);
-        let c2 = curve.d2(t);
+        let (c, c1, c2) = curve.d012(t);
         let diff = c - target;
 
         // Stationarity condition: (C(t) - P)·C'(t) = 0
@@ -85,12 +83,12 @@ fn newton_curve(curve: &CurveGeom, target: Vec3, mut t: f32) -> Option<(f32, f32
         t = (t - dt).clamp(0.0, 1.0);
 
         if f_val.abs() < TOL_F || dt.abs() < TOL_DT {
-            return Some((t, (curve.d0(t) - target).length_squared()));
+            return Some((t, (curve.d012(t).0 - target).length_squared()));
         }
     }
 
     // Check the final point
-    let d2 = (curve.d0(t) - target).length_squared();
+    let d2 = (curve.d012(t).0 - target).length_squared();
     let d2_start = (curve.d0(0.0) - target).length_squared();
     let d2_end = (curve.d0(1.0) - target).length_squared();
     // Result should be comparable to endpoints
@@ -145,8 +143,11 @@ pub fn project_point_on_surface(
     let v_lo_s = v_lo.max(-100.0);
     let v_hi_s = v_hi.min(100.0);
 
-    let coarse = 4;
-    let mut candidates: Vec<(f32, f32, f32)> = Vec::with_capacity(coarse * coarse);
+    // 3×3 grid = 9 seeds (down from 25). Newton converges quadratically
+    // from nearby seeds; fewer seeds reduces redundant convergence.
+    let coarse = 2;
+    let n_seeds = (coarse + 1) * (coarse + 1);
+    let mut candidates: Vec<(f32, f32, f32)> = Vec::with_capacity(n_seeds);
 
     for i in 0..=coarse {
         let u = u_lo + (u_hi - u_lo) * i as f32 / coarse as f32;
@@ -209,9 +210,7 @@ fn newton_surface(
     const TOL_DX: f32 = 1e-8;
 
     for _ in 0..MAX_ITER {
-        let s = surface.d0_native(u, v);
-        let (su, sv) = surface.d1_native(u, v);
-        let (suu, suv, svv) = surface.d2(u, v);
+        let (s, su, sv, suu, suv, svv) = surface.d0_d1_d2_native(u, v);
         let diff = s - target;
 
         let f_val = diff.dot(su);

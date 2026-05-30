@@ -118,6 +118,43 @@ impl NurbsSurface {
         (pos, du, dv)
     }
 
+    /// Combined position + first + second derivatives in one pass.
+    ///
+    /// Shares `find_span` + `bspline_bases` between position and first derivatives.
+    /// Second derivatives use finite differences of the first derivatives (4 extra
+    /// `evaluate_with_derivative` calls at u±eps, v±eps), but the position evaluation
+    /// is done only once (vs 5+ times when calling `evaluate` + `derivative` + `d2`
+    /// separately through `SurfaceGeom::*` methods).
+    pub fn evaluate_with_hessian(
+        &self, u: f32, v: f32,
+    ) -> (Vec3, Vec3, Vec3, Vec3, Vec3, Vec3) {
+        let (pos, du, dv) = self.evaluate_with_derivative(u, v);
+
+        // Finite-difference second derivatives from first derivatives
+        let eps = 1e-4f32;
+        let u_min = self.knots_u[self.degree_u];
+        let u_max = self.knots_u[self.knots_u.len() - self.degree_u - 1];
+        let v_min = self.knots_v[self.degree_v];
+        let v_max = self.knots_v[self.knots_v.len() - self.degree_v - 1];
+
+        let up = (u + eps).clamp(u_min, u_max);
+        let um = (u - eps).clamp(u_min, u_max);
+        let vp = (v + eps).clamp(v_min, v_max);
+        let vm = (v - eps).clamp(v_min, v_max);
+
+        let (_pu, du_p, dv_p) = self.evaluate_with_derivative(up, v);
+        let (_mu, du_m, dv_m) = self.evaluate_with_derivative(um, v);
+        let (_pv, du_vp, dv_vp) = self.evaluate_with_derivative(u, vp);
+        let (_mv, du_vm, dv_vm) = self.evaluate_with_derivative(u, vm);
+
+        let inv_2eps = 1.0 / (2.0 * eps);
+        let duu = (du_p - du_m) * inv_2eps;
+        let duv = (du_vp - du_vm) * inv_2eps;
+        let dvv = (dv_vp - dv_vm) * inv_2eps;
+
+        (pos, du, dv, duu, duv, dvv)
+    }
+
     /// Compute first-order partial derivatives ∂S/∂u and ∂S/∂v at (u, v).
     /// Uses analytical B-spline derivative formulas for accuracy and efficiency.
     pub fn derivative(&self, u: f32, v: f32) -> (Vec3, Vec3) {

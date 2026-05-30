@@ -238,6 +238,37 @@ impl SurfaceGeom {
         self.d0(un, vn)
     }
 
+    /// Combined position + first + second derivatives at native parameters.
+    /// For BSpline, uses `evaluate_with_hessian` to share basis computation.
+    /// For analytical surfaces, calls `d0`, `d1`, `d2` separately (cheap).
+    pub fn d0_d1_d2_native(&self, u: f32, v: f32) -> (Vec3, Vec3, Vec3, Vec3, Vec3, Vec3) {
+        match self {
+            SurfaceGeom::BSpline(nurbs) => {
+                let u_k = map_to_knot_domain(
+                    &nurbs.knots_u, nurbs.degree_u, nurbs.u_count(), u,
+                );
+                let v_k = map_to_knot_domain(
+                    &nurbs.knots_v, nurbs.degree_v, nurbs.v_count(), v,
+                );
+                let u_w = knot_domain_width(&nurbs.knots_u, nurbs.degree_u, nurbs.u_count());
+                let v_w = knot_domain_width(&nurbs.knots_v, nurbs.degree_v, nurbs.v_count());
+                let (pos, du, dv, duu, duv, dvv) =
+                    nurbs.evaluate_with_hessian(u_k, v_k);
+                (
+                    pos,
+                    du * u_w, dv * v_w,
+                    duu * u_w * u_w, duv * u_w * v_w, dvv * v_w * v_w,
+                )
+            }
+            _ => {
+                let s = self.d0_native(u, v);
+                let (su, sv) = self.d1_native(u, v);
+                let (suu, suv, svv) = self.d2(u, v);
+                (s, su, sv, suu, suv, svv)
+            }
+        }
+    }
+
     /// Native U period for closed/periodic surfaces (None if not periodic).
     pub fn native_u_period(&self) -> Option<f32> {
         match self {
@@ -900,7 +931,22 @@ impl SurfaceGeom {
                 (duu, duv, dvv)
             }
 
-            // BSpline/Extrusion/Revolution/Offset: numerical fallback.
+            // BSpline: use evaluate_with_hessian (shares basis computation).
+            SurfaceGeom::BSpline(nurbs) => {
+                let u_k = map_to_knot_domain(
+                    &nurbs.knots_u, nurbs.degree_u, nurbs.u_count(), u,
+                );
+                let v_k = map_to_knot_domain(
+                    &nurbs.knots_v, nurbs.degree_v, nurbs.v_count(), v,
+                );
+                let u_w = knot_domain_width(&nurbs.knots_u, nurbs.degree_u, nurbs.u_count());
+                let v_w = knot_domain_width(&nurbs.knots_v, nurbs.degree_v, nurbs.v_count());
+                let (_pos, _du, _dv, duu, duv, dvv) =
+                    nurbs.evaluate_with_hessian(u_k, v_k);
+                (duu * u_w * u_w, duv * u_w * v_w, dvv * v_w * v_w)
+            }
+
+            // Extrusion/Revolution/Offset: numerical fallback.
             _ => {
                 let eps = 1e-4f32;
                 let (du_p, dv_p) = self.d1(u + eps, v);
