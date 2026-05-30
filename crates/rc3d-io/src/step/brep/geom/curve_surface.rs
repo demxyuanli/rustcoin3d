@@ -2196,4 +2196,62 @@ mod tests {
         // (u=2, v=4)
         assert!((grid[1][1] - Vec3::new(2.0, 4.0, 0.0)).length() < 1e-6);
     }
+
+    // ── Offset surface tests ────────────────────────────
+
+    #[test]
+    fn test_offset_plane_d0_normal() {
+        let plane = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let offset = SurfaceGeom::Offset {
+            basis: Box::new(plane),
+            distance: 2.0,
+        };
+        let p = offset.d0(0.5, 0.5);
+        // Offset plane at distance 2 along Z: point should be at z=2
+        assert!((p.z - 2.0).abs() < 1e-4, "offset plane d0 z should be 2.0, got {}", p.z);
+
+        let n = offset.normal(0.5, 0.5);
+        assert!((n.z.abs() - 1.0).abs() < 1e-4, "offset normal should be ±Z");
+    }
+
+    #[test]
+    fn test_offset_cylinder_d0() {
+        let cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 1.0,
+        };
+        let offset = SurfaceGeom::Offset {
+            basis: Box::new(cyl),
+            distance: 0.5,
+        };
+        // At u=0 (theta=0), v=0: point should be at radius 1.5 on X axis
+        let p = offset.d0(0.0, 0.0);
+        assert!((p.x - 1.5).abs() < 1e-3, "offset cylinder x should be ~1.5, got {}", p.x);
+    }
+
+    #[test]
+    fn test_offset_project_roundtrip() {
+        let plane = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let offset = SurfaceGeom::Offset {
+            basis: Box::new(plane),
+            distance: 1.0,
+        };
+        let target = Vec3::new(0.3, 0.4, 1.0);
+        let uv = offset.project(target);
+        assert!(uv.is_some(), "offset project should return Some");
+        let (u, v) = uv.unwrap();
+        // Use d0_native to evaluate back from native UV
+        let p_back = offset.d0_native(u, v);
+        let dist = (p_back - target).length();
+        assert!(dist < 0.1, "offset project roundtrip error {} too large", dist);
+    }
 }
