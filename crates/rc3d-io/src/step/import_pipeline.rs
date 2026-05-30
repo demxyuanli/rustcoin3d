@@ -183,7 +183,7 @@ pub fn emit_scene_meshes(
             comp,
             NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
         );
-        add_mesh_nodes(graph, comp, &mesh);
+        add_mesh_nodes(graph, comp, mesh);
     };
 
     if use_assembly_hierarchy {
@@ -293,7 +293,7 @@ pub fn emit_scene_meshes(
                         comp,
                         NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
                     );
-                    add_mesh_nodes(graph, comp, &mesh);
+                    add_mesh_nodes(graph, comp, mesh);
                 }
             }
         }
@@ -541,26 +541,26 @@ fn append_props_mesh(mesh: &MeshResult, props_vertices: &mut Vec<Vec3>, props_in
     }
 }
 
-fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: &MeshResult) {
+fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: MeshResult) {
     let vert_count = mesh.vertices.len();
     let normal_count = mesh.normals.len();
     let tri_count = mesh.indices.len() / 4;
     graph.add_child(
         comp,
         NodeData::Coordinate3(Coordinate3Node {
-            point: mesh.vertices.clone(),
+            point: mesh.vertices,  // moved, not cloned
         }),
     );
     if !mesh.normals.is_empty() {
         graph.add_child(
             comp,
-            NodeData::Normal(NormalNode::from_vectors(mesh.normals.clone())),
+            NodeData::Normal(NormalNode::from_vectors(mesh.normals)),  // moved
         );
     }
     graph.add_child(
         comp,
         NodeData::IndexedFaceSet(IndexedFaceSetNode {
-            coord_index: mesh.indices.clone(),
+            coord_index: mesh.indices,  // moved
         }),
     );
     log::debug!(
