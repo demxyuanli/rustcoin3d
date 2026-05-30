@@ -335,15 +335,55 @@ impl SurfaceGeom {
             }
             SurfaceGeom::Offset { basis, distance } => {
                 let (db_du, db_dv) = basis.d1(u, v);
-                let eps = 1e-3f32;
-                let n_u1 = basis.normal(u + eps, v);
-                let n_u0 = basis.normal(u - eps, v);
-                let n_v1 = basis.normal(u, v + eps);
-                let n_v0 = basis.normal(u, v - eps);
-                let mut dn_du = (n_u1 - n_u0) / (2.0 * eps);
-                let mut dn_dv = (n_v1 - n_v0) / (2.0 * eps);
-                if dn_du.is_nan() { dn_du = Vec3::ZERO; }
-                if dn_dv.is_nan() { dn_dv = Vec3::ZERO; }
+                let (db_uu, db_uv, db_vv) = basis.d2(u, v);
+
+                // First fundamental form
+                let e = db_du.dot(db_du);
+                let f = db_du.dot(db_dv);
+                let g = db_dv.dot(db_dv);
+                let det1 = e * g - f * f;
+
+                if det1.abs() < 1e-10 {
+                    // Degenerate metric — fall back to numerical differentiation
+                    log::warn!("offset d1: degenerate metric (det={det1}), using numerical fallback");
+                    let eps = 1e-3f32;
+                    let n_u1 = basis.normal(u + eps, v);
+                    let n_u0 = basis.normal(u - eps, v);
+                    let n_v1 = basis.normal(u, v + eps);
+                    let n_v0 = basis.normal(u, v - eps);
+                    let mut dn_du = (n_u1 - n_u0) / (2.0 * eps);
+                    let mut dn_dv = (n_v1 - n_v0) / (2.0 * eps);
+                    if dn_du.is_nan() { dn_du = Vec3::ZERO; }
+                    if dn_dv.is_nan() { dn_dv = Vec3::ZERO; }
+                    let d = *distance;
+                    return (db_du + dn_du * d, db_dv + dn_dv * d);
+                }
+
+                // Surface normal (unnormalized cross, then normalize)
+                let n = db_du.cross(db_dv);
+                let n_len = n.length();
+                let n_hat = n * (1.0 / n_len.max(1e-12));
+
+                // Second fundamental form
+                let big_l = db_uu.dot(n_hat);
+                let big_m = db_uv.dot(n_hat);
+                let big_n = db_vv.dot(n_hat);
+
+                // Weingarten matrix W = I⁻¹ · II
+                // W = [W11 W12; W21 W22] where
+                //   W11 = (g*L - f*M) / det1,  W12 = (g*M - f*N) / det1
+                //   W21 = (e*M - f*L) / det1,  W22 = (e*N - f*M) / det1
+                let inv_det = 1.0 / det1;
+                let w11 = (g * big_l - f * big_m) * inv_det;
+                let w12 = (g * big_m - f * big_n) * inv_det;
+                let w21 = (e * big_m - f * big_l) * inv_det;
+                let w22 = (e * big_n - f * big_m) * inv_det;
+
+                // dn/du = -(W11 * db_du + W21 * db_dv)
+                // dn/dv = -(W12 * db_du + W22 * db_dv)
+                let dn_du = (db_du * w11 + db_dv * w21) * -1.0;
+                let dn_dv = (db_du * w12 + db_dv * w22) * -1.0;
+
                 let d = *distance;
                 (db_du + dn_du * d, db_dv + dn_dv * d)
             }
@@ -1305,6 +1345,38 @@ mod tests {
         // Offset < radius should be safe
         assert!(!offset_may_self_intersect(&cyl, 0.5, 8),
             "Offset 0.5 < radius 1.0 should not self-intersect");
+    }
+
+    #[test]
+    fn test_offset_d1_weingarten() {
+        // Offset cylinder: r=2.0, offset=0.5 → effective r=2.5.
+        // d1 du of the offset surface should match a cylinder with r=2.5.
+        let cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0,
+        };
+        let offset = SurfaceGeom::Offset {
+            basis: Box::new(cyl), distance: 0.5,
+        };
+
+        let effective_cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.5,
+        };
+
+        for &(u, v) in &[(0.0, 0.0), (0.25, 0.5), (0.5, 1.0), (0.75, -0.3)] {
+            let (du_off, dv_off) = offset.d1(u, v);
+            let (du_eff, dv_eff) = effective_cyl.d1(u, v);
+
+            let du_err = (du_off - du_eff).length();
+            let dv_err = (dv_off - dv_eff).length();
+            assert!(
+                du_err < 0.01,
+                "offset cylinder du mismatch at ({u},{v}): err={du_err}"
+            );
+            assert!(
+                dv_err < 0.01,
+                "offset cylinder dv mismatch at ({u},{v}): err={dv_err}"
+            );
+        }
     }
 
     #[test]
