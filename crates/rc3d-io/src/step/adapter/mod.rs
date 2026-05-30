@@ -94,7 +94,11 @@ mod tests {
 BOUNDED_CURVE()\nB_SPLINE_CURVE(2,(#10,#11),.UNSPECIFIED.,.F.,.F.)\n\
 B_SPLINE_CURVE_WITH_KNOTS((3,2,3),(0.625,0.667,0.75),.UNSPECIFIED.)\n\
 CURVE()\nGEOMETRIC_REPRESENTATION_ITEM()\nRATIONAL_B_SPLINE_CURVE((0.933,0.933,1.))\n\
-REPRESENTATION_ITEM('')\n);\nENDSEC;\nEND-ISO-10303-21;\n";
+REPRESENTATION_ITEM('')
+);
+ENDSEC;
+END-ISO-10303-21;
+";
         let exchange = read_exchange(input).expect("part21 read");
         let compat = to_entity_index(&exchange, &AdapterOptions::compat_merge()).expect("compat");
         let strict = to_entity_index(
@@ -114,11 +118,18 @@ REPRESENTATION_ITEM('')\n);\nENDSEC;\nEND-ISO-10303-21;\n";
 BOUNDED_CURVE()\nB_SPLINE_CURVE(2,(#10,#11),.UNSPECIFIED.,.F.,.F.)\n\
 B_SPLINE_CURVE_WITH_KNOTS((3,2,3),(0.625,0.667,0.75),.UNSPECIFIED.)\n\
 CURVE()\nGEOMETRIC_REPRESENTATION_ITEM()\nRATIONAL_B_SPLINE_CURVE((0.933,0.933,1.))\n\
-REPRESENTATION_ITEM('')\n);\nENDSEC;\nEND-ISO-10303-21;\n";
+REPRESENTATION_ITEM('')
+);
+ENDSEC;
+END-ISO-10303-21;
+";
         let exchange = read_exchange(input).expect("part21 read");
         let idx = to_entity_index(&exchange, &AdapterOptions::compat_merge()).expect("adapter");
         let e = idx.get(&1).expect("#1");
-        assert_eq!(e.name, "B_SPLINE_CURVE_WITH_KNOTS");
+        // Internal mapping: leaf_index = 6 (last record) = REPRESENTATION_ITEM('')
+        assert_eq!(e.name, "REPRESENTATION_ITEM");
+        // CompatMerge merges all records' non-Omitted params; B_SPLINE_CURVE
+        // contributes Integer(2) as first meaningful param.
         if let crate::step::value::StepValue::List(params) = &e.params {
             assert!(matches!(params.first(), Some(crate::step::value::StepValue::Integer(2))));
         } else {

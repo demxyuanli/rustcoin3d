@@ -3,7 +3,6 @@
 
 use rc3d_core::math::Vec3;
 use rc3d_io::step::brep::build_brep;
-use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
 use rc3d_io::step::brep::mesh::report::ShellMeshReport;
 use rc3d_io::step::brep::hausdorff_meshes;
@@ -20,6 +19,7 @@ fn test_data(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "requires OCCT-generated reference STL (shape-tri.stl) not in repository"]
 fn compare_shape_vs_occt() {
     // 1. Parse Shape.step and build mesh
     let step_path = test_data("Shape.step");
@@ -27,8 +27,8 @@ fn compare_shape_vs_occt() {
     let exchange =
         parser::parse_exchange_with_options(&text, &StepImportOptions::default()).expect("parse");
     let brep = build_brep(&exchange.entities).expect("brep");
-    let mut reg = brep.registry;
-    let mut skip_face_keys = Vec::new();
+    let reg = brep.registry;
+    let skip_face_keys = Vec::new();
     // Skip heal — it incorrectly removes circle edges (v_start==v_end) from wires,
     // collapsing 4-edge loops to 2-edge degenerate loops.
     // for &sk in &brep.root_solids {
@@ -47,11 +47,6 @@ fn compare_shape_vs_occt() {
             our_mesh = out.mesh;
         }
     }
-
-    // 1b. Export our mesh as STL
-    let our_stl_path = test_data("shape-our.stl");
-    write_binary_stl(&our_mesh, &our_stl_path).expect("write stl");
-    println!("  Exported our STL to: {:?}", our_stl_path);
 
     // 2. Load OCCT reference STL
     let ref_path = test_data("shape-tri.stl");
@@ -99,41 +94,4 @@ fn compare_shape_vs_occt() {
                 fs.face_key, kind, fs.tri_count, fs.max_chord_error, fs.grid_fallback, fs.uv_source);
         }
     }
-}
-
-fn write_binary_stl(mesh: &MeshResult, path: &std::path::Path) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path)?;
-    // 80-byte header
-    f.write_all(&[0u8; 80])?;
-    // Triangle count
-    let tri_count = mesh.indices.len() / 4;
-    f.write_all(&(tri_count as u32).to_le_bytes())?;
-    // Triangles
-    for chunk in mesh.indices.chunks(4) {
-        if chunk.len() < 3 {
-            continue;
-        }
-        let i0 = chunk[0] as usize;
-        let i1 = chunk[1] as usize;
-        let i2 = chunk[2] as usize;
-        let v0 = mesh.vertices.get(i0).copied().unwrap_or(Vec3::ZERO);
-        let v1 = mesh.vertices.get(i1).copied().unwrap_or(Vec3::ZERO);
-        let v2 = mesh.vertices.get(i2).copied().unwrap_or(Vec3::ZERO);
-        // Normal (cross product edges)
-        let n = (v1 - v0).cross(v2 - v0);
-        let n = if n.length_squared() > 1e-12 { n.normalize() } else { Vec3::Z };
-        f.write_all(&n.x.to_le_bytes())?;
-        f.write_all(&n.y.to_le_bytes())?;
-        f.write_all(&n.z.to_le_bytes())?;
-        // Vertices
-        for v in [v0, v1, v2] {
-            f.write_all(&v.x.to_le_bytes())?;
-            f.write_all(&v.y.to_le_bytes())?;
-            f.write_all(&v.z.to_le_bytes())?;
-        }
-        // Attribute
-        f.write_all(&[0u8; 2])?;
-    }
-    Ok(())
 }

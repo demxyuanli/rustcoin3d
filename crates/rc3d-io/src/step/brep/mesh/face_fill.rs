@@ -1721,10 +1721,16 @@ fn triangulate_plane_center_fan_from_boundary(
         .map(|(_, p)| (*p - centroid).length())
         .collect();
     radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_r = radii[radii.len() / 2].max(1e-6);
+    // Use the full radius range with padding to filter only extreme outliers.
+    // The previous median ± 20% filter was too aggressive for non-circular
+    // faces (e.g. squares: edge midpoints are closer to center than corners).
+    let min_r = radii.first().copied().unwrap_or(0.0);
+    let max_r = radii.last().copied().unwrap_or(0.0);
+    let range = (max_r - min_r).max(min_r * 0.5).max(1e-3);
+    let tol = range * 0.5;
     ring.retain(|(_, p)| {
         let r = (*p - centroid).length();
-        (r - median_r).abs() <= median_r * 0.2 + 1e-3
+        r >= min_r - tol && r <= max_r + tol
     });
     if ring.len() < 3 {
         return Vec::new();
@@ -1746,13 +1752,21 @@ fn triangulate_plane_center_fan_from_boundary(
         normal_vec = -normal_vec;
     }
 
-    for (gi, pt) in &ring {
+    for (gi, _pt) in &ring {
         if *gi < global_vertices.len() {
-            global_vertices[*gi] = *pt;
+            // Do NOT overwrite shared vertex positions — boundary vertices are
+            // shared across adjacent faces and modifying them breaks watertightness.
             if global_normals.len() <= *gi {
                 global_normals.resize(*gi + 1, normal_vec);
             }
-            global_normals[*gi] = normal_vec;
+            // Accumulate face normal for smooth shading at shared vertices.
+            let prev = global_normals[*gi];
+            let blended = (prev + normal_vec).normalize();
+            if blended.length_squared() > 0.5 {
+                global_normals[*gi] = blended;
+            } else {
+                global_normals[*gi] = normal_vec;
+            }
         }
     }
 

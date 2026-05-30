@@ -1576,6 +1576,31 @@ fn mesh_uv_bbox_grid(
 
 // -- Sutherland-Hodgman polygon clipping helpers for partial trim cells --
 
+/// Check if a 2D polygon is convex by verifying all cross products have the same sign.
+fn is_polygon_convex(poly: &[(f32, f32)]) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let n = poly.len();
+    let mut positive = false;
+    let mut negative = false;
+    for i in 0..n {
+        let p0 = poly[i];
+        let p1 = poly[(i + 1) % n];
+        let p2 = poly[(i + 2) % n];
+        let cross = (p1.0 - p0.0) * (p2.1 - p1.1) - (p1.1 - p0.1) * (p2.0 - p1.0);
+        if cross > 1e-8 {
+            positive = true;
+        } else if cross < -1e-8 {
+            negative = true;
+        }
+        if positive && negative {
+            return false;
+        }
+    }
+    true
+}
+
 /// Find the intersection point of two 2D line segments (p1->p2) and (p3->p4).
 /// Returns the intersection point if the segments are not parallel and intersect.
 fn line_segment_intersection(
@@ -1726,9 +1751,20 @@ fn mesh_trimmed_uv_grid(
                     all_indices.extend_from_slice(&[i0, i1, i2, -1]);
                 }
             } else {
-                // Partially inside: clip cell quad against outer trim boundary
+                // Partially inside: clip cell quad against outer trim boundary.
+                // NOTE: Sutherland-Hodgman requires a convex clip polygon. For non-convex
+                // UV boundaries, fall back to using only the corners that are inside the trim.
                 let cell_poly: Vec<(f32, f32)> = corners.to_vec();
-                let clipped = sutherland_hodgman_clip(&cell_poly, &outer_uv);
+                let clipped = if is_polygon_convex(&outer_uv) {
+                    sutherland_hodgman_clip(&cell_poly, &outer_uv)
+                } else {
+                    // Non-convex fallback: keep only corners that pass point_in_trim
+                    corners
+                        .iter()
+                        .copied()
+                        .filter(|&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
+                        .collect()
+                };
                 if clipped.len() < 3 {
                     continue;
                 }

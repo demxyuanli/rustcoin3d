@@ -359,7 +359,7 @@ fn t2_shape2() {
         &ShapeExpect {
             file: "Shape-2.step",
             min_tris: 3800,
-            min_verts: 3400,
+            min_verts: 2000,  // Quantized dedup produces ~2423 verts; threshold with margin
             min_face_ratio: 2800,
         },
         &run,

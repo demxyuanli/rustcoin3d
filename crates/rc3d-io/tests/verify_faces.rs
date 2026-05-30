@@ -29,7 +29,7 @@ fn verify_face_stls() {
 
     println!("\n=== Per-face STL verification ===\n");
     if entries.is_empty() {
-        println!("  No STL files found in {:?} — run export_faces test first", faces_dir);
+        println!("  No STL files found in {:?} — run export_mesh example with --per-face first", faces_dir);
         return;
     }
     println!("  {:45} {:>6} {:>6} {:>6} {:>6} {:>6}","file","tris","verts","diag","degen","max_edge");

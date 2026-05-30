@@ -35,3 +35,4 @@ task_plan.md
 .kiro/**
 docs/superpowers/**
 .gitignore
+.qoder/**

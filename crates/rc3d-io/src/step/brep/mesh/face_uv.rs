@@ -413,6 +413,8 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
     let mut raw: Vec<(f32, f32)> = Vec::with_capacity(n);
     for v in &loop_data.boundary {
         let Some(pt) = global_vertices.get(v.global_idx) else {
+            // SAFETY: This fallback should rarely trigger since boundary indices
+            // should be valid. If this path is hit, the mesh topology may be corrupt.
             raw.push((0.0, 0.0));
             continue;
         };
@@ -422,6 +424,8 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
         let rel = *pt - *axis_origin;
         let radial = rel - axis * rel.dot(axis);
         let angle = if radial.length_squared() < 1e-10 {
+            // Point lies on revolution axis — angle is undefined, mark as NaN
+            // for later interpolation from neighbors.
             f32::NAN
         } else {
             let a = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
@@ -430,8 +434,14 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
         raw.push((u, angle));
     }
 
+    // Interpolate NaN angles from nearest valid neighbors (handles axis points).
+    // NOTE: If ALL vertices have NaN angles (entire loop on axis), this falls back
+    // to 0.0, which produces a degenerate UV mapping. This is acceptable for the
+    // rare degenerate case but should be logged for diagnostics.
+    let mut all_nan = true;
     for i in 0..n {
         if !raw[i].1.is_nan() {
+            all_nan = false;
             continue;
         }
         for d in 1..n {
@@ -449,6 +459,12 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
         if raw[i].1.is_nan() {
             raw[i].1 = 0.0;
         }
+    }
+    if all_nan {
+        log::warn!(
+            "[Revolution UV] All vertices on axis — degenerate UV mapping for {} vertices",
+            n
+        );
     }
 
     loop_data.boundary[0].uv = (raw[0].0, raw[0].1);

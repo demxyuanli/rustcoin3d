@@ -10,7 +10,6 @@ use rc3d_io::step::parser;
 use rc3d_io::step::mesh_result::MeshResult;
 use rc3d_io::parse_stl_triangles;
 use std::path::Path;
-use std::io::Write;
 
 fn test_data(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -64,8 +63,8 @@ fn step_roundtrip_shape() {
     let exchange = parser::parse_exchange(&text).expect("parse original");
 
     let export_path = test_data("Shape_roundtrip.step");
-    rc3d_io::step::write::write_step_file(&export_path, &exchange.entities)
-        .expect("write STEP");
+    let step_text = rc3d_io::step::write::write_step_from_entities(&exchange.entities);
+    std::fs::write(&export_path, &step_text).expect("write STEP");
     println!("Exported: {:?} ({} bytes)", export_path,
         std::fs::metadata(&export_path).map(|m| m.len()).unwrap_or(0));
 

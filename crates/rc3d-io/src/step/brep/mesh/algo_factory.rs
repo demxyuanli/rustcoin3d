@@ -1,7 +1,7 @@
 //! Surface-type mesh dispatch (OCC BRepMesh_MeshAlgoFactory subset).
 
+use super::face_dispatch::prefers_native_uv_trim;
 use super::face_uv::{FaceUvLoops, UvSource};
-use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::topo::BRepFace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,18 +12,6 @@ pub enum FaceMeshAlgo {
     ClosedParametric,
     /// 3D boundary fan / fill when UV projection fails.
     SurfaceFill3d,
-}
-
-/// Surfaces that must use native UV CDT even when STEP loops fail area/validity checks.
-fn prefers_native_uv_trim(surface: &SurfaceGeom) -> bool {
-    matches!(
-        surface,
-        SurfaceGeom::Revolution { .. }
-            | SurfaceGeom::BSpline(_)
-            | SurfaceGeom::Offset { .. }
-            | SurfaceGeom::Cylinder { .. }
-            | SurfaceGeom::Cone { .. }
-    )
 }
 
 /// Choose mesh algorithm from surface geometry and loop validity (OCC factory mapping).
@@ -37,12 +25,7 @@ pub fn select_face_mesh_algo(face: &BRepFace, loops: &FaceUvLoops, wire_empty: b
     if !loops.is_valid() && !prefers_native_uv_trim(&face.surface) {
         return FaceMeshAlgo::SurfaceFill3d;
     }
-    match &face.surface {
-        SurfaceGeom::Plane { .. }
-        | SurfaceGeom::Sphere { .. }
-        | SurfaceGeom::Cylinder { .. }
-        | SurfaceGeom::Cone { .. }
-        | SurfaceGeom::Torus { .. } => FaceMeshAlgo::TrimmedCdt,
-        _ => FaceMeshAlgo::TrimmedCdt,
-    }
+    // All remaining cases default to TrimmedCdt — the UV domain is valid
+    // enough for constrained Delaunay tessellation.
+    FaceMeshAlgo::TrimmedCdt
 }

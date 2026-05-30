@@ -67,7 +67,8 @@ pub fn algo_from_plan(plan: FaceMeshPlan) -> Option<FaceMeshAlgo> {
     }
 }
 
-fn prefers_native_uv_trim(surface: &SurfaceGeom) -> bool {
+/// Surfaces that must use native UV CDT even when STEP loops fail area/validity checks.
+pub fn prefers_native_uv_trim(surface: &SurfaceGeom) -> bool {
     matches!(
         surface,
         SurfaceGeom::Revolution { .. }

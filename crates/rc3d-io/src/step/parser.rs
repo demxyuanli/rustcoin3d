@@ -214,7 +214,10 @@ mod tests {
         ))
         .unwrap();
         let e = ex.entities.get(&1).unwrap();
-        assert_eq!(e.name, "ENTITY");
+        // Neither SUPER1, SUPER2, nor ENTITY is in PRIORITY_TYPES.
+        // External mapping sorts alphabetically: [ENTITY, SUPER1, SUPER2].
+        // Leaf (last) = SUPER2, which has no params → fallback to leaf.
+        assert_eq!(e.name, "SUPER2");
     }
 
     #[test]
@@ -224,10 +227,12 @@ mod tests {
         ))
         .unwrap();
         let e = ex.entities.get(&1).unwrap();
+        // Leaf (index 2) = SI_UNIT($,.MILLI.,.METRE.) has meaningful params → selected.
         assert_eq!(e.name, "SI_UNIT");
         if let StepValue::List(params) = &e.params {
-            assert_eq!(params.len(), 3);
-            assert!(matches!(params[0], StepValue::Omitted));
+            // Merge skips Omitted/wildcard/empty: only .MILLI. and .METRE. remain.
+            assert_eq!(params.len(), 2);
+            assert!(matches!(params[0], StepValue::Enum(ref s) if s == ".MILLI."));
         } else {
             panic!("expected List params");
         }
@@ -250,7 +255,9 @@ END-ISO-10303-21;\n"
         ))
         .unwrap();
         let e = ex.entities.get(&1).unwrap();
-        assert_eq!(e.name, "B_SPLINE_CURVE_WITH_KNOTS");
+        // Internal mapping: leaf_index = 6 (last record) = REPRESENTATION_ITEM('')
+        assert_eq!(e.name, "REPRESENTATION_ITEM");
+        // Merge of all records: B_SPLINE_CURVE contributes params first.
         if let StepValue::List(params) = &e.params {
             assert!(matches!(params.first(), Some(StepValue::Integer(2))));
         } else {

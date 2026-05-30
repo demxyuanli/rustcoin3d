@@ -100,6 +100,14 @@ fn merge_all_param_texts(pairs: &[(String, String)]) -> String {
 }
 
 /// Select the primary record from structured (keyword, StepValue) pairs.
+///
+/// Strategy: trust the STEP-assigned leaf_index (points to the most-derived
+/// subtype). Falls back to the last record when leaf_index is out of range.
+///
+/// NOTE: A previous attempt delegated to `primary_keyword::PRIORITY_TYPES` for
+/// better geometric-type selection, but this broke the NURBS build pipeline for
+/// production STEP files because the priority-selected record's parameters have
+/// different semantics than the STEP-ordered leaf record's parameters.
 fn select_primary_record_structured(
     pairs: &[(String, &StepValue)],
     leaf_index: usize,
@@ -110,17 +118,14 @@ fn select_primary_record_structured(
     if pairs.len() == 1 {
         return Ok((0, pairs[0].0.clone()));
     }
-    // Leaf index takes priority
-    if leaf_index < pairs.len() {
-        return Ok((leaf_index, pairs[leaf_index].0.clone()));
-    }
-    // Fallback: prefer the last record (most derived type in STEP complex entity)
-    let idx = pairs.len() - 1;
+    // Trust the parser's leaf_index (most-derived subtype in STEP ordering).
+    let idx = leaf_index.min(pairs.len() - 1);
     Ok((idx, pairs[idx].0.clone()))
 }
 
 /// Merge all record parameters as structured StepValue lists.
-/// Each record contributes its parameter list entries; Omitted values are skipped.
+/// Each record contributes its parameter list entries; Omitted values are skipped
+/// to avoid contaminating the primary record's parameter count with supertype placeholders.
 fn merge_all_params_structured(
     pairs: &[(&str, &StepValue)],
     _primary_idx: usize,

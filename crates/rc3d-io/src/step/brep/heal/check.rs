@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::step::brep::mesh::face_uv::signed_area_2d;
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey};
 
@@ -526,20 +527,6 @@ fn collect_wire_uv_polygon(
         }
     }
     points
-}
-
-fn signed_area_2d(pts: &[(f32, f32)]) -> f32 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0f32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += pts[i].0 * pts[j].1;
-        area -= pts[j].0 * pts[i].1;
-    }
-    area * 0.5
 }
 
 #[cfg(test)]
