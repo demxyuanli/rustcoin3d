@@ -831,6 +831,77 @@ impl SurfaceGeom {
         while uc >= TAU { uc -= TAU; }
         (uc, v)
     }
+
+    /// Second partial derivatives (d²S/du², d²S/dudv, d²S/dv²) via numerical differentiation of d1.
+    pub fn d2(&self, u: f32, v: f32) -> (Vec3, Vec3, Vec3) {
+        let eps = 1e-4f32;
+        let (du_p, dv_p) = self.d1(u + eps, v);
+        let (du_m, dv_m) = self.d1(u - eps, v);
+        let (du_vp, dv_vp) = self.d1(u, v + eps);
+        let (du_vm, dv_vm) = self.d1(u, v - eps);
+        let duu = (du_p - du_m) / (2.0 * eps);
+        let duv = (du_vp - du_vm) / (2.0 * eps);
+        let dvv = (dv_vp - dv_vm) / (2.0 * eps);
+        (duu, duv, dvv)
+    }
+
+    /// Estimate minimum principal curvature radius at normalized (u, v) ∈ [0,1]².
+    /// Returns f32::MAX for flat surfaces (zero curvature).
+    pub fn min_curvature_radius(&self, u: f32, v: f32) -> f32 {
+        let (du, dv) = self.d1(u, v);
+        let (duu, duv, dvv) = self.d2(u, v);
+
+        // First fundamental form coefficients
+        let e = du.dot(du);
+        let f = du.dot(dv);
+        let g = dv.dot(dv);
+
+        // Surface normal
+        let n = du.cross(dv);
+        let n_len = n.length();
+        if n_len < 1e-10 { return f32::MAX; }
+        let n_hat = n * (1.0 / n_len);
+
+        // Second fundamental form coefficients
+        let l = duu.dot(n_hat);
+        let m = duv.dot(n_hat);
+        let nn = dvv.dot(n_hat);
+
+        // Principal curvatures from shape operator
+        let det1 = e * g - f * f;
+        if det1.abs() < 1e-10 { return f32::MAX; }
+
+        let trace = (l * g - 2.0 * m * f + nn * e) / det1;
+        let det2 = (l * nn - m * m) / det1;
+
+        let disc = (trace * trace - 4.0 * det2).max(0.0);
+        let k1 = (trace + disc.sqrt()) / 2.0;
+        let k2 = (trace - disc.sqrt()) / 2.0;
+
+        let max_k = k1.abs().max(k2.abs());
+        if max_k < 1e-10 { f32::MAX } else { 1.0 / max_k }
+    }
+}
+
+/// Check if an Offset surface might self-intersect.
+/// Returns true if the offset distance exceeds the minimum curvature radius
+/// at any sample point on a grid.
+pub fn offset_may_self_intersect(
+    basis: &SurfaceGeom,
+    distance: f32,
+    sample_grid: usize,
+) -> bool {
+    for i in 0..=sample_grid {
+        let u = i as f32 / sample_grid as f32;
+        for j in 0..=sample_grid {
+            let v = j as f32 / sample_grid as f32;
+            let r = basis.min_curvature_radius(u, v);
+            if distance.abs() > r && r < f32::MAX {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1175,5 +1246,63 @@ mod tests {
         let p_back = offset.d0_native(u, v);
         let dist = (p_back - target).length();
         assert!(dist < 0.1, "offset project roundtrip error {} too large", dist);
+    }
+
+    #[test]
+    fn test_plane_curvature_radius_infinite() {
+        let plane = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let r = plane.min_curvature_radius(0.5, 0.5);
+        assert_eq!(r, f32::MAX, "Plane should have infinite curvature radius");
+    }
+
+    #[test]
+    fn test_cylinder_curvature_radius_equals_radius() {
+        let cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 2.0,
+        };
+        // At any point, one principal curvature radius = cylinder radius
+        let r = cyl.min_curvature_radius(0.25, 0.5);
+        assert!(
+            (r - 2.0).abs() < 0.5,
+            "Cylinder r=2 should have min curvature radius ~2, got {}",
+            r
+        );
+    }
+
+    #[test]
+    fn test_sphere_curvature_radius_equals_radius() {
+        let sphere = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 3.0 };
+        // Sphere has equal principal curvatures everywhere = 1/radius
+        let r = sphere.min_curvature_radius(0.5, 0.5);
+        assert!(
+            (r - 3.0).abs() < 1.0,
+            "Sphere r=3 should have curvature radius ~3, got {}",
+            r
+        );
+    }
+
+    #[test]
+    fn test_offset_self_intersection_detection() {
+        let cyl = SurfaceGeom::Cylinder {
+            origin: Vec3::ZERO,
+            axis: Vec3::Z,
+            radius: 1.0,
+        };
+        // Offset > radius should self-intersect (inward offset)
+        assert!(offset_may_self_intersect(&cyl, 2.0, 8),
+            "Offset 2.0 > radius 1.0 should detect self-intersection");
+        // Offset < radius should be safe
+        assert!(!offset_may_self_intersect(&cyl, 0.5, 8),
+            "Offset 0.5 < radius 1.0 should not self-intersect");
+    }
+
+    #[test]
+    fn test_offset_plane_no_self_intersection() {
+        let plane = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        // Plane offset never self-intersects (infinite curvature radius)
+        assert!(!offset_may_self_intersect(&plane, 100.0, 4),
+            "Plane offset should never self-intersect");
     }
 }
