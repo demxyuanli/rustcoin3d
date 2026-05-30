@@ -10,6 +10,7 @@ pub mod intersect;
 pub mod classify;
 pub mod split;
 pub mod select;
+pub mod stitch;
 
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::ShellKey;
