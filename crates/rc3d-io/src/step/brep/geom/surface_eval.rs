@@ -93,6 +93,72 @@ impl SurfaceParamRange {
     }
 }
 
+/// Hierarchical grid search for surface projection.
+///
+/// Uses a 3-level strategy: coarse 4×4 grid → local 4×4 around top-3 candidates
+/// → coordinate-descent refinement (8 iterations).  Total: ~105 evaluations vs
+/// the 289+32=321 of a full 16×16 grid with refinement.
+fn grid_project_2d(
+    eval: impl Fn(f32, f32) -> Vec3,
+    u_lo: f32, u_hi: f32, v_lo: f32, v_hi: f32,
+    point: Vec3,
+) -> (f32, f32) {
+    /// Evaluate at (u, v), clamping to domain bounds.
+    fn eval_at(eval: &impl Fn(f32, f32) -> Vec3, u: f32, v: f32,
+               u_lo: f32, u_hi: f32, v_lo: f32, v_hi: f32, point: Vec3) -> (f32, f32, f32) {
+        let u = u.clamp(u_lo, u_hi);
+        let v = v.clamp(v_lo, v_hi);
+        let d2 = (eval(u, v) - point).length_squared();
+        (u, v, d2)
+    }
+
+    type Candidate = (f32, f32, f32); // (u, v, d2)
+    let coarse = 4;
+    let mut candidates: Vec<Candidate> = Vec::with_capacity((coarse + 1) * (coarse + 1));
+
+    // Level 1: coarse grid
+    for i in 0..=coarse {
+        let u = u_lo + (u_hi - u_lo) * i as f32 / coarse as f32;
+        for j in 0..=coarse {
+            let v = v_lo + (v_hi - v_lo) * j as f32 / coarse as f32;
+            candidates.push((u, v, (eval(u, v) - point).length_squared()));
+        }
+    }
+    candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    let u_seg = (u_hi - u_lo) / coarse as f32;
+    let v_seg = (v_hi - v_lo) / coarse as f32;
+    let local = 4;
+    let mut best = (candidates[0].0, candidates[0].1, candidates[0].2);
+
+    // Level 2: local 4×4 around top-3 coarse candidates
+    for cand in candidates.iter().take(3) {
+        for i in 0..=local {
+            let u = cand.0 - u_seg + 2.0 * u_seg * i as f32 / local as f32;
+            for j in 0..=local {
+                let v = cand.1 - v_seg + 2.0 * v_seg * j as f32 / local as f32;
+                let (_, _, d2) = eval_at(&eval, u, v, u_lo, u_hi, v_lo, v_hi, point);
+                if d2 < best.2 { best = (u.clamp(u_lo, u_hi), v.clamp(v_lo, v_hi), d2); }
+            }
+        }
+    }
+
+    // Level 3: coordinate descent refinement
+    let mut step_u = u_seg / local as f32 * 0.5;
+    let mut step_v = v_seg / local as f32 * 0.5;
+    for _ in 0..8 {
+        for &(du, dv) in &[(step_u, 0.0), (-step_u, 0.0), (0.0, step_v), (0.0, -step_v)] {
+            let (_, _, d2) = eval_at(&eval, best.0 + du, best.1 + dv, u_lo, u_hi, v_lo, v_hi, point);
+            if d2 < best.2 {
+                best = ((best.0 + du).clamp(u_lo, u_hi), (best.1 + dv).clamp(v_lo, v_hi), d2);
+            }
+        }
+        step_u *= 0.5;
+        step_v *= 0.5;
+    }
+    (best.0, best.1)
+}
+
 impl SurfaceGeom {
     /// Native parameter bounds in STEP / OCC surface space (not normalized [0,1]^2).
     pub fn param_range(&self) -> SurfaceParamRange {
@@ -494,63 +560,21 @@ impl SurfaceGeom {
                 Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::BSpline(nurbs) => {
-                let grid = 16;
                 let u_range = nurbs.knots_u[nurbs.degree_u];
                 let u_end = nurbs.knots_u[nurbs.knots_u.len() - nurbs.degree_u - 1];
                 let v_range = nurbs.knots_v[nurbs.degree_v];
                 let v_end = nurbs.knots_v[nurbs.knots_v.len() - nurbs.degree_v - 1];
-                let mut best_u = u_range;
-                let mut best_v = v_range;
-                let mut best_d2 = f32::MAX;
-                for i in 0..=grid {
-                    let u = u_range + (u_end - u_range) * i as f32 / grid as f32;
-                    for j in 0..=grid {
-                        let v = v_range + (v_end - v_range) * j as f32 / grid as f32;
-                        let p = nurbs.evaluate(u, v);
-                        let d2 = (p - point).length_squared();
-                        if d2 < best_d2 { best_d2 = d2; best_u = u; best_v = v; }
-                    }
-                }
-                let mut u = best_u;
-                let mut v = best_v;
-                let mut step = (u_end - u_range).max(v_end - v_range) / grid as f32 * 0.5;
-                for _ in 0..8 {
-                    for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
-                        let nu = (u + du).clamp(u_range, u_end);
-                        let nv = (v + dv).clamp(v_range, v_end);
-                        let d2 = (nurbs.evaluate(nu, nv) - point).length_squared();
-                        if d2 < best_d2 { best_d2 = d2; u = nu; v = nv; }
-                    }
-                    step *= 0.5;
-                }
+                let (u, v) = grid_project_2d(
+                    |u, v| nurbs.evaluate(u, v),
+                    u_range, u_end, v_range, v_end, point,
+                );
                 Some((u, v))
             }
             SurfaceGeom::Torus { .. } => {
-                let grid = 16;
-                let mut best_u = 0.0f32;
-                let mut best_v = 0.0f32;
-                let mut best_d2 = f32::MAX;
-                for i in 0..=grid {
-                    let u = i as f32 / grid as f32;
-                    for j in 0..=grid {
-                        let v = j as f32 / grid as f32;
-                        let p = self.d0(u, v);
-                        let d2 = (p - point).length_squared();
-                        if d2 < best_d2 { best_d2 = d2; best_u = u; best_v = v; }
-                    }
-                }
-                let mut u = best_u;
-                let mut v = best_v;
-                let mut step = 1.0 / grid as f32 * 0.5;
-                for _ in 0..8 {
-                    for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
-                        let nu = (u + du).clamp(0.0, 1.0);
-                        let nv = (v + dv).clamp(0.0, 1.0);
-                        let d2 = (self.d0(nu, nv) - point).length_squared();
-                        if d2 < best_d2 { best_d2 = d2; u = nu; v = nv; }
-                    }
-                    step *= 0.5;
-                }
+                let (u, v) = grid_project_2d(
+                    |uu, vv| self.d0(uu, vv),
+                    0.0, 1.0, 0.0, 1.0, point,
+                );
                 Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::Extrusion { generatrix, direction } => {
