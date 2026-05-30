@@ -28,8 +28,25 @@ pub(crate) fn plane_tangent_basis(normal: Vec3, u_dir: Vec3) -> (Vec3, Vec3) {
     (u, v)
 }
 
+/// Maximum B-spline degree handled with stack-allocated tables.
+/// Typical STEP B-splines are degree 2–5, rarely exceeding 8.
+const MAX_DEGREE: usize = 16;
+
+/// Flattened triangular table size for degrees 0..=MAX_DEGREE.
+/// Sum of (k+1) for k in 0..=MAX_DEGREE = (MAX_DEGREE+1)*(MAX_DEGREE+2)/2
+const NDU_SIZE: usize = (MAX_DEGREE + 1) * (MAX_DEGREE + 2) / 2; // 153
+
+/// Index into the flattened `ndu` table: row `k` starts at offset k*(k+1)/2.
+#[inline]
+fn ndu_idx(k: usize, i: usize) -> usize {
+    k * (k + 1) / 2 + i
+}
+
 /// Compute d0, d1, d2 for a (possibly rational) B-spline at parameter t.
 /// Uses the Cox-de Boor recurrence for basis functions and their derivatives.
+///
+/// For degree ≤ `MAX_DEGREE` (16), all working tables are stack-allocated.
+/// For higher degrees, falls back to `bspline_d012_heap`.
 fn bspline_d012(
     degree: usize,
     control_points: &[Vec3],
@@ -56,12 +73,18 @@ fn bspline_d012(
         return (pt, Vec3::ZERO, Vec3::ZERO);
     }
 
+    // Heap fallback for unusually high degree (rare in practice)
+    if p > MAX_DEGREE {
+        return bspline_d012_heap(p, control_points, knots, weights, t);
+    }
+
     let span = find_span(p, knots, t);
     let s = span;
 
-    // ── Basis functions: ndu[k][i] = N_{s-k+i, k}(t) for i = 0..k ──
-    let mut ndu: Vec<Vec<f32>> = (0..=p).map(|k| vec![0.0f32; k + 1]).collect();
-    ndu[0][0] = 1.0;
+    // ── Basis functions (stack-allocated triangular table) ──
+    // ndu[k*(k+1)/2 + i] = N_{s-k+i, k}(t) for i = 0..k
+    let mut ndu = [0.0f32; NDU_SIZE];
+    ndu[ndu_idx(0, 0)] = 1.0;
 
     for k in 1..=p {
         for i in 0..=k {
@@ -70,7 +93,7 @@ fn bspline_d012(
             let left = if i >= 1 {
                 let denom = knots[ctrl_idx + k] - knots[ctrl_idx];
                 if denom > 1e-10 {
-                    (t - knots[ctrl_idx]) / denom * ndu[k - 1][i - 1]
+                    (t - knots[ctrl_idx]) / denom * ndu[ndu_idx(k - 1, i - 1)]
                 } else {
                     0.0
                 }
@@ -81,7 +104,7 @@ fn bspline_d012(
             let right = if i < k {
                 let denom = knots[ctrl_idx + k + 1] - knots[ctrl_idx + 1];
                 if denom > 1e-10 {
-                    (knots[ctrl_idx + k + 1] - t) / denom * ndu[k - 1][i]
+                    (knots[ctrl_idx + k + 1] - t) / denom * ndu[ndu_idx(k - 1, i)]
                 } else {
                     0.0
                 }
@@ -89,19 +112,18 @@ fn bspline_d012(
                 0.0
             };
 
-            ndu[k][i] = left + right;
+            ndu[ndu_idx(k, i)] = left + right;
         }
     }
 
     // ── First derivatives N'_{s-p+k, p} ──
-    // N'_{s-p+k, p} = p/denom_L * ndu[p-1][k-1] - p/denom_R * ndu[p-1][k]
-    let mut ndu1: Vec<f32> = vec![0.0; p + 1];
+    let mut ndu1 = [0.0f32; MAX_DEGREE + 1];
     for k in 0..=p {
         let idx = s + k - p;
         let left = if k >= 1 {
             let denom = knots[idx + p] - knots[idx];
             if denom > 1e-10 {
-                (p as f32) / denom * ndu[p - 1][k - 1]
+                (p as f32) / denom * ndu[ndu_idx(p - 1, k - 1)]
             } else {
                 0.0
             }
@@ -111,7 +133,7 @@ fn bspline_d012(
         let right = if k < p {
             let denom = knots[idx + p + 1] - knots[idx + 1];
             if denom > 1e-10 {
-                (p as f32) / denom * ndu[p - 1][k]
+                (p as f32) / denom * ndu[ndu_idx(p - 1, k)]
             } else {
                 0.0
             }
@@ -122,16 +144,16 @@ fn bspline_d012(
     }
 
     // ── Second derivatives N''_{s-p+k, p} ──
-    let mut ndu2: Vec<f32> = vec![0.0; p + 1];
+    let mut ndu2 = [0.0f32; MAX_DEGREE + 1];
     if p >= 2 {
         // First compute N'_{s-(p-1)+k, p-1} for k = 0..p-1
-        let mut ndu1_pm1: Vec<f32> = vec![0.0; p];
+        let mut ndu1_pm1 = [0.0f32; MAX_DEGREE];
         for k in 0..p {
             let idx = s + k - (p - 1);
             let left = if k >= 1 {
                 let denom = knots[idx + p - 1] - knots[idx];
                 if denom > 1e-10 {
-                    ((p - 1) as f32) / denom * ndu[p - 2][k - 1]
+                    ((p - 1) as f32) / denom * ndu[ndu_idx(p - 2, k - 1)]
                 } else {
                     0.0
                 }
@@ -141,7 +163,7 @@ fn bspline_d012(
             let right = if k < p - 1 {
                 let denom = knots[idx + p] - knots[idx + 1];
                 if denom > 1e-10 {
-                    ((p - 1) as f32) / denom * ndu[p - 2][k]
+                    ((p - 1) as f32) / denom * ndu[ndu_idx(p - 2, k)]
                 } else {
                     0.0
                 }
@@ -191,7 +213,7 @@ fn bspline_d012(
         let cp = control_points[idx];
         let w = weights.map_or(1.0, |ws| ws[idx]);
 
-        let n0 = ndu[p][k];
+        let n0 = ndu[ndu_idx(p, k)];
         let n1 = ndu1[k];
         let n2 = ndu2[k];
 
@@ -204,9 +226,6 @@ fn bspline_d012(
     }
 
     let (d0, d1, d2) = if weights.is_some() {
-        // Rational: C(t) = A(t) / w(t)
-        // C' = (A'w - Aw') / w^2
-        // C'' = (A''w^2 - Aw''w - 2A'w'w + 2Aw'^2) / w^3
         let w = w_sum;
         let w1 = w_sum_1;
         let w2 = w_sum_2;
@@ -223,6 +242,138 @@ fn bspline_d012(
     };
 
     // NaN safety: replace any NaN component with zero
+    let safe = |v: Vec3| -> Vec3 {
+        if v.is_nan() { Vec3::ZERO } else { v }
+    };
+    (safe(d0), safe(d1), safe(d2))
+}
+
+/// Heap-allocated fallback for B-spline degree > `MAX_DEGREE`.
+/// Logic is identical to the stack path in `bspline_d012`.
+fn bspline_d012_heap(
+    degree: usize,
+    control_points: &[Vec3],
+    knots: &[f32],
+    weights: Option<&[f32]>,
+    t: f32,
+) -> (Vec3, Vec3, Vec3) {
+    let p = degree;
+
+    if control_points.len() < p + 1 || knots.len() < 2 * (p + 1) {
+        return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+    }
+
+    let t_min = knots[p];
+    let t_max = knots[control_points.len()];
+    let t = t.clamp(t_min, t_max);
+
+    if p == 0 {
+        let span = find_span(0, knots, t);
+        let pt = control_points[span];
+        return (pt, Vec3::ZERO, Vec3::ZERO);
+    }
+
+    let span = find_span(p, knots, t);
+    let s = span;
+
+    let mut ndu: Vec<Vec<f32>> = (0..=p).map(|k| vec![0.0f32; k + 1]).collect();
+    ndu[0][0] = 1.0;
+
+    for k in 1..=p {
+        for i in 0..=k {
+            let ctrl_idx = s + i - k;
+            let left = if i >= 1 {
+                let denom = knots[ctrl_idx + k] - knots[ctrl_idx];
+                if denom > 1e-10 { (t - knots[ctrl_idx]) / denom * ndu[k - 1][i - 1] } else { 0.0 }
+            } else { 0.0 };
+            let right = if i < k {
+                let denom = knots[ctrl_idx + k + 1] - knots[ctrl_idx + 1];
+                if denom > 1e-10 { (knots[ctrl_idx + k + 1] - t) / denom * ndu[k - 1][i] } else { 0.0 }
+            } else { 0.0 };
+            ndu[k][i] = left + right;
+        }
+    }
+
+    let mut ndu1: Vec<f32> = vec![0.0; p + 1];
+    for k in 0..=p {
+        let idx = s + k - p;
+        let left = if k >= 1 {
+            let denom = knots[idx + p] - knots[idx];
+            if denom > 1e-10 { (p as f32) / denom * ndu[p - 1][k - 1] } else { 0.0 }
+        } else { 0.0 };
+        let right = if k < p {
+            let denom = knots[idx + p + 1] - knots[idx + 1];
+            if denom > 1e-10 { (p as f32) / denom * ndu[p - 1][k] } else { 0.0 }
+        } else { 0.0 };
+        ndu1[k] = left - right;
+    }
+
+    let mut ndu2: Vec<f32> = vec![0.0; p + 1];
+    if p >= 2 {
+        let mut ndu1_pm1: Vec<f32> = vec![0.0; p];
+        for k in 0..p {
+            let idx = s + k - (p - 1);
+            let left = if k >= 1 {
+                let denom = knots[idx + p - 1] - knots[idx];
+                if denom > 1e-10 { ((p - 1) as f32) / denom * ndu[p - 2][k - 1] } else { 0.0 }
+            } else { 0.0 };
+            let right = if k < p - 1 {
+                let denom = knots[idx + p] - knots[idx + 1];
+                if denom > 1e-10 { ((p - 1) as f32) / denom * ndu[p - 2][k] } else { 0.0 }
+            } else { 0.0 };
+            ndu1_pm1[k] = left - right;
+        }
+        for k in 0..=p {
+            let idx = s + k - p;
+            let left = if k >= 1 {
+                let denom = knots[idx + p] - knots[idx];
+                if denom > 1e-10 { (p as f32) / denom * ndu1_pm1[k - 1] } else { 0.0 }
+            } else { 0.0 };
+            let right = if k < p {
+                let denom = knots[idx + p + 1] - knots[idx + 1];
+                if denom > 1e-10 { (p as f32) / denom * ndu1_pm1[k] } else { 0.0 }
+            } else { 0.0 };
+            ndu2[k] = left - right;
+        }
+    }
+
+    let mut a0 = Vec3::ZERO;
+    let mut a1 = Vec3::ZERO;
+    let mut a2 = Vec3::ZERO;
+    let mut w_sum = 0.0f32;
+    let mut w_sum_1 = 0.0f32;
+    let mut w_sum_2 = 0.0f32;
+
+    for k in 0..=p {
+        let idx = s + k - p;
+        let cp = control_points[idx];
+        let w = weights.map_or(1.0, |ws| ws[idx]);
+        let n0 = ndu[p][k];
+        let n1 = ndu1[k];
+        let n2 = ndu2[k];
+        a0 += cp * (n0 * w);
+        a1 += cp * (n1 * w);
+        a2 += cp * (n2 * w);
+        w_sum += n0 * w;
+        w_sum_1 += n1 * w;
+        w_sum_2 += n2 * w;
+    }
+
+    let (d0, d1, d2) = if weights.is_some() {
+        let w = w_sum;
+        let w1 = w_sum_1;
+        let w2 = w_sum_2;
+        let w_inv = 1.0 / w.max(1e-12);
+        let w_inv2 = w_inv * w_inv;
+        let w_inv3 = w_inv2 * w_inv;
+        let d0 = a0 * w_inv;
+        let d1 = (a1 * w - a0 * w1) * w_inv2;
+        let d2 = (a2 * w * w - a0 * w2 * w - 2.0 * a1 * w1 * w + 2.0 * a0 * w1 * w1) * w_inv3;
+        (d0, d1, d2)
+    } else {
+        (a0, a1, a2)
+    };
+
     let safe = |v: Vec3| -> Vec3 {
         if v.is_nan() { Vec3::ZERO } else { v }
     };
@@ -709,5 +860,122 @@ mod tests {
         // A line should need very few points (low curvature)
         assert!(pts.len() >= 2); // at least start and end
         assert!(pts.len() <= 16);
+    }
+
+    // ── bspline_d012 stack-allocation tests ─────────────
+
+    #[test]
+    fn test_ndu_idx_triangular_layout() {
+        // Row 0: index 0
+        assert_eq!(ndu_idx(0, 0), 0);
+        // Row 1: indices 1, 2
+        assert_eq!(ndu_idx(1, 0), 1);
+        assert_eq!(ndu_idx(1, 1), 2);
+        // Row 2: indices 3, 4, 5
+        assert_eq!(ndu_idx(2, 0), 3);
+        assert_eq!(ndu_idx(2, 1), 4);
+        assert_eq!(ndu_idx(2, 2), 5);
+        // Row k starts at k*(k+1)/2
+        assert_eq!(ndu_idx(5, 0), 15);
+        assert_eq!(ndu_idx(5, 5), 20);
+    }
+
+    #[test]
+    fn test_bspline_d012_degree3_collinear() {
+        // Cubic B-spline with 4 collinear control points along X axis.
+        // Clamped knot vector → curve starts at P0 and ends at P3.
+        let cps = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ];
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+
+        // Endpoint interpolation (clamped B-spline)
+        let (d0_start, _, _) = bspline_d012(3, &cps, &knots, None, 0.0);
+        let (d0_end, _, _) = bspline_d012(3, &cps, &knots, None, 1.0);
+        assert!((d0_start - cps[0]).length() < 1e-5, "start endpoint: {d0_start:?}");
+        assert!((d0_end - cps[3]).length() < 1e-5, "end endpoint: {d0_end:?}");
+
+        // Curve stays on X axis (y=0, z=0) for all t
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let (d0, d1, d2) = bspline_d012(3, &cps, &knots, None, t);
+            assert!(d0.y.abs() < 1e-5 && d0.z.abs() < 1e-5, "off-axis at t={t}: {d0:?}");
+            // Tangent should be along X
+            assert!(d1.y.abs() < 1e-4 && d1.z.abs() < 1e-4, "tangent off-axis at t={t}: {d1:?}");
+            // Second derivative should also be along X for collinear CPs
+            assert!(d2.y.abs() < 1e-3 && d2.z.abs() < 1e-3, "d2 off-axis at t={t}: {d2:?}");
+            // X should be monotonically increasing
+            assert!(d0.x >= -1e-5 && d0.x <= 3.0 + 1e-5, "x out of range at t={t}: {}", d0.x);
+        }
+    }
+
+    #[test]
+    fn test_bspline_d012_degree8_collinear() {
+        // Degree-8 B-spline with 9 collinear control points along X axis.
+        // Tests the stack path near the upper limit (8 < MAX_DEGREE=16).
+        let cps: Vec<Vec3> = (0..9).map(|i| Vec3::new(i as f32, 0.0, 0.0)).collect();
+        let knots = vec![
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        ];
+
+        // Endpoint interpolation
+        let (d0_start, _, _) = bspline_d012(8, &cps, &knots, None, 0.0);
+        let (d0_end, _, _) = bspline_d012(8, &cps, &knots, None, 1.0);
+        assert!((d0_start - cps[0]).length() < 1e-4, "start: {d0_start:?}");
+        assert!((d0_end - cps[8]).length() < 1e-4, "end: {d0_end:?}");
+
+        // Stays on X axis
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let (d0, d1, _d2) = bspline_d012(8, &cps, &knots, None, t);
+            assert!(d0.y.abs() < 1e-4 && d0.z.abs() < 1e-4, "off-axis at t={t}: {d0:?}");
+            assert!(d1.y.abs() < 1e-3 && d1.z.abs() < 1e-3, "tangent off-axis at t={t}: {d1:?}");
+        }
+
+        // Verify stack and heap paths give identical results
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let stack = bspline_d012(8, &cps, &knots, None, t);
+            let heap = bspline_d012_heap(8, &cps, &knots, None, t);
+            let diff0 = (stack.0 - heap.0).length();
+            let diff1 = (stack.1 - heap.1).length();
+            let diff2 = (stack.2 - heap.2).length();
+            assert!(diff0 < 1e-6, "d0 mismatch at t={t}: {diff0}");
+            assert!(diff1 < 1e-5, "d1 mismatch at t={t}: {diff1}");
+            assert!(diff2 < 1e-4, "d2 mismatch at t={t}: {diff2}");
+        }
+    }
+
+    #[test]
+    fn test_bspline_d012_rational_degree3() {
+        // Rational cubic B-spline (NURBS) — verify weights affect the curve.
+        let cps = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, 1.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ];
+        let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let weights = vec![1.0, 2.0, 2.0, 1.0];
+
+        // Endpoints should still match (clamped, weight=1 at ends)
+        let (d0_start, _, _) = bspline_d012(3, &cps, &knots, Some(&weights), 0.0);
+        let (d0_end, _, _) = bspline_d012(3, &cps, &knots, Some(&weights), 1.0);
+        assert!((d0_start - cps[0]).length() < 1e-5, "rational start: {d0_start:?}");
+        assert!((d0_end - cps[3]).length() < 1e-5, "rational end: {d0_end:?}");
+
+        // Higher weights on middle CPs should pull curve toward them
+        let (d0_mid_unweighted, _, _) = bspline_d012(3, &cps, &knots, None, 0.5);
+        let (d0_mid_weighted, _, _) = bspline_d012(3, &cps, &knots, Some(&weights), 0.5);
+        // The weighted midpoint should be pulled higher in Y
+        assert!(
+            d0_mid_weighted.y > d0_mid_unweighted.y,
+            "weights should pull curve up: unweighted y={}, weighted y={}",
+            d0_mid_unweighted.y, d0_mid_weighted.y
+        );
     }
 }
