@@ -7,6 +7,7 @@ pub mod overlay;
 pub mod heal;
 pub mod mesh;
 pub mod properties;
+pub mod fillet;
 
 pub use overlay::{build_edge_curves, build_mesh_wireframe};
 pub use geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
