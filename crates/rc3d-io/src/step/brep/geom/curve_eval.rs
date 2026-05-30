@@ -731,9 +731,9 @@ fn trim_circle_to_vertices(
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
         }
-        CurveGeom::Ellipse { center, axis, semi_major, .. } => {
-            let a0 = circle_angle_geom(center, *axis, *semi_major, p_lo)?;
-            let a1 = circle_angle_geom(center, *axis, *semi_major, p_hi)?;
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => {
+            let a0 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, p_lo)?;
+            let a1 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, p_hi)?;
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
         }
@@ -754,6 +754,26 @@ fn circle_angle_geom(center: &Vec3, axis: Vec3, radius: f32, point: Vec3) -> Opt
     let dist = proj.length();
     if (dist - radius).abs() > radius * 0.1 && (dist - radius).abs() > 0.5 { return None; }
     let u = f32::atan2(proj.dot(y), proj.dot(x));
+    Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
+}
+
+/// Compute eccentric anomaly angle [0,TAU) of a point on an ellipse.
+///
+/// Unlike `circle_angle_geom`, this correctly handles high-eccentricity ellipses
+/// (e.g. a=10, b=1) by computing θ = atan2(y/b, x/a) instead of assuming
+/// constant distance from center.
+fn ellipse_angle_geom(
+    center: &Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, point: Vec3,
+) -> Option<f32> {
+    let a = axis.normalize();
+    let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let x = ref_dir - a * ref_dir.dot(a);
+    if x.length_squared() < 1e-12 { return None; }
+    let x = x.normalize();
+    let y = a.cross(x);
+    let rel = point - *center;
+    let proj = rel - a * rel.dot(a);
+    let u = f32::atan2(proj.dot(y) / semi_minor, proj.dot(x) / semi_major);
     Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
 }
 
@@ -961,6 +981,33 @@ mod tests {
             assert!(diff1 < 1e-5, "d1 mismatch at t={t}: {diff1}");
             assert!(diff2 < 1e-4, "d2 mismatch at t={t}: {diff2}");
         }
+    }
+
+    #[test]
+    fn test_ellipse_trim_eccentric() {
+        // High-eccentricity ellipse: a=10, b=1.  The old circle_angle_geom
+        // rejects valid points because distance from center varies from 1 to 10.
+        let center = Vec3::ZERO;
+        let axis = Vec3::Z;
+        let a = 10.0f32;
+        let b = 1.0f32;
+        let ellipse = CurveGeom::Ellipse {
+            center, axis, semi_major: a, semi_minor: b,
+        };
+        // Point at eccentric anomaly θ=0:  (a, 0, 0)
+        let p_lo = Vec3::new(a, 0.0, 0.0);
+        // Point at eccentric anomaly θ=π/2:  (0, b, 0)
+        let p_hi = Vec3::new(0.0, b, 0.0);
+
+        let trimmed = trim_circle_to_vertices(&ellipse, p_lo, p_hi);
+        assert!(trimmed.is_some(), "high-eccentricity ellipse trim must succeed");
+
+        // Verify the trimmed curve evaluates to the correct endpoints.
+        let t = trimmed.unwrap();
+        let e0 = (t.d0(0.0) - p_lo).length();
+        let e1 = (t.d0(1.0) - p_hi).length();
+        assert!(e0 < 0.1, "trimmed d0(0) error {e0} too large");
+        assert!(e1 < 0.1, "trimmed d0(1) error {e1} too large");
     }
 
     #[test]
