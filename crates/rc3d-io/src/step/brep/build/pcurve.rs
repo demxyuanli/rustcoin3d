@@ -372,7 +372,7 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
             if segments.is_empty() {
                 None
             } else {
-                Some(CurveGeom::Composite { segments })
+                Some(CurveGeom::Composite { segments, cached_lengths: None })
             }
         }
         _ => None,

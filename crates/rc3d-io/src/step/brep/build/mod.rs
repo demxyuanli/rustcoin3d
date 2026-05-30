@@ -29,6 +29,7 @@ use crate::step::topology;
 use super::registry::BRepRegistry;
 use super::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
+use super::geom::curve_eval::approx_chordal_length;
 use super::geom::normalize_edge_curve_to_vertices;
 use super::heal::curve_trim::add_degenerated_edge_at_pole;
 use rc3d_core::math::Vec3;

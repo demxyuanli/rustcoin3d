@@ -383,9 +383,9 @@ fn bspline_d012_heap(
 /// Approximate arc length of a curve by chordal sum with fixed sampling.
 /// Avoids calling `arc_length` / `sample_adaptive` to break circular dependency
 /// with `Composite` segment selection.
-fn approx_chordal_length(curve: &CurveGeom) -> f32 {
+pub(crate) fn approx_chordal_length(curve: &CurveGeom) -> f32 {
     match curve {
-        CurveGeom::Composite { segments } => {
+        CurveGeom::Composite { segments, .. } => {
             segments.iter().map(|(seg, _)| approx_chordal_length(seg)).sum()
         }
         _ => {
@@ -405,7 +405,13 @@ fn approx_chordal_length(curve: &CurveGeom) -> f32 {
 
 /// Find which segment of a composite curve a parameter t ∈ [0,1] falls in.
 /// Returns (segment_index, t_mapped) where t_mapped ∈ [0,1] maps onto the segment.
-fn find_composite_segment(segments: &[(CurveGeom, bool)], t: f32) -> Option<(usize, f32, f32)> {
+/// If `cached_lengths` is present and matches segment count, uses it directly;
+/// otherwise computes lengths on the fly.
+fn find_composite_segment(
+    segments: &[(CurveGeom, bool)],
+    cached_lengths: &Option<Vec<f32>>,
+    t: f32,
+) -> Option<(usize, f32, f32)> {
     if segments.is_empty() {
         return None;
     }
@@ -413,8 +419,15 @@ fn find_composite_segment(segments: &[(CurveGeom, bool)], t: f32) -> Option<(usi
         return Some((0, t, 1.0));
     }
 
-    // Compute approximate lengths for each segment
-    let lengths: Vec<f32> = segments.iter().map(|(seg, _)| approx_chordal_length(seg).max(1e-10)).collect();
+    // Use cached lengths if available and valid, otherwise compute
+    let owned_lengths: Option<Vec<f32>> = match cached_lengths {
+        Some(c) if c.len() == segments.len() => None, // use cache directly
+        _ => Some(segments.iter().map(|(seg, _)| approx_chordal_length(seg).max(1e-10)).collect()),
+    };
+    let lengths: &[f32] = match &owned_lengths {
+        Some(computed) => computed,
+        None => cached_lengths.as_deref().unwrap(),
+    };
     let total: f32 = lengths.iter().sum();
     let inv_total = 1.0 / total.max(1e-10);
 
@@ -446,7 +459,7 @@ pub enum CurveGeom {
     Ellipse { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32 },
     BSpline { degree: usize, control_points: Vec<Vec3>, knots: Vec<f32>, weights: Option<Vec<f32>> },
     Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
-    Composite { segments: Vec<(CurveGeom, bool)> },
+    Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
     Polyline { points: Vec<Vec3> },
 }
 
@@ -505,8 +518,8 @@ impl CurveGeom {
                 basis.d0(t_eval)
             }
 
-            CurveGeom::Composite { segments } => {
-                if let Some((idx, t_local, _)) = find_composite_segment(segments, t) {
+            CurveGeom::Composite { segments, cached_lengths } => {
+                if let Some((idx, t_local, _)) = find_composite_segment(segments, cached_lengths, t) {
                     let (seg, reversed) = &segments[idx];
                     let t_eval = if *reversed { 1.0 - t_local } else { t_local };
                     seg.d0(t_eval)
@@ -560,8 +573,8 @@ impl CurveGeom {
                 basis.d1(t_eval) * dt_dedge
             }
 
-            CurveGeom::Composite { segments } => {
-                if let Some((idx, t_local, seg_width)) = find_composite_segment(segments, t) {
+            CurveGeom::Composite { segments, cached_lengths } => {
+                if let Some((idx, t_local, seg_width)) = find_composite_segment(segments, cached_lengths, t) {
                     let (seg, reversed) = &segments[idx];
                     let t_eval = if *reversed { 1.0 - t_local } else { t_local };
                     let chain_scale = if *reversed { -1.0 / seg_width } else { 1.0 / seg_width };
@@ -616,8 +629,8 @@ impl CurveGeom {
                 basis.d2(t_eval) * (dt_dedge * dt_dedge)
             }
 
-            CurveGeom::Composite { segments } => {
-                if let Some((idx, t_local, seg_width)) = find_composite_segment(segments, t) {
+            CurveGeom::Composite { segments, cached_lengths } => {
+                if let Some((idx, t_local, seg_width)) = find_composite_segment(segments, cached_lengths, t) {
                     let (seg, reversed) = &segments[idx];
                     let t_eval = if *reversed { 1.0 - t_local } else { t_local };
                     // d² is divided by seg_width² (squared is always positive, reversal doesn't matter)
@@ -948,6 +961,49 @@ mod tests {
             assert!(diff1 < 1e-5, "d1 mismatch at t={t}: {diff1}");
             assert!(diff2 < 1e-4, "d2 mismatch at t={t}: {diff2}");
         }
+    }
+
+    #[test]
+    fn test_composite_cached_lengths() {
+        // Build a composite of two line segments: length 1 + length 2 = total 3.
+        let seg1 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let seg2 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(2.0, 0.0, 0.0) };
+        let segments = vec![(seg1, false), (seg2, false)];
+
+        // Precompute cached lengths (as build_curve does)
+        let cached: Vec<f32> = segments.iter()
+            .map(|(seg, _)| approx_chordal_length(seg).max(1e-10))
+            .collect();
+        let comp = CurveGeom::Composite { segments, cached_lengths: Some(cached.clone()) };
+
+        // Verify cache matches segment count
+        assert_eq!(cached.len(), 2);
+        assert!((cached[0] - 1.0).abs() < 0.05, "seg1 length ≈ 1.0, got {}", cached[0]);
+        assert!((cached[1] - 2.0).abs() < 0.05, "seg2 length ≈ 2.0, got {}", cached[1]);
+
+        // d0 at t=0 should be start of first segment
+        let p0 = comp.d0(0.0);
+        assert!(p0.length() < 1e-5, "d0(0) should be origin, got {:?}", p0);
+
+        // d0 at t=1 should be end of second segment (seg2.d0(1.0) = (2,0,0))
+        let p1 = comp.d0(1.0);
+        assert!((p1 - Vec3::new(2.0, 0.0, 0.0)).length() < 0.1, "d0(1) ≈ (2,0,0), got {:?}", p1);
+
+        // d0 at t=1/3 should be near the junction (end of seg1 = (1,0,0))
+        let p_third = comp.d0(1.0 / 3.0);
+        assert!((p_third - Vec3::new(1.0, 0.0, 0.0)).length() < 0.1,
+            "d0(1/3) ≈ junction (1,0,0), got {:?}", p_third);
+
+        // Also test Composite without cache (cached_lengths: None) still works
+        let seg3 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let seg4 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::Y };
+        let comp_no_cache = CurveGeom::Composite {
+            segments: vec![(seg3, false), (seg4, false)],
+            cached_lengths: None,
+        };
+        let p_mid = comp_no_cache.d0(0.5);
+        // Should still evaluate without panic; midpoint should be near junction
+        assert!(p_mid.x.is_finite() && p_mid.y.is_finite(), "no-cache eval must produce finite point");
     }
 
     #[test]

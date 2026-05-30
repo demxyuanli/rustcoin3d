@@ -75,7 +75,16 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
                     build_curve(parent_id, entities).map(|c| (c, same_sense))
                 })
                 .collect();
-            if segments.is_empty() { None } else { Some(CurveGeom::Composite { segments }) }
+            if segments.is_empty() {
+                None
+            } else {
+                // Precompute segment lengths once at construction to avoid
+                // O(N×32) recomputation on every parameter evaluation.
+                let cached_lengths: Vec<f32> = segments.iter()
+                    .map(|(seg, _)| approx_chordal_length(seg).max(1e-10))
+                    .collect();
+                Some(CurveGeom::Composite { segments, cached_lengths: Some(cached_lengths) })
+            }
         }
         // SURFACE_CURVE/SEAM_CURVE: unwrap to the 3D curve
         "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
