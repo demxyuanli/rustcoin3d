@@ -4,7 +4,6 @@
 //! surfaces (B-spline, NURBS) are converted to this representation for uniform
 //! evaluation and derivative computation.
 
-use std::collections::HashMap;
 use rc3d_core::math::Vec3;
 use crate::step::brep::geom::bspline::{bspline_bases, find_span};
 
@@ -64,10 +63,66 @@ impl NurbsSurface {
         }
     }
 
+    /// Evaluate surface point and first-order partial derivatives together at (u, v).
+    /// Returns (point, ∂S/∂u, ∂S/∂v). Shares span and basis computation between
+    /// position and derivative evaluation for better performance.
+    pub fn evaluate_with_derivative(&self, u: f32, v: f32) -> (Vec3, Vec3, Vec3) {
+        // Shared span + basis computation (computed once, used for both position and derivatives)
+        let span_u = find_span(self.degree_u, &self.knots_u, u);
+        let span_v = find_span(self.degree_v, &self.knots_v, v);
+        let basis_u = bspline_bases(span_u, self.degree_u, u, &self.knots_u);
+        let basis_v = bspline_bases(span_v, self.degree_v, v, &self.knots_v);
+
+        // Analytical basis derivatives (computed once, used for both ∂u and ∂v)
+        let du_basis = analytical_basis_derivatives(span_u, self.degree_u, u, &self.knots_u);
+        let dv_basis = analytical_basis_derivatives(span_v, self.degree_v, v, &self.knots_v);
+
+        // Accumulate weighted position and partial derivatives in a single pass
+        let mut w_sum = 0.0f32;
+        let mut w_u = 0.0f32;
+        let mut w_v = 0.0f32;
+        let mut p = Vec3::ZERO;
+        let mut p_u = Vec3::ZERO;
+        let mut p_v = Vec3::ZERO;
+
+        for &(i, nu) in &basis_u {
+            let dn_du = lookup_basis_value(&du_basis, i);
+            for &(j, nv) in &basis_v {
+                let wgt = self.weights[i][j];
+                let cp = self.control_points[i][j];
+                let coeff = nu * nv * wgt;
+                w_sum += coeff;
+                p = p + cp * coeff;
+                // ∂/∂u
+                let c_u = dn_du * nv * wgt;
+                w_u += c_u;
+                p_u = p_u + cp * c_u;
+                // ∂/∂v
+                let dn_dv = lookup_basis_value(&dv_basis, j);
+                let c_v = nu * dn_dv * wgt;
+                w_v += c_v;
+                p_v = p_v + cp * c_v;
+            }
+        }
+
+        if w_sum.abs() < 1e-10 {
+            return (Vec3::ZERO, Vec3::X, Vec3::Y);
+        }
+
+        let inv_w = 1.0 / w_sum;
+        let pos = p * inv_w;
+        // Quotient rule: d/dx (A/W) = (A' * W - A * W') / W²
+        let inv_w2 = inv_w * inv_w;
+        let du = (p_u * w_sum - p * w_u) * inv_w2;
+        let dv = (p_v * w_sum - p * w_v) * inv_w2;
+        (pos, du, dv)
+    }
+
     /// Compute first-order partial derivatives ∂S/∂u and ∂S/∂v at (u, v).
     /// Uses analytical B-spline derivative formulas for accuracy and efficiency.
     pub fn derivative(&self, u: f32, v: f32) -> (Vec3, Vec3) {
-        rational_surface_derivatives(self, u, v)
+        let (_, du, dv) = self.evaluate_with_derivative(u, v);
+        (du, dv)
     }
 
     /// Compute surface normal at (u, v) = ∂S/∂u × ∂S/∂v (normalized).
@@ -111,75 +166,67 @@ impl NurbsSurface {
     }
 }
 
-/// Compute first-order B-spline basis function derivatives via finite differences
-/// on the basis functions themselves. More robust than analytical recurrence for
-/// clamped B-splines with repeated knots at domain boundaries.
-fn compute_bspline_derivatives(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
+/// Linear scan lookup in a short basis derivative list (3-6 entries).
+/// Faster than HashMap for these small sizes.
+#[inline]
+fn lookup_basis_value(basis: &[(usize, f32)], idx: usize) -> f32 {
+    for &(i, v) in basis {
+        if i == idx { return v; }
+    }
+    0.0
+}
+
+/// Compute first-order B-spline basis function derivatives using the analytical
+/// B-spline derivative recurrence (Piegl & Tiller, The NURBS Book, Eq. 2.10):
+///
+///   N'_{i,p}(t) = p / (knots[i+p] - knots[i])     * N_{i,  p-1}(t)
+///               - p / (knots[i+p+1] - knots[i+1]) * N_{i+1,p-1}(t)
+///
+/// Returns (index, derivative_value) pairs for the active basis functions
+/// at the given span. For degree 0, all derivatives are zero.
+fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
     if degree == 0 {
         return vec![(span, 0.0)];
     }
-    let n = knots.len() - degree - 1;
-    let t_min = knots[degree];
-    let t_max = knots[n];
-    let h = ((t_max - t_min) * 1e-3).max(1e-5);
 
-    let tp = (t + h).min(t_max);
-    let tm = (t - h).max(t_min);
-    let inv_delta = 1.0 / (tp - tm).max(1e-8);
+    // Degree p-1 basis functions: active for j = span-(p-1) to span (p functions)
+    let lower_bases = bspline_bases(span, degree - 1, t, knots);
 
-    let span_p = find_span(degree, knots, tp);
-    let span_m = find_span(degree, knots, tm);
-    let bases_p = bspline_bases(span_p, degree, tp, knots);
-    let bases_m = bspline_bases(span_m, degree, tm, knots);
+    let p = degree as f32;
+    let mut result = Vec::with_capacity(degree + 1);
 
-    let mut derivs: HashMap<usize, f32> = HashMap::with_capacity(bases_p.len() + 1);
-    for &(i, vp) in &bases_p { derivs.insert(i, vp); }
-    for &(i, vm) in &bases_m { *derivs.entry(i).or_default() -= vm; }
+    // Degree-p basis functions are active for i = span-p to span (p+1 functions)
+    let i_start = span.saturating_sub(degree);
+    let i_end = span;
 
-    derivs.into_iter()
-        .map(|(i, diff)| (i, diff * inv_delta))
-        .filter(|(_, v)| v.abs() > 1e-12)
-        .collect()
-}
+    for i in i_start..=i_end {
+        // N_{i, p-1}(t): nonzero only if i is in [span-(p-1), span] = [span-p+1, span]
+        let n_i = if i >= span - degree + 1 {
+            lookup_basis_value(&lower_bases, i)
+        } else {
+            0.0
+        };
 
-/// Analytical rational surface derivatives via quotient rule.
-/// S(u,v) = A(u,v) / W(u,v) where A = ΣΣ N_i N_j w_ij P_ij, W = ΣΣ N_i N_j w_ij
-fn rational_surface_derivatives(surf: &NurbsSurface, u: f32, v: f32) -> (Vec3, Vec3) {
-    let span_u = find_span(surf.degree_u, &surf.knots_u, u);
-    let span_v = find_span(surf.degree_v, &surf.knots_v, v);
-    let basis_u = bspline_bases(span_u, surf.degree_u, u, &surf.knots_u);
-    let basis_v = bspline_bases(span_v, surf.degree_v, v, &surf.knots_v);
+        // N_{i+1, p-1}(t): nonzero only if i+1 is in [span-p+1, span]
+        let n_ip1 = if i + 1 <= span {
+            lookup_basis_value(&lower_bases, i + 1)
+        } else {
+            0.0
+        };
 
-    // Compute derivatives once per direction
-    let du: HashMap<usize, f32> = compute_bspline_derivatives(span_u, surf.degree_u, u, &surf.knots_u)
-        .into_iter().collect();
-    let dv: HashMap<usize, f32> = compute_bspline_derivatives(span_v, surf.degree_v, v, &surf.knots_v)
-        .into_iter().collect();
+        let denom1 = knots[i + degree] - knots[i];
+        let denom2 = knots[i + degree + 1] - knots[i + 1];
 
-    let mut w = 0.0f32; let mut w_u = 0.0f32; let mut w_v = 0.0f32;
-    let mut p = Vec3::ZERO; let mut p_u = Vec3::ZERO; let mut p_v = Vec3::ZERO;
+        let term1 = if denom1.abs() > 1e-12 { n_i / denom1 } else { 0.0 };
+        let term2 = if denom2.abs() > 1e-12 { n_ip1 / denom2 } else { 0.0 };
 
-    for &(i, nu) in &basis_u {
-        let dn_du = du.get(&i).copied().unwrap_or(0.0);
-        for &(j, nv) in &basis_v {
-            let wgt = surf.weights[i][j];
-            let cp = surf.control_points[i][j];
-            let coeff = nu * nv * wgt;
-            w += coeff;
-            p = p + cp * coeff;
-            // ∂/∂u
-            w_u += dn_du * nv * wgt;
-            p_u = p_u + cp * (dn_du * nv * wgt);
-            // ∂/∂v
-            let dn_dv = dv.get(&j).copied().unwrap_or(0.0);
-            w_v += nu * dn_dv * wgt;
-            p_v = p_v + cp * (nu * dn_dv * wgt);
+        let deriv = p * (term1 - term2);
+        if deriv.abs() > 1e-12 {
+            result.push((i, deriv));
         }
     }
 
-    if w.abs() < 1e-10 { return (Vec3::X, Vec3::Y); }
-    let inv_w2 = 1.0 / (w * w);
-    ((p_u * w - p * w_u) * inv_w2, (p_v * w - p * w_v) * inv_w2)
+    result
 }
 
 // B-spline basis functions imported from super::geom.
@@ -488,6 +535,49 @@ mod tests {
         let n = surf.normal(0.0, 0.0);
         // At u=0, v=0 (outer top), normal should point roughly outward (+X)
         assert!(n.x > 0.5, "torus normal at outer top should point +X, got {:?}", n);
+    }
+
+    #[test]
+    fn test_evaluate_with_derivative() {
+        // Test with cylinder: position matches evaluate(), derivatives match derivative()
+        let surf = NurbsSurface::cylinder(1.0, 0.0, 1.0);
+        let u = 0.25f32;
+        let v = 0.5f32;
+
+        let (pos_evd, du_evd, dv_evd) = surf.evaluate_with_derivative(u, v);
+        let pos_eval = surf.evaluate(u, v);
+        let (du_deriv, dv_deriv) = surf.derivative(u, v);
+
+        assert!((pos_evd - pos_eval).length() < 1e-6,
+            "evaluate_with_derivative position should match evaluate: {:?} vs {:?}", pos_evd, pos_eval);
+        assert!((du_evd - du_deriv).length() < 1e-6,
+            "evaluate_with_derivative du should match derivative: {:?} vs {:?}", du_evd, du_deriv);
+        assert!((dv_evd - dv_deriv).length() < 1e-6,
+            "evaluate_with_derivative dv should match derivative: {:?} vs {:?}", dv_evd, dv_deriv);
+
+        // Test with plane: du should be +X, dv should be +Y
+        let plane = NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
+        let (_, du, dv) = plane.evaluate_with_derivative(0.5, 0.5);
+        assert!((du - Vec3::X).length() < 1e-5, "plane du should be +X, got {:?}", du);
+        assert!((dv - Vec3::Y).length() < 1e-5, "plane dv should be +Y, got {:?}", dv);
+
+        // Test degree-0 surface (degenerate): derivatives should still be computed without panic
+        let deg0 = NurbsSurface {
+            degree_u: 0,
+            degree_v: 0,
+            control_points: vec![vec![Vec3::new(1.0, 2.0, 3.0)]],
+            weights: vec![vec![1.0]],
+            knots_u: vec![0.0, 1.0],
+            knots_v: vec![0.0, 1.0],
+        };
+        let (pos, _, _) = deg0.evaluate_with_derivative(0.5, 0.5);
+        assert!((pos - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+
+        // Test with torus: derivatives should produce a non-degenerate normal
+        let torus = NurbsSurface::torus(3.0, 1.0);
+        let (_, du, dv) = torus.evaluate_with_derivative(0.0, 0.0);
+        let n = du.cross(dv);
+        assert!(n.length() > 0.1, "torus derivatives should produce non-degenerate normal");
     }
 
     #[test]

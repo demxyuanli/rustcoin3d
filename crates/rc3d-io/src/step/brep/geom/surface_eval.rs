@@ -317,7 +317,7 @@ impl SurfaceGeom {
                 );
                 let u_w = knot_domain_width(&nurbs.knots_u, nurbs.degree_u, nurbs.u_count());
                 let v_w = knot_domain_width(&nurbs.knots_v, nurbs.degree_v, nurbs.v_count());
-                let (du_k, dv_k) = nurbs.derivative(u_k, v_k);
+                let (_, du_k, dv_k) = nurbs.evaluate_with_derivative(u_k, v_k);
                 (du_k * u_w, dv_k * v_w)
             }
             SurfaceGeom::Extrusion { generatrix, direction } => {
