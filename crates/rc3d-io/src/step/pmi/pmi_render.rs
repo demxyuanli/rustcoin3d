@@ -10,6 +10,7 @@ use rc3d_scene::node_data::{
 use rc3d_scene::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 
 use super::pmi_extract::{PmiData, PmiDimension, PmiDatum, PmiToleranceFrame};
+use super::pmi_types::PmiDataSet;
 
 /// Default annotation style for imported PMI.
 fn pmi_style() -> AnnotationStyle {
@@ -108,4 +109,49 @@ pub fn attach_pmi_to_scene(
         style: pmi_style(),
     };
     graph.add_child(parent, NodeData::AnnotationSet(set))
+}
+
+/// Attach full PMI data set (including surface finishes) to the scene graph.
+/// Returns the NodeId of the created AnnotationSet node.
+pub fn attach_pmi_full_to_scene(
+    graph: &mut SceneGraph,
+    parent: NodeId,
+    pmi: &PmiDataSet,
+) -> NodeId {
+    let mut elements = Vec::new();
+    for dim in &pmi.dimensions {
+        elements.push(dimension_to_element(dim));
+    }
+    for datum in &pmi.datums {
+        elements.push(datum_to_element(datum));
+    }
+    for tol in &pmi.tolerances {
+        if let Some(elem) = tolerance_to_element(tol) {
+            elements.push(elem);
+        }
+    }
+    for finish in &pmi.surface_finishes {
+        elements.push(surface_finish_to_element(finish));
+    }
+    if elements.is_empty() {
+        return parent;
+    }
+    let set = AnnotationSetNode {
+        elements,
+        visible: true,
+        style: pmi_style(),
+    };
+    graph.add_child(parent, NodeData::AnnotationSet(set))
+}
+
+/// Convert a PmiSurfaceFinish to an AnnotationElement.
+fn surface_finish_to_element(finish: &super::pmi_types::PmiSurfaceFinish) -> AnnotationElement {
+    let ra = finish.ra_value.unwrap_or(0.0);
+    AnnotationElement::SurfaceFinish {
+        ra_value: ra,
+        note: finish.note.clone(),
+        position: AnnotationPoint::local(to_arr(&finish.anchor_point)),
+        direction: [0.0, 1.0, 0.0],
+        color: [0.6, 0.9, 0.6, 1.0], // light green
+    }
 }

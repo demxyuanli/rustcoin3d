@@ -2,6 +2,7 @@
 
 use super::super::entity_types::EntityType;
 use super::super::parser::EntityIndex;
+use super::pmi_types::{FinishSymbol, PmiDataSet, PmiSurfaceFinish};
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::{GdtMaterialCondition, GdtSymbol};
 
@@ -42,6 +43,92 @@ pub struct PmiData {
     pub dimensions: Vec<PmiDimension>,
     pub datums: Vec<PmiDatum>,
     pub tolerances: Vec<PmiToleranceFrame>,
+}
+
+/// Extract full PMI data set including surface finishes.
+pub fn extract_pmi_full(entities: &EntityIndex) -> PmiDataSet {
+    let basic = extract_pmi(entities);
+    let surface_finishes = extract_surface_finishes(entities);
+    PmiDataSet {
+        dimensions: basic.dimensions,
+        datums: basic.datums,
+        tolerances: basic.tolerances,
+        surface_finishes,
+    }
+}
+
+/// Extract surface finish annotations from STEP entities.
+///
+/// Looks for entities whose name matches common surface finish entity types:
+/// `SURFACE_FINISH`, `SURFACE_TEXTURE`, or presentation items referencing them.
+fn extract_surface_finishes(entities: &EntityIndex) -> Vec<PmiSurfaceFinish> {
+    let mut finishes = Vec::new();
+    for (&_eid, record) in entities.iter() {
+        let name_upper = record.name.to_uppercase();
+        let is_finish = name_upper.contains("SURFACE_FINISH")
+            || name_upper.contains("SURFACE_TEXTURE")
+            || name_upper.contains("ROUGHNESS");
+        if !is_finish {
+            continue;
+        }
+        // Try to extract Ra/Rz values from params
+        let mut ra_value: Option<f32> = None;
+        let mut rz_value: Option<f32> = None;
+        let mut anchor = Vec3::ZERO;
+        let mut note: Option<String> = None;
+
+        // Param 0: name / description
+        if let Some(n) = record.params.nth_param(0).and_then(|v| v.as_string()) {
+            if !n.is_empty() {
+                note = Some(n.to_string());
+            }
+        }
+        // Param 1: Ra value (or reference to a value entity)
+        if let Some(v) = record.params.nth_param(1) {
+            if let Some(f) = v.as_real() {
+                ra_value = Some(f as f32);
+            } else if let Some(id) = v.as_ref_id() {
+                if let Some(rec) = entities.get(&id) {
+                    ra_value = rec.params.nth_param(0).and_then(|v| v.as_real()).map(|f| f as f32);
+                }
+            }
+        }
+        // Param 2: Rz value
+        if let Some(v) = record.params.nth_param(2) {
+            if let Some(f) = v.as_real() {
+                rz_value = Some(f as f32);
+            }
+        }
+
+        // Resolve anchor from ANNOTATION_OCCURRENCE chain
+        for (_, anno_rec) in entities.iter() {
+            if anno_rec.entity_type != EntityType::AnnotationOccurrence {
+                continue;
+            }
+            if let Some(item_id) = anno_rec.params.nth_param(1).and_then(|v| v.as_ref_id()) {
+                let actual_id = unwrap_styled_item(item_id, entities);
+                if actual_id == _eid {
+                    if let Some(ref_pts) = anno_rec.params.nth_param(3).and_then(|v| v.as_list()) {
+                        let ref_ids: Vec<u64> = ref_pts.iter().filter_map(|v| v.as_ref_id()).collect();
+                        let pts = resolve_pmi_points(&ref_ids, entities);
+                        if let Some(&first) = pts.first() {
+                            anchor = first;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        finishes.push(PmiSurfaceFinish {
+            ra_value,
+            rz_value,
+            symbol: FinishSymbol::Basic,
+            anchor_point: anchor,
+            note,
+        });
+    }
+    finishes
 }
 
 /// Walk PMI presentation chains and extract annotation geometry.
