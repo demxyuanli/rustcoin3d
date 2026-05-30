@@ -187,17 +187,17 @@ fn translate_pcurve_endpoint(
             origin: *origin + shift,
             direction: *direction,
         },
-        CurveGeom::Circle { center, axis, radius } => CurveGeom::Circle {
-            center: *center + shift,
-            axis: *axis,
-            radius: *radius,
-        },
-        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => CurveGeom::Ellipse {
-            center: *center + shift,
-            axis: *axis,
-            semi_major: *semi_major,
-            semi_minor: *semi_minor,
-        },
+        CurveGeom::Circle { center, axis, radius, .. } => CurveGeom::circle(
+            *center + shift,
+            *axis,
+            *radius,
+        ),
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => CurveGeom::ellipse(
+            *center + shift,
+            *axis,
+            *semi_major,
+            *semi_minor,
+        ),
         other => other.clone(),
     }
 }

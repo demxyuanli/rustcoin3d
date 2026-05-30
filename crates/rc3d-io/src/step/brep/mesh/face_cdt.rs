@@ -835,12 +835,7 @@ mod tests {
     fn test_cdt_degenerated_cone() {
         use crate::step::brep::registry::BRepRegistry;
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cone {
-            apex: Vec3::ZERO,
-            axis: Vec3::Z,
-            semi_angle: 0.463648f32,
-            radius_at_apex: 0.0,
-        };
+        let surface = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, 0.463648f32, 0.0);
         let apex = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let fk = reg.faces.insert(BRepFace {
             surface: surface.clone(),

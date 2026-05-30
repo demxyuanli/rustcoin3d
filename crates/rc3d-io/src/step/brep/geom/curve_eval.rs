@@ -455,12 +455,25 @@ fn find_composite_segment(
 #[derive(Debug, Clone)]
 pub enum CurveGeom {
     Line { origin: Vec3, direction: Vec3 },
-    Circle { center: Vec3, axis: Vec3, radius: f32 },
-    Ellipse { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32 },
+    Circle { center: Vec3, axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3 },
+    Ellipse { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
     BSpline { degree: usize, control_points: Vec<Vec3>, knots: Vec<f32>, weights: Option<Vec<f32>> },
     Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
     Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
     Polyline { points: Vec<Vec3> },
+}
+
+impl CurveGeom {
+    /// Construct a Circle with pre-computed ortho axes.
+    pub fn circle(center: Vec3, axis: Vec3, radius: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        CurveGeom::Circle { center, axis, radius, x_dir, y_dir }
+    }
+    /// Construct an Ellipse with pre-computed ortho axes.
+    pub fn ellipse(center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir }
+    }
 }
 
 /// Map edge parameter t in [0,1] to the basis curve parameter used by `d0`/`d1`.
@@ -497,16 +510,14 @@ impl CurveGeom {
         match self {
             CurveGeom::Line { origin, direction } => *origin + *direction * t,
 
-            CurveGeom::Circle { center, axis, radius } => {
+            CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
-                *center + x_dir * radius * theta.cos() + y_dir * radius * theta.sin()
+                *center + *x_dir * radius * theta.cos() + *y_dir * radius * theta.sin()
             }
 
-            CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => {
+            CurveGeom::Ellipse { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
-                *center + x_dir * semi_major * theta.cos() + y_dir * semi_minor * theta.sin()
+                *center + *x_dir * semi_major * theta.cos() + *y_dir * semi_minor * theta.sin()
             }
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
@@ -550,18 +561,16 @@ impl CurveGeom {
         match self {
             CurveGeom::Line { direction, .. } => *direction,
 
-            CurveGeom::Circle { axis, radius, .. } => {
+            CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
                 let twopi = std::f32::consts::TAU;
-                twopi * radius * (-theta.sin() * x_dir + theta.cos() * y_dir)
+                twopi * radius * (-theta.sin() * *x_dir + theta.cos() * *y_dir)
             }
 
-            CurveGeom::Ellipse { axis, semi_major, semi_minor, .. } => {
+            CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
                 let twopi = std::f32::consts::TAU;
-                twopi * (-semi_major * theta.sin() * x_dir + semi_minor * theta.cos() * y_dir)
+                twopi * (-semi_major * theta.sin() * *x_dir + semi_minor * theta.cos() * *y_dir)
             }
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
@@ -606,18 +615,16 @@ impl CurveGeom {
         match self {
             CurveGeom::Line { .. } => Vec3::ZERO,
 
-            CurveGeom::Circle { axis, radius, .. } => {
+            CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
                 let twopi = std::f32::consts::TAU;
-                -(twopi * twopi) * radius * (theta.cos() * x_dir + theta.sin() * y_dir)
+                -(twopi * twopi) * radius * (theta.cos() * *x_dir + theta.sin() * *y_dir)
             }
 
-            CurveGeom::Ellipse { axis, semi_major, semi_minor, .. } => {
+            CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
                 let theta = t * std::f32::consts::TAU;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
                 let twopi = std::f32::consts::TAU;
-                -(twopi * twopi) * (semi_major * theta.cos() * x_dir + semi_minor * theta.sin() * y_dir)
+                -(twopi * twopi) * (semi_major * theta.cos() * *x_dir + semi_minor * theta.sin() * *y_dir)
             }
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
@@ -725,15 +732,15 @@ fn trim_circle_to_vertices(
     curve: &CurveGeom, p_lo: Vec3, p_hi: Vec3,
 ) -> Option<CurveGeom> {
     match curve {
-        CurveGeom::Circle { center, axis, radius } => {
-            let a0 = circle_angle_geom(center, *axis, *radius, p_lo)?;
-            let a1 = circle_angle_geom(center, *axis, *radius, p_hi)?;
+        CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
+            let a0 = circle_angle_geom(center, *axis, *radius, *x_dir, *y_dir, p_lo)?;
+            let a1 = circle_angle_geom(center, *axis, *radius, *x_dir, *y_dir, p_hi)?;
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
         }
-        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => {
-            let a0 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, p_lo)?;
-            let a1 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, p_hi)?;
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
+            let a0 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, *x_dir, *y_dir, p_lo)?;
+            let a1 = ellipse_angle_geom(center, *axis, *semi_major, *semi_minor, *x_dir, *y_dir, p_hi)?;
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
         }
@@ -743,17 +750,15 @@ fn trim_circle_to_vertices(
 }
 
 /// Compute angular parameter [0,TAU) of a point on a circle/ellipse.
-fn circle_angle_geom(center: &Vec3, axis: Vec3, radius: f32, point: Vec3) -> Option<f32> {
-    let a = axis.normalize();
-    let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let x = ref_dir - a * ref_dir.dot(a);
-    if x.length_squared() < 1e-12 { return None; }
-    let x = x.normalize(); let y = a.cross(x);
+fn circle_angle_geom(
+    center: &Vec3, _axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3, point: Vec3,
+) -> Option<f32> {
     let rel = point - *center;
+    let a = _axis.normalize();
     let proj = rel - a * rel.dot(a);
     let dist = proj.length();
     if (dist - radius).abs() > radius * 0.1 && (dist - radius).abs() > 0.5 { return None; }
-    let u = f32::atan2(proj.dot(y), proj.dot(x));
+    let u = f32::atan2(proj.dot(y_dir), proj.dot(x_dir));
     Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
 }
 
@@ -763,17 +768,13 @@ fn circle_angle_geom(center: &Vec3, axis: Vec3, radius: f32, point: Vec3) -> Opt
 /// (e.g. a=10, b=1) by computing θ = atan2(y/b, x/a) instead of assuming
 /// constant distance from center.
 fn ellipse_angle_geom(
-    center: &Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, point: Vec3,
+    center: &Vec3, axis: Vec3, semi_major: f32, semi_minor: f32,
+    x_dir: Vec3, y_dir: Vec3, point: Vec3,
 ) -> Option<f32> {
     let a = axis.normalize();
-    let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let x = ref_dir - a * ref_dir.dot(a);
-    if x.length_squared() < 1e-12 { return None; }
-    let x = x.normalize();
-    let y = a.cross(x);
     let rel = point - *center;
     let proj = rel - a * rel.dot(a);
-    let u = f32::atan2(proj.dot(y) / semi_minor, proj.dot(x) / semi_major);
+    let u = f32::atan2(proj.dot(y_dir) / semi_minor, proj.dot(x_dir) / semi_major);
     Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
 }
 
@@ -878,14 +879,14 @@ mod tests {
 
     #[test]
     fn test_circle_curvature() {
-        let circle = CurveGeom::Circle { center: Vec3::ZERO, axis: Vec3::Z, radius: 2.0 };
+        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 2.0);
         let k = circle.curvature(0.25);
         assert!((k - 0.5).abs() < 1e-4); // curvature = 1/r
     }
 
     #[test]
     fn test_circle_d1_orthogonal_to_radius() {
-        let circle = CurveGeom::Circle { center: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
         let pos = circle.d0(0.0); // at angle 0 -> (1,0,0)
         let tan = circle.d1(0.0);
         // tangent at angle 0 should be (0, 2pi, 0) -- orthogonal to radius
@@ -997,9 +998,7 @@ mod tests {
         let axis = Vec3::Z;
         let a = 10.0f32;
         let b = 1.0f32;
-        let ellipse = CurveGeom::Ellipse {
-            center, axis, semi_major: a, semi_minor: b,
-        };
+        let ellipse = CurveGeom::ellipse(center, axis, a, b);
         // Point at eccentric anomaly θ=0:  (a, 0, 0)
         let p_lo = Vec3::new(a, 0.0, 0.0);
         // Point at eccentric anomaly θ=π/2:  (0, b, 0)

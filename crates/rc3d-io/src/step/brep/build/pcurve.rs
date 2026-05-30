@@ -304,23 +304,14 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
             let center = resolve_placement_2d(placement_id, entities)?;
-            Some(CurveGeom::Circle {
-                center: Vec3::new(center.0, center.1, 0.0),
-                axis: Vec3::Z,
-                radius,
-            })
+            Some(CurveGeom::circle(Vec3::new(center.0, center.1, 0.0), Vec3::Z, radius))
         }
         "ELLIPSE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
             let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
             let center = resolve_placement_2d(placement_id, entities)?;
-            Some(CurveGeom::Ellipse {
-                center: Vec3::new(center.0, center.1, 0.0),
-                axis: Vec3::Z,
-                semi_major,
-                semi_minor,
-            })
+            Some(CurveGeom::ellipse(Vec3::new(center.0, center.1, 0.0), Vec3::Z, semi_major, semi_minor))
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
             build_bspline_2d(record, entities)
@@ -628,7 +619,7 @@ mod tests {
         );
         let curve = build_curve(10, &entities).unwrap();
         match curve {
-            CurveGeom::Circle { center, axis, radius } => {
+            CurveGeom::Circle { center, axis, radius, .. } => {
                 assert!((center - Vec3::ZERO).length() < 1e-6);
                 assert!(radius - 5.0 < 1e-4);
                 assert!((axis - Vec3::Z).length() < 1e-6);
@@ -733,7 +724,7 @@ mod tests {
         );
         let surface = build_surface(10, &entities).unwrap();
         match surface {
-            SurfaceGeom::Cylinder { origin, axis, radius } => {
+            SurfaceGeom::Cylinder { origin, axis, radius, .. } => {
                 assert!((origin - Vec3::ZERO).length() < 1e-6);
                 assert!((axis - Vec3::Z).length() < 1e-6);
                 assert!((radius - 2.5).abs() < 1e-4);
@@ -755,7 +746,7 @@ mod tests {
         );
         let surface = build_surface(10, &entities).unwrap();
         match surface {
-            SurfaceGeom::Cone { apex, axis, radius_at_apex, semi_angle } => {
+            SurfaceGeom::Cone { apex, axis, radius_at_apex, semi_angle, .. } => {
                 assert!((apex - Vec3::ZERO).length() < 1e-6);
                 assert!((radius_at_apex - 1.0).abs() < 1e-4);
                 assert!((semi_angle - 0.5).abs() < 1e-4);
@@ -799,7 +790,7 @@ mod tests {
         );
         let surface = build_surface(10, &entities).unwrap();
         match surface {
-            SurfaceGeom::Torus { center, axis, major_r, minor_r } => {
+            SurfaceGeom::Torus { center, axis, major_r, minor_r, .. } => {
                 assert!((center - Vec3::ZERO).length() < 1e-6);
                 assert!((major_r - 5.0).abs() < 1e-4);
                 assert!((minor_r - 1.0).abs() < 1e-4);

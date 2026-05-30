@@ -70,7 +70,7 @@ fn intersect_surfaces_brep(
             plane_plane_brep(*o1, *n1, *o2, *n2)
         }
         (SurfaceGeom::Plane { origin: o, normal: n, .. },
-         SurfaceGeom::Cylinder { origin: co, axis: ca, radius: cr }) => {
+         SurfaceGeom::Cylinder { origin: co, axis: ca, radius: cr, .. }) => {
             plane_cylinder_brep(*o, *n, *co, *ca, *cr)
         }
         (SurfaceGeom::Cylinder { .. }, SurfaceGeom::Plane { .. }) => {
@@ -101,7 +101,7 @@ fn plane_cylinder_brep(plane_o: Vec3, plane_n: Vec3, cyl_o: Vec3, cyl_axis: Vec3
     if (plane_n.dot(a)).abs() > 0.999 {
         let d = plane_n.dot(cyl_o - plane_o);
         let center = cyl_o - plane_n * d;
-        return Some(vec![CurveGeom::Circle { center, axis: plane_n, radius: cyl_r }]);
+        return Some(vec![CurveGeom::circle(center, plane_n, cyl_r)]);
     }
     None
 }

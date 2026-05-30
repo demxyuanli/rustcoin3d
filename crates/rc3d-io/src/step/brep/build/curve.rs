@@ -20,7 +20,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-            Some(CurveGeom::Circle { center, axis, radius })
+            Some(CurveGeom::circle(center, axis, radius))
         }
         "ELLIPSE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
@@ -28,7 +28,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-            Some(CurveGeom::Ellipse { center, axis, semi_major, semi_minor })
+            Some(CurveGeom::ellipse(center, axis, semi_major, semi_minor))
         }
         "HYPERBOLA" | "PARABOLA" => {
             let pts = geom::sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 1e-4);

@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_detect_cone_apex_degeneracy() {
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cone { apex: Vec3::ZERO, axis: Vec3::Z, semi_angle: 0.5, radius_at_apex: 0.0 };
+        let surface = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, 0.5, 0.0);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],

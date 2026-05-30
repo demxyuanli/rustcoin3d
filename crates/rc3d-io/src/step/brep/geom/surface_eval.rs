@@ -8,14 +8,32 @@ use crate::step::nurbs::NurbsSurface;
 #[derive(Debug, Clone)]
 pub enum SurfaceGeom {
     Plane { origin: Vec3, normal: Vec3, u_dir: Vec3 },
-    Cylinder { origin: Vec3, axis: Vec3, radius: f32 },
-    Cone { apex: Vec3, axis: Vec3, semi_angle: f32, radius_at_apex: f32 },
+    Cylinder { origin: Vec3, axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3 },
+    Cone { apex: Vec3, axis: Vec3, semi_angle: f32, radius_at_apex: f32, x_dir: Vec3, y_dir: Vec3 },
     Sphere { center: Vec3, radius: f32 },
-    Torus { center: Vec3, axis: Vec3, major_r: f32, minor_r: f32 },
+    Torus { center: Vec3, axis: Vec3, major_r: f32, minor_r: f32, x_dir: Vec3, y_dir: Vec3 },
     BSpline(NurbsSurface),
     Extrusion { generatrix: Box<CurveGeom>, direction: Vec3 },
     Revolution { generatrix: Box<CurveGeom>, axis_origin: Vec3, axis_dir: Vec3 },
     Offset { basis: Box<SurfaceGeom>, distance: f32 },
+}
+
+impl SurfaceGeom {
+    /// Construct a Cylinder with pre-computed ortho axes.
+    pub fn cylinder(origin: Vec3, axis: Vec3, radius: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir }
+    }
+    /// Construct a Cone with pre-computed ortho axes.
+    pub fn cone(apex: Vec3, axis: Vec3, semi_angle: f32, radius_at_apex: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir }
+    }
+    /// Construct a Torus with pre-computed ortho axes.
+    pub fn torus(center: Vec3, axis: Vec3, major_r: f32, minor_r: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        SurfaceGeom::Torus { center, axis, major_r, minor_r, x_dir, y_dir }
+    }
 }
 
 /// Rodrigues rotation: rotate point `p` around the line through `origin` along `axis`
@@ -191,22 +209,20 @@ impl SurfaceGeom {
                 let (u_axis, v_axis) = plane_tangent_basis(*normal, *u_dir);
                 *origin + u_axis * u + v_axis * v
             }
-            SurfaceGeom::Cylinder { origin, axis, radius } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir } => {
                 let theta = u * std::f32::consts::TAU;
                 let r = *radius;
                 *origin
-                    + x_dir * r * theta.cos()
-                    + y_dir * r * theta.sin()
+                    + *x_dir * r * theta.cos()
+                    + *y_dir * r * theta.sin()
                     + *axis * v
             }
-            SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
                 let theta = u * std::f32::consts::TAU;
                 let r = *radius_at_apex + v * semi_angle.tan();
                 *apex
-                    + x_dir * r * theta.cos()
-                    + y_dir * r * theta.sin()
+                    + *x_dir * r * theta.cos()
+                    + *y_dir * r * theta.sin()
                     + *axis * v
             }
             SurfaceGeom::Sphere { center, radius } => {
@@ -220,14 +236,13 @@ impl SurfaceGeom {
                         phi.cos(),
                     )
             }
-            SurfaceGeom::Torus { center, axis, major_r, minor_r } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Torus { center, axis, major_r, minor_r, x_dir, y_dir } => {
                 let theta = u * std::f32::consts::TAU;
                 let phi = v * std::f32::consts::TAU;
                 let r = *major_r + *minor_r * phi.cos();
                 *center
-                    + x_dir * r * theta.cos()
-                    + y_dir * r * theta.sin()
+                    + *x_dir * r * theta.cos()
+                    + *y_dir * r * theta.sin()
                     + *axis * *minor_r * phi.sin()
             }
             SurfaceGeom::BSpline(nurbs) => {
@@ -260,22 +275,20 @@ impl SurfaceGeom {
                 let (u_axis, v_axis) = plane_tangent_basis(*normal, *u_dir);
                 (u_axis, v_axis)
             }
-            SurfaceGeom::Cylinder { axis, radius, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cylinder { axis, radius, x_dir, y_dir, .. } => {
                 let r = *radius;
                 let theta = u * std::f32::consts::TAU;
                 let twopi = std::f32::consts::TAU;
-                let du = twopi * r * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                let du = twopi * r * (-theta.sin() * *x_dir + theta.cos() * *y_dir);
                 (du, *axis)
             }
-            SurfaceGeom::Cone { axis, semi_angle, radius_at_apex, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cone { axis, semi_angle, radius_at_apex, x_dir, y_dir, .. } => {
                 let tan_a = semi_angle.tan();
                 let r = *radius_at_apex + v * tan_a;
                 let theta = u * std::f32::consts::TAU;
                 let twopi = std::f32::consts::TAU;
-                let du = twopi * r * (-theta.sin() * x_dir + theta.cos() * y_dir);
-                let dv = tan_a * (theta.cos() * x_dir + theta.sin() * y_dir) + *axis;
+                let du = twopi * r * (-theta.sin() * *x_dir + theta.cos() * *y_dir);
+                let dv = tan_a * (theta.cos() * *x_dir + theta.sin() * *y_dir) + *axis;
                 (du, dv)
             }
             SurfaceGeom::Sphere { radius, .. } => {
@@ -292,18 +305,17 @@ impl SurfaceGeom {
                 );
                 (du, dv)
             }
-            SurfaceGeom::Torus { axis, major_r, minor_r, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Torus { axis, major_r, minor_r, x_dir, y_dir, .. } => {
                 let mr = *major_r;
                 let nr = *minor_r;
                 let theta = u * std::f32::consts::TAU;
                 let phi = v * std::f32::consts::TAU;
                 let twopi = std::f32::consts::TAU;
                 let r = mr + nr * phi.cos();
-                let du = twopi * r * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                let du = twopi * r * (-theta.sin() * *x_dir + theta.cos() * *y_dir);
                 let dv = twopi * (
-                    x_dir * (-nr * phi.sin() * theta.cos())
-                    + y_dir * (-nr * phi.sin() * theta.sin())
+                    *x_dir * (-nr * phi.sin() * theta.cos())
+                    + *y_dir * (-nr * phi.sin() * theta.sin())
                     + *axis * nr * phi.cos()
                 );
                 (du, dv)
@@ -438,23 +450,21 @@ impl SurfaceGeom {
                 let rel = point - *origin;
                 Some((rel.dot(u_axis), rel.dot(v_axis)))
             }
-            SurfaceGeom::Cylinder { origin, axis, .. } => {
+            SurfaceGeom::Cylinder { origin, axis, x_dir, y_dir, .. } => {
                 let a = axis.normalize();
                 let rel = point - *origin;
                 let v = rel.dot(a);
                 let radial = rel - a * v;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
-                let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+                let u_raw = f32::atan2(radial.dot(*y_dir), radial.dot(*x_dir));
                 let u = if u_raw < 0.0 { u_raw / std::f32::consts::TAU + 1.0 } else { u_raw / std::f32::consts::TAU };
                 Some(self.d0_uv_to_native(u, v))
             }
-            SurfaceGeom::Cone { apex, axis, .. } => {
+            SurfaceGeom::Cone { apex, axis, x_dir, y_dir, .. } => {
                 let a = axis.normalize();
                 let rel = point - *apex;
                 let v = rel.dot(a);
                 let radial = rel - a * v;
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
-                let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+                let u_raw = f32::atan2(radial.dot(*y_dir), radial.dot(*x_dir));
                 let u = if u_raw < 0.0 { u_raw / std::f32::consts::TAU + 1.0 } else { u_raw / std::f32::consts::TAU };
                 Some(self.d0_uv_to_native(u, v))
             }
@@ -823,24 +833,22 @@ impl SurfaceGeom {
         match self {
             SurfaceGeom::Plane { .. } => (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO),
 
-            SurfaceGeom::Cylinder { axis, radius, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cylinder { radius, x_dir, y_dir, .. } => {
                 let r = *radius;
                 let theta = u * std::f32::consts::TAU;
                 let t2 = std::f32::consts::TAU * std::f32::consts::TAU;
-                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
+                let duu = -t2 * r * (theta.cos() * *x_dir + theta.sin() * *y_dir);
                 (duu, Vec3::ZERO, Vec3::ZERO)
             }
 
-            SurfaceGeom::Cone { axis, semi_angle, radius_at_apex, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Cone { semi_angle, radius_at_apex, x_dir, y_dir, .. } => {
                 let tan_a = semi_angle.tan();
                 let r = *radius_at_apex + v * tan_a;
                 let theta = u * std::f32::consts::TAU;
                 let t = std::f32::consts::TAU;
                 let t2 = t * t;
-                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
-                let duv = t * tan_a * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                let duu = -t2 * r * (theta.cos() * *x_dir + theta.sin() * *y_dir);
+                let duv = t * tan_a * (-theta.sin() * *x_dir + theta.cos() * *y_dir);
                 (duu, duv, Vec3::ZERO)
             }
 
@@ -859,8 +867,7 @@ impl SurfaceGeom {
                 (duu, duv, dvv)
             }
 
-            SurfaceGeom::Torus { axis, major_r, minor_r, .. } => {
-                let (x_dir, y_dir) = build_ortho_axes(*axis);
+            SurfaceGeom::Torus { axis, major_r, minor_r, x_dir, y_dir, .. } => {
                 let mr = *major_r;
                 let nr = *minor_r;
                 let theta = u * std::f32::consts::TAU;
@@ -868,12 +875,12 @@ impl SurfaceGeom {
                 let t = std::f32::consts::TAU;
                 let t2 = t * t;
                 let r = mr + nr * phi.cos();
-                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
+                let duu = -t2 * r * (theta.cos() * *x_dir + theta.sin() * *y_dir);
                 let duv = t2 * nr * (-phi.sin())
-                    * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                    * (-theta.sin() * *x_dir + theta.cos() * *y_dir);
                 let dvv = t2 * (
-                    x_dir * (-nr * phi.cos() * theta.cos())
-                    + y_dir * (-nr * phi.cos() * theta.sin())
+                    *x_dir * (-nr * phi.cos() * theta.cos())
+                    + *y_dir * (-nr * phi.cos() * theta.sin())
                     + *axis * (-nr * phi.sin())
                 );
                 (duu, duv, dvv)
@@ -997,14 +1004,14 @@ mod tests {
 
     #[test]
     fn test_cylinder_d0_on_surface() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0);
         let p = cyl.d0(0.0, 5.0);
         assert!((p - Vec3::new(2.0, 0.0, 5.0)).length() < 1e-4);
     }
 
     #[test]
     fn test_cylinder_d1_du_is_tangent_dv_is_axis() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let (du, dv) = cyl.d1(0.0, 1.0);
         assert!((dv - Vec3::Z).length() < 1e-6);
         assert!(du.dot(Vec3::Z).abs() < 1e-6);
@@ -1013,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_cylinder_normal_is_radial() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let n = cyl.normal(0.0, 0.0);
         assert!((n - Vec3::X).length() < 1e-4);
         let n2 = cyl.normal(0.25, 0.0);
@@ -1022,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_cylinder_project() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0);
         let (u, v) = cyl.project(Vec3::new(2.0, 0.0, 5.0)).unwrap();
         assert!(u.abs() < 1e-4);
         assert!((v - 5.0).abs() < 1e-4);
@@ -1030,14 +1037,14 @@ mod tests {
 
     #[test]
     fn test_cone_d0_at_apex() {
-        let cone = SurfaceGeom::Cone { apex: Vec3::ZERO, axis: Vec3::Z, semi_angle: std::f32::consts::FRAC_PI_4, radius_at_apex: 0.0 };
+        let cone = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_4, 0.0);
         let p = cone.d0(0.0, 0.0);
         assert!(p.length() < 1e-6);
     }
 
     #[test]
     fn test_cone_d0_radius_grows_with_v() {
-        let cone = SurfaceGeom::Cone { apex: Vec3::ZERO, axis: Vec3::Z, semi_angle: std::f32::consts::FRAC_PI_4, radius_at_apex: 0.0 };
+        let cone = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_4, 0.0);
         let p = cone.d0(0.0, 1.0);
         let r = (p.x * p.x + p.y * p.y).sqrt();
         assert!((r - 1.0).abs() < 1e-4);
@@ -1046,7 +1053,7 @@ mod tests {
 
     #[test]
     fn test_cone_d1_dv_has_axis_component() {
-        let cone = SurfaceGeom::Cone { apex: Vec3::ZERO, axis: Vec3::Z, semi_angle: std::f32::consts::FRAC_PI_4, radius_at_apex: 1.0 };
+        let cone = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_4, 1.0);
         let (_du, dv) = cone.d1(0.0, 0.5);
         assert!(dv.z > 0.5);
     }
@@ -1099,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_torus_d0_outer_equator() {
-        let torus = SurfaceGeom::Torus { center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0 };
+        let torus = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
         let p = torus.d0(0.0, 0.0);
         let r_xy = (p.x * p.x + p.y * p.y).sqrt();
         assert!((r_xy - 4.0).abs() < 1e-4);
@@ -1108,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_torus_d0_inner_top() {
-        let torus = SurfaceGeom::Torus { center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0 };
+        let torus = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
         let p = torus.d0(0.0, 0.5);
         let r_xy = (p.x * p.x + p.y * p.y).sqrt();
         assert!((r_xy - 2.0).abs() < 1e-4);
@@ -1116,14 +1123,14 @@ mod tests {
 
     #[test]
     fn test_torus_normal_outward() {
-        let torus = SurfaceGeom::Torus { center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0 };
+        let torus = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
         let n = torus.normal(0.0, 0.0);
         assert!(n.x > 0.5);
     }
 
     #[test]
     fn test_torus_project() {
-        let torus = SurfaceGeom::Torus { center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0 };
+        let torus = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
         let p = torus.d0_native(0.0, 0.0);
         let (u, v) = torus.project(p).expect("torus project");
         let back = torus.d0_native(u, v);
@@ -1159,7 +1166,7 @@ mod tests {
 
     #[test]
     fn test_revolution_d0_circle_makes_torus() {
-        let circle = CurveGeom::Circle { center: Vec3::new(3.0, 0.0, 0.0), axis: Vec3::Y, radius: 1.0 };
+        let circle = CurveGeom::circle(Vec3::new(3.0, 0.0, 0.0), Vec3::Y, 1.0);
         let rev = SurfaceGeom::Revolution { generatrix: Box::new(circle), axis_origin: Vec3::ZERO, axis_dir: Vec3::Z };
         let p = rev.d0(0.0, 0.0);
         assert!((p - Vec3::new(4.0, 0.0, 0.0)).length() < 1e-4);
@@ -1169,7 +1176,7 @@ mod tests {
 
     #[test]
     fn test_revolution_project() {
-        let circle = CurveGeom::Circle { center: Vec3::new(3.0, 0.0, 0.0), axis: Vec3::Y, radius: 1.0 };
+        let circle = CurveGeom::circle(Vec3::new(3.0, 0.0, 0.0), Vec3::Y, 1.0);
         let rev = SurfaceGeom::Revolution { generatrix: Box::new(circle), axis_origin: Vec3::ZERO, axis_dir: Vec3::Z };
         let proj = rev.project(Vec3::new(4.0, 0.0, 0.0));
         assert!(proj.is_some());
@@ -1223,7 +1230,7 @@ mod tests {
 
     #[test]
     fn test_native_uv_roundtrip_cylinder() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let native = (std::f32::consts::PI, 2.0);
         let d0 = cyl.native_uv_to_d0(native.0, native.1);
         assert!((d0.0 - 0.5).abs() < 1e-5);
@@ -1278,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_offset_cylinder_d0() {
-        let cyl = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let offset = SurfaceGeom::Offset { basis: Box::new(cyl), distance: 0.5 };
         let p = offset.d0(0.0, 0.0);
         assert!((p.x - 1.5).abs() < 1e-3, "offset cylinder x should be ~1.5, got {}", p.x);
@@ -1306,11 +1313,7 @@ mod tests {
 
     #[test]
     fn test_cylinder_curvature_radius_equals_radius() {
-        let cyl = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 2.0,
-        };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0);
         // At any point, one principal curvature radius = cylinder radius
         let r = cyl.min_curvature_radius(0.25, 0.5);
         assert!(
@@ -1334,11 +1337,7 @@ mod tests {
 
     #[test]
     fn test_offset_self_intersection_detection() {
-        let cyl = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 1.0,
-        };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         // Offset > radius should self-intersect (inward offset)
         assert!(offset_may_self_intersect(&cyl, 2.0, 8),
             "Offset 2.0 > radius 1.0 should detect self-intersection");
@@ -1351,16 +1350,12 @@ mod tests {
     fn test_offset_d1_weingarten() {
         // Offset cylinder: r=2.0, offset=0.5 → effective r=2.5.
         // d1 du of the offset surface should match a cylinder with r=2.5.
-        let cyl = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0,
-        };
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0);
         let offset = SurfaceGeom::Offset {
             basis: Box::new(cyl), distance: 0.5,
         };
 
-        let effective_cyl = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.5,
-        };
+        let effective_cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.5);
 
         for &(u, v) in &[(0.0, 0.0), (0.25, 0.5), (0.5, 1.0), (0.75, -0.3)] {
             let (du_off, dv_off) = offset.d1(u, v);
@@ -1384,15 +1379,11 @@ mod tests {
         // Cross-validate analytical d2 against numerical (central differences on d1)
         // for Cylinder, Sphere, and Torus at several (u, v) points.
         let surfaces: Vec<(&str, SurfaceGeom)> = vec![
-            ("cylinder", SurfaceGeom::Cylinder {
-                origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0,
-            }),
+            ("cylinder", SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0)),
             ("sphere", SurfaceGeom::Sphere {
                 center: Vec3::ZERO, radius: 3.0,
             }),
-            ("torus", SurfaceGeom::Torus {
-                center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0,
-            }),
+            ("torus", SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0)),
         ];
 
         let uv_points = [

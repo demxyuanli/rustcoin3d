@@ -153,14 +153,10 @@ fn offset_solid_faces(
                     u_dir: *u_dir,
                 })
             }
-            SurfaceGeom::Cylinder { origin, axis, radius } => {
+            SurfaceGeom::Cylinder { origin, axis, radius, .. } => {
                 let new_r = *radius + distance;
                 if new_r > 0.0 {
-                    Some(SurfaceGeom::Cylinder {
-                        origin: *origin,
-                        axis: *axis,
-                        radius: new_r,
-                    })
+                    Some(SurfaceGeom::cylinder(*origin, *axis, new_r))
                 } else {
                     None // Would invert — skip
                 }
@@ -288,11 +284,7 @@ mod tests {
     #[test]
     fn test_offset_cylinder_face() {
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 5.0,
-        };
+        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -322,11 +314,7 @@ mod tests {
     #[test]
     fn test_offset_cylinder_inversion_skipped() {
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 0.5,
-        };
+        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 0.5);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,

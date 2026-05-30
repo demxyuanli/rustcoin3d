@@ -353,11 +353,7 @@ mod tests {
         let mut reg = BRepRegistry::new();
         let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Cylinder {
-                origin: Vec3::ZERO,
-                axis: Vec3::Z,
-                radius: 5.0,
-            },
+            surface: SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0),
             outer_wire: wire_key,
             inner_wires: vec![],
             same_sense: true,

@@ -134,17 +134,17 @@ fn shift_pcurve(
             origin: *origin + shift,
             direction: *direction,
         },
-        CurveGeom::Circle { center, axis, radius } => CurveGeom::Circle {
-            center: *center + shift,
-            axis: *axis,
-            radius: *radius,
-        },
-        CurveGeom::Ellipse { center, axis, semi_major, semi_minor } => CurveGeom::Ellipse {
-            center: *center + shift,
-            axis: *axis,
-            semi_major: *semi_major,
-            semi_minor: *semi_minor,
-        },
+        CurveGeom::Circle { center, axis, radius, .. } => CurveGeom::circle(
+            *center + shift,
+            *axis,
+            *radius,
+        ),
+        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => CurveGeom::ellipse(
+            *center + shift,
+            *axis,
+            *semi_major,
+            *semi_minor,
+        ),
         other => other.clone(),
     }
 }
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_cylinder_periods() {
-        let s = SurfaceGeom::Cylinder { origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let s = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let (pu, pv) = surface_periods(&s);
         assert!(pu > 0.0);
         assert_eq!(pv, 0.0);
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_torus_periods() {
-        let s = SurfaceGeom::Torus { center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0 };
+        let s = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
         let (pu, pv) = surface_periods(&s);
         assert!(pu > 0.0);
         assert!(pv > 0.0);
@@ -183,11 +183,7 @@ mod tests {
     #[test]
     fn test_shifted_cylinder_pcurve() {
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 1.0,
-        };
+        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
@@ -247,11 +243,7 @@ mod tests {
     #[test]
     fn test_no_false_positive() {
         let mut reg = BRepRegistry::new();
-        let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
-            radius: 1.0,
-        };
+        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });

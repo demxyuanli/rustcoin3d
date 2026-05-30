@@ -496,7 +496,7 @@ fn ray_surface_intersect(
                 RayHit::Miss
             }
         }
-        SurfaceGeom::Cylinder { origin: c0, axis, radius } => {
+        SurfaceGeom::Cylinder { origin: c0, axis, radius, .. } => {
             ray_cylinder_intersect(origin, dir, *c0, *axis, *radius, face, face_key, reg, tolerance)
         }
         SurfaceGeom::Sphere { center, radius } => {

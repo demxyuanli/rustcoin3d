@@ -120,7 +120,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             origin: v_start,
             direction: v_end - v_start,
         },
-        CurveGeom::Circle { center, axis, radius } => {
+        CurveGeom::Circle { center, axis, radius, .. } => {
             let Some(a0) = circle_angle(*center, *axis, *radius, v_start) else {
                 return curve.clone();
             };
@@ -129,11 +129,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             };
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             CurveGeom::Trimmed {
-                basis: Box::new(CurveGeom::Circle {
-                    center: *center,
-                    axis: *axis,
-                    radius: *radius,
-                }),
+                basis: Box::new(CurveGeom::circle(*center, *axis, *radius)),
                 t_min,
                 t_max,
             }
@@ -143,6 +139,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             axis,
             semi_major,
             semi_minor,
+            ..
         } => {
             let Some(a0) = circle_angle(*center, *axis, *semi_major, v_start) else {
                 return curve.clone();
@@ -152,12 +149,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             };
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             CurveGeom::Trimmed {
-                basis: Box::new(CurveGeom::Ellipse {
-                    center: *center,
-                    axis: *axis,
-                    semi_major: *semi_major,
-                    semi_minor: *semi_minor,
-                }),
+                basis: Box::new(CurveGeom::ellipse(*center, *axis, *semi_major, *semi_minor)),
                 t_min,
                 t_max,
             }
@@ -285,11 +277,7 @@ mod tests {
         let center = Vec3::ZERO;
         let v0 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::Y, 1e-4);
-        let circle = CurveGeom::Circle {
-            center,
-            axis: Vec3::Z,
-            radius: 1.0,
-        };
+        let circle = CurveGeom::circle(center, Vec3::Z, 1.0);
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,

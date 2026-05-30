@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_discretize_circle_needs_more_points() {
-        let curve = CurveGeom::Circle { center: Vec3::ZERO, axis: Vec3::Z, radius: 1.0 };
+        let curve = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
         let config = EdgeDiscConfig::default();
         let pts = sample_curve_adaptive(&curve, 0.0, 1.0, &config);
         assert!(pts.len() >= 4);

@@ -19,11 +19,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-            Some(SurfaceGeom::Cylinder {
-                origin,
-                axis: z_axis.normalize(),
-                radius,
-            })
+            Some(SurfaceGeom::cylinder(origin, z_axis.normalize(), radius))
         }
         "CONICAL_SURFACE" => {
             // CONICAL_SURFACE('', #placement, radius, semi_angle)
@@ -32,12 +28,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let semi_angle = geom::nth_real(&record.params, 3).unwrap_or(0.7854) as f32;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-            Some(SurfaceGeom::Cone {
-                apex: origin,
-                axis: z_axis.normalize(),
-                semi_angle,
-                radius_at_apex: radius,
-            })
+            Some(SurfaceGeom::cone(origin, z_axis.normalize(), semi_angle, radius))
         }
         "SPHERICAL_SURFACE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
@@ -53,12 +44,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let minor_r = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
-            Some(SurfaceGeom::Torus {
-                center: origin,
-                axis: z_axis.normalize(),
-                major_r,
-                minor_r,
-            })
+            Some(SurfaceGeom::torus(origin, z_axis.normalize(), major_r, minor_r))
         }
         "B_SPLINE_SURFACE" | "B_SPLINE_SURFACE_WITH_KNOTS" | "RATIONAL_B_SPLINE_SURFACE" => {
             let nurbs = build_nurbs_surface(record, entities)?;

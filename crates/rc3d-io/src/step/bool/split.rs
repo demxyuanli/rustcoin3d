@@ -110,11 +110,10 @@ fn sample_intersection_curve(curve: &crate::step::brep::geom::CurveGeom, n: usiz
                 *origin + *direction * t
             }).collect()
         }
-        CurveGeom::Circle { center, axis, radius } => {
-            let (x_dir, y_dir) = crate::step::brep::geom::curve_eval::build_ortho_axes(*axis);
+        CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
             (0..n).map(|i| {
                 let theta = std::f32::consts::TAU * i as f32 / n as f32;
-                *center + x_dir * (*radius * theta.cos()) + y_dir * (*radius * theta.sin())
+                *center + *x_dir * (*radius * theta.cos()) + *y_dir * (*radius * theta.sin())
             }).collect()
         }
         _ => Vec::new(),
