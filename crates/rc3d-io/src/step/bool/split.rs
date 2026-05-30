@@ -1,5 +1,9 @@
 //! Face splitting along intersection curves (topology-aware).
 //!
+//! Two layers:
+//! 1. Legacy topology-based splitting (StepShell/StepFace) for the old pipeline.
+//! 2. B-Rep registry-based splitting (BRepRegistry/FaceKey) for the Phase 3 boolean pipeline.
+//!
 //! For each intersection curve between two faces, we:
 //! 1. Project intersection points onto the UV domain of each face
 //! 2. Split the 2D trim loop polygon along the projected curve
@@ -11,6 +15,327 @@ use super::super::topology::{StepShell, StepFace, StepEdge, StepLoop};
 use super::super::entity_types::EntityType;
 use super::super::geom;
 use super::intersect::{FaceIntersection, IntersectionCurve};
+
+// ── B-Rep registry-based splitting (Phase 3) ──────────────────────────────
+
+use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::topo::{FaceKey, ShellKey, BRepFace, BRepWire};
+
+/// A curve where two faces intersect, parameterized on both surfaces.
+#[derive(Debug, Clone)]
+pub struct BRepIntersectionCurve {
+    /// 3D polyline approximation of the intersection.
+    pub points_3d: Vec<Vec3>,
+    /// Parameter pairs (u,v) on face A (native surface parameters).
+    pub params_a: Vec<(f32, f32)>,
+    /// Parameter pairs (u,v) on face B (native surface parameters).
+    pub params_b: Vec<(f32, f32)>,
+    /// Face keys involved.
+    pub face_a: FaceKey,
+    pub face_b: FaceKey,
+}
+
+/// Result of splitting a face along intersection curves.
+#[derive(Debug, Clone)]
+pub struct SplitFaceRegion {
+    pub original_face: FaceKey,
+    pub sub_faces: Vec<SubFaceRegion>,
+}
+
+/// A sub-region of a split face with UV boundary and interior sample point.
+#[derive(Debug, Clone)]
+pub struct SubFaceRegion {
+    /// Boundary loop in UV space (outer boundary + holes).
+    pub uv_boundary: Vec<Vec<(f32, f32)>>,
+    /// Interior sample point for classification (native UV).
+    pub interior_point: (f32, f32),
+    /// 3D point corresponding to interior_point.
+    pub interior_point_3d: Vec3,
+    /// The original face key this sub-region belongs to.
+    pub original_face: FaceKey,
+}
+
+/// Compute B-Rep intersection curves from `FaceIntersectionResult`.
+/// Samples 3D points along the analytic intersection and projects to UV on both faces.
+pub fn compute_brep_intersection_curves(
+    intersections: &[super::intersect::FaceIntersectionResult],
+    reg: &BRepRegistry,
+) -> Vec<BRepIntersectionCurve> {
+    let mut out = Vec::new();
+    for fi in intersections {
+        let face_a = match reg.faces.get(fi.face_a) { Some(f) => f, None => continue };
+        let face_b = match reg.faces.get(fi.face_b) { Some(f) => f, None => continue };
+
+        for curve in &fi.curves_3d {
+            let samples = sample_intersection_curve(curve, 32);
+            if samples.is_empty() { continue; }
+
+            let mut pts_3d = Vec::with_capacity(samples.len());
+            let mut params_a = Vec::with_capacity(samples.len());
+            let mut params_b = Vec::with_capacity(samples.len());
+
+            for &pt in &samples {
+                if let Some(uv_a) = face_a.surface.project(pt) {
+                    if let Some(uv_b) = face_b.surface.project(pt) {
+                        pts_3d.push(pt);
+                        params_a.push(uv_a);
+                        params_b.push(uv_b);
+                    }
+                }
+            }
+
+            if pts_3d.len() >= 2 {
+                out.push(BRepIntersectionCurve {
+                    points_3d: pts_3d,
+                    params_a,
+                    params_b,
+                    face_a: fi.face_a,
+                    face_b: fi.face_b,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Sample points along an analytic intersection curve.
+fn sample_intersection_curve(curve: &crate::step::brep::geom::CurveGeom, n: usize) -> Vec<Vec3> {
+    use crate::step::brep::geom::CurveGeom;
+    match curve {
+        CurveGeom::Line { origin, direction } => {
+            // Sample a finite segment of the line
+            let ext = 100.0; // generous extent for bounded faces
+            (0..n).map(|i| {
+                let t = -ext + 2.0 * ext * i as f32 / (n - 1) as f32;
+                *origin + *direction * t
+            }).collect()
+        }
+        CurveGeom::Circle { center, axis, radius } => {
+            let (x_dir, y_dir) = crate::step::brep::geom::curve_eval::build_ortho_axes(*axis);
+            (0..n).map(|i| {
+                let theta = std::f32::consts::TAU * i as f32 / n as f32;
+                *center + x_dir * (*radius * theta.cos()) + y_dir * (*radius * theta.sin())
+            }).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Split all faces of given shells along the intersection curves.
+pub fn split_all_faces_brep(
+    shells: &[ShellKey],
+    curves: &[BRepIntersectionCurve],
+    reg: &BRepRegistry,
+) -> Vec<SplitFaceRegion> {
+    let mut results = Vec::new();
+    for &sk in shells {
+        let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
+        for &(face_key, _) in &shell.faces {
+            let face_curves: Vec<&BRepIntersectionCurve> = curves.iter()
+                .filter(|c| c.face_a == face_key || c.face_b == face_key)
+                .collect();
+            let regions = split_face_along_curves(face_key, &face_curves, reg);
+            results.push(SplitFaceRegion {
+                original_face: face_key,
+                sub_faces: regions,
+            });
+        }
+    }
+    results
+}
+
+/// Split a B-Rep face along intersection curves in UV space.
+/// The intersection curves become new boundary edges.
+pub fn split_face_along_curves(
+    face_key: FaceKey,
+    curves: &[&BRepIntersectionCurve],
+    reg: &BRepRegistry,
+) -> Vec<SubFaceRegion> {
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return vec![],
+    };
+
+    if curves.is_empty() {
+        // No split needed — entire face is one region
+        return vec![whole_face_region(face_key, face)];
+    }
+
+    // Phase 3 MVP: support single intersection curve splitting face into 2 regions
+    split_face_single_curve(face_key, face, curves[0], reg)
+}
+
+/// Create a SubFaceRegion for the entire unsplit face.
+fn whole_face_region(face_key: FaceKey, face: &BRepFace) -> SubFaceRegion {
+    let range = face.surface.param_range();
+    let mid_u = (range.u_min + range.u_max) * 0.5;
+    let mid_v = (range.v_min + range.v_max) * 0.5;
+    let (un, vn) = face.surface.native_uv_to_d0(mid_u, mid_v);
+    let interior_3d = face.surface.d0(un, vn);
+
+    SubFaceRegion {
+        uv_boundary: vec![], // empty = use original face boundary
+        interior_point: (mid_u, mid_v),
+        interior_point_3d: interior_3d,
+        original_face: face_key,
+    }
+}
+
+/// Split a face with a single intersection curve that traverses the face.
+/// Creates two sub-regions separated by the curve.
+fn split_face_single_curve(
+    face_key: FaceKey,
+    face: &BRepFace,
+    curve: &BRepIntersectionCurve,
+    _reg: &BRepRegistry,
+) -> Vec<SubFaceRegion> {
+    // Get UV params on this face from the intersection curve
+    let params = if curve.face_a == face_key {
+        &curve.params_a
+    } else {
+        &curve.params_b
+    };
+
+    if params.len() < 2 {
+        return vec![whole_face_region(face_key, face)];
+    }
+
+    // Compute two interior sample points on opposite sides of the splitting curve.
+    // Use the curve midpoint and offset perpendicular to the curve direction in UV.
+    let mid_idx = params.len() / 2;
+    let (cu, cv) = params[mid_idx];
+
+    // Compute curve tangent direction in UV at midpoint
+    let tangent = if mid_idx > 0 && mid_idx + 1 < params.len() {
+        let (u0, v0) = params[mid_idx - 1];
+        let (u1, v1) = params[mid_idx + 1];
+        (u1 - u0, v1 - v0)
+    } else if mid_idx > 0 {
+        let (u0, v0) = params[mid_idx - 1];
+        (cu - u0, cv - v0)
+    } else {
+        let (u1, v1) = params[1];
+        (u1 - cu, v1 - cv)
+    };
+
+    let t_len = (tangent.0 * tangent.0 + tangent.1 * tangent.1).sqrt();
+    if t_len < 1e-12 {
+        return vec![whole_face_region(face_key, face)];
+    }
+
+    // Perpendicular in UV (rotate 90°)
+    let perp = (-tangent.1 / t_len, tangent.0 / t_len);
+    let offset = 0.01; // small offset in UV space
+
+    let range = face.surface.param_range();
+    let u_span = range.u_span();
+    let v_span = range.v_span();
+    let du = perp.0 * offset * u_span;
+    let dv = perp.1 * offset * v_span;
+
+    // Two sample points on opposite sides
+    let side_a_uv = (cu + du, cv + dv);
+    let side_b_uv = (cu - du, cv - dv);
+
+    let (un_a, vn_a) = face.surface.native_uv_to_d0(side_a_uv.0, side_a_uv.1);
+    let (un_b, vn_b) = face.surface.native_uv_to_d0(side_b_uv.0, side_b_uv.1);
+    let pt_a = face.surface.d0(un_a, vn_a);
+    let pt_b = face.surface.d0(un_b, vn_b);
+
+    // Build UV boundary polygons for each sub-region using the curve + face bounds
+    let uv_poly_a: Vec<(f32, f32)> = params.iter().copied().collect();
+    let uv_poly_b: Vec<(f32, f32)> = params.iter().rev().copied().collect();
+
+    vec![
+        SubFaceRegion {
+            uv_boundary: vec![uv_poly_a],
+            interior_point: side_a_uv,
+            interior_point_3d: pt_a,
+            original_face: face_key,
+        },
+        SubFaceRegion {
+            uv_boundary: vec![uv_poly_b],
+            interior_point: side_b_uv,
+            interior_point_3d: pt_b,
+            original_face: face_key,
+        },
+    ]
+}
+
+#[cfg(test)]
+mod brep_split_tests {
+    use super::*;
+    use crate::step::brep::topo::*;
+    use crate::step::brep::geom::SurfaceGeom;
+
+    /// Build a simple plane face in the registry for testing.
+    fn make_plane_face(
+        reg: &mut BRepRegistry,
+        origin: Vec3, normal: Vec3, u_dir: Vec3,
+    ) -> FaceKey {
+        let surface = SurfaceGeom::Plane { origin, normal, u_dir };
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-6,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        })
+    }
+
+    #[test]
+    fn test_whole_face_region_no_curves() {
+        let mut reg = BRepRegistry::new();
+        let fk = make_plane_face(
+            &mut reg,
+            Vec3::ZERO, Vec3::Z, Vec3::X,
+        );
+        let result = split_face_along_curves(fk, &[], &reg);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].original_face, fk);
+    }
+
+    #[test]
+    fn test_split_two_planes() {
+        let mut reg = BRepRegistry::new();
+        let face_a = make_plane_face(
+            &mut reg,
+            Vec3::ZERO, Vec3::Z, Vec3::X,
+        );
+        let _face_b = make_plane_face(
+            &mut reg,
+            Vec3::ZERO, Vec3::X, Vec3::Z,
+        );
+
+        // Simulate an intersection curve along Y axis (where Z=0 plane meets X=0 plane)
+        let curve = BRepIntersectionCurve {
+            points_3d: vec![
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            params_a: vec![(0.0, -1.0), (0.0, 0.0), (0.0, 1.0)],
+            params_b: vec![(-1.0, 0.0), (0.0, 0.0), (1.0, 0.0)],
+            face_a,
+            face_b: _face_b,
+        };
+
+        let curves_ref = vec![&curve];
+        let result = split_face_along_curves(face_a, &curves_ref, &reg);
+        assert_eq!(result.len(), 2, "Single curve should split plane into 2 regions");
+        // Interior points should be on opposite sides
+        let a = result[0].interior_point;
+        let b = result[1].interior_point;
+        assert!((a.0 - b.0).abs() > 1e-6 || (a.1 - b.1).abs() > 1e-6,
+            "Interior points should differ: ({}, {}) vs ({}, {})", a.0, a.1, b.0, b.1);
+    }
+}
+
+// ── Legacy topology-based splitting ────────────────────────────────────────
 
 /// Split faces along intersection curves.
 pub fn split_faces(
