@@ -13,6 +13,14 @@ test_data/**
 .cargo/**
 Cargo.lock
 
+# Local debug logs and mesh export artifacts (do not commit)
+*.log
+test_output/
+
+# Local AI tooling artifacts (do not commit)
+.codebuddy/
+.codex-adversarial-step-review.prompt.md
+
 # Added by code-review-graph
 .code-review-graph/
 .cursorrules
