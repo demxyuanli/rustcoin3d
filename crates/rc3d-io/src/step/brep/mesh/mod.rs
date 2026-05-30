@@ -524,13 +524,46 @@ fn mesh_brep_shell_with_report_impl(
     let collect_diag = diag_enabled();
     let mut wire_diag: Vec<String> = Vec::new();
 
-    for info in &face_infos {
-        let face = match reg.faces.get(info.face_key) {
+    // Phase 2a: Pre-compute UV loops in parallel (read-only, rayon par_iter)
+    use rayon::prelude::*;
+    struct FaceLoopData {
+        face_key: FaceKey,
+        wire_edges: Vec<(EdgeKey, Vec<usize>)>,
+        loops: Option<FaceUvLoops>,
+    }
+    let face_loop_data: Vec<FaceLoopData> = face_infos
+        .par_iter()
+        .filter_map(|finfo| {
+            let face = reg.faces.get(finfo.face_key)?;
+            if finfo.wire_edges.is_empty() {
+                // Closed parametric surface — no loops needed
+                return Some(FaceLoopData {
+                    face_key: finfo.face_key,
+                    wire_edges: finfo.wire_edges.clone(),
+                    loops: None,
+                });
+            }
+            let loops = collect_face_loops(
+                finfo.face_key, face, reg, &edge_polygons,
+                &edge_boundary_idx, &global_vertices,
+            );
+            Some(FaceLoopData {
+                face_key: finfo.face_key,
+                wire_edges: finfo.wire_edges.clone(),
+                loops: Some(loops),
+            })
+        })
+        .collect();
+
+    for fld in &face_loop_data {
+        let info_face_key = fld.face_key;
+        let info_wire_edges = &fld.wire_edges;
+        let face = match reg.faces.get(info_face_key) {
             Some(f) => f,
             None => continue,
         };
 
-        if info.wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
+        if info_wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
             let tris_before = all_indices.len() / 4;
             mesh_closed_surface(
                 face,
@@ -542,7 +575,7 @@ fn mesh_brep_shell_with_report_impl(
             );
             let tri_count = all_indices.len() / 4 - tris_before;
             report.faces.push(FaceMeshStats {
-                face_key: info.face_key,
+                face_key: info_face_key,
                 tri_count,
                 first_tri: tris_before,
                 uv_source: UvSource::SurfaceFill,
@@ -555,19 +588,18 @@ fn mesh_brep_shell_with_report_impl(
             continue;
         }
 
-        let loops = collect_face_loops(
-            info.face_key,
-            face,
-            reg,
-            &edge_polygons,
-            &edge_boundary_idx,
-            &global_vertices,
-        );
+        let loops = match &fld.loops {
+            Some(l) => l.clone(),
+            None => {
+                // Closed parametric surface — mesh directly
+                continue;
+            }
+        };
 
-        if collect_diag && !info.wire_edges.is_empty() {
-            let we_orient: Vec<_> = info.wire_edges.iter().map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone())).collect();
+        if collect_diag && !info_wire_edges.is_empty() {
+            let we_orient: Vec<_> = info_wire_edges.iter().map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone())).collect();
             wire_diag.extend(format_wire_loop_lines(
-                info.face_key,
+                info_face_key,
                 &loops,
                 &we_orient,
                 &edge_boundary_idx,
@@ -575,9 +607,9 @@ fn mesh_brep_shell_with_report_impl(
             ));
         }
 
-        let wire_empty = info.wire_edges.is_empty();
+        let wire_empty = info_wire_edges.is_empty();
         let mesh_plan = plan_face_mesh(face, &loops, wire_empty, false);
-        log::trace!("[BRep mesh] face {:?} plan {:?}", info.face_key, mesh_plan);
+        log::trace!("[BRep mesh] face {:?} plan {:?}", info_face_key, mesh_plan);
         if matches!(mesh_plan, FaceMeshPlan::Failed) {
             continue;
         }
@@ -590,7 +622,7 @@ fn mesh_brep_shell_with_report_impl(
                 | SurfaceGeom::Cone { .. }
         );
         let mut algo = algo_from_plan(mesh_plan).unwrap_or(FaceMeshAlgo::SurfaceFill3d);
-        if info.wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
+        if info_wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
             algo = FaceMeshAlgo::TrimmedCdt;
         }
         if prefer_native_cdt && loops.is_fillable() {
@@ -606,7 +638,7 @@ fn mesh_brep_shell_with_report_impl(
             && face_boundary_is_mixed(&loops, &global_vertices);
 
         let mut boundary_ordered = Vec::new();
-        for &(ek, ref pis) in &info.wire_edges {
+        for &(ek, ref pis) in info_wire_edges {
             for &pi in pis {
                 if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
                     if boundary_ordered.last() != Some(&gi) {
@@ -619,7 +651,7 @@ fn mesh_brep_shell_with_report_impl(
             boundary_ordered.pop();
         }
 
-        let wire_len = info.wire_edges.len();
+        let wire_len = info_wire_edges.len();
         let multi_wire_rev = wire_len >= 3
             && matches!(face.surface, SurfaceGeom::Revolution { .. })
             && boundary_ordered.len() >= 3;
@@ -630,9 +662,9 @@ fn mesh_brep_shell_with_report_impl(
             && !loops.is_fillable()
         {
             let ruled = try_ruled_two_wire_mesh(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &mut global_vertices,
@@ -644,7 +676,7 @@ fn mesh_brep_shell_with_report_impl(
             if ruled.tri_count > 0 {
                 let tri_n = ruled.tri_count;
                 report.faces.push(FaceMeshStats {
-                    face_key: info.face_key,
+                    face_key: info_face_key,
                     tri_count: tri_n,
                     first_tri: ruled.first_tri,
                     uv_source: UvSource::Synthetic,
@@ -655,7 +687,7 @@ fn mesh_brep_shell_with_report_impl(
                 report.meshed_faces += 1;
                 log::debug!(
                     "[BRep mesh] face {:?}: plane ruled two-wire strip ({} tris)",
-                    info.face_key,
+                    info_face_key,
                     tri_n
                 );
                 continue;
@@ -666,11 +698,11 @@ fn mesh_brep_shell_with_report_impl(
         let chord_reject = (scaled_config.face.deflection_interior * 10.0).max(0.05);
         let min_adequate = min_adequate_trim_tris(&face.surface, wire_len);
 
-        if wire_len == 2 && prefers_native_uv_ruled(&face.surface, &info.wire_edges) {
+        if wire_len == 2 && prefers_native_uv_ruled(&face.surface, info_wire_edges) {
             let ruled = try_ruled_two_wire_mesh(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &mut global_vertices,
@@ -687,7 +719,7 @@ fn mesh_brep_shell_with_report_impl(
             );
             if valid >= min_adequate {
                 report.faces.push(FaceMeshStats {
-                    face_key: info.face_key,
+                    face_key: info_face_key,
                     tri_count: valid,
                     first_tri: ruled.first_tri,
                     uv_source: UvSource::Synthetic,
@@ -695,7 +727,7 @@ fn mesh_brep_shell_with_report_impl(
                     grid_fallback: false,
                 });
                 face_ranges.push(FaceMeshRange {
-                    face_key: info.face_key,
+                    face_key: info_face_key,
                     first_tri: ruled.first_tri,
                     tri_count: valid,
                     boundary_global: ruled.boundary_global,
@@ -704,7 +736,7 @@ fn mesh_brep_shell_with_report_impl(
                 report.meshed_faces += 1;
                 log::debug!(
                     "[BRep mesh] face {:?}: revolution-like ruled two-wire ({} tris)",
-                    info.face_key,
+                    info_face_key,
                     valid
                 );
                 continue;
@@ -716,9 +748,9 @@ fn mesh_brep_shell_with_report_impl(
         let mut mesh_loops = loops.clone();
         if multi_wire_rev {
             if let Some(s) = revolution_loops_from_wire_edges(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &global_vertices,
@@ -730,9 +762,9 @@ fn mesh_brep_shell_with_report_impl(
             }
         } else if wire_len == 2 && matches!(face.surface, SurfaceGeom::Revolution { .. }) {
             if let Some(s) = revolution_loops_from_wire_edges(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &global_vertices,
@@ -747,9 +779,9 @@ fn mesh_brep_shell_with_report_impl(
             && boundary_ordered.len() >= 3
         {
             if let Some(s) = revolution_loops_from_wire_edges(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &global_vertices,
@@ -793,7 +825,7 @@ fn mesh_brep_shell_with_report_impl(
             && boundary_ordered.len() >= 3
         {
             let fan = mesh_plane_fan_3d(
-                info.face_key,
+                info_face_key,
                 &boundary_ordered,
                 face,
                 &mut global_vertices,
@@ -804,7 +836,7 @@ fn mesh_brep_shell_with_report_impl(
             if fan.tri_count > 0 {
                 let tri_n = fan.tri_count;
                 report.faces.push(FaceMeshStats {
-                    face_key: info.face_key,
+                    face_key: info_face_key,
                     tri_count: tri_n,
                     first_tri: fan.first_tri,
                     uv_source: loops.uv_source,
@@ -815,7 +847,7 @@ fn mesh_brep_shell_with_report_impl(
                 report.meshed_faces += 1;
                 log::debug!(
                     "[BRep mesh] face {:?}: plane single-wire center fan ({} tris)",
-                    info.face_key,
+                    info_face_key,
                     tri_n
                 );
                 continue;
@@ -831,7 +863,7 @@ fn mesh_brep_shell_with_report_impl(
         let mut range = match algo {
             FaceMeshAlgo::SurfaceFill3d | FaceMeshAlgo::ClosedParametric if mixed_boundary => {
                 surface_fill_3d(
-                    info.face_key,
+                    info_face_key,
                     &boundary_ordered,
                     face,
                     &mut global_vertices,
@@ -842,7 +874,7 @@ fn mesh_brep_shell_with_report_impl(
                 )
             }
             FaceMeshAlgo::SurfaceFill3d => surface_fill_3d(
-                info.face_key,
+                info_face_key,
                 &boundary_ordered,
                 face,
                 &mut global_vertices,
@@ -852,7 +884,7 @@ fn mesh_brep_shell_with_report_impl(
                 &scaled_config.face,
             ),
             FaceMeshAlgo::TrimmedCdt if mixed_boundary => surface_fill_3d(
-                info.face_key,
+                info_face_key,
                 &boundary_ordered,
                 face,
                 &mut global_vertices,
@@ -862,7 +894,7 @@ fn mesh_brep_shell_with_report_impl(
                 &scaled_config.face,
             ),
             FaceMeshAlgo::TrimmedCdt | FaceMeshAlgo::ClosedParametric => fill_trimmed(
-                info.face_key,
+                info_face_key,
                 fill_loops,
                 face,
                 reg,
@@ -875,7 +907,7 @@ fn mesh_brep_shell_with_report_impl(
             ),
         };
 
-        range.face_key = info.face_key;
+        range.face_key = info_face_key;
 
         if used_surface_fill
             && range.tri_count > 0
@@ -883,13 +915,13 @@ fn mesh_brep_shell_with_report_impl(
         {
             log::debug!(
                 "[BRep mesh] face {:?}: reject surface fill (chord {:.4} > {:.4}), retry trimmed CDT",
-                info.face_key,
+                info_face_key,
                 range.max_chord_error,
                 chord_reject
             );
             all_indices.truncate(tris_before_face * 4);
             range = fill_trimmed(
-                info.face_key,
+                info_face_key,
                 fill_loops,
                 face,
                 reg,
@@ -900,7 +932,7 @@ fn mesh_brep_shell_with_report_impl(
                 wire_len,
                 &scaled_config.face,
             );
-            range.face_key = info.face_key;
+            range.face_key = info_face_key;
             used_surface_fill = false;
         }
 
@@ -910,7 +942,7 @@ fn mesh_brep_shell_with_report_impl(
 
         if range.tri_count == 0 && !used_surface_fill && !mixed_boundary {
             range = surface_fill_3d(
-                info.face_key,
+                info_face_key,
                 &boundary_ordered,
                 face,
                 &mut global_vertices,
@@ -960,7 +992,7 @@ fn mesh_brep_shell_with_report_impl(
                 .fold(f32::MIN, f32::max);
             eprintln!(
                 "[mesh diag] {:?} pre-grid tris={} wire={} outer_uv={} v=[{:.4},{:.4}] native={:?} rv={:?} allow={}",
-                info.face_key,
+                info_face_key,
                 range.tri_count,
                 wire_len,
                 grid_loops.outer.boundary.len(),
@@ -984,7 +1016,7 @@ fn mesh_brep_shell_with_report_impl(
                     all_indices.truncate(range.first_tri * 4);
                 }
                 let sf = surface_fill_3d(
-                    info.face_key,
+                    info_face_key,
                     &boundary_ordered,
                     face,
                     &mut global_vertices,
@@ -995,7 +1027,7 @@ fn mesh_brep_shell_with_report_impl(
                 );
                 if sf.tri_count >= min_adequate {
                     range = sf;
-                    range.face_key = info.face_key;
+                    range.face_key = info_face_key;
                     used_surface_fill = true;
                 }
             }
@@ -1012,7 +1044,7 @@ fn mesh_brep_shell_with_report_impl(
                     all_indices.truncate(range.first_tri * 4);
                 }
                 let sf = surface_fill_3d(
-                    info.face_key,
+                    info_face_key,
                     &boundary_ordered,
                     face,
                     &mut global_vertices,
@@ -1023,7 +1055,7 @@ fn mesh_brep_shell_with_report_impl(
                 );
                 if sf.tri_count > 0 {
                     range = sf;
-                    range.face_key = info.face_key;
+                    range.face_key = info_face_key;
                     used_surface_fill = true;
                 }
             } else {
@@ -1033,9 +1065,9 @@ fn mesh_brep_shell_with_report_impl(
                 all_indices.truncate(range.first_tri * 4);
             }
             range = try_ruled_two_wire_mesh(
-                info.face_key,
+                info_face_key,
                 face,
-                &info.wire_edges,
+                &info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
                 &mut global_vertices,
@@ -1081,7 +1113,7 @@ fn mesh_brep_shell_with_report_impl(
                 range.tri_count = saved_count;
                 log::debug!(
                     "[BRep mesh] face {:?}: rejected ruled strip (valid={}/{} ratio={:.2})",
-                    info.face_key,
+                    info_face_key,
                     valid,
                     ruled_tri_count,
                     valid_ratio
@@ -1146,7 +1178,7 @@ fn mesh_brep_shell_with_report_impl(
                 }
                 if new_tris > 0 {
                     let trial_range = FaceMeshRange {
-                        face_key: info.face_key,
+                        face_key: info_face_key,
                         first_tri: append_start_tri,
                         tri_count: new_tris,
                         boundary_global: range.boundary_global.clone(),
@@ -1172,7 +1204,7 @@ fn mesh_brep_shell_with_report_impl(
                         report.grid_fallback_count += 1;
                         log::debug!(
                             "[BRep mesh] face {:?}: trimmed UV grid ({} tris, chord {:.4})",
-                            info.face_key,
+                            info_face_key,
                             range.tri_count,
                             grid_chord
                         );
@@ -1183,7 +1215,7 @@ fn mesh_brep_shell_with_report_impl(
                         range.max_chord_error = saved_chord;
                         log::debug!(
                             "[BRep mesh] face {:?}: reject trimmed UV grid (chord {:.4} > {:.4})",
-                            info.face_key,
+                            info_face_key,
                             grid_chord,
                             chord_reject
                         );
@@ -1216,7 +1248,7 @@ fn mesh_brep_shell_with_report_impl(
                     report.grid_fallback_count += 1;
                     log::debug!(
                         "[BRep mesh] face {:?}: UV-clipped grid fallback ({} tris)",
-                        info.face_key,
+                        info_face_key,
                         grid_tris
                     );
                 }
@@ -1225,7 +1257,7 @@ fn mesh_brep_shell_with_report_impl(
 
         if range.tri_count == 0 && boundary_ordered.len() >= 3 {
             let sf = surface_fill_3d(
-                info.face_key,
+                info_face_key,
                 &boundary_ordered,
                 face,
                 &mut global_vertices,
@@ -1236,14 +1268,14 @@ fn mesh_brep_shell_with_report_impl(
             );
             if sf.tri_count > 0 {
                 range = sf;
-                range.face_key = info.face_key;
+                range.face_key = info_face_key;
                 used_surface_fill = true;
                 report.grid_fallback_count += 1;
             }
         }
 
         report.faces.push(FaceMeshStats {
-            face_key: info.face_key,
+            face_key: info_face_key,
             tri_count: range.tri_count,
             first_tri: range.first_tri,
             uv_source: loops.uv_source,
@@ -1254,7 +1286,7 @@ fn mesh_brep_shell_with_report_impl(
         if range.tri_count > 0 {
             log::debug!(
                 "[BRep mesh] face {:?}: {} tris uv={:?} max_chord={:.6}",
-                info.face_key,
+                info_face_key,
                 range.tri_count,
                 loops.uv_source,
                 range.max_chord_error,

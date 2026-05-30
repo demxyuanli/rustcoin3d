@@ -22,4 +22,5 @@ fbxcel = { version = "0.9", features = ["writer"] }
 earcutr = "0.4"
 spade = "2"
 slotmap = "1"
+rayon = { workspace = true }
 
