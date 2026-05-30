@@ -20,6 +20,8 @@ pub struct BRepRegistry {
     pub vertex_hash_index: HashMap<[u32; 3], VertexKey>,
     /// Ordered endpoint pair → EdgeKey for O(1) edge deduplication.
     pub edge_hash_index: HashMap<(VertexKey, VertexKey), Vec<EdgeKey>>,
+    /// Inverted index: edge → faces that reference this edge (built after B-Rep construction).
+    pub edge_to_faces: HashMap<EdgeKey, Vec<FaceKey>>,
 }
 
 impl BRepRegistry {
@@ -33,6 +35,7 @@ impl BRepRegistry {
             solids: SlotMap::with_key(),
             vertex_hash_index: HashMap::new(),
             edge_hash_index: HashMap::new(),
+            edge_to_faces: HashMap::new(),
         }
     }
 
@@ -139,12 +142,31 @@ impl BRepRegistry {
     }
 
     /// Find edges shared by two faces. A shared edge has PCURVEs for both faces.
+    /// O(edges) iteration using pcurve presence as the authoritative check.
     pub fn find_shared_edges(&self, face_a: FaceKey, face_b: FaceKey) -> Vec<EdgeKey> {
+        // Fast path: iterate face_a's wire edges (works when wires are populated)
         let mut shared = Vec::new();
+        if let Some(face) = self.faces.get(face_a) {
+            let has_wire_edges = self.wires.get(face.outer_wire)
+                .map(|w| !w.edges.is_empty())
+                .unwrap_or(false);
+            if has_wire_edges {
+                for wire_key in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
+                    let Some(wire) = self.wires.get(*wire_key) else { continue };
+                    for &(ek, _) in &wire.edges {
+                        if let Some(edge) = self.edges.get(ek) {
+                            if edge.pcurves.contains_key(&face_b) {
+                                shared.push(ek);
+                            }
+                        }
+                    }
+                }
+                return shared;
+            }
+        }
+        // Fallback: iterate all edges (for test/legacy cases where wires are empty)
         for (ek, edge) in self.edges.iter() {
-            let has_a = edge.pcurves.contains_key(&face_a);
-            let has_b = edge.pcurves.contains_key(&face_b);
-            if has_a && has_b {
+            if edge.pcurves.contains_key(&face_a) && edge.pcurves.contains_key(&face_b) {
                 shared.push(ek);
             }
         }
@@ -164,6 +186,25 @@ impl BRepRegistry {
 
     pub fn iter_faces(&self) -> impl Iterator<Item = (FaceKey, &BRepFace)> {
         self.faces.iter()
+    }
+
+    /// Build the edge_to_faces inverted index. Call after B-Rep construction is complete.
+    pub fn build_edge_to_faces_index(&mut self) {
+        let mut index: HashMap<EdgeKey, Vec<FaceKey>> = HashMap::new();
+        for (fk, face) in self.faces.iter() {
+            for wire_key in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
+                let Some(wire) = self.wires.get(*wire_key) else { continue };
+                for &(ek, _) in &wire.edges {
+                    index.entry(ek).or_default().push(fk);
+                }
+            }
+        }
+        // Deduplicate
+        for faces in index.values_mut() {
+            faces.sort();
+            faces.dedup();
+        }
+        self.edge_to_faces = index;
     }
 }
 

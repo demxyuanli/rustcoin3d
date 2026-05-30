@@ -226,6 +226,9 @@ pub fn build_brep_with_options(
         return Err(StepError::NoGeometry);
     }
 
+    // Build edge-to-face inverted index for fast shared edge queries
+    reg.build_edge_to_faces_index();
+
     let void_shell_count = root_solids
         .iter()
         .filter_map(|&sk| reg.solids.get(sk))
