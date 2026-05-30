@@ -11,8 +11,6 @@ pub mod classify;
 pub mod split;
 pub mod select;
 
-use super::parser::EntityIndex;
-use super::topology::StepShell;
 use crate::step::brep::registry::BRepRegistry;
 use crate::step::brep::topo::ShellKey;
 
@@ -24,45 +22,9 @@ pub enum BoolOp {
     Difference,   // A - B
 }
 
-/// Result of a boolean operation: a new solid defined by its faces.
+/// Result of a boolean operation (legacy — will be replaced by BRepBoolResult in Phase 3).
 pub struct BoolResult {
-    pub shells: Vec<StepShell>,
-    /// Whether the operation produced a valid non-empty solid.
     pub is_empty: bool,
-}
-
-/// Perform a boolean operation between two sets of shells.
-pub fn boolean(a_shells: &[StepShell], b_shells: &[StepShell],
-               entities_a: &EntityIndex, entities_b: &EntityIndex,
-               op: BoolOp) -> BoolResult
-{
-    // Phase 1: Compute face-face intersections
-    let intersections = intersect::compute_intersections(
-        a_shells, b_shells, entities_a, entities_b);
-
-    // Phase 2: Split faces along intersection curves
-    let (split_a, split_b) = split::split_faces(
-        a_shells, b_shells, entities_a, entities_b, &intersections);
-
-    // Phase 3: Classify each split face region
-    let classified_a = classify::classify_faces(&split_a, b_shells, entities_b);
-    let classified_b = classify::classify_faces(&split_b, a_shells, entities_a);
-
-    // Phase 4: Select faces based on operation
-    let selected = select::select_faces(&classified_a, &classified_b, op);
-
-    if selected.is_empty() {
-        return BoolResult { shells: vec![], is_empty: true };
-    }
-
-    // Phase 5: Build output shell
-    BoolResult {
-        shells: vec![StepShell {
-            id: 0,
-            faces: selected,
-        }],
-        is_empty: false,
-    }
 }
 
 /// Perform a boolean operation (union, intersection, difference).
@@ -79,28 +41,19 @@ pub fn boolean_brep(
     // Phase 2-3: Split + classify (simplified -- full impl requires TopoDS-level operations)
     // For now: return empty result for unsupported combinations
     let _ = op;
-    BoolResult { shells: vec![], is_empty: true }
+    BoolResult { is_empty: true }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::parser;
-
-    fn make_entities(data: &str) -> EntityIndex {
-        let input = format!(
-            "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n{}\nENDSEC;\nEND-ISO-10303-21;\n",
-            data
-        );
-        parser::parse_exchange(&input).unwrap().entities
-    }
 
     #[test]
     fn test_bool_module_loads() {
         // Verify module compiles and basic types work
         let op = BoolOp::Union;
         assert_eq!(op, BoolOp::Union);
-        let result = BoolResult { shells: vec![], is_empty: true };
+        let result = BoolResult { is_empty: true };
         assert!(result.is_empty);
     }
 }

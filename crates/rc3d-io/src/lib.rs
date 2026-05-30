@@ -19,7 +19,7 @@ pub use step::{
 pub use step::write::{write_step_from_entities, write_step_from_graph};
 pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};
 pub use step::xml::{write_xml_step, parse_xml_step};
-pub use step::bool::{BoolOp, boolean as step_boolean};
+pub use step::bool::BoolOp;
 pub use step::brep;
 pub use step::tree::{AssemblyTree, AssemblyNode, ProductMetadata};
 pub use step::header::HeaderInfo;
