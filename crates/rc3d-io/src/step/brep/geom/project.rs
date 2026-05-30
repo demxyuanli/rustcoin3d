@@ -249,6 +249,22 @@ fn newton_surface(
 
     let s = surface.d0_native(u, v);
     let d2 = (s - target).length_squared();
+
+    // Reject if result is significantly worse than domain corners,
+    // which indicates Newton diverged or converged to a saddle point.
+    let range = surface.param_range();
+    let corners = [
+        surface.d0_native(range.u_min, range.v_min),
+        surface.d0_native(range.u_min, range.v_max),
+        surface.d0_native(range.u_max, range.v_min),
+        surface.d0_native(range.u_max, range.v_max),
+    ];
+    let min_corner_d2 = corners.iter()
+        .map(|c| (c - target).length_squared())
+        .fold(f32::MAX, |a, b| a.min(b));
+    if d2 > min_corner_d2 * 3.0 && min_corner_d2 > 1e-6 {
+        return None;
+    }
     Some((u, v, d2))
 }
 

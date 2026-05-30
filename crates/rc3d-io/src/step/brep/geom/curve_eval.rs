@@ -46,7 +46,7 @@ fn ndu_idx(k: usize, i: usize) -> usize {
 /// Uses the Cox-de Boor recurrence for basis functions and their derivatives.
 ///
 /// For degree ≤ `MAX_DEGREE` (16), all working tables are stack-allocated.
-/// For higher degrees, falls back to `bspline_d012_heap`.
+/// Returns `Vec3::ZERO` for degree > `MAX_DEGREE` (not seen in practice).
 fn bspline_d012(
     degree: usize,
     control_points: &[Vec3],
@@ -73,9 +73,11 @@ fn bspline_d012(
         return (pt, Vec3::ZERO, Vec3::ZERO);
     }
 
-    // Heap fallback for unusually high degree (rare in practice)
+    // STEP files never exceed degree ~8; MAX_DEGREE=16 is well above that.
+    // Return zero for pathological degrees rather than maintaining a duplicate
+    // heap-allocated code path.
     if p > MAX_DEGREE {
-        return bspline_d012_heap(p, control_points, knots, weights, t);
+        return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
     }
 
     let span = find_span(p, knots, t);
@@ -242,138 +244,6 @@ fn bspline_d012(
     };
 
     // NaN safety: replace any NaN component with zero
-    let safe = |v: Vec3| -> Vec3 {
-        if v.is_nan() { Vec3::ZERO } else { v }
-    };
-    (safe(d0), safe(d1), safe(d2))
-}
-
-/// Heap-allocated fallback for B-spline degree > `MAX_DEGREE`.
-/// Logic is identical to the stack path in `bspline_d012`.
-fn bspline_d012_heap(
-    degree: usize,
-    control_points: &[Vec3],
-    knots: &[f32],
-    weights: Option<&[f32]>,
-    t: f32,
-) -> (Vec3, Vec3, Vec3) {
-    let p = degree;
-
-    if control_points.len() < p + 1 || knots.len() < 2 * (p + 1) {
-        return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
-    }
-
-    let t_min = knots[p];
-    let t_max = knots[control_points.len()];
-    let t = t.clamp(t_min, t_max);
-
-    if p == 0 {
-        let span = find_span(0, knots, t);
-        let pt = control_points[span];
-        return (pt, Vec3::ZERO, Vec3::ZERO);
-    }
-
-    let span = find_span(p, knots, t);
-    let s = span;
-
-    let mut ndu: Vec<Vec<f32>> = (0..=p).map(|k| vec![0.0f32; k + 1]).collect();
-    ndu[0][0] = 1.0;
-
-    for k in 1..=p {
-        for i in 0..=k {
-            let ctrl_idx = s + i - k;
-            let left = if i >= 1 {
-                let denom = knots[ctrl_idx + k] - knots[ctrl_idx];
-                if denom > 1e-10 { (t - knots[ctrl_idx]) / denom * ndu[k - 1][i - 1] } else { 0.0 }
-            } else { 0.0 };
-            let right = if i < k {
-                let denom = knots[ctrl_idx + k + 1] - knots[ctrl_idx + 1];
-                if denom > 1e-10 { (knots[ctrl_idx + k + 1] - t) / denom * ndu[k - 1][i] } else { 0.0 }
-            } else { 0.0 };
-            ndu[k][i] = left + right;
-        }
-    }
-
-    let mut ndu1: Vec<f32> = vec![0.0; p + 1];
-    for k in 0..=p {
-        let idx = s + k - p;
-        let left = if k >= 1 {
-            let denom = knots[idx + p] - knots[idx];
-            if denom > 1e-10 { (p as f32) / denom * ndu[p - 1][k - 1] } else { 0.0 }
-        } else { 0.0 };
-        let right = if k < p {
-            let denom = knots[idx + p + 1] - knots[idx + 1];
-            if denom > 1e-10 { (p as f32) / denom * ndu[p - 1][k] } else { 0.0 }
-        } else { 0.0 };
-        ndu1[k] = left - right;
-    }
-
-    let mut ndu2: Vec<f32> = vec![0.0; p + 1];
-    if p >= 2 {
-        let mut ndu1_pm1: Vec<f32> = vec![0.0; p];
-        for k in 0..p {
-            let idx = s + k - (p - 1);
-            let left = if k >= 1 {
-                let denom = knots[idx + p - 1] - knots[idx];
-                if denom > 1e-10 { ((p - 1) as f32) / denom * ndu[p - 2][k - 1] } else { 0.0 }
-            } else { 0.0 };
-            let right = if k < p - 1 {
-                let denom = knots[idx + p] - knots[idx + 1];
-                if denom > 1e-10 { ((p - 1) as f32) / denom * ndu[p - 2][k] } else { 0.0 }
-            } else { 0.0 };
-            ndu1_pm1[k] = left - right;
-        }
-        for k in 0..=p {
-            let idx = s + k - p;
-            let left = if k >= 1 {
-                let denom = knots[idx + p] - knots[idx];
-                if denom > 1e-10 { (p as f32) / denom * ndu1_pm1[k - 1] } else { 0.0 }
-            } else { 0.0 };
-            let right = if k < p {
-                let denom = knots[idx + p + 1] - knots[idx + 1];
-                if denom > 1e-10 { (p as f32) / denom * ndu1_pm1[k] } else { 0.0 }
-            } else { 0.0 };
-            ndu2[k] = left - right;
-        }
-    }
-
-    let mut a0 = Vec3::ZERO;
-    let mut a1 = Vec3::ZERO;
-    let mut a2 = Vec3::ZERO;
-    let mut w_sum = 0.0f32;
-    let mut w_sum_1 = 0.0f32;
-    let mut w_sum_2 = 0.0f32;
-
-    for k in 0..=p {
-        let idx = s + k - p;
-        let cp = control_points[idx];
-        let w = weights.map_or(1.0, |ws| ws[idx]);
-        let n0 = ndu[p][k];
-        let n1 = ndu1[k];
-        let n2 = ndu2[k];
-        a0 += cp * (n0 * w);
-        a1 += cp * (n1 * w);
-        a2 += cp * (n2 * w);
-        w_sum += n0 * w;
-        w_sum_1 += n1 * w;
-        w_sum_2 += n2 * w;
-    }
-
-    let (d0, d1, d2) = if weights.is_some() {
-        let w = w_sum;
-        let w1 = w_sum_1;
-        let w2 = w_sum_2;
-        let w_inv = 1.0 / w.max(1e-12);
-        let w_inv2 = w_inv * w_inv;
-        let w_inv3 = w_inv2 * w_inv;
-        let d0 = a0 * w_inv;
-        let d1 = (a1 * w - a0 * w1) * w_inv2;
-        let d2 = (a2 * w * w - a0 * w2 * w - 2.0 * a1 * w1 * w + 2.0 * a0 * w1 * w1) * w_inv3;
-        (d0, d1, d2)
-    } else {
-        (a0, a1, a2)
-    };
-
     let safe = |v: Vec3| -> Vec3 {
         if v.is_nan() { Vec3::ZERO } else { v }
     };
@@ -793,34 +663,8 @@ fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
 /// `n_samples` controls the initial grid resolution; `refine_iters` controls
 /// the number of refinement passes.
 pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, _n_samples: usize, _refine_iters: usize) -> f32 {
-    // Use Newton-Raphson for all curve types except Polyline
-    match curve {
-        CurveGeom::Polyline { .. } => {}
-        _ => {
-            let results = super::project::project_point_on_curve(curve, target);
-            if let Some((t, _)) = results.first() {
-                return *t;
-            }
-        }
-    }
-    // Fallback: grid search + refinement
-    let n = 64usize;
-    let mut best_t = 0.0f32; let mut best_d2 = f32::MAX;
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        let d2 = (curve.d0(t) - target).length_squared();
-        if d2 < best_d2 { best_d2 = d2; best_t = t; }
-    }
-    let mut step = 1.0 / (n as f32 * 2.0);
-    for _ in 0..5 {
-        for &dt in &[-step, step] {
-            let t = (best_t + dt).clamp(0.0, 1.0);
-            let d2 = (curve.d0(t) - target).length_squared();
-            if d2 < best_d2 { best_d2 = d2; best_t = t; }
-        }
-        step *= 0.5;
-    }
-    best_t
+    let results = super::project::project_point_on_curve(curve, target);
+    results.first().map(|(t, _)| *t).unwrap_or(0.0)
 }
 
 /// STEP `LINE` entities often reference a unit `VECTOR`; the actual edge span is
@@ -986,19 +830,6 @@ mod tests {
             let (d0, d1, _d2) = bspline_d012(8, &cps, &knots, None, t);
             assert!(d0.y.abs() < 1e-4 && d0.z.abs() < 1e-4, "off-axis at t={t}: {d0:?}");
             assert!(d1.y.abs() < 1e-3 && d1.z.abs() < 1e-3, "tangent off-axis at t={t}: {d1:?}");
-        }
-
-        // Verify stack and heap paths give identical results
-        for i in 0..=10 {
-            let t = i as f32 / 10.0;
-            let stack = bspline_d012(8, &cps, &knots, None, t);
-            let heap = bspline_d012_heap(8, &cps, &knots, None, t);
-            let diff0 = (stack.0 - heap.0).length();
-            let diff1 = (stack.1 - heap.1).length();
-            let diff2 = (stack.2 - heap.2).length();
-            assert!(diff0 < 1e-6, "d0 mismatch at t={t}: {diff0}");
-            assert!(diff1 < 1e-5, "d1 mismatch at t={t}: {diff1}");
-            assert!(diff2 < 1e-4, "d2 mismatch at t={t}: {diff2}");
         }
     }
 
