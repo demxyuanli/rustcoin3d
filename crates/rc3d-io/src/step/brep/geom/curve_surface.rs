@@ -2,7 +2,7 @@
 //! T1.1: CurveGeom  T1.2: SurfaceGeom
 
 use rc3d_core::math::Vec3;
-use crate::step::geom::find_span;
+use super::bspline::find_span;
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -44,6 +44,11 @@ fn bspline_d012(
     if control_points.len() < p + 1 || knots.len() < 2 * (p + 1) {
         return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
     }
+
+    // Clamp t to valid knot domain [knots[p], knots[control_points.len()]]
+    let t_min = knots[p];
+    let t_max = knots[control_points.len()];
+    let t = t.clamp(t_min, t_max);
 
     // Degree 0 special case
     if p == 0 {
@@ -199,10 +204,10 @@ fn bspline_d012(
         w_sum_2 += n2 * w;
     }
 
-    if weights.is_some() {
+    let (d0, d1, d2) = if weights.is_some() {
         // Rational: C(t) = A(t) / w(t)
-        // C' = (A'w - Aw') / w²
-        // C'' = (A''w² - Aw''w - 2A'w'w + 2Aw'²) / w³
+        // C' = (A'w - Aw') / w^2
+        // C'' = (A''w^2 - Aw''w - 2A'w'w + 2Aw'^2) / w^3
         let w = w_sum;
         let w1 = w_sum_1;
         let w2 = w_sum_2;
@@ -216,7 +221,13 @@ fn bspline_d012(
         (d0, d1, d2)
     } else {
         (a0, a1, a2)
-    }
+    };
+
+    // NaN safety: replace any NaN component with zero
+    let safe = |v: Vec3| -> Vec3 {
+        if v.is_nan() { Vec3::ZERO } else { v }
+    };
+    (safe(d0), safe(d1), safe(d2))
 }
 
 /// Approximate arc length of a curve by chordal sum with fixed sampling.
@@ -830,7 +841,8 @@ impl SurfaceGeom {
             | SurfaceGeom::Cone { .. }
             | SurfaceGeom::Sphere { .. }
             | SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
-            SurfaceGeom::Revolution { .. } => Some(std::f32::consts::TAU),
+            // Revolution native U is generatrix parameter [0,1], not periodic.
+            SurfaceGeom::Revolution { .. } => None,
             SurfaceGeom::Offset { basis, .. } => basis.native_u_period(),
             _ => None,
         }
@@ -841,6 +853,8 @@ impl SurfaceGeom {
         match self {
             SurfaceGeom::Sphere { .. } => Some(std::f32::consts::PI),
             SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
+            // Revolution native V is axis angle in radians.
+            SurfaceGeom::Revolution { .. } => Some(std::f32::consts::TAU),
             SurfaceGeom::Offset { basis, .. } => basis.native_v_period(),
             _ => None,
         }
@@ -1007,13 +1021,15 @@ impl SurfaceGeom {
             }
             SurfaceGeom::Offset { basis, distance } => {
                 let (db_du, db_dv) = basis.d1(u, v);
-                let eps = 1e-4f32;
+                let eps = 1e-3f32;
                 let n_u1 = basis.normal(u + eps, v);
                 let n_u0 = basis.normal(u - eps, v);
                 let n_v1 = basis.normal(u, v + eps);
                 let n_v0 = basis.normal(u, v - eps);
-                let dn_du = (n_u1 - n_u0) / (2.0 * eps);
-                let dn_dv = (n_v1 - n_v0) / (2.0 * eps);
+                let mut dn_du = (n_u1 - n_u0) / (2.0 * eps);
+                let mut dn_dv = (n_v1 - n_v0) / (2.0 * eps);
+                if dn_du.is_nan() { dn_du = Vec3::ZERO; }
+                if dn_dv.is_nan() { dn_dv = Vec3::ZERO; }
                 let d = *distance;
                 (db_du + dn_du * d, db_dv + dn_dv * d)
             }
@@ -1590,6 +1606,7 @@ impl SurfaceGeom {
         let (min_u, min_v) = match self {
             SurfaceGeom::Sphere { .. } | SurfaceGeom::Torus { .. } => (8, 8),
             SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. } => (8, 4),
+            SurfaceGeom::Revolution { .. } => (8, 16),
             SurfaceGeom::BSpline(_) => (4, 4),
             _ => (2, 2),
         };

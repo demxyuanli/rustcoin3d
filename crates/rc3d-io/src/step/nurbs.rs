@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
-use super::geom::{find_span, bspline_bases};
+use crate::step::brep::geom::bspline::{bspline_bases, find_span};
 
 /// NURBS (Non-Uniform Rational B-Spline) surface.
 ///

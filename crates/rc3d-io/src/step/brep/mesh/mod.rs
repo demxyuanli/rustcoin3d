@@ -10,11 +10,16 @@ pub mod t4_quality;
 pub mod diagnostic;
 pub mod algo_factory;
 pub mod void_subtract;
+pub mod face_dispatch;
+pub mod shell_mesh;
 
-use std::collections::HashMap;
+pub use face_dispatch::{algo_from_plan, FaceMeshPlan, SurfaceFillReason, plan_face_mesh};
+pub use shell_mesh::{mesh_brep_shell, mesh_brep_shell_with_report, ShellMeshOutput};
+
+use std::collections::{HashMap, HashSet};
 use rc3d_core::math::Vec3;
 use rc3d_core::utils::hash::f32x3_quantized_bits;
-use super::topo::{ShellKey, EdgeKey, FaceKey, Orientation};
+use super::topo::{ShellKey, EdgeKey, FaceKey, Orientation, VertexKey};
 use super::registry::BRepRegistry;
 use super::geom::SurfaceGeom;
 use crate::step::mesh_result::MeshResult;
@@ -23,19 +28,20 @@ use face_fill::{
     face_boundary_is_mixed, fix_tri_winding, FaceFillConfig, FaceMeshRange, fill_trimmed,
     mesh_plane_fan_3d, mesh_plane_fan_wire_polygons, mesh_revolution_native_grid,
     mesh_ruled_two_wire_edges, mesh_ruled_wire_polygons_3d, surface_fill_3d,
-    measure_face_chord_error,
+    measure_face_chord_error, surface_is_revolution_like, prefers_native_uv_ruled,
 };
 use super::geom::SurfaceParamRange;
 use face_uv::{
     collect_face_loops, loops_from_boundary_indices, loops_from_wire_edges,
     loops_native_surface_uv, point_in_trim, repair_plane_loop_uv,
-    revolution_loops_from_wire_edges, signed_area_2d, unwrap_periodic_uv_loops,
+    revolution_boundary_v_collapsed, revolution_loops_from_wire_edges, signed_area_2d,
+    unwrap_periodic_uv_loops, uv_loop_is_degenerate,
     FaceUvLoops, UvSource,
 };
 use refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map, RefineConfig};
 use optimize::{OptimizeConfig, optimize_mesh};
 use same_param::apply_same_parameter;
-use algo_factory::{select_face_mesh_algo, FaceMeshAlgo};
+use algo_factory::FaceMeshAlgo;
 use diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinates_if_requested};
 use report::{
     apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport,
@@ -44,7 +50,7 @@ use report::{
 /// UV grid resolution fallback when deflection config is unavailable.
 pub const MESH_CLOSED_SURFACE_SEGS: u32 = 64;
 
-fn min_adequate_trim_tris(surface: &SurfaceGeom) -> usize {
+fn min_adequate_trim_tris(surface: &SurfaceGeom, _wire_edge_count: usize) -> usize {
     match surface {
         SurfaceGeom::Revolution { .. }
         | SurfaceGeom::BSpline(_)
@@ -53,13 +59,135 @@ fn min_adequate_trim_tris(surface: &SurfaceGeom) -> usize {
     }
 }
 
-fn outer_uv_signed_area(loops: &FaceUvLoops) -> f64 {
-    let uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
-    signed_area_2d(&uv)
+/// Count triangles with non-zero area in a face index range (before global cull).
+fn count_valid_tris_in_range(
+    indices: &[i32],
+    vertices: &[Vec3],
+    first_tri: usize,
+    tri_count: usize,
+) -> usize {
+    let mut valid = 0usize;
+    for ti in first_tri..first_tri.saturating_add(tri_count) {
+        let base = ti * 4;
+        if base + 3 >= indices.len() {
+            break;
+        }
+        if indices[base + 3] != -1 {
+            continue;
+        }
+        let (i0, i1, i2) = (
+            indices[base] as usize,
+            indices[base + 1] as usize,
+            indices[base + 2] as usize,
+        );
+        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            continue;
+        }
+        let area = (vertices[i0] - vertices[i1])
+            .cross(vertices[i0] - vertices[i2])
+            .length();
+        if area > 1e-12 {
+            valid += 1;
+        }
+    }
+    valid
 }
 
-fn uv_loop_is_degenerate(loops: &FaceUvLoops) -> bool {
-    loops.outer.boundary.len() < 3 || outer_uv_signed_area(loops).abs() <= 1e-6
+/// Ruled quad strip between exactly two boundary wires (no untrimmed native UV sheet).
+#[allow(clippy::too_many_arguments)]
+fn try_ruled_two_wire_mesh(
+    face_key: FaceKey,
+    face: &super::topo::BRepFace,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    fill_config: &FaceFillConfig,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    if wire_edges.len() != 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+
+    let (mut segs_u, mut segs_v) = ruled_strip_uv_segs(wire_edges, edge_polygons, fill_config);
+    let base = parametric_grid_segs(face, fill_config);
+    segs_u = segs_u.max(base).min(64);
+    segs_v = segs_v.max(2).min(32);
+
+    if prefers_native_uv_ruled(&face.surface, wire_edges) {
+        return mesh_ruled_two_wire_edges(
+            face_key,
+            face,
+            wire_edges,
+            edge_polygons,
+            edge_boundary_idx,
+            global_vertices,
+            global_normals,
+            all_indices,
+            pos_to_idx,
+            segs_u,
+            segs_v,
+        );
+    }
+
+    let we_orient: Vec<_> = wire_edges
+        .iter()
+        .map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone()))
+        .collect();
+
+    let ruled = mesh_ruled_wire_polygons_3d(
+        face_key,
+        face,
+        &we_orient,
+        edge_polygons,
+        global_vertices,
+        global_normals,
+        all_indices,
+        segs_u,
+        segs_v,
+    );
+    if ruled.tri_count > 0 {
+        ruled
+    } else {
+        mesh_ruled_two_wire_edges(
+            face_key,
+            face,
+            wire_edges,
+            edge_polygons,
+            edge_boundary_idx,
+            global_vertices,
+            global_normals,
+            all_indices,
+            pos_to_idx,
+            segs_u,
+            segs_v,
+        )
+    }
+}
+
+/// Register a boundary point in the shared pool (quantized dedup; topology vertices seeded first).
+fn register_boundary_point(
+    pt: Vec3,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+) -> usize {
+    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+    *pos_to_idx.entry(hash).or_insert_with(|| {
+        let i = global_vertices.len();
+        global_vertices.push(pt);
+        global_normals.push(Vec3::ZERO);
+        i
+    })
 }
 
 fn enrich_loops_from_wire_edges(
@@ -242,23 +370,9 @@ impl Default for BRepMeshConfig {
     }
 }
 
-#[derive(Debug)]
-pub struct ShellMeshOutput {
-    pub mesh: MeshResult,
-    pub report: ShellMeshReport,
-}
+// Shell-level meshing lives in shell_mesh.rs (re-exported above).
 
-/// Mesh a B-Rep shell (OCC BRepMesh_IncrementalMesh equivalent).
-pub fn mesh_brep_shell(
-    shell_key: ShellKey,
-    reg: &BRepRegistry,
-    config: &BRepMeshConfig,
-    skip_face_keys: &[FaceKey],
-) -> MeshResult {
-    mesh_brep_shell_with_report(shell_key, reg, config, skip_face_keys).mesh
-}
-
-pub fn mesh_brep_shell_with_report(
+fn mesh_brep_shell_with_report_impl(
     shell_key: ShellKey,
     reg: &BRepRegistry,
     config: &BRepMeshConfig,
@@ -304,22 +418,51 @@ pub fn mesh_brep_shell_with_report(
         );
     }
 
-    // Phase 2: shared boundary vertex pool
+    // Phase 2: shared boundary vertex pool (B-Rep vertices own canonical indices)
     let mut global_vertices: Vec<Vec3> = Vec::new();
     let mut global_normals: Vec<Vec3> = Vec::new();
     let mut pos_to_idx: HashMap<[u32; 3], usize> = HashMap::new();
+    let mut vertex_mesh_idx: HashMap<VertexKey, usize> = HashMap::new();
     let mut edge_boundary_idx: HashMap<(EdgeKey, usize), usize> = HashMap::new();
+
+    for (vk, v) in reg.vertices.iter() {
+        let idx = register_boundary_point(
+            v.position,
+            &mut global_vertices,
+            &mut global_normals,
+            &mut pos_to_idx,
+        );
+        vertex_mesh_idx.insert(vk, idx);
+    }
 
     let mut total_edge_pts = 0usize;
     for (&ek, poly) in &edge_polygons {
         total_edge_pts += poly.params_3d.len();
+        let edge = reg.edges.get(ek);
+        let n = poly.params_3d.len();
         for (pi, &(_t, pt)) in poly.params_3d.iter().enumerate() {
-            let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-            let idx = *pos_to_idx.entry(hash).or_insert_with(|| {
-                let i = global_vertices.len();
-                global_vertices.push(pt);
-                global_normals.push(Vec3::ZERO);
-                i
+            let idx = if let Some(e) = edge {
+                if e.v_low != e.v_high {
+                    if pi == 0 {
+                        vertex_mesh_idx.get(&e.v_low).copied()
+                    } else if pi + 1 == n {
+                        vertex_mesh_idx.get(&e.v_high).copied()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let idx = idx.unwrap_or_else(|| {
+                register_boundary_point(
+                    pt,
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut pos_to_idx,
+                )
             });
             edge_boundary_idx.insert((ek, pi), idx);
         }
@@ -433,7 +576,11 @@ pub fn mesh_brep_shell_with_report(
         }
 
         let wire_empty = info.wire_edges.is_empty();
-        // Revolution/Offset/BSpline: prefer native UV CDT; 3D "mixed" jumps are often seam artifacts.
+        let mesh_plan = plan_face_mesh(face, &loops, wire_empty, false);
+        log::trace!("[BRep mesh] face {:?} plan {:?}", info.face_key, mesh_plan);
+        if matches!(mesh_plan, FaceMeshPlan::Failed) {
+            continue;
+        }
         let prefer_native_cdt = matches!(
             &face.surface,
             SurfaceGeom::Revolution { .. }
@@ -442,7 +589,10 @@ pub fn mesh_brep_shell_with_report(
                 | SurfaceGeom::Cylinder { .. }
                 | SurfaceGeom::Cone { .. }
         );
-        let mut algo = select_face_mesh_algo(face, &loops, wire_empty);
+        let mut algo = algo_from_plan(mesh_plan).unwrap_or(FaceMeshAlgo::SurfaceFill3d);
+        if info.wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
+            algo = FaceMeshAlgo::TrimmedCdt;
+        }
         if prefer_native_cdt && loops.is_fillable() {
             algo = FaceMeshAlgo::TrimmedCdt;
         }
@@ -469,11 +619,159 @@ pub fn mesh_brep_shell_with_report(
             boundary_ordered.pop();
         }
 
+        let wire_len = info.wire_edges.len();
+        let multi_wire_rev = wire_len >= 3
+            && matches!(face.surface, SurfaceGeom::Revolution { .. })
+            && boundary_ordered.len() >= 3;
+
+        // Plane two-wire patches: ruled strip when PCURVE loop is not fillable.
+        if wire_len == 2
+            && matches!(face.surface, SurfaceGeom::Plane { .. })
+            && !loops.is_fillable()
+        {
+            let ruled = try_ruled_two_wire_mesh(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            if ruled.tri_count > 0 {
+                let tri_n = ruled.tri_count;
+                report.faces.push(FaceMeshStats {
+                    face_key: info.face_key,
+                    tri_count: tri_n,
+                    first_tri: ruled.first_tri,
+                    uv_source: UvSource::Synthetic,
+                    max_chord_error: ruled.max_chord_error,
+                    grid_fallback: false,
+                });
+                face_ranges.push(ruled);
+                report.meshed_faces += 1;
+                log::debug!(
+                    "[BRep mesh] face {:?}: plane ruled two-wire strip ({} tris)",
+                    info.face_key,
+                    tri_n
+                );
+                continue;
+            }
+        }
+
         let tris_before_face = all_indices.len() / 4;
         let chord_reject = (scaled_config.face.deflection_interior * 10.0).max(0.05);
+        let min_adequate = min_adequate_trim_tris(&face.surface, wire_len);
 
-        // Revolution/Offset faces: try UV loop reconstruction for CDT
+        if wire_len == 2 && prefers_native_uv_ruled(&face.surface, &info.wire_edges) {
+            let ruled = try_ruled_two_wire_mesh(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            let valid = count_valid_tris_in_range(
+                &all_indices,
+                &global_vertices,
+                ruled.first_tri,
+                ruled.tri_count,
+            );
+            if valid >= min_adequate {
+                report.faces.push(FaceMeshStats {
+                    face_key: info.face_key,
+                    tri_count: valid,
+                    first_tri: ruled.first_tri,
+                    uv_source: UvSource::Synthetic,
+                    max_chord_error: ruled.max_chord_error,
+                    grid_fallback: false,
+                });
+                face_ranges.push(FaceMeshRange {
+                    face_key: info.face_key,
+                    first_tri: ruled.first_tri,
+                    tri_count: valid,
+                    boundary_global: ruled.boundary_global,
+                    max_chord_error: ruled.max_chord_error,
+                });
+                report.meshed_faces += 1;
+                log::debug!(
+                    "[BRep mesh] face {:?}: revolution-like ruled two-wire ({} tris)",
+                    info.face_key,
+                    valid
+                );
+                continue;
+            }
+            all_indices.truncate(tris_before_face * 4);
+        }
+
+        // Revolution/Offset faces: rebuild UV loops for CDT (avoid degenerate PCURVE / collapsed V).
         let mut mesh_loops = loops.clone();
+        if multi_wire_rev {
+            if let Some(s) = revolution_loops_from_wire_edges(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &global_vertices,
+            ) {
+                if !uv_loop_is_degenerate(&s) {
+                    mesh_loops = s;
+                    algo = FaceMeshAlgo::TrimmedCdt;
+                }
+            }
+        } else if wire_len == 2 && matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+            if let Some(s) = revolution_loops_from_wire_edges(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &global_vertices,
+            ) {
+                if !uv_loop_is_degenerate(&s) {
+                    mesh_loops = s;
+                    algo = FaceMeshAlgo::TrimmedCdt;
+                }
+            }
+        } else if matches!(face.surface, SurfaceGeom::Revolution { .. })
+            && uv_loop_is_degenerate(&mesh_loops)
+            && boundary_ordered.len() >= 3
+        {
+            if let Some(s) = revolution_loops_from_wire_edges(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &global_vertices,
+            ) {
+                if !uv_loop_is_degenerate(&s) {
+                    mesh_loops = s;
+                    algo = FaceMeshAlgo::TrimmedCdt;
+                }
+            }
+        }
+        if wire_len == 2
+            && matches!(face.surface, SurfaceGeom::Offset { .. })
+            && boundary_ordered.len() >= 3
+        {
+            if let Some(s) = loops_from_boundary_indices(&boundary_ordered, face, &global_vertices) {
+                let native = loops_native_surface_uv(&s, face, &global_vertices);
+                if !uv_loop_is_degenerate(&native) {
+                    mesh_loops = native;
+                    algo = FaceMeshAlgo::TrimmedCdt;
+                }
+            }
+        }
         if matches!(face.surface, SurfaceGeom::Revolution { .. } | SurfaceGeom::Offset { .. })
             && uv_loop_is_degenerate(&mesh_loops)
             && boundary_ordered.len() >= 3
@@ -486,9 +784,49 @@ pub fn mesh_brep_shell_with_report(
                 }
             }
         }
-        if !uv_loop_is_degenerate(&mesh_loops) && mesh_loops.is_fillable() {
+        if !uv_loop_is_degenerate(&mesh_loops) {
             algo = FaceMeshAlgo::TrimmedCdt;
         }
+
+        if wire_len == 1
+            && matches!(face.surface, SurfaceGeom::Plane { .. })
+            && boundary_ordered.len() >= 3
+        {
+            let fan = mesh_plane_fan_3d(
+                info.face_key,
+                &boundary_ordered,
+                face,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+            );
+            if fan.tri_count > 0 {
+                let tri_n = fan.tri_count;
+                report.faces.push(FaceMeshStats {
+                    face_key: info.face_key,
+                    tri_count: tri_n,
+                    first_tri: fan.first_tri,
+                    uv_source: loops.uv_source,
+                    max_chord_error: fan.max_chord_error,
+                    grid_fallback: false,
+                });
+                face_ranges.push(fan);
+                report.meshed_faces += 1;
+                log::debug!(
+                    "[BRep mesh] face {:?}: plane single-wire center fan ({} tris)",
+                    info.face_key,
+                    tri_n
+                );
+                continue;
+            }
+        }
+
+        let fill_loops = if !uv_loop_is_degenerate(&mesh_loops) {
+            &mesh_loops
+        } else {
+            &loops
+        };
 
         let mut range = match algo {
             FaceMeshAlgo::SurfaceFill3d | FaceMeshAlgo::ClosedParametric if mixed_boundary => {
@@ -525,13 +863,14 @@ pub fn mesh_brep_shell_with_report(
             ),
             FaceMeshAlgo::TrimmedCdt | FaceMeshAlgo::ClosedParametric => fill_trimmed(
                 info.face_key,
-                &loops,
+                fill_loops,
                 face,
                 reg,
                 &mut global_vertices,
                 &mut global_normals,
                 &mut all_indices,
                 &mut pos_to_idx,
+                wire_len,
                 &scaled_config.face,
             ),
         };
@@ -551,13 +890,14 @@ pub fn mesh_brep_shell_with_report(
             all_indices.truncate(tris_before_face * 4);
             range = fill_trimmed(
                 info.face_key,
-                &loops,
+                fill_loops,
                 face,
                 reg,
                 &mut global_vertices,
                 &mut global_normals,
                 &mut all_indices,
                 &mut pos_to_idx,
+                wire_len,
                 &scaled_config.face,
             );
             range.face_key = info.face_key;
@@ -590,12 +930,13 @@ pub fn mesh_brep_shell_with_report(
             && !used_surface_fill
             && !mixed_boundary;
 
-        let grid_loops = if prefer_native_cdt
+        let grid_loops = if matches!(face.surface, SurfaceGeom::Revolution { .. })
+            || prefer_native_cdt
             || matches!(face.surface, SurfaceGeom::Plane { .. })
         {
-            loops_native_surface_uv(&loops, face, &global_vertices)
+            loops_native_surface_uv(&mesh_loops, face, &global_vertices)
         } else {
-            loops.clone()
+            mesh_loops.clone()
         };
 
         let diag_shape = std::env::var("SHAPE_FACE_DIAG").is_ok();
@@ -631,86 +972,127 @@ pub fn mesh_brep_shell_with_report(
             );
         }
 
-        if range.tri_count < min_adequate_trim_tris(&face.surface) && info.wire_edges.len() == 2 {
-            let segs = parametric_grid_segs(face, &scaled_config.face);
-            let we_orient: Vec<_> = info
-                .wire_edges
-                .iter()
-                .map(|&(ek, ref pis)| (ek, Orientation::Forward, pis.clone()))
-                .collect();
-            let mut upgraded = false;
-            if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
-                let uv_bounds = grid_loops
-                    .revolution_native_uv_bounds_from_boundary(face, &global_vertices)
-                    .or_else(|| {
-                        revolution_fallback_uv_bounds(&grid_loops, face, &global_vertices)
-                    });
-                if let Some(bounds) = uv_bounds {
-                    let native = mesh_revolution_native_grid(
-                        info.face_key,
-                        face,
-                        bounds,
-                        segs,
-                        segs,
-                        &mut global_vertices,
-                        &mut global_normals,
-                        &mut all_indices,
-                    );
-                    if native.tri_count > 0 {
-                        if range.tri_count > 0 {
-                            all_indices.truncate(range.first_tri * 4);
-                        }
-                        range = native;
-                        upgraded = true;
-                    }
+        if wire_len == 2 && (range.tri_count < min_adequate || used_surface_fill) {
+            let try_surface_fill = boundary_ordered.len() >= 3
+                && range.tri_count < min_adequate
+                && (matches!(face.surface, SurfaceGeom::Offset { .. })
+                    || (matches!(face.surface, SurfaceGeom::Revolution { .. })
+                        && revolution_boundary_v_collapsed(&mesh_loops)));
+
+            if try_surface_fill {
+                if range.tri_count > 0 {
+                    all_indices.truncate(range.first_tri * 4);
                 }
-                if !upgraded {
-                    let ruled = mesh_ruled_two_wire_edges(
-                        info.face_key,
-                        face,
-                        &we_orient,
-                        &edge_boundary_idx,
-                        &mut global_vertices,
-                        &mut global_normals,
-                        &mut all_indices,
-                        &mut pos_to_idx,
-                        segs,
-                        segs,
-                    );
-                    if ruled.tri_count > 0 {
-                        if range.tri_count > 0 {
-                            all_indices.truncate(range.first_tri * 4);
-                        }
-                        range = ruled;
-                        upgraded = true;
-                    }
-                }
-            } else if matches!(
-                face.surface,
-                SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }
-            ) {
-                let ruled = mesh_ruled_two_wire_edges(
+                let sf = surface_fill_3d(
                     info.face_key,
+                    &boundary_ordered,
                     face,
-                    &we_orient,
-                    &edge_boundary_idx,
                     &mut global_vertices,
                     &mut global_normals,
                     &mut all_indices,
                     &mut pos_to_idx,
-                    segs,
-                    segs,
+                    &scaled_config.face,
                 );
-                if ruled.tri_count > 0 {
-                    if range.tri_count > 0 {
-                        all_indices.truncate(range.first_tri * 4);
-                    }
-                    range = ruled;
+                if sf.tri_count >= min_adequate {
+                    range = sf;
+                    range.face_key = info.face_key;
+                    used_surface_fill = true;
                 }
+            }
+
+            let skip_ruled = range.tri_count >= min_adequate
+                && (!used_surface_fill || range.max_chord_error <= chord_reject);
+
+            if skip_ruled {
+                // adequate trimmed / surface fill
+            } else if matches!(face.surface, SurfaceGeom::Offset { .. })
+                && boundary_ordered.len() >= 3
+            {
+                if range.tri_count > 0 {
+                    all_indices.truncate(range.first_tri * 4);
+                }
+                let sf = surface_fill_3d(
+                    info.face_key,
+                    &boundary_ordered,
+                    face,
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut all_indices,
+                    &mut pos_to_idx,
+                    &scaled_config.face,
+                );
+                if sf.tri_count > 0 {
+                    range = sf;
+                    range.face_key = info.face_key;
+                    used_surface_fill = true;
+                }
+            } else {
+            let saved_first = range.first_tri;
+            let saved_count = range.tri_count;
+            if range.tri_count > 0 {
+                all_indices.truncate(range.first_tri * 4);
+            }
+            range = try_ruled_two_wire_mesh(
+                info.face_key,
+                face,
+                &info.wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                &scaled_config.face,
+            );
+            let valid = count_valid_tris_in_range(
+                &all_indices,
+                &global_vertices,
+                range.first_tri,
+                range.tri_count,
+            );
+            let valid_ratio = if range.tri_count > 0 {
+                valid as f32 / range.tri_count as f32
+            } else {
+                0.0
+            };
+            let ruled_tri_count = range.tri_count;
+            let mut ruled_ok = if matches!(face.surface, SurfaceGeom::Plane { .. }) {
+                range.tri_count > 0
+            } else {
+                valid >= min_adequate.min(8) && valid_ratio >= 0.25
+            };
+            if ruled_ok && !matches!(face.surface, SurfaceGeom::Plane { .. }) {
+                range.max_chord_error = measure_face_chord_error(
+                    face,
+                    &global_vertices,
+                    &all_indices,
+                    &range,
+                );
+                if range.max_chord_error > chord_reject {
+                    ruled_ok = false;
+                }
+            }
+            if ruled_ok {
+                range.tri_count = valid;
+                used_surface_fill = false;
+            } else {
+                all_indices.truncate(saved_first * 4);
+                range.first_tri = saved_first;
+                range.tri_count = saved_count;
+                log::debug!(
+                    "[BRep mesh] face {:?}: rejected ruled strip (valid={}/{} ratio={:.2})",
+                    info.face_key,
+                    valid,
+                    ruled_tri_count,
+                    valid_ratio
+                );
+            }
             }
         }
 
-        if range.tri_count < min_adequate_trim_tris(&face.surface)
+        if (range.tri_count < min_adequate)
+            && !multi_wire_rev
+            && !matches!(face.surface, SurfaceGeom::Plane { .. })
             && allows_trimmed_uv_grid(reg, face, &grid_loops, &global_vertices)
         {
             let mut uv_bounds = grid_loops
@@ -722,21 +1104,21 @@ pub fn mesh_brep_shell_with_report(
                 uv_bounds,
                 grid_loops.revolution_v_bounds_from_3d(face, &global_vertices),
             ) {
-                if matches!(face.surface, SurfaceGeom::Revolution { .. })
-                    && (v1 - v0).abs() < 1e-5
-                {
+                if surface_is_revolution_like(&face.surface) && (v1 - v0).abs() < 1e-5 {
                     uv_bounds = Some((u0, u1, rv0, rv1));
                 }
             }
             if let Some(uv_bounds) = uv_bounds {
                 let saved_first = range.first_tri;
                 let saved_count = range.tri_count;
+                let saved_chord = range.max_chord_error;
                 let append_start_tri = all_indices.len() / 4;
                 mesh_trimmed_uv_grid(
                     face,
                     &grid_loops,
                     uv_bounds,
                     Some(&scaled_config.face),
+                    None,
                     &mut global_vertices,
                     &mut global_normals,
                     &mut pos_to_idx,
@@ -763,26 +1145,56 @@ pub fn mesh_brep_shell_with_report(
                     }
                 }
                 if new_tris > 0 {
-                    if saved_count > 0 {
-                        all_indices.drain(saved_first * 4..append_start_tri * 4);
-                        range.first_tri = saved_first;
-                    } else {
-                        range.first_tri = append_start_tri;
-                    }
-                    range.tri_count = all_indices.len() / 4 - range.first_tri;
-                    used_parametric_grid = true;
-                    report.grid_fallback_count += 1;
-                    log::debug!(
-                        "[BRep mesh] face {:?}: trimmed UV grid ({} tris)",
-                        info.face_key,
-                        range.tri_count
+                    let trial_range = FaceMeshRange {
+                        face_key: info.face_key,
+                        first_tri: append_start_tri,
+                        tri_count: new_tris,
+                        boundary_global: range.boundary_global.clone(),
+                        max_chord_error: 0.0,
+                    };
+                    let grid_chord = measure_face_chord_error(
+                        face,
+                        &global_vertices,
+                        &all_indices,
+                        &trial_range,
                     );
+                    let accept_grid = (grid_chord <= chord_reject
+                        || (saved_count > 0 && grid_chord <= saved_chord.max(chord_reject) * 1.5))
+                        && (saved_count == 0 || new_tris >= saved_count / 4);
+                    if accept_grid {
+                        if saved_count > 0 {
+                            all_indices.drain(saved_first * 4..append_start_tri * 4);
+                        }
+                        range.first_tri = saved_first;
+                        range.tri_count = all_indices.len() / 4 - saved_first;
+                        range.max_chord_error = grid_chord;
+                        used_parametric_grid = true;
+                        report.grid_fallback_count += 1;
+                        log::debug!(
+                            "[BRep mesh] face {:?}: trimmed UV grid ({} tris, chord {:.4})",
+                            info.face_key,
+                            range.tri_count,
+                            grid_chord
+                        );
+                    } else {
+                        all_indices.truncate(append_start_tri * 4);
+                        range.first_tri = saved_first;
+                        range.tri_count = saved_count;
+                        range.max_chord_error = saved_chord;
+                        log::debug!(
+                            "[BRep mesh] face {:?}: reject trimmed UV grid (chord {:.4} > {:.4})",
+                            info.face_key,
+                            grid_chord,
+                            chord_reject
+                        );
+                    }
                 }
             }
         }
 
         if range.tri_count == 0
             && !keep_trimmed
+            && !matches!(face.surface, SurfaceGeom::Plane { .. })
             && allows_parametric_grid_fallback(reg, face, &loops)
         {
             if let Some(uv_bounds) = loops.native_uv_bounds() {
@@ -853,33 +1265,15 @@ pub fn mesh_brep_shell_with_report(
     }
 
     for face_key in heal_skipped_faces {
-        let face = match reg.faces.get(face_key) {
-            Some(f) => f,
-            None => continue,
-        };
-        let tris_before = all_indices.len() / 4;
-        mesh_parametric_grid(
-            face,
-            None,
-            Some(&scaled_config.face),
-            &mut global_vertices,
-            &mut global_normals,
-            &mut pos_to_idx,
-            &mut all_indices,
-        );
-        let tri_count = all_indices.len() / 4 - tris_before;
         report.faces.push(FaceMeshStats {
             face_key,
-            tri_count,
-            first_tri: tris_before,
+            tri_count: 0,
+            first_tri: 0,
             uv_source: UvSource::SurfaceFill,
             max_chord_error: 0.0,
-            grid_fallback: tri_count > 0,
+            grid_fallback: false,
         });
-        if tri_count > 0 {
-            report.meshed_faces += 1;
-            report.grid_fallback_count += 1;
-        }
+        log::debug!("[BRep mesh] face {:?} skipped by heal (no grid fallback)", face_key);
     }
 
     if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
@@ -889,6 +1283,10 @@ pub fn mesh_brep_shell_with_report(
                 Some(f) => f,
                 None => continue,
             };
+            // Planes are exact; post-refine Steiner splits break watertight quads (Cube.step).
+            if matches!(face.surface, SurfaceGeom::Plane { .. }) {
+                continue;
+            }
             let adj_start_raw = (range.first_tri as isize + tri_offset) * 4;
             if adj_start_raw < 0 { tri_offset -= adj_start_raw / 4; continue; }
             let adj_start = adj_start_raw as usize;
@@ -973,6 +1371,8 @@ pub fn mesh_brep_shell_with_report(
     ShellMeshOutput { mesh, report }
 }
 
+// shell_mesh.rs wraps the implementation above.
+
 /// Area-weighted vertex normals from final triangle winding (fixes ruled/off-surface fills).
 fn recompute_normals_from_tris(vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>) {
     if normals.len() != vertices.len() {
@@ -1029,6 +1429,83 @@ fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
     }
     *indices = out;
     removed
+}
+
+fn sample_ruled_polyline(curve: &[Vec3], t: f32) -> Vec3 {
+    if curve.is_empty() {
+        return Vec3::ZERO;
+    }
+    if curve.len() == 1 {
+        return curve[0];
+    }
+    let f = t * (curve.len() - 1) as f32;
+    let i = f.floor() as usize;
+    let j = (i + 1).min(curve.len() - 1);
+    let u = f - i as f32;
+    curve[i].lerp(curve[j], u)
+}
+
+/// Grid resolution for a two-wire ruled strip: u along edges, v across strip width.
+fn ruled_strip_uv_segs(
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    config: &FaceFillConfig,
+) -> (u32, u32) {
+    let defl = config.deflection_interior.max(1e-6);
+    let mut max_arc = 0.0f32;
+    let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    for (side, &(ek, ref pis)) in wire_edges.iter().enumerate() {
+        let Some(poly) = edge_polygons.get(&ek) else {
+            continue;
+        };
+        let mut chain_wire = 0.0f32;
+        let mut prev: Option<Vec3> = None;
+        for &pi in pis {
+            let Some(&(_, pt)) = poly.params_3d.get(pi) else {
+                continue;
+            };
+            if let Some(p) = prev {
+                chain_wire += (pt - p).length();
+            }
+            prev = Some(pt);
+            if curves[side]
+                .last()
+                .map(|q| (*q - pt).length_squared() > 1e-14)
+                .unwrap_or(true)
+            {
+                curves[side].push(pt);
+            }
+        }
+        let mut chain_full = 0.0f32;
+        for w in poly.params_3d.windows(2) {
+            chain_full += (w[1].1 - w[0].1).length();
+        }
+        if curves[side].len() < 2 && poly.params_3d.len() >= 2 {
+            curves[side].clear();
+            for &(_, pt) in &poly.params_3d {
+                if curves[side]
+                    .last()
+                    .map(|q| (*q - pt).length_squared() > 1e-14)
+                    .unwrap_or(true)
+                {
+                    curves[side].push(pt);
+                }
+            }
+        }
+        max_arc = max_arc.max(chain_wire.max(chain_full));
+    }
+    let segs_u = ((max_arc / (defl * 0.85)).ceil() as u32).clamp(8, 96);
+    let mut max_width = 0.0f32;
+    if curves[0].len() >= 2 && curves[1].len() >= 2 {
+        for i in 0..=16 {
+            let t = i as f32 / 16.0;
+            let p0 = sample_ruled_polyline(&curves[0], t);
+            let p1 = sample_ruled_polyline(&curves[1], t);
+            max_width = max_width.max((p1 - p0).length());
+        }
+    }
+    let segs_v = ((max_width / (defl * 0.85)).ceil() as u32).clamp(4, 48);
+    (segs_u, segs_v)
 }
 
 /// Grid resolution from DeflectionInterior (OCC BRepMesh-style, not a fixed 64x64).
@@ -1096,11 +1573,86 @@ fn mesh_uv_bbox_grid(
 }
 
 /// Parametric grid clipped to the face trim (outer/holes in UV).
+
+// -- Sutherland-Hodgman polygon clipping helpers for partial trim cells --
+
+/// Find the intersection point of two 2D line segments (p1->p2) and (p3->p4).
+/// Returns the intersection point if the segments are not parallel and intersect.
+fn line_segment_intersection(
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    p4: (f32, f32),
+) -> Option<(f32, f32)> {
+    let dx1 = p2.0 - p1.0;
+    let dy1 = p2.1 - p1.1;
+    let dx2 = p4.0 - p3.0;
+    let dy2 = p4.1 - p3.1;
+    let denom = dx1 * dy2 - dy1 * dx2;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let t = ((p3.0 - p1.0) * dy2 - (p3.1 - p1.1) * dx2) / denom;
+    let s = ((p3.0 - p1.0) * dy1 - (p3.1 - p1.1) * dx1) / denom;
+    if t >= -1e-6 && t <= 1.0 + 1e-6 && s >= -1e-6 && s <= 1.0 + 1e-6 {
+        Some((p1.0 + t * dx1, p1.1 + t * dy1))
+    } else {
+        None
+    }
+}
+
+/// Clip a convex polygon (subject) against each edge of a clip polygon using
+/// the Sutherland-Hodgman algorithm. Returns the resulting polygon vertices.
+fn sutherland_hodgman_clip(
+    subject: &[(f32, f32)],
+    clip: &[(f32, f32)],
+) -> Vec<(f32, f32)> {
+    if subject.is_empty() || clip.len() < 3 {
+        return subject.to_vec();
+    }
+    let mut output = subject.to_vec();
+    let n = clip.len();
+    for i in 0..n {
+        if output.is_empty() {
+            return Vec::new();
+        }
+        let a = clip[i];
+        let b = clip[(i + 1) % n];
+        let edge_dx = b.0 - a.0;
+        let edge_dy = b.1 - a.1;
+        let input = std::mem::take(&mut output);
+        let m = input.len();
+        for j in 0..m {
+            let current = input[j];
+            let prev = input[(j + m - 1) % m];
+            let cur_inside = edge_dx * (current.1 - a.1) - edge_dy * (current.0 - a.0) >= -1e-8;
+            let prev_inside = edge_dx * (prev.1 - a.1) - edge_dy * (prev.0 - a.0) >= -1e-8;
+            match (prev_inside, cur_inside) {
+                (true, true) => { output.push(current); }
+                (true, false) => {
+                    if let Some(pt) = line_segment_intersection(prev, current, a, b) {
+                        output.push(pt);
+                    }
+                }
+                (false, true) => {
+                    if let Some(pt) = line_segment_intersection(prev, current, a, b) {
+                        output.push(pt);
+                    }
+                    output.push(current);
+                }
+                (false, false) => {}
+            }
+        }
+    }
+    output
+}
+
 fn mesh_trimmed_uv_grid(
     face: &super::topo::BRepFace,
     loops: &FaceUvLoops,
     uv_bounds: (f32, f32, f32, f32),
     fill_config: Option<&FaceFillConfig>,
+    grid_segs: Option<u32>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -1116,9 +1668,12 @@ fn mesh_trimmed_uv_grid(
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
         .collect();
 
-    let segs = fill_config
-        .map(|c| parametric_grid_segs(face, c))
-        .unwrap_or(16)
+    let segs = grid_segs
+        .unwrap_or_else(|| {
+            fill_config
+                .map(|c| parametric_grid_segs(face, c))
+                .unwrap_or(16)
+        })
         .clamp(4, 64);
     let (u_min, u_max, v_min, v_max) = uv_bounds;
 
@@ -1129,41 +1684,96 @@ fn mesh_trimmed_uv_grid(
             let v0 = v_min + (v_max - v_min) * iv as f32 / segs as f32;
             let v1 = v_min + (v_max - v_min) * (iv + 1) as f32 / segs as f32;
             let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
-            if !corners
+            let n_inside = corners
                 .iter()
-                .all(|&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
-            {
+                .filter(|&&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
+                .count();
+
+            if n_inside == 0 {
                 continue;
             }
-            let mut idx = [0i32; 4];
-            for (k, &(u, v)) in corners.iter().enumerate() {
-                let pt = face.surface.d0_native(u, v);
-                let mut n = face.surface.normal_native(u, v);
-                if !face.same_sense {
-                    n = -n;
+
+            if n_inside == 4 {
+                // Fully inside: emit quad as two triangles
+                let mut idx = [0i32; 4];
+                for (k, &(u, v)) in corners.iter().enumerate() {
+                    let pt = face.surface.d0_native(u, v);
+                    let mut n = face.surface.normal_native(u, v);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                        let i = global_vertices.len();
+                        global_vertices.push(pt);
+                        global_normals.push(n);
+                        i
+                    });
+                    idx[k] = gi as i32;
                 }
-                let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                    let i = global_vertices.len();
-                    global_vertices.push(pt);
-                    global_normals.push(n);
-                    i
-                });
-                idx[k] = gi as i32;
-            }
-            for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
-                if i0 == i1 || i1 == i2 || i2 == i0 {
+                for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
+                    if i0 == i1 || i1 == i2 || i2 == i0 {
+                        continue;
+                    }
+                    fix_tri_winding(
+                        &mut i0,
+                        &mut i1,
+                        &mut i2,
+                        global_vertices,
+                        &face.surface,
+                        face.same_sense,
+                    );
+                    all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+                }
+            } else {
+                // Partially inside: clip cell quad against outer trim boundary
+                let cell_poly: Vec<(f32, f32)> = corners.to_vec();
+                let clipped = sutherland_hodgman_clip(&cell_poly, &outer_uv);
+                if clipped.len() < 3 {
                     continue;
                 }
-                fix_tri_winding(
-                    &mut i0,
-                    &mut i1,
-                    &mut i2,
-                    global_vertices,
-                    &face.surface,
-                    face.same_sense,
-                );
-                all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+                // Filter out points that fall inside a hole
+                let clipped: Vec<(f32, f32)> = clipped
+                    .into_iter()
+                    .filter(|&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
+                    .collect();
+                if clipped.len() < 3 {
+                    continue;
+                }
+                // Fan triangulation from first vertex
+                let mut tri_idx = Vec::new();
+                for &(u, v) in &clipped {
+                    let pt = face.surface.d0_native(u, v);
+                    let mut n = face.surface.normal_native(u, v);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                        let i = global_vertices.len();
+                        global_vertices.push(pt);
+                        global_normals.push(n);
+                        i
+                    });
+                    tri_idx.push(gi as i32);
+                }
+                for k in 1..tri_idx.len().saturating_sub(1) {
+                    let mut i0 = tri_idx[0];
+                    let mut i1 = tri_idx[k];
+                    let mut i2 = tri_idx[k + 1];
+                    if i0 == i1 || i1 == i2 || i2 == i0 {
+                        continue;
+                    }
+                    fix_tri_winding(
+                        &mut i0,
+                        &mut i1,
+                        &mut i2,
+                        global_vertices,
+                        &face.surface,
+                        face.same_sense,
+                    );
+                    all_indices.extend_from_slice(&[i0, i1, i2, -1]);
+                }
             }
         }
     }

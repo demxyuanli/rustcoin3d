@@ -281,12 +281,13 @@ pub fn log_mesh_coordinates_if_requested(
     out.writeln("[BRep mesh diag] --- end dump ---");
 }
 
-/// NDJSON agent debug (`RC3D_AGENT_DEBUG=1`, optional `RC3D_AGENT_DEBUG_LOG=path`).
+/// NDJSON agent debug: `feature = "step-agent-debug"` or `RC3D_AGENT_DEBUG=1`.
 pub fn agent_debug_enabled() -> bool {
-    match std::env::var("RC3D_AGENT_DEBUG") {
-        Ok(s) if !s.is_empty() && s != "0" => true,
-        _ => false,
-    }
+    cfg!(feature = "step-agent-debug")
+        || matches!(
+            std::env::var("RC3D_AGENT_DEBUG"),
+            Ok(s) if !s.is_empty() && s != "0"
+        )
 }
 
 pub fn agent_debug_log(hypothesis_id: &str, location: &str, message: &str, data_json: &str) {

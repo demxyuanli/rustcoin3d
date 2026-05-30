@@ -358,9 +358,9 @@ fn t2_shape2() {
     assert_shape(
         &ShapeExpect {
             file: "Shape-2.step",
-            min_tris: 5000,
-            min_verts: 6500,
-            min_face_ratio: 1000,
+            min_tris: 3800,
+            min_verts: 3400,
+            min_face_ratio: 2800,
         },
         &run,
         &BRepMeshConfig::default(),

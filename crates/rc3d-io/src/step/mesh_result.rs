@@ -33,6 +33,34 @@ impl MeshResult {
             .collect();
     }
 
+    /// Append another mesh into this one (indices remapped).
+    pub fn append_from(&mut self, other: &MeshResult) {
+        if other.vertices.is_empty() || other.indices.is_empty() {
+            return;
+        }
+        let base = self.vertices.len() as i32;
+        self.vertices.extend_from_slice(&other.vertices);
+        if other.normals.len() == other.vertices.len() {
+            if self.normals.len() < self.vertices.len() - other.vertices.len() {
+                self.normals.resize(self.vertices.len() - other.vertices.len(), Vec3::ZERO);
+            }
+            self.normals.extend_from_slice(&other.normals);
+        } else if !self.vertices.is_empty() && self.normals.len() != self.vertices.len() {
+            self.normals.resize(self.vertices.len(), Vec3::ZERO);
+        }
+        for chunk in other.indices.chunks(4) {
+            if chunk.len() < 3 {
+                continue;
+            }
+            self.indices.extend_from_slice(&[
+                chunk[0] + base,
+                chunk[1] + base,
+                chunk[2] + base,
+                -1,
+            ]);
+        }
+    }
+
     /// Weld vertices within tolerance using spatial hash + union-find.
     pub fn weld_vertices(&mut self, tolerance: f32) {
         if self.vertices.is_empty() { return; }

@@ -10,106 +10,13 @@ use super::pcurve::FaceTrim;
 use super::surface_tess;
 use super::geom;
 
-#[derive(Debug, Default)]
-pub struct MeshResult {
-    pub vertices: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
-    pub indices: Vec<i32>,
-}
-
-impl MeshResult {
-    /// Compute per-vertex normals by averaging normals of adjacent triangles.
-    /// Call after vertices and indices are populated.
-    pub fn compute_normals(&mut self) {
-        if self.vertices.is_empty() || self.indices.is_empty() {
-            return;
-        }
-
-        let mut normals_acc = vec![Vec3::ZERO; self.vertices.len()];
-
-        // Each triangle is stored as 4 indices: i0, i1, i2, -1 (sentinel)
-        for chunk in self.indices.chunks(4) {
-            if chunk.len() < 3 {
-                continue;
-            }
-            let i0 = chunk[0] as usize;
-            let i1 = chunk[1] as usize;
-            let i2 = chunk[2] as usize;
-            if i0 >= self.vertices.len() || i1 >= self.vertices.len() || i2 >= self.vertices.len() {
-                continue;
-            }
-
-            let v0 = self.vertices[i0];
-            let v1 = self.vertices[i1];
-            let v2 = self.vertices[i2];
-
-            let n = (v1 - v0).cross(v2 - v0);
-            normals_acc[i0] = normals_acc[i0] + n;
-            normals_acc[i1] = normals_acc[i1] + n;
-            normals_acc[i2] = normals_acc[i2] + n;
-        }
-
-        self.normals = normals_acc
-            .into_iter()
-            .map(|n| {
-                let len = n.length();
-                if len > 1e-10 {
-                    n * (1.0 / len)
-                } else {
-                    Vec3::Z // default normal for degenerate vertices
-                }
-            })
-            .collect();
-    }
-
-    /// Finalize normals: prefer analytical surface normals where available,
-    /// fall back to face-averaged normals for any missing entries.
-    pub fn finalize_normals(&mut self) {
-        if self.vertices.is_empty() || self.indices.is_empty() {
-            return;
-        }
-
-        // Ensure normals array exists
-        if self.normals.len() != self.vertices.len() {
-            self.normals = vec![Vec3::ZERO; self.vertices.len()];
-        }
-
-        // Compute face-averaged normals into a temporary buffer
-        let mut face_normals = vec![Vec3::ZERO; self.vertices.len()];
-        for chunk in self.indices.chunks(4) {
-            if chunk.len() < 3 {
-                continue;
-            }
-            let i0 = chunk[0] as usize;
-            let i1 = chunk[1] as usize;
-            let i2 = chunk[2] as usize;
-            if i0 >= self.vertices.len() || i1 >= self.vertices.len() || i2 >= self.vertices.len() {
-                continue;
-            }
-            let n = (self.vertices[i1] - self.vertices[i0]).cross(self.vertices[i2] - self.vertices[i0]);
-            face_normals[i0] = face_normals[i0] + n;
-            face_normals[i1] = face_normals[i1] + n;
-            face_normals[i2] = face_normals[i2] + n;
-        }
-
-        // Prefer analytical normals; use face-average as fallback
-        for i in 0..self.vertices.len() {
-            let ana = self.normals[i];
-            if ana.length() > 1e-10 {
-                self.normals[i] = ana.normalize();
-            } else {
-                let n = face_normals[i];
-                self.normals[i] = if n.length() > 1e-10 {
-                    n.normalize()
-                } else {
-                    Vec3::Z
-                };
-            }
-        }
-    }
-}
+pub use crate::step::mesh_result::MeshResult;
 
 /// Tessellate all faces into a single mesh, with optional per-face trim data.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use brep::build_brep + brep::mesh::mesh_brep_shell instead"
+)]
 pub fn tessellate_faces(
     faces: &[StepFace],
     entities: &EntityIndex,
@@ -118,6 +25,10 @@ pub fn tessellate_faces(
 }
 
 /// Tessellate faces with optional per-face PCURVE trim data.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use brep::build_brep + brep::mesh::mesh_brep_shell instead"
+)]
 pub fn tessellate_faces_with_trim(
     faces: &[StepFace],
     entities: &EntityIndex,

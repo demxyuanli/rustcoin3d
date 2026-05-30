@@ -1,11 +1,9 @@
 //! Map fidelity `StepInstance` records to flat entity params (OCC Transfer-style).
 
 use crate::step::model::{ComplexMapping, Record, StepInstance};
-use crate::step::part21::params::parse_param_list;
 use crate::step::value::StepValue;
 
 use super::AdapterMode;
-use crate::step::primary_keyword::select_primary_record;
 
 pub fn instance_to_name_and_params(
     inst: &StepInstance,
@@ -33,25 +31,26 @@ fn flatten_complex(
     leaf_index: usize,
     mode: AdapterMode,
 ) -> Result<(String, StepValue), String> {
-    let pairs: Vec<(String, String)> = inst
+    let pairs_struct: Vec<(String, &StepValue)> = inst
         .records
         .iter()
-        .map(record_param_text)
+        .map(|r| (r.keyword.clone(), &r.params))
         .collect();
 
-    if pairs.is_empty() {
+    if pairs_struct.is_empty() {
         return Err(format!("entity #{}: no records", inst.id));
     }
 
-    let (best_idx, name) = select_primary_record(&pairs, leaf_index)?;
+    let (best_idx, name) = select_primary_record_structured(&pairs_struct, leaf_index)?;
 
-    let merged = match mode {
-        AdapterMode::CompatMerge => merge_all_param_texts(&pairs),
-        AdapterMode::StrictFidelity => pairs[best_idx].1.clone(),
+    let params = match mode {
+        AdapterMode::CompatMerge => merge_all_params_structured(
+            &pairs_struct.iter().map(|(k, v)| (k.as_str(), *v)).collect::<Vec<_>>(),
+            best_idx,
+        ),
+        AdapterMode::StrictFidelity => pairs_struct[best_idx].1.clone(),
     };
 
-    let (params, _) =
-        parse_param_list(&merged).map_err(|e| format!("entity #{}: {}", inst.id, e))?;
     Ok((name, params))
 }
 
@@ -98,4 +97,74 @@ fn merge_all_param_texts(pairs: &[(String, String)]) -> String {
         }
     }
     parts.join(",")
+}
+
+/// Select the primary record from structured (keyword, StepValue) pairs.
+fn select_primary_record_structured(
+    pairs: &[(String, &StepValue)],
+    leaf_index: usize,
+) -> Result<(usize, String), String> {
+    if pairs.is_empty() {
+        return Err("no records".to_string());
+    }
+    if pairs.len() == 1 {
+        return Ok((0, pairs[0].0.clone()));
+    }
+    // Leaf index takes priority
+    if leaf_index < pairs.len() {
+        return Ok((leaf_index, pairs[leaf_index].0.clone()));
+    }
+    // Fallback: prefer the last record (most derived type in STEP complex entity)
+    let idx = pairs.len() - 1;
+    Ok((idx, pairs[idx].0.clone()))
+}
+
+/// Merge all record parameters as structured StepValue lists.
+/// Each record contributes its parameter list entries; Omitted values are skipped.
+fn merge_all_params_structured(
+    pairs: &[(&str, &StepValue)],
+    _primary_idx: usize,
+) -> StepValue {
+    let mut merged: Vec<StepValue> = Vec::new();
+    for (_keyword, params) in pairs {
+        if let Some(list) = params.as_list() {
+            for val in list {
+                if matches!(val, StepValue::Omitted) {
+                    continue;
+                }
+                // Deduplicate: skip if same value already in merged
+                let is_dup = merged.iter().any(|existing| {
+                    step_values_equal(existing, val)
+                });
+                if !is_dup {
+                    merged.push(val.clone());
+                }
+            }
+        }
+    }
+    StepValue::List(merged)
+}
+
+/// Approximate equality check for StepValue deduplication during merge.
+fn step_values_equal(a: &StepValue, b: &StepValue) -> bool {
+    match (a, b) {
+        (StepValue::Integer(n1), StepValue::Integer(n2)) => n1 == n2,
+        (StepValue::Real(r1), StepValue::Real(r2)) => (r1 - r2).abs() < 1e-10,
+        (StepValue::Ref(id1), StepValue::Ref(id2)) => id1 == id2,
+        (StepValue::Enum(e1), StepValue::Enum(e2)) => e1 == e2,
+        (StepValue::String(s1), StepValue::String(s2)) => s1 == s2,
+        (StepValue::Omitted, StepValue::Omitted) => true,
+        (StepValue::Typed(n1, i1), StepValue::Typed(n2, i2)) => {
+            n1 == n2 && step_values_equal(i1, i2)
+        }
+        (StepValue::List(l1), StepValue::List(l2)) => {
+            l1.len() == l2.len()
+                && l1.iter().zip(l2.iter()).all(|(a, b)| step_values_equal(a, b))
+        }
+        // Integer/Real cross-type: compare numerically
+        (StepValue::Integer(n), StepValue::Real(r)) | (StepValue::Real(r), StepValue::Integer(n)) => {
+            (*n as f64 - *r).abs() < 1e-10
+        }
+        _ => false,
+    }
 }

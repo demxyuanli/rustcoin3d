@@ -27,6 +27,7 @@ pub mod curve;
 pub mod refine;
 pub mod mesh_result;
 pub mod import_options;
+mod import_pipeline;
 
 pub use import_options::{
     StepImportMode, StepImportOptions, StepImportReport, StepImportResult,
@@ -34,18 +35,10 @@ pub use import_options::{
 pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::NodeId;
+use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_data::{
-    Coordinate3Node, IndexedFaceSetNode, MaterialNode, NormalNode, SeparatorNode, TransformNode,
-};
-use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::SolidKey;
-use crate::step::brep::mesh::BRepMeshConfig;
-use crate::step::brep::heal::HealReport;
-use crate::step::mesh_result::MeshResult;
+use rc3d_scene::node_data::{MaterialNode, SeparatorNode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StepError {
@@ -234,9 +227,10 @@ fn exchange_to_import_result(
         )));
     }
 
+    let root_solids = brep_result.root_solids;
     let mut reg = brep_result.registry;
     let g0_tol = topology::global_tolerance(&exchange.entities).max(1e-6);
-    for &sk in &brep_result.root_solids {
+    for &sk in &root_solids {
         let shell_key = reg.solids.get(sk).map(|s| s.outer_shell);
         if let Some(shell_key) = shell_key {
             let n = brep::same_parameter::same_parameter_shell(&mut reg, shell_key, g0_tol);
@@ -265,38 +259,20 @@ fn exchange_to_import_result(
         );
     }
 
-    let mut total_heal = brep::heal::HealReport::default();
-    for &sk in &brep_result.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            total_heal.merge(brep::heal::auto_heal_shell(
-                solid.outer_shell,
-                &mut reg,
-                options.heal_level,
-                5,
-            ));
-        }
-    }
+    let total_heal = import_pipeline::run_heal_pipeline(
+        &mut reg,
+        &root_solids,
+        options.heal_level,
+        5,
+    );
     import_report.heal_check_errors = total_heal.check_errors;
-    log::info!("[STEP] healed: {:?}", total_heal);
-
-    for &sk in &brep_result.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            let defects = brep::heal::check_shell_continuity(
-                solid.outer_shell,
-                &reg,
-                g0_tol,
-                5.0,
-            );
-            import_report.continuity_defects += defects.len();
-            if !defects.is_empty() {
-                log::info!(
-                    "[STEP] shell {:?}: {} continuity defect(s)",
-                    solid.outer_shell,
-                    defects.len()
-                );
-            }
-        }
-    }
+    import_report.skipped_faces += total_heal.skip_face_keys.len();
+    import_pipeline::run_continuity_checks(
+        &reg,
+        &root_solids,
+        g0_tol,
+        &mut import_report,
+    );
 
     if options.fail_on_heal_check_errors() && total_heal.check_errors > 0 {
         return Err(StepError::ImportQuality(format!(
@@ -310,148 +286,40 @@ fn exchange_to_import_result(
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
-    fn make_material(color: [f32; 3]) -> MaterialNode {
-        MaterialNode {
-            diffuse_color: Vec3::new(color[0], color[1], color[2]),
-            base_color: Vec3::new(color[0], color[1], color[2]),
+    let default_color = [0.9, 0.9, 0.9];
+    graph.add_child(
+        root,
+        NodeData::Material(MaterialNode {
+            diffuse_color: Vec3::new(default_color[0], default_color[1], default_color[2]),
+            base_color: Vec3::new(default_color[0], default_color[1], default_color[2]),
             roughness: 0.35,
             opacity: 1.0,
             ..Default::default()
-        }
-    }
-    let default_color = [0.9, 0.9, 0.9];
-    graph.add_child(root, NodeData::Material(make_material(default_color)));
+        }),
+    );
 
-    let default_xform = assembly::AssemblyTransform::default();
-    let mut any_geom = false;
-    let mut props_vertices: Vec<Vec3> = Vec::new();
-    let mut props_indices: Vec<i32> = Vec::new();
-    let use_assembly_hierarchy = assembly_geom_nodes > 1;
-    let scene_parent = if use_assembly_hierarchy {
-        graph.add_child(root, NodeData::Separator(SeparatorNode))
-    } else {
-        root
-    };
+    let assembly_explode = import_pipeline::effective_assembly_explode(
+        options.assembly_preview_explode,
+        options.mode,
+        &reg,
+        &root_solids,
+    );
 
-    let mut emit_solid_to =
-        |graph: &mut SceneGraph,
-         parent: NodeId,
-         sk: SolidKey,
-         xform: &assembly::AssemblyTransform,
-         any_geom: &mut bool| {
-            let Some(solid) = reg.solids.get(sk) else {
-                return;
-            };
-            let Some(final_mesh) =
-                mesh_solid_shell(sk, solid.outer_shell, &reg, &mesh_config, &total_heal)
-            else {
-                return;
-            };
-            log::info!(
-                "[STEP] mesh: {} verts, {} tris",
-                final_mesh.vertices.len(),
-                final_mesh.indices.len() / 4,
-            );
-            append_props_mesh(&final_mesh, &mut props_vertices, &mut props_indices);
-            let shell_step_id = reg
-                .shells
-                .get(solid.outer_shell)
-                .and_then(|s| s.step_id);
-            let shell_color = shell_step_id
-                .and_then(|sid| shell_styles.get(&sid))
-                .map(|style| [style.diffuse.x, style.diffuse.y, style.diffuse.z]);
-            let mut mesh = final_mesh;
-            apply_mesh_transform(&mut mesh, xform);
-            *any_geom = true;
-            let comp = graph.add_child(parent, NodeData::Separator(SeparatorNode));
-            graph.add_child(
-                comp,
-                NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
-            );
-            add_mesh_nodes(graph, comp, &mesh);
-        };
-
-    if use_assembly_hierarchy {
-        let mut emitted = std::collections::HashSet::new();
-        assembly_tree.walk(&mut |node, world, depth| {
-            if node.shells.is_empty() {
-                return;
-            }
-            let part = graph.add_child(scene_parent, NodeData::Separator(SeparatorNode));
-            graph.add_child(part, NodeData::Transform(transform_node_from_mat4(*world)));
-            log::debug!(
-                "[STEP] assembly part '{}' depth {} shells={}",
-                node.name,
-                depth,
-                node.shells.len()
-            );
-            // Mesh stays in component-local B-Rep coords; part Transform applies world (NAUO chain).
-            let mesh_local = assembly::AssemblyTransform::default();
-            for &shell_step_id in &node.shells {
-                if let Some(sk) =
-                    solid_for_shell_step_id(&reg, &brep_result.root_solids, shell_step_id)
-                {
-                    if emitted.insert(sk) {
-                        emit_solid_to(&mut graph, part, sk, &mesh_local, &mut any_geom);
-                    }
-                }
-            }
-        });
-        for &sk in &brep_result.root_solids {
-            if !emitted.contains(&sk) {
-                emit_solid_to(&mut graph, scene_parent, sk, &default_xform, &mut any_geom);
-            }
-        }
-    } else {
-        for &sk in &brep_result.root_solids {
-            if let Some(solid) = reg.solids.get(sk) {
-                let final_mesh = match mesh_solid_shell(sk, solid.outer_shell, &reg, &mesh_config, &total_heal) {
-                    Some(m) => m,
-                    None => continue,
-                };
-                log::info!(
-                    "[STEP] mesh: {} verts, {} tris",
-                    final_mesh.vertices.len(),
-                    final_mesh.indices.len() / 4,
-                );
-                append_props_mesh(&final_mesh, &mut props_vertices, &mut props_indices);
-                let shell_step_id = reg
-                    .shells
-                    .get(solid.outer_shell)
-                    .and_then(|s| s.step_id);
-                let shell_color = shell_step_id
-                    .and_then(|sid| shell_styles.get(&sid))
-                    .map(|style| [style.diffuse.x, style.diffuse.y, style.diffuse.z]);
-                let mut instances: Vec<&assembly::AssemblyTransform> = shell_step_id
-                    .map(|sid| {
-                        shell_instances
-                            .iter()
-                            .filter(|(id, _)| *id == sid)
-                            .map(|(_, xform)| xform)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if instances.is_empty() {
-                    instances.push(&default_xform);
-                }
-                for xform in instances {
-                    let mut mesh = final_mesh.clone();
-                    apply_mesh_transform(&mut mesh, xform);
-                    any_geom = true;
-                    let comp = graph.add_child(root, NodeData::Separator(SeparatorNode));
-                    graph.add_child(
-                        comp,
-                        NodeData::Material(make_material(shell_color.unwrap_or(default_color))),
-                    );
-                    add_mesh_nodes(&mut graph, comp, &mesh);
-                }
-            }
-        }
-    }
-
-    if !any_geom {
-        return Err(StepError::NoGeometry);
-    }
+    let emit = import_pipeline::emit_scene_meshes(
+        &mut graph,
+        root,
+        &reg,
+        &root_solids,
+        &mesh_config,
+        &total_heal,
+        &assembly_tree,
+        assembly_geom_nodes,
+        &shell_styles,
+        &shell_instances,
+        assembly_explode,
+    )?;
+    let props_vertices = emit.props_vertices;
+    let props_indices = emit.props_indices;
 
     if !props_vertices.is_empty() && !props_indices.is_empty() {
         let props = brep::compute_mesh_properties(&props_vertices, &props_indices);
@@ -467,7 +335,7 @@ fn exchange_to_import_result(
 
     log::info!(
         "[STEP] mesh complete: {} solid(s), {} skipped face(s) during heal",
-        brep_result.root_solids.len(),
+        root_solids.len(),
         total_heal.skip_face_keys.len(),
     );
 
@@ -475,7 +343,7 @@ fn exchange_to_import_result(
         &mut graph,
         root,
         &reg,
-        &brep_result.root_solids,
+        &root_solids,
         &shell_instances,
         &mesh_config,
     );
@@ -524,117 +392,4 @@ fn exchange_to_import_result(
         assembly_tree,
         entities: exchange.entities,
     })
-}
-
-fn apply_mesh_transform(mesh: &mut MeshResult, xform: &assembly::AssemblyTransform) {
-    for v in &mut mesh.vertices {
-        *v = xform.transform_point(*v);
-    }
-    for n in &mut mesh.normals {
-        let t = xform.matrix.transform_vector3(*n);
-        let len = t.length();
-        if len > 1e-10 {
-            *n = t * (1.0 / len);
-        }
-    }
-}
-
-fn solid_for_shell_step_id(
-    reg: &BRepRegistry,
-    root_solids: &[SolidKey],
-    shell_step_id: u64,
-) -> Option<SolidKey> {
-    for &sk in root_solids {
-        let solid = reg.solids.get(sk)?;
-        let sid = reg.shells.get(solid.outer_shell)?.step_id?;
-        if sid == shell_step_id {
-            return Some(sk);
-        }
-    }
-    None
-}
-
-fn mesh_solid_shell(
-    sk: SolidKey,
-    outer_shell: crate::step::brep::topo::ShellKey,
-    reg: &BRepRegistry,
-    mesh_config: &BRepMeshConfig,
-    heal: &HealReport,
-) -> Option<MeshResult> {
-    let solid = reg.solids.get(sk)?;
-    let base_mesh = brep::mesh::mesh_brep_shell(outer_shell, reg, mesh_config, &heal.skip_face_keys);
-    if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
-        return None;
-    }
-    let void_meshes: Vec<_> = solid
-        .void_shells
-        .iter()
-        .map(|&vk| brep::mesh::mesh_brep_shell(vk, reg, mesh_config, &heal.skip_face_keys))
-        .collect();
-    let void_result =
-        brep::mesh::void_subtract::subtract_void_meshes(&base_mesh, &void_meshes);
-    if void_result.removed_tris > 0 {
-        log::info!(
-            "[STEP] void subtraction: removed {} tris, kept {}",
-            void_result.removed_tris,
-            void_result.mesh.indices.len() / 4,
-        );
-    }
-    Some(void_result.mesh)
-}
-
-fn append_props_mesh(mesh: &MeshResult, props_vertices: &mut Vec<Vec3>, props_indices: &mut Vec<i32>) {
-    let base_offset = props_vertices.len() as i32;
-    props_vertices.extend_from_slice(&mesh.vertices);
-    for chunk in mesh.indices.chunks(4) {
-        if chunk.len() >= 3 {
-            props_indices.extend_from_slice(&[
-                chunk[0] + base_offset,
-                chunk[1] + base_offset,
-                chunk[2] + base_offset,
-                -1,
-            ]);
-        }
-    }
-}
-
-fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: &MeshResult) {
-    let vert_count = mesh.vertices.len();
-    let normal_count = mesh.normals.len();
-    let tri_count = mesh.indices.len() / 4;
-    graph.add_child(
-        comp,
-        NodeData::Coordinate3(Coordinate3Node {
-            point: mesh.vertices.clone(),
-        }),
-    );
-    if !mesh.normals.is_empty() {
-        graph.add_child(
-            comp,
-            NodeData::Normal(NormalNode::from_vectors(mesh.normals.clone())),
-        );
-    }
-    graph.add_child(
-        comp,
-        NodeData::IndexedFaceSet(IndexedFaceSetNode {
-            coord_index: mesh.indices.clone(),
-        }),
-    );
-    log::debug!(
-        "[STEP] scene mesh: {} verts, {} normals, {} tris ({} KB indices)",
-        vert_count,
-        normal_count,
-        tri_count,
-        tri_count * 12 / 1024,
-    );
-}
-
-/// Scene graph transform from assembly world matrix (translation + rotation; unit scale).
-fn transform_node_from_mat4(m: Mat4) -> TransformNode {
-    TransformNode {
-        translation: Vec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z),
-        rotation: m,
-        scale: Vec3::ONE,
-        center: Vec3::ZERO,
-    }
 }

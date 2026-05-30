@@ -538,3 +538,29 @@ enum TrimSegment {
 | P1 Unknown 实体统计 | Done |
 | P1 XML STEP 路由 | Done |
 | P2 AP 模式 / void mesh 布尔减 / PMI | Backlog |
+
+---
+
+## 十、Refactor baseline 2026-05-29
+
+**目的**：STEP 管线可维护性重构期间的 mesh 指标快照与 API 冻结规则。
+
+**快照**（`test_output/step_baseline.txt`，`shape_corpus` release）：
+
+| 文件 | tris | verts | faces meshed | grid_fallback | secs |
+|------|------|-------|--------------|---------------|------|
+| Shape-1.step | 39109 | 27612 | 60/60 | 21.7% | 6.18 |
+| Shape-2.step | 4290 | 3545 | 31/31 | 9.7% | 1.19 |
+| Shape.step | 8032 | 15378 | 9/11 | 18.2% | 5.11 |
+
+**漂移门禁**：单阶段合并后 tri 数相对上表允许 ±5%，除非修复已知失败用例。
+
+**冻结规则（重构期）**：
+
+1. 新逻辑不得新增对 `EntityIndex` 的直接拓扑/几何解析；应经 `brep/build` 或 `brep/geom`。
+2. 新 mesh 逻辑不得写入 `brep/mesh/mod.rs` 主文件；使用 `shell_mesh.rs` / `face_dispatch.rs` 子模块。
+3. 禁止默认启用 Agent NDJSON 写盘；仅 `feature = "step-agent-debug"` 或 `RC3D_AGENT_DEBUG=1`。
+
+**重构闭环（2026-05-29）**：`import_pipeline::emit_scene_meshes` 已从 `step/mod.rs` 抽出；`topology/`、`brep/build/{shell,surface,curve,pcurve}`、`brep/mesh/{shell_mesh,face_dispatch}` 已落地。
+
+**Shape-2 第 31 面（2026-05-29）**：双导线平面 ruled 条带：`mesh_ruled_wire_polygons_3d` + `ruled_strip_uv_segs`（边弧长 u、条带宽度 v），31/31 面、约 4290 tri（原 30/31、~923 tri）；STL 见 `test_output/Shape-2.stl`。

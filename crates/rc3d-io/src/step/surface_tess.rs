@@ -6,7 +6,7 @@ use super::parser::EntityIndex;
 use super::entity_types::EntityType;
 use super::topology::{self, StepFace};
 use super::pcurve::FaceTrim;
-use super::tessellate::MeshResult;
+use super::mesh_result::MeshResult;
 use super::geom;
 use super::nurbs::NurbsSurface;
 use super::value::StepValue;

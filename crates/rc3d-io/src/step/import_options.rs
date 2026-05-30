@@ -33,6 +33,9 @@ pub struct StepImportOptions {
     pub strict_schema: bool,
     /// Complex-entity flattening mode for Part21 → `EntityIndex` adapter.
     pub adapter_mode: AdapterMode,
+    /// Radial preview separation for multi-solid assemblies (0 = off).
+    /// In Preview mode, overlapping solid bboxes still auto-apply 0.35 when this is zero.
+    pub assembly_preview_explode: f32,
 }
 
 /// Full STEP import output (scene + assembly metadata for editor/tools).
@@ -51,6 +54,7 @@ impl StepImportOptions {
             mesh_relative_deflection: 0.0,
             strict_schema: false,
             adapter_mode: AdapterMode::CompatMerge,
+            assembly_preview_explode: 0.0,
         }
     }
 
@@ -61,6 +65,7 @@ impl StepImportOptions {
             mesh_relative_deflection: 0.0,
             strict_schema: false,
             adapter_mode: AdapterMode::CompatMerge,
+            assembly_preview_explode: 0.0,
         }
     }
 

@@ -74,7 +74,13 @@ pub fn auto_heal_shell(
     total_report
 }
 
-/// Select which fixes to apply based on heal level, iteration, and current check.
+/// Table-driven fix selection by [`HealLevel`] and check report (iteration 0 = bulk pass).
+///
+/// | Level    | Iteration 0 fixes |
+/// |----------|-------------------|
+/// | Basic    | connected, small edges, reorder, gaps 3d, orientation |
+/// | Standard | + UV gaps, shifted, periodic degen, edge curves, lacking, seams, natural bound, reversed 2d |
+/// | Advanced | + self-intersection, degenerated, intersecting wires (when check flags set) |
 pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckReport) -> HealConfig {
     let mut config = HealConfig::all_disabled();
 

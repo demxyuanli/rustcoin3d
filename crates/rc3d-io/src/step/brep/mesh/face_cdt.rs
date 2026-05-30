@@ -11,13 +11,44 @@ use super::face_fill::{effective_min_size, FaceFillConfig};
 use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::BRepFace;
+use crate::step::brep::topo::{BRepFace, FaceKey};
 
 /// Hard cap on CDT vertices per face (boundary + Steiner).
 const MAX_CDT_VERTICES: usize = 4096;
 
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
+}
+
+/// Relative UV quantization: scale by UV span so that quantization adapts to the
+/// actual coordinate range rather than using a fixed absolute resolution.
+fn uv_quant_key_relative(uv: (f32, f32), uv_span: (f32, f32)) -> (u64, u64) {
+    let su = uv_span.0.max(1e-6);
+    let sv = uv_span.1.max(1e-6);
+    ((uv.0 / su * 1e6).round() as u64, (uv.1 / sv * 1e6).round() as u64)
+}
+
+/// Compute the UV span (range) of all boundary vertices in the loops.
+fn compute_uv_span(loops: &FaceUvLoops) -> (f32, f32) {
+    let mut u_min = f32::MAX;
+    let mut u_max = f32::MIN;
+    let mut v_min = f32::MAX;
+    let mut v_max = f32::MIN;
+    for v in &loops.outer.boundary {
+        u_min = u_min.min(v.uv.0);
+        u_max = u_max.max(v.uv.0);
+        v_min = v_min.min(v.uv.1);
+        v_max = v_max.max(v.uv.1);
+    }
+    for inner in &loops.inners {
+        for v in &inner.boundary {
+            u_min = u_min.min(v.uv.0);
+            u_max = u_max.max(v.uv.0);
+            v_min = v_min.min(v.uv.1);
+            v_max = v_max.max(v.uv.1);
+        }
+    }
+    ((u_max - u_min).abs(), (v_max - v_min).abs())
 }
 
 fn insert_uv(
@@ -27,14 +58,26 @@ fn insert_uv(
     handles: &mut Vec<spade::handles::FixedVertexHandle>,
     handle_gi: &mut Vec<usize>,
     uv_to_handle: &mut HashMap<(u64, u64), usize>,
+    uv_span: Option<(f32, f32)>,
 ) -> Option<spade::handles::FixedVertexHandle> {
     for bump in 0..32usize {
-        let key = uv_quant_key(uv);
+        let key = match uv_span {
+            Some(span) => uv_quant_key_relative(uv, span),
+            None => uv_quant_key(uv),
+        };
         if let Some(&hi) = uv_to_handle.get(&key) {
             if handle_gi[hi] == gi {
                 return Some(handles[hi]);
             }
-            uv.0 += 1e-5 * (bump as f32 + 1.0);
+            // Bump both U and V to avoid collisions
+            let bump_scale = 1e-5 * (bump as f32 + 1.0);
+            if let Some(span) = uv_span {
+                uv.0 += bump_scale * span.0;
+                uv.1 += bump_scale * span.1 * ((bump % 2) as f32 * 2.0 - 1.0);
+            } else {
+                uv.0 += bump_scale;
+                uv.1 += bump_scale * ((bump % 2) as f32 * 2.0 - 1.0);
+            }
             continue;
         }
         let pt = Point2::new(uv.0 as f64, uv.1 as f64);
@@ -101,6 +144,7 @@ fn extract_cdt_triangles(
 pub fn triangulate_uv_cdt_with_steiner(
     loops: &FaceUvLoops,
     face: &BRepFace,
+    face_key: Option<FaceKey>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -117,6 +161,9 @@ pub fn triangulate_uv_cdt_with_steiner(
     let mut handle_gi: Vec<usize> = Vec::new();
     let mut uv_to_handle: HashMap<(u64, u64), usize> = HashMap::new();
 
+    // Compute UV span for relative quantization
+    let uv_span = compute_uv_span(loops);
+
     let mut outer_handles = Vec::new();
     for v in &loops.outer.boundary {
         let Some(h) = insert_uv(
@@ -126,6 +173,7 @@ pub fn triangulate_uv_cdt_with_steiner(
             &mut handles,
             &mut handle_gi,
             &mut uv_to_handle,
+            Some(uv_span),
         ) else {
             return (Vec::new(), 0.0);
         };
@@ -151,6 +199,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 &mut handles,
                 &mut handle_gi,
                 &mut uv_to_handle,
+                Some(uv_span),
             ) else {
                 return (Vec::new(), 0.0);
             };
@@ -179,10 +228,14 @@ pub fn triangulate_uv_cdt_with_steiner(
                 Some(e) => e,
                 None => continue,
             };
-            // Degenerated edges are created for this face; use the first available PCurve
-            let pc = match edge.pcurves.values().next() {
+            // Degenerated edges are created for this face; prefer the PCurve for this face,
+            // fall back to any available PCurve (handles edge sharing across faces)
+            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
                 Some(p) => p,
-                None => continue,
+                None => match edge.pcurves.values().next() {
+                    Some(p) => p,
+                    None => continue,
+                },
             };
             let uv0 = pc.d0(0.0);
             let uv1 = pc.d0(1.0);
@@ -211,11 +264,11 @@ pub fn triangulate_uv_cdt_with_steiner(
                 global_normals.push(n);
                 i
             });
-            let h0 = match insert_uv(&mut cdt, (uv0.x, uv0.y), gi0, &mut handles, &mut handle_gi, &mut uv_to_handle) {
+            let h0 = match insert_uv(&mut cdt, (uv0.x, uv0.y), gi0, &mut handles, &mut handle_gi, &mut uv_to_handle, Some(uv_span)) {
                 Some(h) => h,
                 None => continue,
             };
-            let h1 = match insert_uv(&mut cdt, (uv1.x, uv1.y), gi1, &mut handles, &mut handle_gi, &mut uv_to_handle) {
+            let h1 = match insert_uv(&mut cdt, (uv1.x, uv1.y), gi1, &mut handles, &mut handle_gi, &mut uv_to_handle, Some(uv_span)) {
                 Some(h) => h,
                 None => continue,
             };
@@ -230,7 +283,14 @@ pub fn triangulate_uv_cdt_with_steiner(
         let u_max = loops.outer.boundary.iter().map(|v| v.uv.0).fold(f32::MIN, f32::max);
         let v_min = loops.outer.boundary.iter().map(|v| v.uv.1).fold(f32::INFINITY, f32::min);
         let v_max = loops.outer.boundary.iter().map(|v| v.uv.1).fold(f32::MIN, f32::max);
-        let range = (u_min, u_max, v_min, v_max);
+        let range = if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+            loops
+                .revolution_native_uv_bounds_from_boundary(face, global_vertices)
+                .unwrap_or((u_min, u_max, v_min, v_max))
+        } else {
+            (u_min, u_max, v_min, v_max)
+        };
+        let (u_min, u_max, v_min, v_max) = range;
         let (u_divs, v_divs) = face.surface.parameter_division(range, config.deflection_interior);
 
         let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
@@ -282,6 +342,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                         &mut handles,
                         &mut handle_gi,
                         &mut uv_to_handle,
+                        Some(uv_span),
                     )
                     .is_some()
                     {
@@ -403,6 +464,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                     &mut handles,
                     &mut handle_gi,
                     &mut uv_to_handle,
+                    Some(uv_span),
                 );
             }
         }
@@ -458,7 +520,7 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
         ..Default::default()
     };
     let (tris, _) = triangulate_uv_cdt_with_steiner(
-        loops, &face, &mut verts, &mut norms, &mut pmap, &config, None,
+        loops, &face, None, &mut verts, &mut norms, &mut pmap, &config, None,
     );
     if tris.is_empty() {
         None
@@ -519,7 +581,7 @@ mod tests {
         };
 
         let (tris_loose, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_loose, None,
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_loose, None,
         );
         let verts_before = verts.len();
 
@@ -529,7 +591,7 @@ mod tests {
             ..config_loose.clone()
         };
         let (tris_tight, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config_tight, None,
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_tight, None,
         );
         assert!(verts.len() > verts_before,
             "tight deflection should insert Steiner points on sphere, verts {} -> {}",
@@ -632,7 +694,7 @@ mod tests {
             ..Default::default()
         };
         let (tris, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config, None,
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None,
         );
         assert!(!tris.is_empty());
         for chunk in tris.chunks(3) {
@@ -691,7 +753,7 @@ mod tests {
         };
         let before = verts.len();
         let (tris, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, &mut verts, &mut norms, &mut pos_map, &config, None,
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None,
         );
         assert!(verts.len() > before, "Steiner should add interior vertices");
         assert!(!tris.is_empty());
@@ -759,6 +821,7 @@ mod tests {
         let (tris, _) = triangulate_uv_cdt_with_steiner(
             &loops,
             &face,
+            Some(fk),
             &mut verts,
             &mut norms,
             &mut pos_map,
@@ -829,6 +892,7 @@ mod tests {
         let (tris, _) = triangulate_uv_cdt_with_steiner(
             &loops,
             &face,
+            Some(fk),
             &mut verts,
             &mut norms,
             &mut pos_map,

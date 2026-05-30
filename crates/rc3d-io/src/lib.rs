@@ -23,7 +23,9 @@ pub use step::brep;
 pub use step::tree::{AssemblyTree, AssemblyNode, ProductMetadata};
 pub use step::header::HeaderInfo;
 pub use step::lod;
-pub use stl::{parse_stl, parse_stl_file, parse_stl_triangles, write_binary_stl, StlError};
+pub use stl::{
+    parse_stl, parse_stl_file, parse_stl_triangles, write_ascii_stl, write_binary_stl, StlError,
+};
 
 use std::path::Path;
 use rc3d_scene::SceneGraph;

@@ -73,6 +73,15 @@ pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
     a * 0.5
 }
 
+/// True when the outer UV loop has fewer than 3 vertices or zero signed area.
+pub fn uv_loop_is_degenerate(loops: &FaceUvLoops) -> bool {
+    if loops.outer.boundary.len() < 3 {
+        return true;
+    }
+    let uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    signed_area_2d(&uv).abs() <= 1e-6
+}
+
 pub fn loops_uv_valid(outer: &[Option<(f32, f32)>], inners: &[Vec<(f32, f32)>]) -> bool {
     if outer.len() < 3 || !outer.iter().all(|uv| uv.is_some()) {
         return false;
@@ -151,6 +160,14 @@ impl FaceUvLoops {
 
 /// True when stored revolution U span is too small for valid trim.
 pub fn revolution_u_span_collapsed(du: f32) -> bool { du < std::f32::consts::TAU * 0.15 }
+
+/// True when revolution boundary samples collapse in native V (axis angle).
+pub fn revolution_boundary_v_collapsed(loops: &FaceUvLoops) -> bool {
+    loops
+        .native_uv_bounds()
+        .map(|(_, _, v0, v1)| (v1 - v0).abs() < 1e-5)
+        .unwrap_or(true)
+}
 
 /// Even-odd point-in-trim test (BRepClass_FaceClassifier equivalent, UV only).
 pub fn point_in_trim(u: f32, v: f32, outer: &[(f32, f32)], holes: &[Vec<(f32, f32)>]) -> bool {
@@ -372,12 +389,87 @@ fn collect_wire_loop(
     (UvLoop { boundary }, all_pcurve)
 }
 
+pub(crate) fn assign_revolution_native_uv_along_wire(
+    loop_data: &mut UvLoop,
+    surface: &SurfaceGeom,
+    global_vertices: &[Vec3],
+) {
+    let SurfaceGeom::Revolution {
+        axis_origin,
+        axis_dir,
+        ..
+    } = surface
+    else {
+        return;
+    };
+    let n = loop_data.boundary.len();
+    if n < 3 {
+        return;
+    }
+    let axis = axis_dir.normalize();
+    let (x_dir, y_dir) = build_ortho_axes(axis);
+    const TAU: f32 = std::f32::consts::TAU;
+
+    let mut raw: Vec<(f32, f32)> = Vec::with_capacity(n);
+    for v in &loop_data.boundary {
+        let Some(pt) = global_vertices.get(v.global_idx) else {
+            raw.push((0.0, 0.0));
+            continue;
+        };
+        let u = surface
+            .revolution_generatrix_u_at(*pt)
+            .unwrap_or(0.0);
+        let rel = *pt - *axis_origin;
+        let radial = rel - axis * rel.dot(axis);
+        let angle = if radial.length_squared() < 1e-10 {
+            f32::NAN
+        } else {
+            let a = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+            if a < 0.0 { a + TAU } else { a }
+        };
+        raw.push((u, angle));
+    }
+
+    for i in 0..n {
+        if !raw[i].1.is_nan() {
+            continue;
+        }
+        for d in 1..n {
+            let fwd = raw[(i + d) % n].1;
+            if !fwd.is_nan() {
+                raw[i].1 = fwd;
+                break;
+            }
+            let bwd = raw[(i + n - d) % n].1;
+            if !bwd.is_nan() {
+                raw[i].1 = bwd;
+                break;
+            }
+        }
+        if raw[i].1.is_nan() {
+            raw[i].1 = 0.0;
+        }
+    }
+
+    loop_data.boundary[0].uv = (raw[0].0, raw[0].1);
+    for i in 1..n {
+        let v = get_mindiff(raw[i].1, loop_data.boundary[i - 1].uv.1, TAU);
+        loop_data.boundary[i].uv = (raw[i].0, v);
+    }
+}
+
 fn rebuild_loop_uv_from_3d(
     loop_data: &mut UvLoop,
     surface: &SurfaceGeom,
     global_vertices: &[Vec3],
     inv_tol: f32,
 ) {
+    if matches!(surface, SurfaceGeom::Revolution { .. }) {
+        assign_revolution_native_uv_along_wire(loop_data, surface, global_vertices);
+        return;
+    }
+
+    // Pass 1: Independent projection — each vertex gets its own best UV
     for v in &mut loop_data.boundary {
         let Some(pt) = global_vertices.get(v.global_idx) else { continue; };
         // Skip expensive project() when PCurve UV already matches 3D point
@@ -385,6 +477,19 @@ fn rebuild_loop_uv_from_3d(
         if (*pt - surf_pt).length() <= inv_tol * 2.0 { continue; }
         if let Some(uv) = surface.project(*pt).or_else(|| surface.inverse_native_uv(*pt, inv_tol)) {
             v.uv = uv;
+        }
+    }
+
+    // Pass 2: Periodic unwrapping — make UV continuous across period boundaries
+    let up = surface.native_u_period();
+    let vp = surface.native_v_period();
+    if up.is_some() || vp.is_some() {
+        for i in 1..loop_data.boundary.len() {
+            let prev = loop_data.boundary[i - 1].uv;
+            let mut cur = loop_data.boundary[i].uv;
+            if let Some(pu) = up { cur.0 = get_mindiff(cur.0, prev.0, pu); }
+            if let Some(pv) = vp { cur.1 = get_mindiff(cur.1, prev.1, pv); }
+            loop_data.boundary[i].uv = cur;
         }
     }
 }
@@ -582,7 +687,7 @@ pub fn boundary_is_mixed(boundary: &[UvVertex], verts: &[Vec3]) -> bool {
 // ── Periodic UV Loop Unwrap ──────────────────────────────────
 
 fn get_mindiff(u: f32, u0: f32, period: f32) -> f32 {
-    (-2..=2)
+    (-4..=4)
         .map(|i| u + i as f32 * period)
         .min_by(|a, b| (a - u0).abs().partial_cmp(&(b - u0).abs()).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(u)
@@ -698,25 +803,22 @@ pub fn loops_from_wire_edges(
 }
 
 pub fn revolution_loops_from_wire_edges(
-    face_key: FaceKey, face: &BRepFace,
+    _face_key: FaceKey, face: &BRepFace,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
     global_vertices: &[Vec3],
 ) -> Option<FaceUvLoops> {
-    let inv_tol = face.tolerance.max(1e-3);
     let mut boundary = Vec::new();
     let mut fail_reason: Option<&str> = None;
     for &(ek, ref pis) in wire_edges {
-        let poly = match edge_polygons.get(&ek) { Some(p) => p, None => { fail_reason = Some("no_poly"); break; } };
+        let _poly = match edge_polygons.get(&ek) { Some(p) => p, None => { fail_reason = Some("no_poly"); break; } };
         for &pi in pis {
             let gi = match edge_boundary_idx.get(&(ek, pi)).copied() { Some(g) => g, None => { fail_reason = Some("no_bidx"); break; } };
             if boundary.last().map(|v: &UvVertex| v.global_idx) == Some(gi) { continue; }
             let pt = match global_vertices.get(gi) { Some(p) => p, None => { fail_reason = Some("no_vtx"); break; } };
-            let uv = match face.surface.revolution_native_uv_at(*pt)
-                .or_else(|| face.surface.inverse_native_uv(*pt, inv_tol))
-            { Some(u) => u, None => { fail_reason = Some("no_uv"); break; } };
-            boundary.push(UvVertex { global_idx: gi, uv });
+            let _ = pt;
+            boundary.push(UvVertex { global_idx: gi, uv: (0.0, 0.0) });
         }
         if fail_reason.is_some() { break; }
     }
@@ -726,8 +828,12 @@ pub fn revolution_loops_from_wire_edges(
     }
     if boundary.len() < 3 { return None; }
     ensure_loop_orientation(&mut boundary, false);
-    let mut loops = FaceUvLoops { outer: UvLoop { boundary: boundary.clone() }, inners: Vec::new(), uv_source: UvSource::Synthetic };
-    unwrap_periodic_uv_loops(&mut loops, &face.surface);
+    let mut loops = FaceUvLoops {
+        outer: UvLoop { boundary },
+        inners: Vec::new(),
+        uv_source: UvSource::Synthetic,
+    };
+    assign_revolution_native_uv_along_wire(&mut loops.outer, &face.surface, global_vertices);
     Some(loops)
 }
 
@@ -744,8 +850,15 @@ pub fn loops_from_boundary_indices(
     };
     for &gi in indices {
         let pt = global_vertices.get(gi)?;
-        let uv = proj_surface.project(*pt)
-            .or_else(|| proj_surface.inverse_native_uv(*pt, inv_tol))?;
+        let uv = if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+            face.surface
+                .revolution_native_uv_at(*pt)
+                .or_else(|| face.surface.inverse_native_uv(*pt, inv_tol))
+        } else {
+            proj_surface
+                .project(*pt)
+                .or_else(|| proj_surface.inverse_native_uv(*pt, inv_tol))
+        }?;
         boundary.push(UvVertex { global_idx: gi, uv });
     }
     if boundary.len() < 3 { return None; }

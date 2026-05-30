@@ -45,6 +45,14 @@ pub use check::{check_shell, check_uv_self_intersection, CheckReport};
 pub use continuity::check_shell_continuity;
 pub use pipeline::{auto_heal_shell, HealLevel};
 
+/// Why a face was excluded from meshing after heal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceSkipReason {
+    HealPipeline,
+    CheckError,
+    SelfIntersection,
+}
+
 #[derive(Debug, Clone)]
 pub struct HealReport {
     pub reordered_wires: usize,
@@ -57,6 +65,7 @@ pub struct HealReport {
     pub shifted_pcurves: usize,
     pub adjusted_edge_curves: usize,
     pub skip_face_keys: Vec<FaceKey>,
+    pub face_skip_reasons: Vec<(FaceKey, FaceSkipReason)>,
     pub lacking_tolerance_fixes: usize,
     pub degenerate_edges_created: usize,
     pub periodic_degen_created: usize,
@@ -84,6 +93,7 @@ impl Default for HealReport {
             shifted_pcurves: 0,
             adjusted_edge_curves: 0,
             skip_face_keys: Vec::new(),
+            face_skip_reasons: Vec::new(),
             lacking_tolerance_fixes: 0,
             degenerate_edges_created: 0,
             periodic_degen_created: 0,
@@ -120,17 +130,18 @@ impl HealReport {
         self.split_faces_created += other.split_faces_created;
         self.natural_bounds_added += other.natural_bounds_added;
         self.reversed_2d_fixed += other.reversed_2d_fixed;
-        for fk in other.skip_face_keys {
-            push_skip_face(self, fk);
+        for (fk, reason) in other.face_skip_reasons {
+            push_skip_face(self, fk, reason);
         }
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
     }
 }
 
-fn push_skip_face(report: &mut HealReport, face_key: FaceKey) {
+fn push_skip_face(report: &mut HealReport, face_key: FaceKey, reason: FaceSkipReason) {
     if report.skip_faces_seen.insert(face_key) {
         report.skip_face_keys.push(face_key);
+        report.face_skip_reasons.push((face_key, reason));
     }
 }
 
@@ -461,7 +472,7 @@ fn heal_self_intersect_on_wire(
                 "[BRep heal] FixSelfIntersection face {:?}: still self-intersecting after fix",
                 face_key
             );
-            push_skip_face(report, face_key);
+            push_skip_face(report, face_key, FaceSkipReason::CheckError);
             return false;
         }
     }
@@ -501,7 +512,7 @@ pub fn heal_shell(
 
         for wk in wire_keys {
             if !heal_wire_passes(wk, *face_key, reg, config, &protected_edges, &mut report) {
-                push_skip_face(&mut report, *face_key);
+                push_skip_face(&mut report, *face_key, FaceSkipReason::HealPipeline);
                 log::warn!("[BRep heal] face {:?}: wire {:?} failed wire heal", face_key, wk);
                 break;
             }
@@ -512,7 +523,7 @@ pub fn heal_shell(
         }
 
         if !heal_face_passes(*face_key, reg, config, &mut report) {
-            push_skip_face(&mut report, *face_key);
+            push_skip_face(&mut report, *face_key, FaceSkipReason::SelfIntersection);
         }
     }
 
@@ -531,7 +542,7 @@ pub fn heal_shell(
     if config.fix_small_area {
         let small = fix_small_area(shell_key, reg);
         for fk in small {
-            push_skip_face(&mut report, fk);
+            push_skip_face(&mut report, fk, FaceSkipReason::HealPipeline);
         }
     }
 

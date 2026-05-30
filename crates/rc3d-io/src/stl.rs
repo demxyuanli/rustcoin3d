@@ -39,8 +39,7 @@ pub fn parse_stl_triangles(data: &[u8]) -> Result<Vec<StlTriangle>, StlError> {
     }
 }
 
-/// Write engine mesh as binary STL (OCC reference export workflow).
-pub fn write_binary_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Result<(), StlError> {
+fn mesh_to_stl_triangles(vertices: &[Vec3], indices: &[i32]) -> Vec<StlTriangle> {
     let mut tris = Vec::new();
     for chunk in indices.chunks(4) {
         if chunk.len() < 3 {
@@ -70,6 +69,39 @@ pub fn write_binary_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Resu
             ],
         });
     }
+    tris
+}
+
+/// Write engine mesh as ASCII STL (indices layout: i0, i1, i2, -1 per triangle).
+pub fn write_ascii_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Result<(), StlError> {
+    let tris = mesh_to_stl_triangles(vertices, indices);
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mesh");
+    let mut out = String::with_capacity(tris.len().saturating_mul(200) + 64);
+    out.push_str(&format!("solid {name}\n"));
+    for tri in &tris {
+        let [nx, ny, nz] = tri.normal;
+        out.push_str(&format!("  facet normal {nx} {ny} {nz}\n"));
+        out.push_str("    outer loop\n");
+        for v in &tri.vertices {
+            out.push_str(&format!(
+                "      vertex {} {} {}\n",
+                v[0], v[1], v[2]
+            ));
+        }
+        out.push_str("    endloop\n");
+        out.push_str("  endfacet\n");
+    }
+    out.push_str(&format!("endsolid {name}\n"));
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
+/// Write engine mesh as binary STL (OCC reference export workflow).
+pub fn write_binary_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Result<(), StlError> {
+    let tris = mesh_to_stl_triangles(vertices, indices);
     let mut out = Vec::with_capacity(84 + tris.len() * 50);
     out.extend_from_slice(b"rc3d-io T4 reference mesh             ");
     out.extend_from_slice(&(tris.len() as u32).to_le_bytes());

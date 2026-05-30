@@ -22,12 +22,12 @@ pub struct ClassifiedFace {
     pub class: RegionClass,
 }
 
-fn mesh_target_solids_brep(entities: &EntityIndex) -> super::super::tessellate::MeshResult {
+fn mesh_target_solids_brep(entities: &EntityIndex) -> super::super::mesh_result::MeshResult {
     use super::super::brep::{build_brep_with_options, BRepBuildOptions};
     use super::super::brep::mesh::{mesh_brep_shell, BRepMeshConfig};
     use super::super::import_options::StepImportOptions;
 
-    let mut out = super::super::tessellate::MeshResult::default();
+    let mut out = super::super::mesh_result::MeshResult::default();
     let import_opts = StepImportOptions::default();
     let build_opts = BRepBuildOptions::from_import(&import_opts);
     let brep = match build_brep_with_options(entities, &build_opts) {
@@ -47,7 +47,7 @@ fn mesh_target_solids_brep(entities: &EntityIndex) -> super::super::tessellate::
 }
 
 fn append_brep_mesh(
-    dst: &mut super::super::tessellate::MeshResult,
+    dst: &mut super::super::mesh_result::MeshResult,
     src: &super::super::mesh_result::MeshResult,
 ) {
     let base = dst.vertices.len() as i32;
@@ -79,12 +79,7 @@ pub fn classify_faces(
     // For faces without: use edge-loop fallback triangulation.
     let target_faces: Vec<StepFace> = target_shells.iter()
         .flat_map(|s| s.faces.iter().cloned()).collect();
-    let legacy_mesh =
-        super::super::tessellate::tessellate_faces(&target_faces, target_entities);
     let mut target_mesh = mesh_target_solids_brep(target_entities);
-    if target_mesh.indices.len() / 4 < legacy_mesh.indices.len() / 4 {
-        target_mesh = legacy_mesh;
-    }
 
     if target_mesh.vertices.is_empty() && !target_faces.is_empty() {
         target_mesh = build_mesh_from_edge_loops(&target_faces, target_entities);
@@ -101,8 +96,8 @@ pub fn classify_faces(
 fn build_mesh_from_edge_loops(
     faces: &[StepFace],
     entities: &EntityIndex,
-) -> super::super::tessellate::MeshResult {
-    let mut mesh = super::super::tessellate::MeshResult::default();
+) -> super::super::mesh_result::MeshResult {
+    let mut mesh = super::super::mesh_result::MeshResult::default();
     let mut pos_map: std::collections::HashMap<[u32; 3], i32> = std::collections::HashMap::new();
 
     for face in faces {
@@ -211,7 +206,7 @@ fn face_center(face: &StepFace) -> Vec3 {
 /// Classify a point relative to a mesh using multiple rays for robustness.
 /// Uses 6 axis-aligned rays with majority voting.
 /// Special handling for near-boundary cases via jittered retry.
-pub fn classify_point(point: &Vec3, mesh: &super::super::tessellate::MeshResult) -> RegionClass {
+pub fn classify_point(point: &Vec3, mesh: &super::super::mesh_result::MeshResult) -> RegionClass {
     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
         return RegionClass::Outside;
     }
@@ -293,7 +288,7 @@ pub fn classify_point(point: &Vec3, mesh: &super::super::tessellate::MeshResult)
 
 /// Retry classification with small random-like offsets when all rays graze.
 fn classify_point_jittered(
-    point: &Vec3, mesh: &super::super::tessellate::MeshResult,
+    point: &Vec3, mesh: &super::super::mesh_result::MeshResult,
 ) -> RegionClass {
     let offsets = [
         Vec3::new(0.001, 0.0, 0.0),
@@ -387,7 +382,7 @@ fn compute_ray_triangle_t(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::super::tessellate::MeshResult;
+    use super::super::super::mesh_result::MeshResult;
 
     #[test]
     fn test_ray_triangle_hit() {
