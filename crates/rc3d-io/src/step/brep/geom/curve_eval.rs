@@ -792,15 +792,27 @@ fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
 /// Uses uniform sampling followed by iterative step-halving refinement.
 /// `n_samples` controls the initial grid resolution; `refine_iters` controls
 /// the number of refinement passes.
-pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, n_samples: usize, refine_iters: usize) -> f32 {
+pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, _n_samples: usize, _refine_iters: usize) -> f32 {
+    // Use Newton-Raphson for all curve types except Polyline
+    match curve {
+        CurveGeom::Polyline { .. } => {}
+        _ => {
+            let results = super::project::project_point_on_curve(curve, target);
+            if let Some((t, _)) = results.first() {
+                return *t;
+            }
+        }
+    }
+    // Fallback: grid search + refinement
+    let n = 64usize;
     let mut best_t = 0.0f32; let mut best_d2 = f32::MAX;
-    for i in 0..=n_samples {
-        let t = i as f32 / n_samples as f32;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
         let d2 = (curve.d0(t) - target).length_squared();
         if d2 < best_d2 { best_d2 = d2; best_t = t; }
     }
-    let mut step = 1.0 / (n_samples as f32 * 2.0);
-    for _ in 0..refine_iters {
+    let mut step = 1.0 / (n as f32 * 2.0);
+    for _ in 0..5 {
         for &dt in &[-step, step] {
             let t = (best_t + dt).clamp(0.0, 1.0);
             let d2 = (curve.d0(t) - target).length_squared();

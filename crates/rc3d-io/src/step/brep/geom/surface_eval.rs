@@ -98,7 +98,7 @@ impl SurfaceParamRange {
 /// Uses a 3-level strategy: coarse 4×4 grid → local 4×4 around top-3 candidates
 /// → coordinate-descent refinement (8 iterations).  Total: ~105 evaluations vs
 /// the 289+32=321 of a full 16×16 grid with refinement.
-fn grid_project_2d(
+pub fn grid_project_2d(
     eval: impl Fn(f32, f32) -> Vec3,
     u_lo: f32, u_hi: f32, v_lo: f32, v_hi: f32,
     point: Vec3,
@@ -559,23 +559,13 @@ impl SurfaceGeom {
                 let u = find_param_on_curve(generatrix, unrotated, 64, 5);
                 Some(self.d0_uv_to_native(u, v))
             }
-            SurfaceGeom::BSpline(nurbs) => {
-                let u_range = nurbs.knots_u[nurbs.degree_u];
-                let u_end = nurbs.knots_u[nurbs.knots_u.len() - nurbs.degree_u - 1];
-                let v_range = nurbs.knots_v[nurbs.degree_v];
-                let v_end = nurbs.knots_v[nurbs.knots_v.len() - nurbs.degree_v - 1];
-                let (u, v) = grid_project_2d(
-                    |u, v| nurbs.evaluate(u, v),
-                    u_range, u_end, v_range, v_end, point,
-                );
-                Some((u, v))
-            }
-            SurfaceGeom::Torus { .. } => {
-                let (u, v) = grid_project_2d(
-                    |uu, vv| self.d0(uu, vv),
-                    0.0, 1.0, 0.0, 1.0, point,
-                );
-                Some(self.d0_uv_to_native(u, v))
+            SurfaceGeom::BSpline(_) | SurfaceGeom::Torus { .. } => {
+                // Use Newton-Raphson; falls back to grid_project_2d internally
+                let candidates = super::project::project_point_on_surface(self, point);
+                if let Some((u, v, _)) = candidates.first() {
+                    return Some((*u, *v));
+                }
+                None
             }
             SurfaceGeom::Extrusion { generatrix, direction } => {
                 let dir = direction.normalize();
