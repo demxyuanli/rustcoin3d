@@ -826,7 +826,7 @@ pub fn normalize_edge_curve_to_vertices(
     }
 
     // Match heal's gap_tolerance. Add length component for long revolution arcs.
-    let match_tol = (tol.max(1e-4) * 100.0).max(len * 0.005).max(0.01);
+    let match_tol = (tol.max(1e-4) * 10.0).max(len * 0.001).min(0.1);
     let c0 = curve.d0(0.0);
     let c1 = curve.d0(1.0);
     if (c0 - p_lo).length() <= match_tol && (c1 - p_hi).length() <= match_tol { return curve; }
@@ -845,6 +845,12 @@ pub fn normalize_edge_curve_to_vertices(
 
     // Keep original geometry — PCurve on each face provides correct surface trajectory.
     // Replacing with a straight line destroys geometric fidelity.
+    let c0_err = (curve.d0(0.0) - p_lo).length();
+    let c1_err = (curve.d0(1.0) - p_hi).length();
+    if c0_err > match_tol || c1_err > match_tol {
+        log::warn!("edge curve mismatch: endpoints off by {:.4}/{:.4} (tol={:.4}, len={:.4})",
+            c0_err, c1_err, match_tol, len);
+    }
     curve
 }
 
