@@ -558,7 +558,7 @@ impl CurveGeom {
 ///
 /// For Circle/Ellipse curves, find angular parameters matching vertex positions.
 fn trim_circle_to_vertices(
-    curve: &CurveGeom, p_lo: Vec3, p_hi: Vec3, _match_tol: f32,
+    curve: &CurveGeom, p_lo: Vec3, p_hi: Vec3,
 ) -> Option<CurveGeom> {
     match curve {
         CurveGeom::Circle { center, axis, radius } => {
@@ -573,7 +573,7 @@ fn trim_circle_to_vertices(
             let (t_min, t_max) = normalize_arc_params(a0, a1);
             Some(CurveGeom::Trimmed { basis: Box::new(curve.clone()), t_min, t_max })
         }
-        CurveGeom::Trimmed { basis, .. } => trim_circle_to_vertices(basis, p_lo, p_hi, _match_tol),
+        CurveGeom::Trimmed { basis, .. } => trim_circle_to_vertices(basis, p_lo, p_hi),
         _ => None,
     }
 }
@@ -603,16 +603,19 @@ fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
 }
 
 /// Find the parameter t∈[0,1] on a curve closest to the target point.
-fn find_param_on_curve(curve: &CurveGeom, target: Vec3) -> f32 {
-    let n = 24;
+///
+/// Uses uniform sampling followed by iterative step-halving refinement.
+/// `n_samples` controls the initial grid resolution; `refine_iters` controls
+/// the number of refinement passes.
+pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, n_samples: usize, refine_iters: usize) -> f32 {
     let mut best_t = 0.0f32; let mut best_d2 = f32::MAX;
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
+    for i in 0..=n_samples {
+        let t = i as f32 / n_samples as f32;
         let d2 = (curve.d0(t) - target).length_squared();
         if d2 < best_d2 { best_d2 = d2; best_t = t; }
     }
-    let mut step = 1.0 / (n as f32 * 2.0);
-    for _ in 0..3 {
+    let mut step = 1.0 / (n_samples as f32 * 2.0);
+    for _ in 0..refine_iters {
         for &dt in &[-step, step] {
             let t = (best_t + dt).clamp(0.0, 1.0);
             let d2 = (curve.d0(t) - target).length_squared();
@@ -646,11 +649,11 @@ pub fn normalize_edge_curve_to_vertices(
     if (c0 - p_hi).length() <= match_tol && (c1 - p_lo).length() <= match_tol { return curve; }
 
     // Circle/Ellipse: find angular parameters matching vertices.
-    if let Some(t) = trim_circle_to_vertices(&curve, p_lo, p_hi, match_tol) { return t; }
+    if let Some(t) = trim_circle_to_vertices(&curve, p_lo, p_hi) { return t; }
 
     // Generic: trim curve to correct parameter range.
-    let t_lo = find_param_on_curve(&curve, p_lo);
-    let t_hi = find_param_on_curve(&curve, p_hi);
+    let t_lo = find_param_on_curve(&curve, p_lo, 24, 3);
+    let t_hi = find_param_on_curve(&curve, p_hi, 24, 3);
     if (curve.d0(t_lo) - p_lo).length() <= match_tol && (curve.d0(t_hi) - p_hi).length() <= match_tol {
         let (t_min, t_max) = (t_lo.min(t_hi), t_lo.max(t_hi));
         return CurveGeom::Trimmed { basis: Box::new(curve), t_min, t_max };

@@ -1,7 +1,7 @@
 //! Surface geometry evaluation (SurfaceGeom enum and methods).
 
 use rc3d_core::math::Vec3;
-use super::curve_eval::{build_ortho_axes, plane_tangent_basis, CurveGeom};
+use super::curve_eval::{build_ortho_axes, find_param_on_curve, plane_tangent_basis, CurveGeom};
 use crate::step::nurbs::NurbsSurface;
 
 /// Parametric surface geometry (retained, not converted to NURBS).
@@ -378,28 +378,6 @@ impl SurfaceGeom {
         best
     }
 
-    /// Sample a curve and find the parameter t ∈ [0,1] closest to a target 3D point.
-    fn find_closest_t_on_curve(curve: &CurveGeom, target: Vec3) -> f32 {
-        let n = 64;
-        let mut best_t = 0.0f32;
-        let mut best_dist = f32::MAX;
-        for i in 0..=n {
-            let t = i as f32 / n as f32;
-            let d = (curve.d0(t) - target).length_squared();
-            if d < best_dist { best_dist = d; best_t = t; }
-        }
-        let mut step = 1.0 / (n as f32 * 2.0);
-        for _ in 0..5 {
-            for &dt in &[-step, step] {
-                let t = (best_t + dt).clamp(0.0, 1.0);
-                let d = (curve.d0(t) - target).length_squared();
-                if d < best_dist { best_dist = d; best_t = t; }
-            }
-            step *= 0.5;
-        }
-        best_t
-    }
-
     /// Evaluate surface at native UV coordinates returned by `project` / PCurve.
     pub fn d0_at_native_uv(&self, u: f32, v: f32) -> Vec3 {
         match self {
@@ -462,7 +440,7 @@ impl SurfaceGeom {
                 let v = if u_raw < 0.0 { u_raw / std::f32::consts::TAU + 1.0 } else { u_raw / std::f32::consts::TAU };
                 let angle = v * std::f32::consts::TAU;
                 let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
-                let u = Self::find_closest_t_on_curve(generatrix, unrotated);
+                let u = find_param_on_curve(generatrix, unrotated, 64, 5);
                 Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::BSpline(nurbs) => {
@@ -497,7 +475,7 @@ impl SurfaceGeom {
                 }
                 Some((u, v))
             }
-            SurfaceGeom::Torus { center, axis, major_r, minor_r } => {
+            SurfaceGeom::Torus { .. } => {
                 let grid = 16;
                 let mut best_u = 0.0f32;
                 let mut best_v = 0.0f32;
@@ -523,7 +501,6 @@ impl SurfaceGeom {
                     }
                     step *= 0.5;
                 }
-                let _ = (center, axis, major_r, minor_r);
                 Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::Extrusion { generatrix, direction } => {
@@ -581,9 +558,6 @@ impl SurfaceGeom {
         if let SurfaceGeom::Offset { basis, distance } = self {
             return Self::inverse_native_uv_offset(basis, *distance, point, max_dist);
         }
-        if let SurfaceGeom::Extrusion { generatrix, direction } = self {
-            return Self::inverse_native_uv_extrusion(generatrix, *direction, point, max_dist);
-        }
         if let Some(uv) = self.project(point) {
             let err = (self.d0_native(uv.0, uv.1) - point).length();
             if err <= max_dist { return Some(uv); }
@@ -592,34 +566,6 @@ impl SurfaceGeom {
         let uv = self.grid_search_native_uv(point, search_tol, 16, 10)?;
         let err = (self.d0_native(uv.0, uv.1) - point).length();
         if err <= max_dist { Some(uv) } else { None }
-    }
-
-    fn inverse_native_uv_extrusion(generatrix: &CurveGeom, direction: Vec3, point: Vec3, max_dist: f32) -> Option<(f32, f32)> {
-        let dir = direction.normalize();
-        let (u_lo, u_hi) = generatrix.native_param_range();
-        let n = 64;
-        let mut best_u = u_lo;
-        let mut best_v = 0.0f32;
-        let mut best_d2 = f32::MAX;
-        for i in 0..=n {
-            let u = u_lo + (u_hi - u_lo) * i as f32 / n as f32;
-            let g = generatrix.d0(u);
-            let v = (point - g).dot(dir);
-            let d2 = (g + dir * v - point).length_squared();
-            if d2 < best_d2 { best_d2 = d2; best_u = u; best_v = v; }
-        }
-        let mut step = (u_hi - u_lo).max(1e-6) / (n as f32 * 2.0);
-        for _ in 0..8 {
-            for &du in &[-step, step] {
-                let u = (best_u + du).clamp(u_lo, u_hi);
-                let g = generatrix.d0(u);
-                let v = (point - g).dot(dir);
-                let d2 = (g + dir * v - point).length_squared();
-                if d2 < best_d2 { best_d2 = d2; best_u = u; best_v = v; }
-            }
-            step *= 0.5;
-        }
-        if best_d2.sqrt() <= max_dist { Some((best_u, best_v)) } else { None }
     }
 
     fn inverse_native_uv_offset(basis: &SurfaceGeom, distance: f32, point: Vec3, max_dist: f32) -> Option<(f32, f32)> {
@@ -644,9 +590,6 @@ impl SurfaceGeom {
     pub fn inverse_native_uv_build(&self, point: Vec3, max_dist: f32) -> Option<(f32, f32)> {
         if let SurfaceGeom::Offset { basis, distance } = self {
             return Self::inverse_native_uv_offset(basis, *distance, point, max_dist);
-        }
-        if let SurfaceGeom::Extrusion { generatrix, direction } = self {
-            return Self::inverse_native_uv_extrusion(generatrix, *direction, point, max_dist);
         }
         if let Some(uv) = self.project(point) {
             let err = (self.d0_native(uv.0, uv.1) - point).length();
@@ -729,7 +672,7 @@ impl SurfaceGeom {
     /// Generatrix curve parameter in [0,1] for a 3D point on a revolution surface.
     pub fn revolution_generatrix_u_at(&self, point: Vec3) -> Option<f32> {
         let SurfaceGeom::Revolution { generatrix, .. } = self else { return None; };
-        Some(Self::find_closest_t_on_curve(generatrix, point))
+        Some(find_param_on_curve(generatrix, point, 64, 5))
     }
 
     /// Revolution native (u,v): u=generatrix parameter, v=axis angle in radians [0,TAU].
@@ -743,7 +686,7 @@ impl SurfaceGeom {
         else { let u_raw = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
             if u_raw < 0.0 { u_raw + std::f32::consts::TAU } else { u_raw } };
         let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
-        let u = Self::find_closest_t_on_curve(generatrix, unrotated);
+        let u = find_param_on_curve(generatrix, unrotated, 64, 5);
         Some((u, angle))
     }
 

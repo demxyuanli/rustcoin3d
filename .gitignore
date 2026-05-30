@@ -36,3 +36,4 @@ task_plan.md
 docs/superpowers/**
 .gitignore
 .qoder/**
+.codegraph/**
