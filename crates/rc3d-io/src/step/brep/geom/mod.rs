@@ -1,8 +1,10 @@
-//! Unified curve and surface geometry (B-Rep evaluation kernel).
+//! Curve and surface geometry (B-Rep evaluation kernel).
 
 pub mod bspline;
 pub mod nurbs_build;
 
-mod curve_surface;
+pub mod curve_eval;
+pub mod surface_eval;
 
-pub use curve_surface::*;
+pub use curve_eval::*;
+pub use surface_eval::*;
