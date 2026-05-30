@@ -775,17 +775,83 @@ impl SurfaceGeom {
         (uc, v)
     }
 
-    /// Second partial derivatives (d²S/du², d²S/dudv, d²S/dv²) via numerical differentiation of d1.
+    /// Second partial derivatives (d²S/du², d²S/dudv, d²S/dv²).
+    ///
+    /// Analytical for Plane/Cylinder/Cone/Sphere/Torus; numerical fallback
+    /// (central differences on d1) for BSpline/Extrusion/Revolution/Offset.
     pub fn d2(&self, u: f32, v: f32) -> (Vec3, Vec3, Vec3) {
-        let eps = 1e-4f32;
-        let (du_p, dv_p) = self.d1(u + eps, v);
-        let (du_m, dv_m) = self.d1(u - eps, v);
-        let (du_vp, dv_vp) = self.d1(u, v + eps);
-        let (du_vm, dv_vm) = self.d1(u, v - eps);
-        let duu = (du_p - du_m) / (2.0 * eps);
-        let duv = (du_vp - du_vm) / (2.0 * eps);
-        let dvv = (dv_vp - dv_vm) / (2.0 * eps);
-        (duu, duv, dvv)
+        match self {
+            SurfaceGeom::Plane { .. } => (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO),
+
+            SurfaceGeom::Cylinder { axis, radius, .. } => {
+                let (x_dir, y_dir) = build_ortho_axes(*axis);
+                let r = *radius;
+                let theta = u * std::f32::consts::TAU;
+                let t2 = std::f32::consts::TAU * std::f32::consts::TAU;
+                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
+                (duu, Vec3::ZERO, Vec3::ZERO)
+            }
+
+            SurfaceGeom::Cone { axis, semi_angle, radius_at_apex, .. } => {
+                let (x_dir, y_dir) = build_ortho_axes(*axis);
+                let tan_a = semi_angle.tan();
+                let r = *radius_at_apex + v * tan_a;
+                let theta = u * std::f32::consts::TAU;
+                let t = std::f32::consts::TAU;
+                let t2 = t * t;
+                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
+                let duv = t * tan_a * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                (duu, duv, Vec3::ZERO)
+            }
+
+            SurfaceGeom::Sphere { radius, .. } => {
+                let r = *radius;
+                let theta = u * std::f32::consts::TAU;
+                let phi = v * std::f32::consts::PI;
+                let t = std::f32::consts::TAU;
+                let pi = std::f32::consts::PI;
+                let duu = -t * t * r * phi.sin()
+                    * Vec3::new(theta.cos(), theta.sin(), 0.0);
+                let duv = t * pi * r * phi.cos()
+                    * Vec3::new(-theta.sin(), theta.cos(), 0.0);
+                let dvv = -pi * pi * r
+                    * Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
+                (duu, duv, dvv)
+            }
+
+            SurfaceGeom::Torus { axis, major_r, minor_r, .. } => {
+                let (x_dir, y_dir) = build_ortho_axes(*axis);
+                let mr = *major_r;
+                let nr = *minor_r;
+                let theta = u * std::f32::consts::TAU;
+                let phi = v * std::f32::consts::TAU;
+                let t = std::f32::consts::TAU;
+                let t2 = t * t;
+                let r = mr + nr * phi.cos();
+                let duu = -t2 * r * (theta.cos() * x_dir + theta.sin() * y_dir);
+                let duv = t2 * nr * (-phi.sin())
+                    * (-theta.sin() * x_dir + theta.cos() * y_dir);
+                let dvv = t2 * (
+                    x_dir * (-nr * phi.cos() * theta.cos())
+                    + y_dir * (-nr * phi.cos() * theta.sin())
+                    + *axis * (-nr * phi.sin())
+                );
+                (duu, duv, dvv)
+            }
+
+            // BSpline/Extrusion/Revolution/Offset: numerical fallback.
+            _ => {
+                let eps = 1e-4f32;
+                let (du_p, dv_p) = self.d1(u + eps, v);
+                let (du_m, dv_m) = self.d1(u - eps, v);
+                let (du_vp, dv_vp) = self.d1(u, v + eps);
+                let (du_vm, dv_vm) = self.d1(u, v - eps);
+                let duu = (du_p - du_m) / (2.0 * eps);
+                let duv = (du_vp - du_vm) / (2.0 * eps);
+                let dvv = (dv_vp - dv_vm) / (2.0 * eps);
+                (duu, duv, dvv)
+            }
+        }
     }
 
     /// Estimate minimum principal curvature radius at normalized (u, v) ∈ [0,1]².
@@ -1239,6 +1305,58 @@ mod tests {
         // Offset < radius should be safe
         assert!(!offset_may_self_intersect(&cyl, 0.5, 8),
             "Offset 0.5 < radius 1.0 should not self-intersect");
+    }
+
+    #[test]
+    fn test_d2_analytical_vs_numerical() {
+        // Cross-validate analytical d2 against numerical (central differences on d1)
+        // for Cylinder, Sphere, and Torus at several (u, v) points.
+        let surfaces: Vec<(&str, SurfaceGeom)> = vec![
+            ("cylinder", SurfaceGeom::Cylinder {
+                origin: Vec3::ZERO, axis: Vec3::Z, radius: 2.0,
+            }),
+            ("sphere", SurfaceGeom::Sphere {
+                center: Vec3::ZERO, radius: 3.0,
+            }),
+            ("torus", SurfaceGeom::Torus {
+                center: Vec3::ZERO, axis: Vec3::Z, major_r: 3.0, minor_r: 1.0,
+            }),
+        ];
+
+        let uv_points = [
+            (0.1, 0.2), (0.25, 0.5), (0.5, 0.25), (0.75, 0.75), (0.9, 0.1),
+        ];
+
+        let eps = 1e-4f32;
+        for (name, surf) in &surfaces {
+            for &(u, v) in &uv_points {
+                // Analytical d2
+                let (duu_a, duv_a, dvv_a) = surf.d2(u, v);
+
+                // Numerical d2 (central differences on d1)
+                let (du_p, dv_p) = surf.d1(u + eps, v);
+                let (du_m, dv_m) = surf.d1(u - eps, v);
+                let (du_vp, dv_vp) = surf.d1(u, v + eps);
+                let (du_vm, dv_vm) = surf.d1(u, v - eps);
+                let duu_n = (du_p - du_m) / (2.0 * eps);
+                let duv_n = (du_vp - du_vm) / (2.0 * eps);
+                let dvv_n = (dv_vp - dv_vm) / (2.0 * eps);
+
+                let tol = 0.5;
+                assert!(
+                    (duu_a - duu_n).length() < tol,
+                    "{name} duu mismatch at ({u},{v}): analytical={duu_a:?}, numerical={duu_n:?}"
+                );
+                assert!(
+                    (duv_a - duv_n).length() < tol,
+                    "{name} duv mismatch at ({u},{v}): analytical={duv_a:?}, numerical={duv_n:?}"
+                );
+                assert!(
+                    (dvv_a - dvv_n).length() < tol,
+                    "{name} dvv mismatch at ({u},{v}): analytical={dvv_a:?}, numerical={dvv_n:?}"
+                );
+            }
+        }
     }
 
     #[test]
