@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use crate::step::brep::mesh::face_uv::signed_area_2d;
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey};
+use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default)]
 pub struct CheckReport {
@@ -72,7 +73,51 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepRegistry) -> CheckReport {
         }
     }
 
+    // Euler-Poincaré topology validation
+    if let Some(chi) = check_euler_poincare(shell_key, reg) {
+        if chi != 2 && chi != 0 {
+            report.warnings.push(format!(
+                "shell {:?}: Euler characteristic χ={} (expected 2 for closed, 0 for torus)",
+                shell_key, chi
+            ));
+        }
+    }
+
     report
+}
+
+/// Euler-Poincaré formula validation for shells.
+/// For a closed manifold shell: V - E + F = 2(1 - genus)
+/// genus=0 (sphere-like) → V - E + F = 2
+/// Returns None if shell has no faces.
+pub fn check_euler_poincare(shell_key: ShellKey, reg: &BRepRegistry) -> Option<i32> {
+    let shell = reg.shells.get(shell_key)?;
+    if shell.faces.is_empty() {
+        return None;
+    }
+
+    let mut edge_set: HashSet<EdgeKey> = HashSet::new();
+    let mut vertex_set: HashSet<VertexKey> = HashSet::new();
+
+    for &(fk, _) in &shell.faces {
+        let face = reg.faces.get(fk)?;
+        for wire_key in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
+            let Some(wire) = reg.wires.get(*wire_key) else { continue };
+            for &(ek, _) in &wire.edges {
+                edge_set.insert(ek);
+                if let Some(edge) = reg.edges.get(ek) {
+                    vertex_set.insert(edge.v_low);
+                    vertex_set.insert(edge.v_high);
+                }
+            }
+        }
+    }
+
+    let v = vertex_set.len() as i32;
+    let e = edge_set.len() as i32;
+    let f = shell.faces.len() as i32;
+
+    Some(v - e + f)
 }
 
 fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
@@ -850,6 +895,27 @@ mod tests {
             warnings.is_empty(),
             "plane surface should not trigger parameter range warnings"
         );
+    }
+
+    #[test]
+    fn test_euler_poincare_single_face() {
+        // Single face with 4 edges and 4 vertices: χ = V - E + F = 4 - 4 + 1 = 1
+        let mut reg = BRepRegistry::new();
+        let sk = closed_cube_shell(&mut reg);
+        let chi = check_euler_poincare(sk, &reg);
+        assert_eq!(chi, Some(1), "single-face shell should have χ=1");
+    }
+
+    #[test]
+    fn test_euler_poincare_empty_shell() {
+        let mut reg = BRepRegistry::new();
+        let sk = reg.shells.insert(BRepShell {
+            faces: vec![],
+            closed: false,
+            step_id: None,
+        });
+        let chi = check_euler_poincare(sk, &reg);
+        assert_eq!(chi, None, "empty shell should return None");
     }
 
     #[test]
