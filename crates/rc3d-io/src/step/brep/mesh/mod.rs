@@ -632,6 +632,7 @@ fn mesh_brep_shell_with_report_impl(
             algo = FaceMeshAlgo::TrimmedCdt;
         }
         let mut used_surface_fill = algo == FaceMeshAlgo::SurfaceFill3d;
+        let mut used_parametric_grid = false;
         let mixed_boundary = algo == FaceMeshAlgo::TrimmedCdt
             && !prefer_native_cdt
             && !matches!(face.surface, SurfaceGeom::Plane { .. })
@@ -938,6 +939,72 @@ fn mesh_brep_shell_with_report_impl(
 
         if used_surface_fill {
             report.grid_fallback_count += 1;
+        }
+
+        // Chord-error rejection for TrimmedCdt: retry with tighter deflection
+        // when interior grid points fail to capture surface curvature.
+        if !used_surface_fill
+            && !used_parametric_grid
+            && range.tri_count > 0
+            && range.max_chord_error > chord_reject
+            && scaled_config.face.deflection_interior > 1e-6
+        {
+            let tighter = (scaled_config.face.deflection_interior * 0.25)
+                .max(1e-5);
+            log::debug!(
+                "[BRep mesh] face {:?}: TrimmedCdt chord {:.4} > {:.4}, retry with deflection {:.6}",
+                info_face_key, range.max_chord_error, chord_reject, tighter,
+            );
+            let mut retry_cfg = scaled_config.face.clone();
+            retry_cfg.deflection_interior = tighter;
+            all_indices.truncate(tris_before_face * 4);
+            range = fill_trimmed(
+                info_face_key,
+                fill_loops,
+                face,
+                reg,
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                &mut pos_to_idx,
+                wire_len,
+                &retry_cfg,
+            );
+            range.face_key = info_face_key;
+            if range.max_chord_error > chord_reject * 0.5 {
+                // Still poor — fall back to parametric grid
+                log::debug!(
+                    "[BRep mesh] face {:?}: retry chord still {:.4}, using parametric grid",
+                    info_face_key, range.max_chord_error,
+                );
+                all_indices.truncate(tris_before_face * 4);
+                let uv_bounds = loops.outer.boundary.iter().fold(
+                    (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                    |(u0, u1, v0, v1), v| {
+                        (u0.min(v.uv.0), u1.max(v.uv.0), v0.min(v.uv.1), v1.max(v.uv.1))
+                    },
+                );
+                mesh_trimmed_uv_grid(
+                    face,
+                    fill_loops,
+                    uv_bounds,
+                    Some(&retry_cfg),
+                    None,
+                    &mut global_vertices,
+                    &mut global_normals,
+                    &mut pos_to_idx,
+                    &mut all_indices,
+                );
+                range = FaceMeshRange {
+                    face_key: info_face_key,
+                    first_tri: tris_before_face,
+                    tri_count: all_indices.len() / 4 - tris_before_face,
+                    boundary_global: range.boundary_global,
+                    max_chord_error: 0.0,
+                };
+                used_parametric_grid = true;
+                report.grid_fallback_count += 1;
+            }
         }
 
         if range.tri_count == 0 && !used_surface_fill && !mixed_boundary {
