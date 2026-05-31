@@ -254,8 +254,8 @@ END-ISO-10303-21;\n"
         ))
         .unwrap();
         let e = ex.entities.get(&1).unwrap();
-        // Internal mapping: leaf_index = 6 (last record) = REPRESENTATION_ITEM('')
-        assert_eq!(e.name, "REPRESENTATION_ITEM");
+        // Internal mapping: priority picks B_SPLINE_CURVE (first PRIORITY_TYPE with structural params)
+        assert_eq!(e.name, "B_SPLINE_CURVE");
         // Merge of all records: B_SPLINE_CURVE contributes params first.
         if let StepValue::List(params) = &e.params {
             assert!(matches!(params.first(), Some(StepValue::Integer(2))));

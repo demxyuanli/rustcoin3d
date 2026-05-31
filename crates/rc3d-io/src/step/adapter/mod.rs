@@ -113,6 +113,20 @@ END-ISO-10303-21;
     }
 
     #[test]
+    fn adapter_picks_bspline_surface_from_subsurface_wrapper() {
+        let input = "ISO-10303-21;\nHEADER;ENDSEC;\nDATA;\n#1 = (\n\
+BOUNDED_SURFACE()\nB_SPLINE_SURFACE(6,10,(#10,#11))\n\
+);
+ENDSEC;
+END-ISO-10303-21;
+";
+        let exchange = read_exchange(input).expect("part21 read");
+        let idx = to_entity_index(&exchange, &AdapterOptions::compat_merge()).expect("adapter");
+        let e = idx.get(&1).expect("#1");
+        assert_eq!(e.name, "B_SPLINE_SURFACE");
+    }
+
+    #[test]
     fn adapter_picks_bspline_with_knots() {
         let input = "ISO-10303-21;\nHEADER;ENDSEC;\nDATA;\n#1 = (\n\
 BOUNDED_CURVE()\nB_SPLINE_CURVE(2,(#10,#11),.UNSPECIFIED.,.F.,.F.)\n\
@@ -126,8 +140,8 @@ END-ISO-10303-21;
         let exchange = read_exchange(input).expect("part21 read");
         let idx = to_entity_index(&exchange, &AdapterOptions::compat_merge()).expect("adapter");
         let e = idx.get(&1).expect("#1");
-        // Internal mapping: leaf_index = 6 (last record) = REPRESENTATION_ITEM('')
-        assert_eq!(e.name, "REPRESENTATION_ITEM");
+        // Internal mapping: priority picks B_SPLINE_CURVE (first PRIORITY_TYPE with structural params)
+        assert_eq!(e.name, "B_SPLINE_CURVE");
         // CompatMerge merges all records' non-Omitted params; B_SPLINE_CURVE
         // contributes Integer(2) as first meaningful param.
         if let crate::step::value::StepValue::List(params) = &e.params {

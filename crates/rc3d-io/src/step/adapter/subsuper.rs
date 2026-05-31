@@ -1,6 +1,7 @@
 //! Map fidelity `StepInstance` records to flat entity params (OCC Transfer-style).
 
 use crate::step::model::{ComplexMapping, Record, StepInstance};
+use crate::step::primary_keyword::PRIORITY_TYPES;
 use crate::step::value::StepValue;
 
 use super::AdapterMode;
@@ -101,13 +102,13 @@ fn merge_all_param_texts(pairs: &[(String, String)]) -> String {
 
 /// Select the primary record from structured (keyword, StepValue) pairs.
 ///
-/// Strategy: trust the STEP-assigned leaf_index (points to the most-derived
-/// subtype). Falls back to the last record when leaf_index is out of range.
-///
-/// NOTE: A previous attempt delegated to `primary_keyword::PRIORITY_TYPES` for
-/// better geometric-type selection, but this broke the NURBS build pipeline for
-/// production STEP files because the priority-selected record's parameters have
-/// different semantics than the STEP-ordered leaf record's parameters.
+/// Strategy:
+/// 1-2. Prioritise concrete geometric types (B_SPLINE_SURFACE, B_SPLINE_CURVE, etc.)
+///      over abstract supertypes (REPRESENTATION_ITEM, SURFACE, CURVE, etc.) using
+///      `PRIORITY_TYPES`, with a structural sanity check (first param must be
+///      Integer or Ref to avoid empty supertype stubs).
+/// 3.  Fallback: trust the STEP-assigned `leaf_index` (points to the most-derived
+///      subtype).
 fn select_primary_record_structured(
     pairs: &[(String, &StepValue)],
     leaf_index: usize,
@@ -118,6 +119,27 @@ fn select_primary_record_structured(
     if pairs.len() == 1 {
         return Ok((0, pairs[0].0.clone()));
     }
+
+    // Rule 1-2: priority-based with structural check
+    for prio_type in PRIORITY_TYPES {
+        for (i, (name, params)) in pairs.iter().enumerate() {
+            if name.as_str() != *prio_type {
+                continue;
+            }
+            // Structural check: first param must be Integer (degree) or Ref (placement)
+            let has_struct = params
+                .as_list()
+                .and_then(|l| l.first())
+                .map_or(false, |v| {
+                    matches!(v, StepValue::Integer(_) | StepValue::Ref(_))
+                });
+            if has_struct {
+                return Ok((i, name.clone()));
+            }
+        }
+    }
+
+    // Rule 3: fallback to leaf_index
     let idx = leaf_index.min(pairs.len() - 1);
     Ok((idx, pairs[idx].0.clone()))
 }
