@@ -158,39 +158,14 @@ fn merge_all_params_structured(
                 if matches!(val, StepValue::Omitted) {
                     continue;
                 }
-                // Deduplicate: skip if same value already in merged
-                let is_dup = merged.iter().any(|existing| {
-                    step_values_equal(existing, val)
-                });
-                if !is_dup {
-                    merged.push(val.clone());
-                }
+                // NOTE: Deduplication was removed because it breaks the positional layout
+                // of merged params. Supertype and subtype records can contribute identical
+                // StepValues (e.g. two `.F.` LOGICALs in B_SPLINE_SURFACE) that occupy
+                // different parameter slots. Removing them shifts indices, causing the
+                // downstream B-rep builder to read wrong values for knots, weights, etc.
+                merged.push(val.clone());
             }
         }
     }
     StepValue::List(merged)
-}
-
-/// Approximate equality check for StepValue deduplication during merge.
-fn step_values_equal(a: &StepValue, b: &StepValue) -> bool {
-    match (a, b) {
-        (StepValue::Integer(n1), StepValue::Integer(n2)) => n1 == n2,
-        (StepValue::Real(r1), StepValue::Real(r2)) => (r1 - r2).abs() < 1e-10,
-        (StepValue::Ref(id1), StepValue::Ref(id2)) => id1 == id2,
-        (StepValue::Enum(e1), StepValue::Enum(e2)) => e1 == e2,
-        (StepValue::String(s1), StepValue::String(s2)) => s1 == s2,
-        (StepValue::Omitted, StepValue::Omitted) => true,
-        (StepValue::Typed(n1, i1), StepValue::Typed(n2, i2)) => {
-            n1 == n2 && step_values_equal(i1, i2)
-        }
-        (StepValue::List(l1), StepValue::List(l2)) => {
-            l1.len() == l2.len()
-                && l1.iter().zip(l2.iter()).all(|(a, b)| step_values_equal(a, b))
-        }
-        // Integer/Real cross-type: compare numerically
-        (StepValue::Integer(n), StepValue::Real(r)) | (StepValue::Real(r), StepValue::Integer(n)) => {
-            (*n as f64 - *r).abs() < 1e-10
-        }
-        _ => false,
-    }
 }

@@ -96,8 +96,11 @@ pub fn build_surface_knots(
             let t = (i + 1) as f32 / (extra + 1) as f32;
             knots.push(min_k + (max_k - min_k) * t);
         }
-        knots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     }
+    // Ensure knot vector is monotonically non-decreasing (STEP files may provide
+    // knot values in descending order for some axis, or multiplicities/knot_values
+    // may not align perfectly after param merge).
+    knots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     knots
 }
 

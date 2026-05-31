@@ -139,9 +139,9 @@ pub fn project_point_on_surface(
     let v_lo = range.v_min;
     let v_hi = range.v_max;
 
-    // Clamp unbounded ranges for seed sampling
+    // Clamp unbounded ranges for seed sampling (never inverted)
     let v_lo_s = v_lo.max(-100.0);
-    let v_hi_s = v_hi.min(100.0);
+    let v_hi_s = v_hi.min(100.0).max(v_lo_s + 1e-6);
 
     // 3×3 grid = 9 seeds (down from 25). Newton converges quadratically
     // from nearby seeds; fewer seeds reduces redundant convergence.
@@ -176,9 +176,9 @@ pub fn project_point_on_surface(
     // Fallback: if Newton produced nothing, use grid search
     if unique.is_empty() {
         let u_lo_e = u_lo.max(-100.0);
-        let u_hi_e = u_hi.min(100.0);
+        let u_hi_e = u_hi.min(100.0).max(u_lo_e + 1e-6);
         let v_lo_e = v_lo.max(-100.0);
-        let v_hi_e = v_hi.min(100.0);
+        let v_hi_e = v_hi.min(100.0).max(v_lo_e + 1e-6);
         let (u, v) = grid_project_2d(
             |uu, vv| surface.d0_native(uu, vv),
             u_lo_e, u_hi_e, v_lo_e, v_hi_e, target,
