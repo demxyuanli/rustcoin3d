@@ -258,4 +258,61 @@ mod tests {
         assert!(matches!(tokens[1].0, Token::Eq));
         assert!(matches!(tokens[2].0, Token::Keyword(ref k) if k == "CARTESIAN_POINT"));
     }
+
+    #[test]
+    fn lex_all_token_types_roundtrip() {
+        let tokens = lex("#12 = CARTESIAN_POINT('label', (0.0, 1.5e-3, -2.0), .T., $);").unwrap();
+        // Verify key token types are present (use search, not hardcoded indices)
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Ref(12))));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Eq)));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Keyword(k) if k == "CARTESIAN_POINT")));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::String(s) if s == "label")));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Real(v) if (v - 0.0).abs() < 1e-10)));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Real(v) if (v - 1.5e-3).abs() < 1e-10)));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Enum(e) if e == ".T.")));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Omitted)));
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Semi)));
+    }
+
+    #[test]
+    fn lex_escaped_apostrophe() {
+        // '#1 = STRING('it''s');' — apostrophe escaped as double ''
+        let tokens = lex("#1 = STRING('it''s');").unwrap();
+        let s = tokens.iter().find_map(|(t, _)| match t {
+            Token::String(s) => Some(s.clone()),
+            _ => None,
+        }).expect("should have a string token");
+        assert_eq!(s, "it's");
+    }
+
+    #[test]
+    fn lex_negative_real_with_exponent() {
+        // '#1 = REAL_VAL(-1.5e+3);' — negative real inside parens
+        let tokens = lex("#1 = REAL_VAL(-1.5e+3);").unwrap();
+        let has_real = tokens.iter().any(|(t, _)| {
+            matches!(t, Token::Real(v) if (v + 1500.0).abs() < 1e-10)
+        });
+        assert!(has_real, "should parse -1.5e+3 as real -1500");
+    }
+
+    #[test]
+    fn lex_block_comment_skipped() {
+        let tokens = lex("/* this is a comment */\n#1 = POINT(0.0);").unwrap();
+        assert!(!tokens.is_empty());
+        assert!(matches!(tokens[0].0, Token::Ref(1)));
+        let has_point = tokens.iter().any(|(t, _)| matches!(t, Token::Keyword(k) if k == "POINT"));
+        assert!(has_point, "comment should be skipped, POINT should be found");
+    }
+
+    #[test]
+    fn lex_keyword_with_underscores() {
+        let tokens = lex("#1 = B_SPLINE_SURFACE_WITH_KNOTS();").unwrap();
+        assert!(matches!(&tokens[2].0, Token::Keyword(k) if k == "B_SPLINE_SURFACE_WITH_KNOTS"));
+    }
+
+    #[test]
+    fn lex_empty_input() {
+        let tokens = lex("").unwrap();
+        assert!(tokens.is_empty());
+    }
 }
