@@ -254,4 +254,35 @@ REPRESENTATION_ITEM('')\n\
         assert!(inst.records.iter().any(|r| r.keyword == "B_SPLINE_CURVE_WITH_KNOTS"
             && r.params.as_list().map(|l| l.len()).unwrap_or(0) >= 2));
     }
+
+    #[test]
+    fn subsuper_internal_three_level() {
+        let input = "#1 = (CHILD(1.0) PARENT());";
+        let (inst, _) = parse_instance(input).unwrap();
+        assert_eq!(inst.id, 1);
+        assert!(inst.records.len() >= 2);
+        let keywords: Vec<&str> = inst.records.iter().map(|r| r.keyword.as_str()).collect();
+        assert!(keywords.contains(&"CHILD"));
+        assert!(keywords.contains(&"PARENT"));
+    }
+
+    #[test]
+    fn subsuper_internal_multiline() {
+        let input = "#1 = (\nBOUNDED_SURFACE()\nB_SPLINE_SURFACE(2,3,(#10))\n);";
+        let (inst, _) = parse_instance(input).unwrap();
+        assert_eq!(inst.id, 1);
+        assert!(inst.records.len() >= 2);
+        let keywords: Vec<&str> = inst.records.iter().map(|r| r.keyword.as_str()).collect();
+        assert!(keywords.contains(&"B_SPLINE_SURFACE"));
+        assert!(keywords.contains(&"BOUNDED_SURFACE"));
+    }
+
+    #[test]
+    fn subsuper_external_with_keyword_after_paren() {
+        let input = "#1 = (WRAPPER())REAL_ENTITY(1.0, 2.0);";
+        let (inst, _) = parse_instance(input).unwrap();
+        assert_eq!(inst.id, 1);
+        let keywords: Vec<&str> = inst.records.iter().map(|r| r.keyword.as_str()).collect();
+        assert!(keywords.contains(&"REAL_ENTITY"));
+    }
 }

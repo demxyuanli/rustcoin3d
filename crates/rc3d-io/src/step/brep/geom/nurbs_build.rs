@@ -41,12 +41,25 @@ pub fn build_nurbs_surface(
         return None;
     }
 
-    // Extract knot vectors from multiplicities
+    // Extract knot vectors from multiplicities (hardcoded positions for
+    // standalone WITH_KNOTS format). Falls back to type-based scanning for
+    // subsuper-merged params where the layout differs.
     let mult_base = off + 7;
     let u_mults = geom::nth_list_ints(params, mult_base);
     let v_mults = geom::nth_list_ints(params, mult_base + 1);
     let u_knot_vals = geom::nth_list_reals(params, mult_base + 2);
     let v_knot_vals = geom::nth_list_reals(params, mult_base + 3);
+
+    let (u_mults, v_mults, u_knot_vals, v_knot_vals) =
+        if u_mults.is_empty() || v_mults.is_empty() {
+            if let Some((um, vm, uk, vk)) = scan_knot_data(params) {
+                (um, vm, uk, vk)
+            } else {
+                (u_mults, v_mults, u_knot_vals, v_knot_vals)
+            }
+        } else {
+            (u_mults, v_mults, u_knot_vals, v_knot_vals)
+        };
 
     let knots_u = build_surface_knots(
         &u_mults, &u_knot_vals, degree_u, control_points.len(),
@@ -104,6 +117,54 @@ pub fn build_surface_knots(
     knots
 }
 
+/// Scan merged params for knot multiplicity/value lists by type inspection.
+/// Used when hardcoded mult_base positions fail (CompatMerge layout differs
+/// from standalone B_SPLINE_SURFACE_WITH_KNOTS format).
+fn scan_knot_data(
+    params: &StepValue,
+) -> Option<(Vec<i64>, Vec<i64>, Vec<StepValue>, Vec<StepValue>)> {
+    let list = params.as_list()?;
+    let mut past_cps = false;
+    let mut int_lists: Vec<&[StepValue]> = Vec::new();
+    let mut real_lists: Vec<&[StepValue]> = Vec::new();
+
+    for val in list {
+        match val {
+            StepValue::List(inner) if !inner.is_empty() => {
+                // Detect the CP list: List of Lists of Refs
+                if inner.iter().any(|v| matches!(v, StepValue::List(_))) {
+                    past_cps = true;
+                    continue;
+                }
+                if !past_cps {
+                    continue;
+                }
+                if inner.iter().all(|v| matches!(v, StepValue::Integer(_))) {
+                    int_lists.push(inner.as_slice());
+                } else if inner.iter().all(|v| matches!(v, StepValue::Real(_))) {
+                    real_lists.push(inner.as_slice());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if int_lists.len() < 2 || real_lists.len() < 2 {
+        return None;
+    }
+
+    Some((
+        int_lists[0].iter().filter_map(|v| {
+            if let StepValue::Integer(n) = v { Some(*n) } else { None }
+        }).collect(),
+        int_lists[1].iter().filter_map(|v| {
+            if let StepValue::Integer(n) = v { Some(*n) } else { None }
+        }).collect(),
+        real_lists[0].to_vec(),
+        real_lists[1].to_vec(),
+    ))
+}
+
 /// Scan params for a 2D weights list matching NURBS control point dimensions.
 pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Option<Vec<Vec<f32>>> {
     let list = params.as_list()?;
@@ -127,4 +188,44 @@ pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Opt
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_knot_data_from_merged_params() {
+        // Simulate CompatMerge output for B_SPLINE_SURFACE + B_SPLINE_SURFACE_WITH_KNOTS
+        let params = StepValue::List(vec![
+            StepValue::Integer(2),  // degree_u
+            StepValue::Integer(3),  // degree_v
+            StepValue::List(vec![  // control_points
+                StepValue::List(vec![StepValue::Ref(10), StepValue::Ref(11)]),
+                StepValue::List(vec![StepValue::Ref(12), StepValue::Ref(13)]),
+            ]),
+            StepValue::Enum(".UNSPECIFIED.".to_string()),
+            StepValue::Enum(".F.".to_string()),
+            StepValue::Enum(".F.".to_string()),
+            StepValue::Enum(".F.".to_string()),
+            StepValue::List(vec![StepValue::Integer(2), StepValue::Integer(2)]), // u_mults
+            StepValue::List(vec![StepValue::Integer(2), StepValue::Integer(2)]), // v_mults
+            StepValue::List(vec![StepValue::Real(0.0), StepValue::Real(1.0)]),   // u_knots
+            StepValue::List(vec![StepValue::Real(0.0), StepValue::Real(1.0)]),   // v_knots
+        ]);
+        let result = scan_knot_data(&params);
+        assert!(result.is_some(), "should find knot data in merged params");
+        let (um, vm, _uk, _vk) = result.unwrap();
+        assert_eq!(um, vec![2, 2]);
+        assert_eq!(vm, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_scan_knot_data_empty_params() {
+        let params = StepValue::List(vec![
+            StepValue::Integer(2),
+            StepValue::Integer(3),
+        ]);
+        assert!(scan_knot_data(&params).is_none());
+    }
 }

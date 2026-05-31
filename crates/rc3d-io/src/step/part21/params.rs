@@ -192,4 +192,49 @@ mod tests {
         let err = parse_param_list("(1.0 2.0)").unwrap_err();
         assert!(err.message.contains("expected ','"));
     }
+
+    #[test]
+    fn parse_deeply_nested_param_list() {
+        // 5 levels of nesting
+        let input = "#1 = NEST((((((42))))));";
+        let (inst, _) = crate::step::part21::instance::parse_instance(input).unwrap();
+        assert_eq!(inst.id, 1);
+        assert_eq!(inst.records[0].keyword, "NEST");
+    }
+
+    #[test]
+    fn parse_typed_param_nested_value() {
+        let (val, rest) = parse_param("LENGTH_MEASURE(0.001)").unwrap();
+        assert!(rest.trim().is_empty());
+        assert!(matches!(val, StepValue::Typed(name, _) if name == "LENGTH_MEASURE"));
+    }
+
+    #[test]
+    fn parse_mixed_types_in_list() {
+        let (val, rest) = parse_param_list("#1, 2.0, 'str', .T., $").unwrap();
+        assert!(rest.trim().is_empty());
+        let list = val.as_list().unwrap();
+        assert_eq!(list.len(), 5);
+        assert!(matches!(list[0], StepValue::Ref(1)));
+        assert!(matches!(list[1], StepValue::Real(v) if (v - 2.0).abs() < 1e-10));
+        assert!(matches!(&list[2], StepValue::String(s) if s == "str"));
+        assert!(matches!(&list[3], StepValue::Enum(e) if e == ".T."));
+        assert!(matches!(list[4], StepValue::Omitted));
+    }
+
+    #[test]
+    fn parse_enum_variants() {
+        for (input, expected) in &[
+            (".T.", ".T."),
+            (".F.", ".F."),
+            (".UNSPECIFIED.", ".UNSPECIFIED."),
+            (".MILLI.", ".MILLI."),
+            (".METRE.", ".METRE."),
+        ] {
+            let (val, rest) = parse_param(input).unwrap();
+            assert!(rest.trim().is_empty(), "rest not empty for {}", input);
+            assert!(matches!(&val, StepValue::Enum(e) if e == expected),
+                "expected {} got {:?}", expected, val);
+        }
+    }
 }

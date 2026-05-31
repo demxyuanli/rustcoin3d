@@ -150,4 +150,22 @@ END-ISO-10303-21;
             panic!("expected List params");
         }
     }
+
+    #[test]
+    fn entity_type_mapping_coverage() {
+        use crate::step::entity_types::EntityType;
+        let surface_types = [
+            "PLANE", "CYLINDRICAL_SURFACE", "CONICAL_SURFACE",
+            "SPHERICAL_SURFACE", "TOROIDAL_SURFACE",
+            "B_SPLINE_SURFACE", "B_SPLINE_SURFACE_WITH_KNOTS",
+            "RATIONAL_B_SPLINE_SURFACE",
+            "SURFACE_OF_LINEAR_EXTRUSION", "SURFACE_OF_REVOLUTION",
+            "OFFSET_SURFACE", "BOUNDED_SURFACE", "RECTANGULAR_TRIMMED_SURFACE",
+            "CURVE_BOUNDED_SURFACE",
+        ];
+        for name in &surface_types {
+            let ty = EntityType::from_name(name);
+            assert_ne!(ty, EntityType::Unknown, "Missing mapping: {}", name);
+        }
+    }
 }
