@@ -12,6 +12,9 @@ pub mod classify;
 pub mod split;
 pub mod select;
 pub mod stitch;
+pub mod marching;
+pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
+pub use marching::{SeedPoint, find_seeds, trace_curve};
 
 use crate::store::BRepStore;
 use crate::topo::ShellKey;

@@ -193,6 +193,48 @@ fn split_face_single_curve(
     ]
 }
 
+/// Create a new B-Rep face from a UV boundary region of an existing face (P3 sub-face creation).
+/// Adds vertices, edges, and a wire. The new face shares the original surface geometry.
+pub fn create_sub_face(
+    original_face: FaceKey,
+    uv_boundary: &[(f32, f32)],
+    reg: &mut BRepStore,
+) -> Option<FaceKey> {
+    let original = reg.faces.get(original_face)?;
+    if uv_boundary.len() < 3 { return None; }
+
+    let mut edges = Vec::new();
+    for i in 0..uv_boundary.len() {
+        let p0 = uv_boundary[i];
+        let p1 = uv_boundary[(i + 1) % uv_boundary.len()];
+        let (un0, vn0) = original.surface.native_uv_to_d0(p0.0, p0.1);
+        let (un1, vn1) = original.surface.native_uv_to_d0(p1.0, p1.1);
+        let start = original.surface.d0(un0, vn0);
+        let end = original.surface.d0(un1, vn1);
+        let vk0 = reg.vertices.insert(crate::topo::BRepVertex { position: start, tolerance: original.tolerance });
+        let vk1 = reg.vertices.insert(crate::topo::BRepVertex { position: end, tolerance: original.tolerance });
+        let ek = reg.edges.insert(crate::topo::BRepEdge {
+            curve: crate::geom::CurveGeom::Line { origin: start, direction: (end - start).normalize() },
+            tolerance: original.tolerance,
+            v_low: vk0,
+            v_high: vk1,
+            pcurves: std::collections::HashMap::new(),
+        });
+        edges.push((ek, crate::topo::Orientation::Forward));
+    }
+    let wire = reg.wires.insert(crate::topo::BRepWire { edges });
+    Some(reg.faces.insert(crate::topo::BRepFace {
+        surface: original.surface.clone(),
+        outer_wire: wire,
+        inner_wires: vec![],
+        same_sense: original.same_sense,
+        tolerance: original.tolerance,
+        seam_edges: vec![],
+        color: original.color,
+        degenerated_edges: vec![],
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +255,29 @@ mod tests {
         let result = split_face_along_curves(fk, &[], &reg);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].original_face, fk);
+    }
+
+    #[test]
+    fn create_sub_face_from_triangle_uv() {
+        let mut reg = BRepStore::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-6,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let uv_tri = vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+        let sub_fk = create_sub_face(fk, &uv_tri, &mut reg);
+        assert!(sub_fk.is_some(), "should create sub-face from UV triangle");
+        if let Some(sub) = sub_fk {
+            let face = reg.faces.get(sub).unwrap();
+            assert!(matches!(&face.surface, SurfaceGeom::Plane { .. }));
+        }
     }
 }
