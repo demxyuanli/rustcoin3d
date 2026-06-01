@@ -9,7 +9,7 @@
 //! Current status: API skeleton with input validation.
 //! Full implementation requires robust NURBS offset support.
 
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{FaceKey, ShellKey, SolidKey};
 use crate::step::bool::{boolean_brep, BoolOp};
 use crate::step::brep::geom::SurfaceGeom;
@@ -40,7 +40,7 @@ pub fn make_thick_solid(
     solid_key: SolidKey,
     _open_faces: &[FaceKey],
     thickness: f32,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> ShellResult {
     // Validate inputs
     if thickness <= 0.0 {
@@ -96,7 +96,7 @@ pub fn make_thick_solid(
         BoolOp::Difference,
     );
 
-    match bool_result.result_shell {
+    match bool_result.result_shells.first().copied() {
         Some(sk) => ShellResult {
             result_shell: Some(sk),
             success: true,
@@ -129,7 +129,7 @@ pub fn make_thick_solid(
 fn offset_solid_faces(
     shell_key: ShellKey,
     distance: f32,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Vec<FaceKey> {
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s.clone(),
@@ -212,7 +212,7 @@ mod tests {
     use crate::step::brep::topo::*;
     use rc3d_core::math::Vec3;
 
-    fn make_test_solid(reg: &mut BRepRegistry) -> SolidKey {
+    fn make_test_solid(reg: &mut BRepStore) -> SolidKey {
         // Create a simple solid with one planar face
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_make_thick_solid_api() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let result = make_thick_solid(
             SolidKey::from(slotmap::KeyData::from_ffi(0xDEAD)),
             &[],
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_make_thick_solid_negative_thickness() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let solid = make_test_solid(&mut reg);
         let result = make_thick_solid(solid, &[], -1.0, &mut reg);
         assert!(!result.success);
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_offset_plane_face() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let solid = make_test_solid(&mut reg);
         let shell = reg.solids.get(solid).unwrap().outer_shell;
         let offset_faces = offset_solid_faces(shell, -1.0, &mut reg);
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_offset_cylinder_face() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_offset_cylinder_inversion_skipped() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 0.5);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
