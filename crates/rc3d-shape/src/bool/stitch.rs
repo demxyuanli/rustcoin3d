@@ -3,8 +3,8 @@
 //! After boolean face selection, the selected faces need to be assembled into
 //! a new B-Rep shell with consistent orientation and connectivity.
 
-use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{FaceKey, ShellKey, BRepShell, Orientation};
+use crate::store::BRepStore;
+use crate::topo::{FaceKey, ShellKey, BRepShell, Orientation};
 
 /// Stitch selected faces into a new B-Rep shell.
 ///
@@ -15,7 +15,7 @@ use crate::step::brep::topo::{FaceKey, ShellKey, BRepShell, Orientation};
 /// 4. Validate shell closure via Euler-Poincaré (if enough topology info)
 pub fn stitch_faces_into_shell(
     face_keys: &[FaceKey],
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Option<ShellKey> {
     if face_keys.is_empty() {
         return None;
@@ -49,7 +49,7 @@ pub fn stitch_faces_into_shell(
 
 /// Attempt to close a shell by matching open edges and setting orientations.
 /// Returns true if the shell was successfully closed.
-pub fn try_close_shell(shell_key: ShellKey, reg: &mut BRepRegistry) -> bool {
+pub fn try_close_shell(shell_key: ShellKey, reg: &mut BRepStore) -> bool {
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s.clone(),
         None => return false,
@@ -57,7 +57,7 @@ pub fn try_close_shell(shell_key: ShellKey, reg: &mut BRepRegistry) -> bool {
 
     // Build edge usage count: each edge should be shared by exactly 2 faces
     // for a closed shell (Euler-Poincaré).
-    let mut edge_count: std::collections::HashMap<crate::step::brep::topo::EdgeKey, u32> =
+    let mut edge_count: std::collections::HashMap<crate::topo::EdgeKey, u32> =
         std::collections::HashMap::new();
 
     for &(face_key, _) in &shell.faces {
@@ -89,11 +89,11 @@ pub fn try_close_shell(shell_key: ShellKey, reg: &mut BRepRegistry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::topo::*;
-    use crate::step::brep::geom::SurfaceGeom;
+    use crate::topo::*;
+    use crate::geom::SurfaceGeom;
     use rc3d_core::math::Vec3;
 
-    fn make_test_face(reg: &mut BRepRegistry) -> FaceKey {
+    fn make_test_face(reg: &mut BRepStore) -> FaceKey {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
@@ -113,13 +113,13 @@ mod tests {
 
     #[test]
     fn test_stitch_empty_returns_none() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         assert!(stitch_faces_into_shell(&[], &mut reg).is_none());
     }
 
     #[test]
     fn test_stitch_cube_faces() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let faces: Vec<FaceKey> = (0..6).map(|_| make_test_face(&mut reg)).collect();
 
         let shell_key = stitch_faces_into_shell(&faces, &mut reg);
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_stitch_skips_invalid_faces() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let fk = make_test_face(&mut reg);
 
         // Create a bogus key that doesn't exist in the registry

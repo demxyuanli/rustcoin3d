@@ -1,0 +1,217 @@
+//! Face splitting along intersection curves (B-Rep native).
+
+use rc3d_core::math::Vec3;
+use crate::store::BRepStore;
+use crate::topo::{FaceKey, ShellKey, BRepFace};
+
+/// A curve where two faces intersect, parameterized on both surfaces.
+#[derive(Debug, Clone)]
+pub struct BRepIntersectionCurve {
+    pub points_3d: Vec<Vec3>,
+    pub params_a: Vec<(f32, f32)>,
+    pub params_b: Vec<(f32, f32)>,
+    pub face_a: FaceKey,
+    pub face_b: FaceKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitFaceRegion {
+    pub original_face: FaceKey,
+    pub sub_faces: Vec<SubFaceRegion>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubFaceRegion {
+    pub uv_boundary: Vec<Vec<(f32, f32)>>,
+    pub interior_point: (f32, f32),
+    pub interior_point_3d: Vec3,
+    pub original_face: FaceKey,
+}
+
+/// Compute B-Rep intersection curves from FaceIntersectionResult.
+pub fn compute_brep_intersection_curves(
+    intersections: &[super::intersect::FaceIntersectionResult],
+    reg: &BRepStore,
+) -> Vec<BRepIntersectionCurve> {
+    let mut out = Vec::new();
+    for fi in intersections {
+        let face_a = match reg.faces.get(fi.face_a) { Some(f) => f, None => continue };
+        let face_b = match reg.faces.get(fi.face_b) { Some(f) => f, None => continue };
+
+        for curve in &fi.curves_3d {
+            let samples = sample_intersection_curve(curve, 32);
+            if samples.is_empty() { continue; }
+
+            let mut pts_3d = Vec::with_capacity(samples.len());
+            let mut params_a = Vec::with_capacity(samples.len());
+            let mut params_b = Vec::with_capacity(samples.len());
+
+            for &pt in &samples {
+                if let Some(uv_a) = face_a.surface.project(pt) {
+                    if let Some(uv_b) = face_b.surface.project(pt) {
+                        pts_3d.push(pt);
+                        params_a.push(uv_a);
+                        params_b.push(uv_b);
+                    }
+                }
+            }
+
+            if pts_3d.len() >= 2 {
+                out.push(BRepIntersectionCurve {
+                    points_3d: pts_3d, params_a, params_b,
+                    face_a: fi.face_a, face_b: fi.face_b,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn sample_intersection_curve(curve: &crate::geom::CurveGeom, n: usize) -> Vec<Vec3> {
+    use crate::geom::CurveGeom;
+    match curve {
+        CurveGeom::Line { origin, direction } => {
+            let ext = 100.0;
+            (0..n).map(|i| {
+                let t = -ext + 2.0 * ext * i as f32 / (n - 1) as f32;
+                *origin + *direction * t
+            }).collect()
+        }
+        CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
+            (0..n).map(|i| {
+                let theta = std::f32::consts::TAU * i as f32 / n as f32;
+                *center + *x_dir * (*radius * theta.cos()) + *y_dir * (*radius * theta.sin())
+            }).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub fn split_all_faces_brep(
+    shells: &[ShellKey],
+    curves: &[BRepIntersectionCurve],
+    reg: &BRepStore,
+) -> Vec<SplitFaceRegion> {
+    let mut results = Vec::new();
+    for &sk in shells {
+        let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
+        for &(face_key, _) in &shell.faces {
+            let face_curves: Vec<&BRepIntersectionCurve> = curves.iter()
+                .filter(|c| c.face_a == face_key || c.face_b == face_key)
+                .collect();
+            let regions = split_face_along_curves(face_key, &face_curves, reg);
+            results.push(SplitFaceRegion { original_face: face_key, sub_faces: regions });
+        }
+    }
+    results
+}
+
+pub fn split_face_along_curves(
+    face_key: FaceKey,
+    curves: &[&BRepIntersectionCurve],
+    reg: &BRepStore,
+) -> Vec<SubFaceRegion> {
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return vec![],
+    };
+    if curves.is_empty() {
+        return vec![whole_face_region(face_key, face)];
+    }
+    split_face_single_curve(face_key, face, curves[0], reg)
+}
+
+fn whole_face_region(face_key: FaceKey, face: &BRepFace) -> SubFaceRegion {
+    let range = face.surface.param_range();
+    let mid_u = (range.u_min + range.u_max) * 0.5;
+    let mid_v = (range.v_min + range.v_max) * 0.5;
+    let (un, vn) = face.surface.native_uv_to_d0(mid_u, mid_v);
+    let interior_3d = face.surface.d0(un, vn);
+    SubFaceRegion {
+        uv_boundary: vec![],
+        interior_point: (mid_u, mid_v),
+        interior_point_3d: interior_3d,
+        original_face: face_key,
+    }
+}
+
+fn split_face_single_curve(
+    face_key: FaceKey,
+    face: &BRepFace,
+    curve: &BRepIntersectionCurve,
+    _reg: &BRepStore,
+) -> Vec<SubFaceRegion> {
+    let params = if curve.face_a == face_key { &curve.params_a } else { &curve.params_b };
+    if params.len() < 2 {
+        return vec![whole_face_region(face_key, face)];
+    }
+
+    let mid_idx = params.len() / 2;
+    let (cu, cv) = params[mid_idx];
+
+    let tangent = if mid_idx > 0 && mid_idx + 1 < params.len() {
+        let (u0, v0) = params[mid_idx - 1];
+        let (u1, v1) = params[mid_idx + 1];
+        (u1 - u0, v1 - v0)
+    } else if mid_idx > 0 {
+        let (u0, v0) = params[mid_idx - 1];
+        (cu - u0, cv - v0)
+    } else {
+        let (u1, v1) = params[1];
+        (u1 - cu, v1 - cv)
+    };
+
+    let t_len = (tangent.0 * tangent.0 + tangent.1 * tangent.1).sqrt();
+    if t_len < 1e-12 {
+        return vec![whole_face_region(face_key, face)];
+    }
+
+    let perp = (-tangent.1 / t_len, tangent.0 / t_len);
+    let offset = 0.01;
+    let range = face.surface.param_range();
+    let du = perp.0 * offset * range.u_span();
+    let dv = perp.1 * offset * range.v_span();
+    let side_a_uv = (cu + du, cv + dv);
+    let side_b_uv = (cu - du, cv - dv);
+
+    let (un_a, vn_a) = face.surface.native_uv_to_d0(side_a_uv.0, side_a_uv.1);
+    let (un_b, vn_b) = face.surface.native_uv_to_d0(side_b_uv.0, side_b_uv.1);
+
+    vec![
+        SubFaceRegion {
+            uv_boundary: vec![params.iter().copied().collect()],
+            interior_point: side_a_uv,
+            interior_point_3d: face.surface.d0(un_a, vn_a),
+            original_face: face_key,
+        },
+        SubFaceRegion {
+            uv_boundary: vec![params.iter().rev().copied().collect()],
+            interior_point: side_b_uv,
+            interior_point_3d: face.surface.d0(un_b, vn_b),
+            original_face: face_key,
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::SurfaceGeom;
+    use crate::store::BRepStore;
+    use crate::topo::BRepWire;
+
+    #[test]
+    fn unsplit_face_returns_one_region() {
+        let mut reg = BRepStore::new();
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            outer_wire: wire, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-6, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let result = split_face_along_curves(fk, &[], &reg);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].original_face, fk);
+    }
+}
