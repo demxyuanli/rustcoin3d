@@ -1,6 +1,6 @@
 //! Assembly hierarchy reconstruction from STEP entities.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use rc3d_core::math::{Mat4, Vec3};
 use super::entity_types::EntityType;
 use super::parser::EntityIndex;
@@ -234,11 +234,15 @@ impl AssemblyContext {
 
     pub fn shell_instances(&self, entities: &EntityIndex) -> ShellInstanceList {
         let mut instances = ShellInstanceList::new();
+        let mut seen: HashSet<(u64, [u32; 16])> = HashSet::new();
         for (&pd_id, shape_ids) in &self.graph.shapes {
             let xform = self.graph.accumulate(pd_id);
             for &sid in shape_ids {
                 for shell_id in find_shells_in_representation(sid, entities) {
-                    instances.push((shell_id, xform.clone()));
+                    let key = (shell_id, xform.matrix.to_cols_array().map(f32::to_bits));
+                    if seen.insert(key) {
+                        instances.push((shell_id, xform.clone()));
+                    }
                 }
             }
         }
@@ -319,6 +323,7 @@ impl AssemblyGraph {
                             .idt_transforms
                             .get(&child)
                             .cloned()
+                            .or_else(|| find_idt_transform_for_pd(child, entities))
                             .or(ap203_xform)
                             .unwrap_or_default();
                         graph
@@ -349,14 +354,32 @@ impl AssemblyGraph {
         graph.build_reverse_index();
 
         for (&prod_def, &pds_entity) in &graph.prod_to_pds {
-            if let Some(&shape_repr) = graph.pds_to_shape.get(&pds_entity) {
-                let geometry_repr = graph
+            let Some(&shape_repr) = graph.pds_to_shape.get(&pds_entity) else {
+                continue;
+            };
+            let is_direct_abrep = entities
+                .get(&shape_repr)
+                .is_some_and(|r| r.entity_type == EntityType::AdvancedBrepShapeRepresentation);
+            let geometry_repr = if is_direct_abrep {
+                shape_repr
+            } else if graph.parent_child.contains_key(&prod_def) {
+                // Placement/context reps on assembly containers; geometry comes from child PDs.
+                continue;
+            } else {
+                graph
                     .shape_repr_links
                     .get(&shape_repr)
                     .copied()
-                    .unwrap_or(shape_repr);
-                graph.shapes.entry(prod_def).or_default().push(geometry_repr);
+                    .unwrap_or(shape_repr)
+            };
+            if find_shells_in_representation(geometry_repr, entities).is_empty() {
+                continue;
             }
+            graph
+                .shapes
+                .entry(prod_def)
+                .or_default()
+                .push(geometry_repr);
         }
 
         graph
@@ -425,6 +448,20 @@ fn resolve_placement_transform(placement_id: u64, entities: &EntityIndex) -> Opt
     }
 }
 
+fn find_idt_transform_for_pd(pd_id: u64, entities: &EntityIndex) -> Option<AssemblyTransform> {
+    entities.values().find_map(|record| {
+        if record.entity_type != EntityType::ItemDefinedTransformation {
+            return None;
+        }
+        let target_pd = geom::nth_ref(&record.params, 3)?;
+        if target_pd != pd_id {
+            return None;
+        }
+        let placement_id = geom::nth_ref(&record.params, 2)?;
+        resolve_placement_transform(placement_id, entities)
+    })
+}
+
 fn find_shells_in_representation(rep_id: u64, entities: &EntityIndex) -> Vec<u64> {
     let record = match entities.get(&rep_id) {
         Some(r) => r,
@@ -456,6 +493,11 @@ fn find_shells_in_representation(rep_id: u64, entities: &EntityIndex) -> Vec<u64
         }
     }
     shells
+}
+
+/// Public wrapper for CAF transfer / dedup shell discovery.
+pub fn find_shells_in_representation_public(rep_id: u64, entities: &EntityIndex) -> Vec<u64> {
+    find_shells_in_representation(rep_id, entities)
 }
 
 fn extract_shells_from_brep(brep_id: u64, entities: &EntityIndex) -> Vec<u64> {
@@ -580,10 +622,38 @@ fn build_assembly_tree_with_graph(
         }
     }
 
-    let root_index = nodes.iter().position(|n| !n.children.is_empty() || !n.shells.is_empty())
-        .unwrap_or(0);
+    let root_index = find_assembly_root_index(&nodes);
 
     AssemblyTree { nodes, root_index }
+}
+
+/// Prefer a true assembly root (not referenced as NAUO child); fall back to first node with children/shells.
+fn find_assembly_root_index(nodes: &[super::tree::AssemblyNode]) -> usize {
+    let mut is_child = vec![false; nodes.len()];
+    for node in nodes {
+        for &child in &node.children {
+            if child < is_child.len() {
+                is_child[child] = true;
+            }
+        }
+    }
+    let forest_roots: Vec<usize> = is_child
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &child)| (!child).then_some(idx))
+        .collect();
+    forest_roots
+        .into_iter()
+        .max_by_key(|&idx| {
+            let n = &nodes[idx];
+            (n.children.len(), n.shells.len(), n.name.len())
+        })
+        .or_else(|| {
+            nodes
+                .iter()
+                .position(|n| !n.children.is_empty() || !n.shells.is_empty())
+        })
+        .unwrap_or(0)
 }
 
 /// Resolve a PRODUCT_DEFINITION ID to its PRODUCT ID.
@@ -727,6 +797,25 @@ ENDSEC;\nEND-ISO-10303-21;\n";
             "expected parent*child translation (11,0,0), got {:?}",
             trans
         );
+    }
+
+    #[test]
+    fn cs_step_shell_instances_unique_shells() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data/cs.step");
+        if !path.exists() {
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let ex = super::super::parser::parse_exchange(&text).unwrap();
+        let ctx = super::AssemblyContext::build(&ex.entities);
+        let instances = ctx.shell_instances(&ex.entities);
+        assert_eq!(
+            instances.len(),
+            2,
+            "Cube + Sphere only; assembly root must not inherit child ABREP"
+        );
+        let shell_ids: HashSet<u64> = instances.iter().map(|(id, _)| *id).collect();
+        assert_eq!(shell_ids.len(), 2);
     }
 
     #[test]

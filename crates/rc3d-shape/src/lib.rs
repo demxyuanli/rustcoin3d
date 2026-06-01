@@ -1,0 +1,37 @@
+//! Engine-level B-Rep shape document kernel (OCC TopoDS + XDE aligned).
+
+pub mod document;
+pub mod emit_plan;
+pub mod error;
+pub mod geom;
+pub mod heal;
+pub mod mesh;
+pub mod mesh_result;
+pub mod mesh_split;
+pub mod nurbs;
+pub mod shape;
+pub mod store;
+pub mod tessellation;
+pub mod topo;
+pub mod xde;
+
+pub use document::{PmiDataSet, PmiEntry, ProvenanceMap, ShapeDocument};
+pub use emit_plan::{
+    CachedMesh, EmitInstance, EmitNode, EmitPlanOptions, FaceMaterialGroup, MaterialDesc,
+    MeshSlotId, PmiPlacement, SceneEmitPlan,
+};
+pub use error::ShapeError;
+pub use mesh_result::MeshResult;
+pub use shape::{Shape, ShapeId, ShapeKind, ShapeNode, ShapeType};
+pub use store::{BRepRegistry, BRepStore, PCurveEdit};
+pub use mesh_split::{extract_mesh_tri_ranges, face_material_draw_batches, FaceDrawBatch, FaceTriRange};
+pub use tessellation::{TessEntry, TessKey, TessellationCache};
+pub use topo::*;
+pub use xde::{AttributeBag, LabelId, XdeLabel, XdeLabelForest};
+
+pub use heal::{auto_heal_shell, check_shell_continuity, HealLevel, HealReport};
+pub use mesh::report::deflection_from_report;
+pub use mesh::t4_quality::{
+    deflection_within_band, hausdorff_meshes, measure_shell_deflection, DeflectionMetrics,
+    HausdorffMetrics,
+};

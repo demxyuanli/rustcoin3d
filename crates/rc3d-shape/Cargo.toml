@@ -1,0 +1,18 @@
+[package]
+name = "rc3d-shape"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+step-agent-debug = []
+
+[dependencies]
+rc3d-core = { workspace = true }
+slotmap = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+earcutr = "0.4"
+spade = "2"

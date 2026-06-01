@@ -209,6 +209,7 @@ mod tests {
             bounds: vec![],
             surface_id: None,
             same_sense: true,
+            oriented_forward: true,
             face_id: None,
         }
     }

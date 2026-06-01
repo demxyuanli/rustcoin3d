@@ -1,6 +1,4 @@
 use super::*;
-use super::surface::build_surface;
-use super::curve::build_curve;
 use super::pcurve::resolve_edge_pcurve;
 pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut ShellBuildCtx<'_>) -> Option<ShellKey> {
     let mut face_keys = Vec::new();
@@ -108,7 +106,14 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
             }
         }
 
-        face_keys.push((face_key, Orientation::Forward));
+        let face_orient = if face_data.oriented_forward {
+            *ctx.oriented_forward_faces += 1;
+            Orientation::Forward
+        } else {
+            *ctx.oriented_reversed_faces += 1;
+            Orientation::Reversed
+        };
+        face_keys.push((face_key, face_orient));
     }
 
     if face_keys.is_empty() {

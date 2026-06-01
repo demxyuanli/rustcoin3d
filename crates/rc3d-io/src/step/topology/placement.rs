@@ -1,6 +1,5 @@
 //! Placement and direction resolution.
 use super::super::parser::EntityIndex;
-use super::super::value::StepValue;
 use super::helpers::*;
 use rc3d_core::math::Vec3;
 

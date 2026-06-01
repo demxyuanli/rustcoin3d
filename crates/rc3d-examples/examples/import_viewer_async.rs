@@ -39,6 +39,11 @@ fn main() {
         .map(|e| e.eq_ignore_ascii_case("stl"))
         .unwrap_or(false);
 
+    let ext = path_buf
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
     // Show STEP statistics for .step/.stp files
     if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
         if let Ok(text) = std::fs::read_to_string(&path_buf) {

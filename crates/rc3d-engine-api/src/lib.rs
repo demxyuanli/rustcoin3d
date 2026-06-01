@@ -10,6 +10,9 @@ pub mod input_state;
 pub mod fps_tracker;
 
 pub use camera::CameraController;
+pub use import::{
+    default_scene_loader, import_file, import_step_into_graph, import_step_with_document,
+};
 pub use engine::Engine;
 pub use viewport::{ViewportCamera, ViewportCameraSet};
 pub use world::World;

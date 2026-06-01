@@ -1,11 +1,5 @@
-//! Curve and surface geometry (B-Rep evaluation kernel).
+//! B-Rep geometry: kernel in `rc3d-shape`, STEP builders in io.
 
-pub mod bspline;
 pub mod nurbs_build;
-pub mod project;
 
-pub mod curve_eval;
-pub mod surface_eval;
-
-pub use curve_eval::*;
-pub use surface_eval::*;
+pub use rc3d_shape::geom::*;

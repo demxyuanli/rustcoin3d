@@ -10,6 +10,9 @@ pub struct StepFace {
     pub bounds: Vec<StepLoop>,
     pub surface_id: Option<u64>,
     pub same_sense: bool,
+    /// ORIENTED_FACE orientation flag relative to the underlying FACE.
+    /// true => forward, false => reversed.
+    pub oriented_forward: bool,
     /// STEP entity ID of this face (for color/material lookup).
     pub face_id: Option<u64>,
 }
@@ -181,6 +184,12 @@ fn resolve_face(face_id: u64, entities: &EntityIndex) -> Option<StepFace> {
         "ORIENTED_FACE" => {
             let inner_id = nth_ref(&record.params, 3).or_else(|| nth_ref(&record.params, 1))?;
             let mut face = resolve_face(inner_id, entities)?;
+            // STEP ORIENTED_FACE orientation enum may appear at different indices
+            // depending on schema flavor/writer.
+            face.oriented_forward = nth_enum(&record.params, 4)
+                .map(|v| v == ".T.")
+                .or_else(|| nth_enum(&record.params, 2).map(|v| v == ".T."))
+                .unwrap_or(true);
             face.face_id = Some(face_id);
             Some(face)
         }
@@ -215,7 +224,13 @@ fn resolve_face_surface(
         return None;
     }
 
-    Some(StepFace { bounds, surface_id, same_sense, face_id: Some(face_id) })
+    Some(StepFace {
+        bounds,
+        surface_id,
+        same_sense,
+        oriented_forward: true,
+        face_id: Some(face_id),
+    })
 }
 
 fn resolve_bound(bound_id: u64, entities: &EntityIndex) -> Option<StepLoop> {

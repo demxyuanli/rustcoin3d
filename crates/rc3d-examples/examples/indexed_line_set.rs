@@ -44,6 +44,7 @@ fn main() {
         graph.add_child(root, NodeData::IndexedLineSet(IndexedLineSetNode {
             coord_index: indices,
             line_width: 1.0,
+            ..Default::default()
         }));
     });
 }

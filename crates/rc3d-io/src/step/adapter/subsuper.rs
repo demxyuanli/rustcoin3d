@@ -55,11 +55,13 @@ fn flatten_complex(
     Ok((name, params))
 }
 
+#[allow(dead_code)]
 fn record_param_text(r: &Record) -> (String, String) {
     let text = params_to_comma_text(&r.params);
     (r.keyword.clone(), text)
 }
 
+#[allow(dead_code)]
 fn params_to_comma_text(params: &StepValue) -> String {
     match params.as_list() {
         Some(list) if !list.is_empty() => list
@@ -71,6 +73,7 @@ fn params_to_comma_text(params: &StepValue) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn value_to_text(v: &StepValue) -> String {
     match v {
         StepValue::Integer(n) => n.to_string(),
@@ -89,6 +92,7 @@ fn value_to_text(v: &StepValue) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn merge_all_param_texts(pairs: &[(String, String)]) -> String {
     let mut parts = Vec::new();
     for (_, pd) in pairs {

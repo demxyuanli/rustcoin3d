@@ -9,6 +9,7 @@ use rc3d_scene::node_data::{GdtMaterialCondition, GdtSymbol};
 /// Linear dimension with start/end points and offset direction.
 #[derive(Debug, Clone)]
 pub struct PmiDimension {
+    pub entity_id: u64,
     pub start: Vec3,
     pub end: Vec3,
     pub offset_dir: Vec3,
@@ -18,6 +19,7 @@ pub struct PmiDimension {
 /// Datum identifier anchored to a face/plane.
 #[derive(Debug, Clone)]
 pub struct PmiDatum {
+    pub entity_id: u64,
     pub origin: Vec3,
     pub normal: Vec3,
     pub label: String,
@@ -143,7 +145,7 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
                 }
             }
             EntityType::Datum => {
-                if let Some(datum) = extract_datum(&record.params, entities) {
+                if let Some(datum) = extract_datum(eid, &record.params, entities) {
                     pmi.datums.push(datum);
                 }
             }
@@ -225,10 +227,17 @@ fn extract_dimension(
     }
 
     let offset_dir = Vec3::Y;
-    Some(PmiDimension { start, end, offset_dir, text })
+    Some(PmiDimension {
+        entity_id,
+        start,
+        end,
+        offset_dir,
+        text,
+    })
 }
 
 fn extract_datum(
+    entity_id: u64,
     params: &super::super::value::StepValue,
     entities: &EntityIndex,
 ) -> Option<PmiDatum> {
@@ -278,7 +287,12 @@ fn extract_datum(
         }
     }
 
-    Some(PmiDatum { origin, normal, label })
+    Some(PmiDatum {
+        entity_id,
+        origin,
+        normal,
+        label,
+    })
 }
 
 fn extract_tolerance(

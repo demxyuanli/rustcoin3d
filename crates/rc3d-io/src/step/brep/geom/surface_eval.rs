@@ -277,6 +277,7 @@ impl SurfaceGeom {
             | SurfaceGeom::Sphere { .. }
             | SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
             SurfaceGeom::Revolution { .. } => None,
+            SurfaceGeom::BSpline(nurbs) => nurbs.u_period(),
             SurfaceGeom::Offset { basis, .. } => basis.native_u_period(),
             _ => None,
         }
@@ -288,6 +289,7 @@ impl SurfaceGeom {
             SurfaceGeom::Sphere { .. } => Some(std::f32::consts::PI),
             SurfaceGeom::Torus { .. } => Some(std::f32::consts::TAU),
             SurfaceGeom::Revolution { .. } => Some(std::f32::consts::TAU),
+            SurfaceGeom::BSpline(nurbs) => nurbs.v_period(),
             SurfaceGeom::Offset { basis, .. } => basis.native_v_period(),
             _ => None,
         }

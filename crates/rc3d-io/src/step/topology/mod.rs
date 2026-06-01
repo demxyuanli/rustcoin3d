@@ -87,6 +87,36 @@ mod tests {
     }
 
     #[test]
+    fn test_oriented_face_reversed_flag() {
+        let entities = make_exchange(
+            "\
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#3 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#4 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#5 = DIRECTION('', (0.0, 0.0, 1.0));
+#6 = AXIS2_PLACEMENT_3D('', #1, #5, #2);
+#7 = PLANE('', #6);
+#10 = EDGE_CURVE('', #1, #2, #20, .T.);
+#11 = EDGE_CURVE('', #2, #3, #20, .T.);
+#12 = EDGE_CURVE('', #3, #4, #20, .T.);
+#13 = EDGE_CURVE('', #4, #1, #20, .T.);
+#14 = EDGE_LOOP('', (#10, #11, #12, #13));
+#15 = FACE_OUTER_BOUND('', #14, .T.);
+#16 = ADVANCED_FACE('', (#15), #7, .T.);
+#17 = ORIENTED_FACE('', *, *, #16, .F.);
+#18 = CLOSED_SHELL('', (#17));
+#20 = LINE('', #1, #2);\
+",
+        );
+
+        let shells = collect_shells(&entities);
+        assert_eq!(shells.len(), 1);
+        assert_eq!(shells[0].faces.len(), 1);
+        assert!(!shells[0].faces[0].oriented_forward);
+    }
+
+    #[test]
     fn test_brep_with_voids_extracts_outer() {
         let entities = make_exchange(
             "\

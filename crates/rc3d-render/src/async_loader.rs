@@ -7,6 +7,9 @@ use std::thread;
 use rc3d_core::{EngineError, EngineResult};
 use rc3d_scene::SceneGraph;
 
+/// Background scene loader (provided by engine-api / rc3d-io integration).
+pub type SceneLoadFn = Arc<dyn Fn(&Path) -> Result<SceneGraph, String> + Send + Sync + 'static>;
+
 /// Handle to a potentially not-yet-loaded asset.
 pub struct AssetHandle<T> {
     state: Arc<Mutex<AssetState<T>>>,
@@ -98,19 +101,22 @@ pub struct AsyncAssetManager {
     pending_scenes: HashMap<PathBuf, Arc<Mutex<AssetState<SceneGraph>>>>,
     /// Number of background worker threads.
     worker_count: usize,
+    scene_loader: SceneLoadFn,
 }
 
 impl AsyncAssetManager {
     /// Create a new async asset manager with `worker_count` background threads.
-    pub fn new(worker_count: usize) -> Self {
+    pub fn new(worker_count: usize, scene_loader: SceneLoadFn) -> Self {
         let workers = worker_count.max(1);
         let (request_tx, request_rx) = mpsc::channel::<LoadRequest>();
         let (result_tx, result_rx) = mpsc::channel::<LoadResult>();
 
         let rx = Arc::new(Mutex::new(request_rx));
+        let loader = Arc::clone(&scene_loader);
         for i in 0..workers {
             let rx = Arc::clone(&rx);
             let tx = result_tx.clone();
+            let loader = Arc::clone(&loader);
             thread::Builder::new()
                 .name(format!("asset-loader-{i}"))
                 .spawn(move || {
@@ -131,8 +137,8 @@ impl AsyncAssetManager {
                         }
                         match req.kind {
                             LoadKind::Scene => {
-                                let result = rc3d_io::import_file(&req.path)
-                                    .map_err(|e| EngineError::Parse(e.to_string()));
+                                let result = loader(&req.path)
+                                    .map_err(|e| EngineError::Parse(e));
                                 let _ = tx.send(LoadResult::Scene {
                                     path: req.path,
                                     result,
@@ -149,6 +155,7 @@ impl AsyncAssetManager {
             result_rx,
             pending_scenes: HashMap::new(),
             worker_count: workers,
+            scene_loader,
         }
     }
 

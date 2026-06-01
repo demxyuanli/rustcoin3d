@@ -38,7 +38,7 @@ pub struct ShellResult {
 /// * `reg` - B-Rep registry (mutated)
 pub fn make_thick_solid(
     solid_key: SolidKey,
-    open_faces: &[FaceKey],
+    _open_faces: &[FaceKey],
     thickness: f32,
     reg: &mut BRepRegistry,
 ) -> ShellResult {
@@ -138,7 +138,7 @@ fn offset_solid_faces(
 
     let mut new_faces = Vec::new();
 
-    for &(face_key, orient) in &shell.faces {
+    for &(face_key, _orient) in &shell.faces {
         let face = match reg.faces.get(face_key) {
             Some(f) => f,
             None => continue,

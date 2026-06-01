@@ -1354,6 +1354,7 @@ mod tests {
             NodeData::IndexedLineSet(IndexedLineSetNode {
                 coord_index: vec![0, 1],
                 line_width: 1.0,
+                ..Default::default()
             }),
         );
 

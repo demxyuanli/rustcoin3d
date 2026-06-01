@@ -382,7 +382,7 @@ fn compute_ray_triangle_t(
 // ── B-Rep registry-based classification (Phase 3) ────────────────────────
 
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{ShellKey, FaceKey, BRepFace, Orientation};
+use crate::step::brep::topo::{ShellKey, FaceKey, BRepFace};
 use crate::step::brep::geom::SurfaceGeom;
 use super::split::SplitFaceRegion;
 

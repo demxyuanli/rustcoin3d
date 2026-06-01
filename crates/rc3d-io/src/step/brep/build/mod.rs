@@ -39,6 +39,8 @@ pub struct BRepBuildReport {
     pub skipped_faces: usize,
     pub skipped_edges: usize,
     pub void_shell_count: usize,
+    pub oriented_forward_faces: usize,
+    pub oriented_reversed_faces: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +78,8 @@ struct ShellBuildCtx<'a> {
     options: &'a BRepBuildOptions,
     skipped_faces: &'a mut usize,
     skipped_edges: &'a mut usize,
+    oriented_forward_faces: &'a mut usize,
+    oriented_reversed_faces: &'a mut usize,
 }
 
 fn resolve_face_surface(
@@ -192,6 +196,8 @@ pub fn build_brep_with_options(
     let face_colors = topology::collect_face_colors(entities);
     let mut skipped_faces = 0usize;
     let mut skipped_edges = 0usize;
+    let mut oriented_forward_faces = 0usize;
+    let mut oriented_reversed_faces = 0usize;
     let mut root_solids = Vec::new();
 
     for model in &solid_models {
@@ -203,6 +209,8 @@ pub fn build_brep_with_options(
             options,
             skipped_faces: &mut skipped_faces,
             skipped_edges: &mut skipped_edges,
+            oriented_forward_faces: &mut oriented_forward_faces,
+            oriented_reversed_faces: &mut oriented_reversed_faces,
         };
 
         let outer_shell = match shell::build_shell_from_step(&model.outer, &mut ctx) {
@@ -243,6 +251,8 @@ pub fn build_brep_with_options(
             skipped_faces,
             skipped_edges,
             void_shell_count,
+            oriented_forward_faces,
+            oriented_reversed_faces,
         },
     })
 }

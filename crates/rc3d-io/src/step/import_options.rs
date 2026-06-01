@@ -1,6 +1,7 @@
 //! STEP import strictness and quality reporting.
 
 use rc3d_scene::SceneGraph;
+use rc3d_shape::ShapeDocument;
 
 use crate::step::adapter::{AdapterMode, AdapterOptions};
 use crate::step::brep::heal::HealLevel;
@@ -38,10 +39,12 @@ pub struct StepImportOptions {
     pub assembly_preview_explode: f32,
 }
 
-/// Full STEP import output (scene + assembly metadata for editor/tools).
+/// Full STEP import output (scene + shape document + assembly metadata).
 pub struct StepImportResult {
+    pub document: ShapeDocument,
     pub graph: SceneGraph,
     pub report: StepImportReport,
+    #[deprecated(note = "use ShapeDocument.labels (XdeLabelForest) instead")]
     pub assembly_tree: AssemblyTree,
     pub entities: EntityIndex,
 }
@@ -124,4 +127,7 @@ pub struct StepImportReport {
     pub complex_external_count: usize,
     /// EXPRESS WR violations from pre-transfer schema check (Part21 path).
     pub schema_violations: usize,
+    /// Face orientation counters from STEP ORIENTED_FACE/ADVANCED_FACE mapping.
+    pub oriented_forward_faces: usize,
+    pub oriented_reversed_faces: usize,
 }

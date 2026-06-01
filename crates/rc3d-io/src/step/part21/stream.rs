@@ -1,6 +1,6 @@
 //! Incremental ISO 10303-21 exchange reader (no full-file `String`).
 
-use std::io::{BufRead, Read};
+use std::io::BufRead;
 
 use crate::step::header;
 use crate::step::model::conformance::from_header;

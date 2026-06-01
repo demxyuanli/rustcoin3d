@@ -23,10 +23,15 @@ pub mod curve;
 pub mod mesh_result;
 pub mod import_options;
 mod import_pipeline;
+mod caf_transfer;
+mod scene_emit;
+mod assembly_explode;
 
 pub use import_options::{
     StepImportMode, StepImportOptions, StepImportReport, StepImportResult,
 };
+pub use caf_transfer::{CafTransferOutput, StepCafTransfer};
+pub use scene_emit::{apply_plan, emit_plan_options_from_step, SceneEmitOptions};
 pub use adapter::AdapterMode;
 
 use std::path::Path;
@@ -210,35 +215,51 @@ fn exchange_to_import_result(
     }
 
     let build_options = brep::BRepBuildOptions::from_import(options);
-    let brep_result = brep::build_brep_with_options(&exchange.entities, &build_options)?;
-    import_report.skipped_faces = brep_result.build_report.skipped_faces;
-    import_report.skipped_edges = brep_result.build_report.skipped_edges;
-    import_report.void_shell_count = brep_result.build_report.void_shell_count;
+    let transfer = StepCafTransfer::transfer(&exchange.entities, &build_options)?;
+    let mut document = transfer.document;
+    import_report.skipped_faces = transfer.build_report.skipped_faces;
+    import_report.skipped_edges = transfer.build_report.skipped_edges;
+    import_report.void_shell_count = transfer.build_report.void_shell_count;
+    import_report.oriented_forward_faces = transfer.build_report.oriented_forward_faces;
+    import_report.oriented_reversed_faces = transfer.build_report.oriented_reversed_faces;
 
-    if !options.allow_void_shells_unmeshed() && brep_result.build_report.void_shell_count > 0 {
+    if !options.allow_void_shells_unmeshed() && transfer.build_report.void_shell_count > 0 {
         return Err(StepError::ImportQuality(format!(
             "BREP_WITH_VOIDS: {} void shell(s) present; strict import does not mesh voids",
-            brep_result.build_report.void_shell_count
+            transfer.build_report.void_shell_count
         )));
     }
 
-    let root_solids = brep_result.root_solids;
-    let mut reg = brep_result.registry;
+    let root_solids = transfer.root_solids;
     let g0_tol = topology::global_tolerance(&exchange.entities).max(1e-6);
     for &sk in &root_solids {
-        let shell_key = reg.solids.get(sk).map(|s| s.outer_shell);
-        if let Some(shell_key) = shell_key {
-            let n = brep::same_parameter::same_parameter_shell(&mut reg, shell_key, g0_tol);
-            if n > 0 {
-                log::debug!("[STEP] SameParameter: {} edge(s) on solid {:?}", n, sk);
-            }
+        let shell_keys: Vec<_> = document
+            .store
+            .solids
+            .get(sk)
+            .map(|s| {
+                let mut keys = Vec::with_capacity(1 + s.void_shells.len());
+                keys.push(s.outer_shell);
+                keys.extend(s.void_shells.iter().copied());
+                keys
+            })
+            .unwrap_or_default();
+        let mut total_same_param = 0usize;
+        for shell_key in shell_keys {
+            total_same_param +=
+                brep::same_parameter::same_parameter_shell(&mut document.store, shell_key, g0_tol);
+        }
+        if total_same_param > 0 {
+            log::debug!(
+                "[STEP] SameParameter: {} edge(s) on solid {:?}",
+                total_same_param,
+                sk
+            );
         }
     }
 
     let assembly_ctx = assembly::AssemblyContext::build(&exchange.entities);
     let shell_instances = assembly_ctx.shell_instances(&exchange.entities);
-    let shell_styles = assembly::extract_shell_styles(&exchange.entities);
-
     let assembly_tree = assembly_ctx.assembly_tree(&exchange.entities);
     let assembly_geom_nodes = assembly_tree
         .nodes
@@ -255,7 +276,7 @@ fn exchange_to_import_result(
     }
 
     let total_heal = import_pipeline::run_heal_pipeline(
-        &mut reg,
+        &mut document.store,
         &root_solids,
         options.heal_level,
         5,
@@ -263,7 +284,7 @@ fn exchange_to_import_result(
     import_report.heal_check_errors = total_heal.check_errors;
     import_report.skipped_faces += total_heal.skip_face_keys.len();
     import_pipeline::run_continuity_checks(
-        &reg,
+        &document.store,
         &root_solids,
         g0_tol,
         &mut import_report,
@@ -276,8 +297,29 @@ fn exchange_to_import_result(
         )));
     }
 
-    let mut mesh_config = brep::mesh::BRepMeshConfig::default();
-    mesh_config.relative_deflection = options.mesh_relative_deflection;
+    let explode_factor = assembly_explode::effective_assembly_explode(
+        options.assembly_preview_explode,
+        options.mode,
+        &document.store,
+        &root_solids,
+    );
+    if explode_factor > 0.0 {
+        log::info!("[STEP] assembly preview explode: {:.2}", explode_factor);
+    }
+
+    let mut plan_options = emit_plan_options_from_step(options);
+    plan_options.heal_skip_faces = total_heal.skip_face_keys.clone();
+    plan_options.explode_offsets = assembly_explode::compute_assembly_explode_offsets(
+        &document.store,
+        &root_solids,
+        &assembly_tree,
+        assembly_geom_nodes,
+        explode_factor,
+    );
+    let plan = document
+        .build_emit_plan(&plan_options)
+        .map_err(|e| StepError::ImportQuality(e.to_string()))?;
+
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
@@ -293,28 +335,19 @@ fn exchange_to_import_result(
         }),
     );
 
-    let assembly_explode = import_pipeline::effective_assembly_explode(
-        options.assembly_preview_explode,
-        options.mode,
-        &reg,
-        &root_solids,
-    );
-
-    let emit = import_pipeline::emit_scene_meshes(
+    apply_plan(
         &mut graph,
         root,
-        &reg,
-        &root_solids,
-        &mesh_config,
-        &total_heal,
-        &assembly_tree,
-        assembly_geom_nodes,
-        &shell_styles,
-        &shell_instances,
-        assembly_explode,
+        &plan,
+        &SceneEmitOptions::default(),
+        &document.pmi_pool,
     )?;
-    let props_vertices = emit.props_vertices;
-    let props_indices = emit.props_indices;
+
+    let mut props_vertices: Vec<Vec3> = Vec::new();
+    let mut props_indices: Vec<i32> = Vec::new();
+    for cached in plan.mesh_table.values() {
+        import_pipeline::append_props_mesh_public(&cached.mesh, &mut props_vertices, &mut props_indices);
+    }
 
     if !props_vertices.is_empty() && !props_indices.is_empty() {
         let props = brep::compute_mesh_properties(&props_vertices, &props_indices);
@@ -334,10 +367,13 @@ fn exchange_to_import_result(
         total_heal.skip_face_keys.len(),
     );
 
+    let mut mesh_config = brep::mesh::BRepMeshConfig::default();
+    mesh_config.relative_deflection = options.mesh_relative_deflection;
+
     brep::overlay::build_edge_curves(
         &mut graph,
         root,
-        &reg,
+        &document.store,
         &root_solids,
         &shell_instances,
         &mesh_config,
@@ -360,28 +396,20 @@ fn exchange_to_import_result(
         log::warn!("[STEP] import report: {:?}", import_report);
     }
 
-    // PMI annotations
-    {
-        let pmi_data = pmi::pmi_extract::extract_pmi(&exchange.entities);
-        let has_pmi = !pmi_data.dimensions.is_empty()
-            || !pmi_data.datums.is_empty()
-            || !pmi_data.tolerances.is_empty();
-        if has_pmi {
-            log::info!(
-                "[STEP] PMI: {} dims, {} datums, {} tolerances",
-                pmi_data.dimensions.len(),
-                pmi_data.datums.len(),
-                pmi_data.tolerances.len(),
-            );
-            pmi::pmi_render::attach_pmi_to_scene(&mut graph, root, &pmi_data);
-        }
+    if !document.pmi_pool.entries.is_empty() {
+        log::info!(
+            "[STEP] PMI: {} annotation(s) via emit plan",
+            document.pmi_pool.entries.len(),
+        );
     }
 
     if let Some(root_entry) = graph.get_mut(root) {
         root_entry.display_mode = Some(DisplayMode::Shaded);
     }
 
+    #[allow(deprecated)]
     Ok(StepImportResult {
+        document,
         graph,
         report: import_report,
         assembly_tree,

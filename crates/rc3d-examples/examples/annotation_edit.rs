@@ -358,6 +358,11 @@ fn element_handles(elem: &AnnotationElement) -> Vec<(&'static str, [f32; 3])> {
             ("feature", feature.coords()),
             ("datum", datum.coords()),
         ],
+        AnnotationElement::SurfaceFinish { position, .. }
+        | AnnotationElement::WeldSymbol { position, .. }
+        | AnnotationElement::DatumIdentifier { position, .. } => vec![
+            ("position", position.coords()),
+        ],
     };
     // Add "all" handle at average of all points for overall drag
     if !handles.is_empty() {
@@ -608,6 +613,11 @@ fn update_element_point(
                     *feature = AnnotationPoint::local((Vec3::from(feature.coords()) + delta).into());
                     *datum = AnnotationPoint::local((Vec3::from(datum.coords()) + delta).into());
                 }
+                AnnotationElement::SurfaceFinish { ref mut position, .. }
+                | AnnotationElement::WeldSymbol { ref mut position, .. }
+                | AnnotationElement::DatumIdentifier { ref mut position, .. } => {
+                    *position = AnnotationPoint::local((Vec3::from(position.coords()) + delta).into());
+                }
             }
             return;
         }
@@ -684,6 +694,11 @@ fn update_element_point(
                     "datum" => *datum = p,
                     _ => {}
                 }
+            }
+            AnnotationElement::SurfaceFinish { ref mut position, .. }
+            | AnnotationElement::WeldSymbol { ref mut position, .. }
+            | AnnotationElement::DatumIdentifier { ref mut position, .. } => {
+                *position = AnnotationPoint::local(new_local);
             }
         }
     }

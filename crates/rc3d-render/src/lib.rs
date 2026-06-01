@@ -62,7 +62,7 @@ pub mod volumetric_fog;
 pub mod profiler;
 
 pub use asset_manager::GpuAssetManager;
-pub use async_loader::{AssetHandle, AsyncAssetManager};
+pub use async_loader::{AssetHandle, AsyncAssetManager, SceneLoadFn};
 pub use auto_exposure::AutoExposure;
 pub use pipeline_cache::PipelineCacheManager;
 pub use shader_permutation::{ShaderFeatures, ShaderVariantCache, preprocess_wgsl};

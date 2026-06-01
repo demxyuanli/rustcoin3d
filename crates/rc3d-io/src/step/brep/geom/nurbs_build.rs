@@ -6,7 +6,7 @@
 use crate::step::parser::{EntityIndex, EntityRecord};
 use crate::step::value::StepValue;
 use crate::step::{geom, topology};
-use crate::step::nurbs::NurbsSurface;
+use rc3d_shape::nurbs::NurbsSurface;
 
 /// Build a NurbsSurface from a B_SPLINE_SURFACE* entity.
 pub fn build_nurbs_surface(

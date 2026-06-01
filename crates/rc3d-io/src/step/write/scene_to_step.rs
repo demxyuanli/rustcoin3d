@@ -152,8 +152,10 @@ pub fn write_scene(graph: &SceneGraph) -> Result<String, String> {
         format!("'',({})", face_list.join(",")));
 
     // MANIFOLD_SOLID_BREP
-    emit!(out, next_id, "MANIFOLD_SOLID_BREP",
-        format!("'',#{}", shell_id));
+    out.push_str(&format!(
+        "#{} = MANIFOLD_SOLID_BREP('',#{});\n",
+        next_id, shell_id
+    ));
 
     out.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
     Ok(out)

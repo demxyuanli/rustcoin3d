@@ -19,7 +19,7 @@ use super::intersect::{FaceIntersection, IntersectionCurve};
 // ── B-Rep registry-based splitting (Phase 3) ──────────────────────────────
 
 use crate::step::brep::registry::BRepRegistry;
-use crate::step::brep::topo::{FaceKey, ShellKey, BRepFace, BRepWire};
+use crate::step::brep::topo::{FaceKey, ShellKey, BRepFace};
 
 /// A curve where two faces intersect, parameterized on both surfaces.
 #[derive(Debug, Clone)]

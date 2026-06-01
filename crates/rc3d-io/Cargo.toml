@@ -11,6 +11,7 @@ step-agent-debug = []
 
 [dependencies]
 rc3d-core = { workspace = true }
+rc3d-shape = { workspace = true }
 rc3d-scene = { workspace = true }
 rc3d-nurbs = { workspace = true }
 thiserror = { workspace = true }
