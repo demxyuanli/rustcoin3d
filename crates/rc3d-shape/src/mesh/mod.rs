@@ -20,10 +20,12 @@ mod grid;
 mod post_process;
 mod ruled;
 mod shell_impl;
+mod edge_pool;
 
 pub use config::{BRepMeshConfig, MESH_CLOSED_SURFACE_SEGS};
 pub use face_dispatch::{algo_from_plan, FaceMeshPlan, SurfaceFillReason, plan_face_mesh};
 pub use shell_mesh::{mesh_brep_shell, mesh_brep_shell_with_report, ShellMeshOutput};
+pub use edge_pool::measure_equivalent_edge_weld_gap;
 
 #[cfg(test)]
 mod mesh_integration {
