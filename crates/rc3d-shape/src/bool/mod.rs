@@ -31,12 +31,14 @@ pub struct BoolResult {
 
 /// Result of a B-Rep boolean operation.
 pub struct BRepBoolResult {
-    /// The resulting shell, if any.
-    pub result_shell: Option<ShellKey>,
+    /// Result shells (multiple for disjoint union components).
+    pub result_shells: Vec<ShellKey>,
     /// Whether the result is empty (e.g., disjoint intersection).
     pub is_empty: bool,
     /// Number of face-face intersection curves found.
     pub intersection_count: usize,
+    /// Tolerance propagated from input face tolerances.
+    pub tolerance: f32,
 }
 
 /// Perform a boolean operation on B-Rep shells.
@@ -53,8 +55,10 @@ pub fn boolean_brep(
     reg: &mut BRepStore,
     op: BoolOp,
 ) -> BRepBoolResult {
+    let tolerance = compute_face_tolerance(shells_a.iter().chain(shells_b.iter()), reg) + 1e-6;
+
     if shells_a.is_empty() || shells_b.is_empty() {
-        return BRepBoolResult { result_shell: None, is_empty: true, intersection_count: 0 };
+        return BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance };
     }
 
     // Phase 1: Face-face intersections
@@ -62,7 +66,7 @@ pub fn boolean_brep(
 
     if raw_intersections.is_empty() {
         // No intersection — handle trivial cases
-        return handle_no_intersection(shells_a, shells_b, reg, op);
+        return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
     }
 
     // Convert to B-Rep intersection curves with UV parameters
@@ -70,7 +74,7 @@ pub fn boolean_brep(
     let intersection_count = curves.len();
 
     if curves.is_empty() {
-        return handle_no_intersection(shells_a, shells_b, reg, op);
+        return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
     }
 
     // Phase 2: Split faces along intersection curves
@@ -88,20 +92,35 @@ pub fn boolean_brep(
 
     if selected.is_empty() {
         return BRepBoolResult {
-            result_shell: None,
+            result_shells: vec![],
             is_empty: true,
             intersection_count,
+            tolerance,
         };
     }
 
     // Phase 5: Stitch into new shell
     let shell_key = stitch::stitch_faces_into_shell(&selected, reg);
+    let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
+    let is_empty = result_shells.is_empty();
 
     BRepBoolResult {
-        result_shell: shell_key,
-        is_empty: shell_key.is_none(),
+        result_shells,
+        is_empty,
         intersection_count,
+        tolerance,
     }
+}
+
+/// Compute tolerance from face tolerances in the given shells.
+fn compute_face_tolerance<'a>(shells: impl Iterator<Item = &'a ShellKey>, reg: &BRepStore) -> f32 {
+    shells
+        .filter_map(|&sk| reg.shells.get(sk))
+        .flat_map(|s| s.faces.iter())
+        .filter_map(|&(fk, _)| reg.faces.get(fk))
+        .map(|f| f.tolerance)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(1e-4)
 }
 
 /// Handle the no-intersection trivial case.
@@ -110,6 +129,7 @@ fn handle_no_intersection(
     shells_b: &[ShellKey],
     reg: &mut BRepStore,
     op: BoolOp,
+    tolerance: f32,
 ) -> BRepBoolResult {
     // Check containment: is A inside B or B inside A?
     // Use a sample point from each shell
@@ -124,10 +144,10 @@ fn handle_no_intersection(
         BoolOp::Union => {
             if a_inside_b {
                 // A inside B → result is B
-                BRepBoolResult { result_shell: Some(shells_b[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
             } else if b_inside_a {
                 // B inside A → result is A
-                BRepBoolResult { result_shell: Some(shells_a[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint: both shells in result
                 let mut all_faces = Vec::new();
@@ -137,29 +157,31 @@ fn handle_no_intersection(
                     }
                 }
                 let shell_key = stitch::stitch_faces_into_shell(&all_faces, reg);
-                BRepBoolResult { result_shell: shell_key, is_empty: shell_key.is_none(), intersection_count: 0 }
+                let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
+                let is_empty = result_shells.is_empty();
+                BRepBoolResult { result_shells, is_empty, intersection_count: 0, tolerance }
             }
         }
         BoolOp::Intersection => {
             if a_inside_b {
-                BRepBoolResult { result_shell: Some(shells_a[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else if b_inside_a {
-                BRepBoolResult { result_shell: Some(shells_b[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint → empty intersection
-                BRepBoolResult { result_shell: None, is_empty: true, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
             }
         }
         BoolOp::Difference => {
             if a_inside_b {
                 // A entirely inside B → empty result
-                BRepBoolResult { result_shell: None, is_empty: true, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
             } else if b_inside_a {
                 // B entirely inside A → A with B void (simplified: return A)
-                BRepBoolResult { result_shell: Some(shells_a[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint → A unchanged
-                BRepBoolResult { result_shell: Some(shells_a[0]), is_empty: false, intersection_count: 0 }
+                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             }
         }
     }
@@ -225,7 +247,7 @@ mod tests {
     fn test_bool_module_loads() {
         let op = BoolOp::Union;
         assert_eq!(op, BoolOp::Union);
-        let result = BRepBoolResult { result_shell: None, is_empty: true, intersection_count: 0 };
+        let result = BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance: 1e-4 };
         assert!(result.is_empty);
     }
 
@@ -238,7 +260,7 @@ mod tests {
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
         // Disjoint union should produce a combined shell
-        assert!(result.result_shell.is_some(), "Disjoint union should produce a result");
+        assert!(!result.result_shells.is_empty(), "Disjoint union should produce a result");
     }
 
     #[test]
@@ -259,7 +281,7 @@ mod tests {
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
         assert!(!result.is_empty, "Disjoint difference should return A");
-        assert_eq!(result.result_shell, Some(sa));
+        assert_eq!(result.result_shells, vec![sa]);
     }
 
     #[test]
