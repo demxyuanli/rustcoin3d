@@ -76,5 +76,6 @@ pub fn prefers_native_uv_trim(surface: &SurfaceGeom) -> bool {
             | SurfaceGeom::Offset { .. }
             | SurfaceGeom::Cylinder { .. }
             | SurfaceGeom::Cone { .. }
+            | SurfaceGeom::Torus { .. }
     )
 }

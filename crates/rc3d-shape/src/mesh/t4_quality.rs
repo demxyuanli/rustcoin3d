@@ -6,7 +6,7 @@ use rc3d_core::math::Vec3;
 use super::face_uv::point_in_trim;
 use super::BRepMeshConfig;
 use crate::geom::SurfaceGeom;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, ShellKey, WireKey};
 use crate::mesh_result::MeshResult;
 
@@ -30,7 +30,7 @@ pub struct HausdorffMetrics {
 
 /// Geometric deflection: mesh triangle centroids → nearest trimmed face surface.
 pub fn measure_shell_deflection(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     shell_key: ShellKey,
     mesh: &MeshResult,
     _grid: u32,
@@ -46,7 +46,7 @@ pub fn measure_shell_deflection(
 
 /// Per-triangle centroid distance to the nearest face surface in the shell.
 fn sample_mesh_to_surface(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     shell: &crate::topo::BRepShell,
     mesh: &MeshResult,
     out: &mut Vec<f32>,
@@ -69,7 +69,7 @@ fn sample_mesh_to_surface(
     }
 }
 
-fn closest_surface_distance(reg: &BRepRegistry, shell: &crate::topo::BRepShell, point: Vec3) -> f32 {
+fn closest_surface_distance(reg: &BRepStore, shell: &crate::topo::BRepShell, point: Vec3) -> f32 {
     let mut best = f32::MAX;
     for &(face_key, _) in &shell.faces {
         let Some(face) = reg.faces.get(face_key) else {
@@ -106,7 +106,7 @@ fn closest_surface_distance(reg: &BRepRegistry, shell: &crate::topo::BRepShell, 
 }
 
 fn wire_uv_polygon(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     face_key: FaceKey,
     wire_key: WireKey,
     surface: &SurfaceGeom,

@@ -3,7 +3,7 @@
 use super::shell_impl::mesh_brep_shell_with_report_impl;
 use super::config::BRepMeshConfig;
 use super::report::ShellMeshReport;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{FaceKey, ShellKey};
 use crate::mesh_result::MeshResult;
 
@@ -16,7 +16,7 @@ pub struct ShellMeshOutput {
 /// Mesh a B-Rep shell (OCC BRepMesh_IncrementalMesh equivalent).
 pub fn mesh_brep_shell(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> MeshResult {
@@ -25,7 +25,7 @@ pub fn mesh_brep_shell(
 
 pub fn mesh_brep_shell_with_report(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> ShellMeshOutput {

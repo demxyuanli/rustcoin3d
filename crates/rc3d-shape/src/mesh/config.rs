@@ -28,6 +28,8 @@ pub struct BRepMeshConfig {
     pub same_parameter_tol: f32,
     /// Fast tessellation: skip chord retry, grid quality trials, and per-face chord remeasure.
     pub fast_export: bool,
+    /// Tolerance for vertex welding after void shell merge. Prevents visible seams.
+    pub weld_tolerance: f32,
 }
 
 impl Default for BRepMeshConfig {
@@ -40,6 +42,7 @@ impl Default for BRepMeshConfig {
             relative_deflection: 0.0,
             same_parameter_tol: 1e-4,
             fast_export: false,
+            weld_tolerance: 1e-6,
         }
     }
 }

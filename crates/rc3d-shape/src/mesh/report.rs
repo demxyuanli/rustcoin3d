@@ -5,7 +5,7 @@ use rc3d_core::math::Vec3;
 use super::face_uv::UvSource;
 use super::t4_quality::DeflectionMetrics;
 use super::BRepMeshConfig;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{FaceKey, ShellKey};
 
 #[derive(Debug, Clone)]
@@ -25,6 +25,8 @@ pub struct ShellMeshReport {
     pub grid_fallback_count: usize,
     pub total_tris: usize,
     pub shell_diag: f32,
+    /// Max 3D gap between boundary samples on duplicate EdgeKeys (same vertex pair).
+    pub max_equiv_edge_weld_gap: f32,
     pub faces: Vec<FaceMeshStats>,
 }
 
@@ -54,14 +56,14 @@ impl ShellMeshReport {
 }
 
 /// Bounding-box diagonal of all vertices referenced by a shell's faces/edges.
-pub fn shell_bbox_diagonal(shell_key: ShellKey, reg: &BRepRegistry) -> f32 {
+pub fn shell_bbox_diagonal(shell_key: ShellKey, reg: &BRepStore) -> f32 {
     shell_vertex_bbox(shell_key, reg)
         .map(|(min, max)| (max - min).length())
         .unwrap_or(0.0)
 }
 
 /// Axis-aligned bbox (min, max) of BRep vertices on a shell.
-pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepRegistry) -> Option<(Vec3, Vec3)> {
+pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepStore) -> Option<(Vec3, Vec3)> {
     let shell = reg.shells.get(shell_key)?;
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
@@ -130,8 +132,8 @@ mod tests {
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepShell, BRepSolid, BRepWire, Orientation};
 
-    fn tiny_plane_shell() -> (BRepRegistry, ShellKey) {
-        let mut reg = BRepRegistry::new();
+    fn tiny_plane_shell() -> (BRepStore, ShellKey) {
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
@@ -206,7 +208,7 @@ mod tests {
         cfg_small.relative_deflection = 0.005;
         apply_relative_deflection(&mut cfg_small, diag_small);
 
-        let mut reg_large = BRepRegistry::new();
+        let _reg_large = BRepStore::new();
         let mut cfg_large = BRepMeshConfig::default();
         cfg_large.relative_deflection = 0.005;
         apply_relative_deflection(&mut cfg_large, diag_small * 10.0);

@@ -10,7 +10,7 @@ use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use super::face_fill::{effective_min_size, FaceFillConfig};
 use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::geom::SurfaceGeom;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
 
 /// Hard cap on CDT vertices per face (boundary + Steiner).
@@ -149,7 +149,7 @@ pub fn triangulate_uv_cdt_with_steiner(
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
     config: &FaceFillConfig,
-    reg: Option<&BRepRegistry>,
+    reg: Option<&BRepStore>,
 ) -> (Vec<usize>, f32) {
     if loops.outer.boundary.len() < 3 {
         return (Vec::new(), 0.0);
@@ -764,8 +764,8 @@ mod tests {
 
     #[test]
     fn test_cdt_degenerated_sphere_constraint() {
-        use crate::store::BRepRegistry;
-        let mut reg = BRepRegistry::new();
+        use crate::store::BRepStore;
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Sphere {
             center: Vec3::ZERO,
             radius: 1.0,
@@ -836,8 +836,8 @@ mod tests {
 
     #[test]
     fn test_cdt_degenerated_cone() {
-        use crate::store::BRepRegistry;
-        let mut reg = BRepRegistry::new();
+        use crate::store::BRepStore;
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, 0.463648f32, 0.0);
         let apex = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let fk = reg.faces.insert(BRepFace {

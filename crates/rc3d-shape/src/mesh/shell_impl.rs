@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
 use crate::topo::{ShellKey, EdgeKey, FaceKey, Orientation, VertexKey};
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::geom::SurfaceGeom;
 use crate::mesh_result::MeshResult;
 use super::boundary::register_boundary_point;
@@ -23,10 +23,11 @@ use super::fallback_policy::{
 };
 use super::grid::{mesh_closed_surface, mesh_parametric_grid, mesh_trimmed_uv_grid, mesh_uv_bbox_grid};
 use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris};
-use super::ruled::try_ruled_two_wire_mesh;
+use super::ruled::{try_ruled_two_wire_mesh, RuledMeshBuffers};
 use super::refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map};
 use super::optimize::optimize_mesh;
 use super::same_param::apply_same_parameter;
+use super::edge_pool::{build_edge_boundary_pool, max_equivalent_edge_gap};
 use super::algo_factory::FaceMeshAlgo;
 use super::diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinates_if_requested};
 use super::report::{apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport};
@@ -35,7 +36,7 @@ use super::shell_mesh::ShellMeshOutput;
 
 pub(crate) fn mesh_brep_shell_with_report_impl(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> ShellMeshOutput {
@@ -84,7 +85,6 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     let mut global_normals: Vec<Vec3> = Vec::new();
     let mut pos_to_idx: HashMap<[u32; 3], usize> = HashMap::new();
     let mut vertex_mesh_idx: HashMap<VertexKey, usize> = HashMap::new();
-    let mut edge_boundary_idx: HashMap<(EdgeKey, usize), usize> = HashMap::new();
 
     for (vk, v) in reg.vertices.iter() {
         let idx = register_boundary_point(
@@ -96,38 +96,22 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         vertex_mesh_idx.insert(vk, idx);
     }
 
-    let mut total_edge_pts = 0usize;
-    for (&ek, poly) in &edge_polygons {
-        total_edge_pts += poly.params_3d.len();
-        let edge = reg.edges.get(ek);
-        let n = poly.params_3d.len();
-        for (pi, &(_t, pt)) in poly.params_3d.iter().enumerate() {
-            let idx = if let Some(e) = edge {
-                if e.v_low != e.v_high {
-                    if pi == 0 {
-                        vertex_mesh_idx.get(&e.v_low).copied()
-                    } else if pi + 1 == n {
-                        vertex_mesh_idx.get(&e.v_high).copied()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let idx = idx.unwrap_or_else(|| {
-                register_boundary_point(
-                    pt,
-                    &mut global_vertices,
-                    &mut global_normals,
-                    &mut pos_to_idx,
-                )
-            });
-            edge_boundary_idx.insert((ek, pi), idx);
-        }
-    }
+    let total_edge_pts: usize = edge_polygons.values().map(|p| p.params_3d.len()).sum();
+    let edge_boundary_idx = build_edge_boundary_pool(
+        reg,
+        &edge_polygons,
+        &mut global_vertices,
+        &mut global_normals,
+        &mut pos_to_idx,
+        &vertex_mesh_idx,
+    );
+    report.max_equiv_edge_weld_gap = max_equivalent_edge_gap(
+        reg,
+        &edge_polygons,
+        &edge_boundary_idx,
+        &global_vertices,
+        config.same_parameter_tol,
+    );
     log::debug!(
         "[BRep mesh] {} edge polygons, {} total edge pts -> {} unique boundary verts",
         edge_polygons.len(),
@@ -143,7 +127,17 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     let mut face_infos: Vec<FaceWireInfo> = Vec::new();
     let mut heal_skipped_faces: Vec<FaceKey> = Vec::new();
 
-    for &(face_key, _orient) in &shell.faces {
+    // Fix: build per-face effective sense from shell orientation.
+    // Previously _orient was discarded, causing broken normals on reversed faces.
+    let face_orient: HashMap<FaceKey, bool> = shell.faces.iter()
+        .filter_map(|&(fk, orient)| {
+            reg.faces.get(fk).map(|f| (fk, super::orient::effective_sense_raw(f.same_sense, orient)))
+        })
+        .collect();
+
+    for &(face_key, orient) in &shell.faces {
+        let _ = orient; // consumed in face_orient map above
+
         if skip_face_keys.contains(&face_key) {
             heal_skipped_faces.push(face_key);
             continue;
@@ -281,6 +275,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 | SurfaceGeom::Offset { .. }
                 | SurfaceGeom::Cylinder { .. }
                 | SurfaceGeom::Cone { .. }
+                | SurfaceGeom::Torus { .. }
         );
         let mut algo = algo_from_plan(mesh_plan).unwrap_or(FaceMeshAlgo::SurfaceFill3d);
         if info_wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
@@ -329,10 +324,12 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
-                &mut global_vertices,
-                &mut global_normals,
-                &mut all_indices,
-                &mut pos_to_idx,
+                RuledMeshBuffers {
+                    global_vertices: &mut global_vertices,
+                    global_normals: &mut global_normals,
+                    all_indices: &mut all_indices,
+                    pos_to_idx: &mut pos_to_idx,
+                },
                 &scaled_config.face,
             );
             if ruled.tri_count > 0 {
@@ -367,10 +364,12 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
-                &mut global_vertices,
-                &mut global_normals,
-                &mut all_indices,
-                &mut pos_to_idx,
+                RuledMeshBuffers {
+                    global_vertices: &mut global_vertices,
+                    global_normals: &mut global_normals,
+                    all_indices: &mut all_indices,
+                    pos_to_idx: &mut pos_to_idx,
+                },
                 &scaled_config.face,
             );
             let valid = count_valid_tris_in_range(
@@ -833,10 +832,12 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 &info_wire_edges,
                 &edge_polygons,
                 &edge_boundary_idx,
-                &mut global_vertices,
-                &mut global_normals,
-                &mut all_indices,
-                &mut pos_to_idx,
+                RuledMeshBuffers {
+                    global_vertices: &mut global_vertices,
+                    global_normals: &mut global_normals,
+                    all_indices: &mut all_indices,
+                    pos_to_idx: &mut pos_to_idx,
+                },
                 &scaled_config.face,
             );
             let valid = count_valid_tris_in_range(

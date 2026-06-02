@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
 use crate::topo::{EdgeKey, FaceKey, BRepEdge};
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::geom::{CurveGeom, SurfaceGeom, normalize_edge_curve_to_vertices};
 
 /// Configuration for edge discretization.
@@ -40,7 +40,7 @@ pub struct EdgePolygon {
 
 /// Discretize all unique edges in a registry. Shared edges are discretized once.
 pub fn discretize_all_edges(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &EdgeDiscConfig,
 ) -> HashMap<EdgeKey, EdgePolygon> {
     let mut result = HashMap::new();
@@ -70,7 +70,7 @@ fn estimate_curve_length(curve: &crate::geom::CurveGeom) -> f32 {
 
 pub fn discretize_edge(
     ek: EdgeKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &EdgeDiscConfig,
 ) -> EdgePolygon {
     let edge = match reg.edges.get(ek) {
@@ -142,7 +142,7 @@ pub fn discretize_edge(
 }
 
 /// True for healed seam edges or closed isoparam edges (v_low == v_high).
-fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepRegistry) -> bool {
+fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepStore) -> bool {
     if edge.v_low == edge.v_high {
         return true;
     }
@@ -154,7 +154,7 @@ fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepRegistry) ->
 /// Use stored polyline knots exactly (seam / isoparam edges aligned with surface mesh grid).
 fn sample_polyline_on_surface_exact(
     edge: &BRepEdge,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> Option<Vec<(f32, Vec3)>> {
     let mut face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     face_keys.sort_unstable();
@@ -198,7 +198,7 @@ fn sample_polyline_on_surface_exact(
 /// Pick the first face PCURVE pair for OCCT-style BRepAdaptor_Curve(E, F).
 fn primary_pcurve_on_surface<'a>(
     edge: &'a BRepEdge,
-    reg: &'a BRepRegistry,
+    reg: &'a BRepStore,
 ) -> Option<(&'a CurveGeom, &'a SurfaceGeom)> {
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
@@ -298,7 +298,7 @@ fn sample_pcurve_on_surface(
 }
 
 /// Curve used for mesh discretization: always spans `v_low` → `v_high` at t=0..1.
-fn mesh_curve_for_edge(edge: &BRepEdge, reg: &BRepRegistry) -> CurveGeom {
+fn mesh_curve_for_edge(edge: &BRepEdge, reg: &BRepStore) -> CurveGeom {
     if edge.v_low == edge.v_high {
         return edge.curve.clone();
     }
@@ -379,7 +379,7 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::BRepFace;
-    use crate::store::BRepRegistry;
+    use crate::store::BRepStore;
 
     #[test]
     fn test_discretize_line_minimal() {
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_pcurve_on_plane_matches_3d_line() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
         let wire = reg.wires.insert(crate::topo::BRepWire { edges: vec![] });

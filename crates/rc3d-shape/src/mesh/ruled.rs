@@ -9,20 +9,29 @@ use super::face_fill::{
 };
 use super::grid::parametric_grid_segs;
 
+pub struct RuledMeshBuffers<'a> {
+    pub global_vertices: &'a mut Vec<Vec3>,
+    pub global_normals: &'a mut Vec<Vec3>,
+    pub all_indices: &'a mut Vec<i32>,
+    pub pos_to_idx: &'a mut HashMap<[u32; 3], usize>,
+}
+
 /// Ruled quad strip between exactly two boundary wires (no untrimmed native UV sheet).
-#[allow(clippy::too_many_arguments)]
 pub fn try_ruled_two_wire_mesh(
     face_key: FaceKey,
     face: &crate::topo::BRepFace,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
-    all_indices: &mut Vec<i32>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    buffers: RuledMeshBuffers<'_>,
     fill_config: &FaceFillConfig,
 ) -> FaceMeshRange {
+    let RuledMeshBuffers {
+        global_vertices,
+        global_normals,
+        all_indices,
+        pos_to_idx,
+    } = buffers;
     let first_tri = all_indices.len() / 4;
     if wire_edges.len() != 2 {
         return FaceMeshRange {

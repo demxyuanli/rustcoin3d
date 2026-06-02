@@ -6,7 +6,6 @@ use rc3d_core::math::Vec3;
 use crate::geom::SurfaceGeom;
 use crate::topo::BRepFace;
 use crate::mesh_result::MeshResult;
-use super::face_fill::FaceMeshRange;
 
 #[derive(Debug, Clone)]
 pub struct RefineConfig {

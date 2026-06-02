@@ -1,8 +1,7 @@
 //! Mesh-level void shell subtraction for BREP_WITH_VOIDS.
 //!
-//! Classifies each outer-mesh triangle against void meshes using
-//! centroid ray-casting. Triangles whose centroids fall inside any
-//! void are removed.
+//! Legacy centroid ray-cast removal. Production paths use
+//! [`solid_mesh::mesh_solid_with_voids`] (OCC oriented multi-shell merge).
 
 use rc3d_core::math::Vec3;
 use crate::mesh_result::MeshResult;

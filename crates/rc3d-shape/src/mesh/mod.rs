@@ -12,31 +12,35 @@ pub mod algo_factory;
 pub mod void_subtract;
 pub mod face_dispatch;
 pub mod shell_mesh;
+pub mod orient;
+pub mod uv_source;
+mod solid_mesh;
 
 mod boundary;
 mod config;
 mod fallback_policy;
 mod grid;
+mod edge_pool;
 mod post_process;
 mod ruled;
 mod shell_impl;
-mod edge_pool;
 
 pub use config::{BRepMeshConfig, MESH_CLOSED_SURFACE_SEGS};
+pub use edge_pool::measure_equivalent_edge_weld_gap;
+pub use solid_mesh::mesh_solid_with_voids;
 pub use face_dispatch::{algo_from_plan, FaceMeshPlan, SurfaceFillReason, plan_face_mesh};
 pub use shell_mesh::{mesh_brep_shell, mesh_brep_shell_with_report, ShellMeshOutput};
-pub use edge_pool::measure_equivalent_edge_weld_gap;
 
 #[cfg(test)]
 mod mesh_integration {
     use super::*;
     use rc3d_core::math::Vec3;
     use crate::geom::{CurveGeom, SurfaceGeom};
-    use crate::store::BRepRegistry;
+    use crate::store::BRepStore;
     use crate::topo::{BRepFace, BRepShell, BRepWire, BRepSolid, Orientation, ShellKey};
 
-    fn build_plane_square_shell() -> (BRepRegistry, ShellKey) {
-        let mut reg = BRepRegistry::new();
+    fn build_plane_square_shell() -> (BRepStore, ShellKey) {
+        let mut reg = BRepStore::new();
         let face_key = {
             let wire = reg.wires.insert(BRepWire { edges: vec![] });
             reg.faces.insert(BRepFace {

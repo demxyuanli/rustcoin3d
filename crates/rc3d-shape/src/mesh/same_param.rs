@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use super::edge_disc::EdgePolygon;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::EdgeKey;
 
 /// Snap discretized edge 3D points onto their PCurve-evaluated surface positions.
 pub fn apply_same_parameter(
     edge_polygons: &mut HashMap<EdgeKey, EdgePolygon>,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     base_tol: f32,
 ) {
     for (&ek, poly) in edge_polygons.iter_mut() {
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn offset_3d_point_snaps_to_surface() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
                 origin: Vec3::ZERO,

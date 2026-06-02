@@ -8,7 +8,7 @@ use rc3d_core::math::Vec3;
 use super::edge_disc::EdgePolygon;
 use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
 use crate::geom::{build_ortho_axes, SurfaceGeom, plane_tangent_basis};
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::BRepFace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,21 +103,21 @@ impl FaceUvLoops {
         &self, face: &BRepFace, global_vertices: &[Vec3],
     ) -> Option<(f32, f32, f32, f32)> {
         if !matches!(face.surface, SurfaceGeom::Revolution { .. }) { return None; }
-        let mut um = f32::MAX; let mut uM = f32::MIN; let mut vm = f32::MAX; let mut vM = f32::MIN; let mut n = 0usize;
+        let mut um = f32::MAX; let mut u_max = f32::MIN; let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut n = 0usize;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = global_vertices.get(v.global_idx) else { continue; };
             let Some((u, vn)) = face.surface.revolution_native_uv_at(*p) else { continue; };
-            um = um.min(u); uM = uM.max(u); vm = vm.min(vn); vM = vM.max(vn); n += 1;
+            um = um.min(u); u_max = u_max.max(u); vm = vm.min(vn); v_max = v_max.max(vn); n += 1;
         }
         if n < 2 { return None; }
-        if (uM - um) < 1e-8 && (vM - vm) < 1e-8 { return None; }
-        if (vM - vm) < 1e-5 {
+        if (u_max - um) < 1e-8 && (v_max - vm) < 1e-8 { return None; }
+        if (v_max - vm) < 1e-5 {
             if let Some((r0, r1)) = self.revolution_v_bounds_from_3d(face, global_vertices) {
-                if r1 > r0 + 1e-5 { return Some((um, uM, r0, r1)); }
+                if r1 > r0 + 1e-5 { return Some((um, u_max, r0, r1)); }
             }
             return None;
         }
-        Some((um, uM, vm, vM))
+        Some((um, u_max, vm, v_max))
     }
 
     pub fn native_uv_bounds(&self) -> Option<(f32, f32, f32, f32)> {
@@ -134,27 +134,27 @@ impl FaceUvLoops {
     }
     pub fn uv_bounds_from_projection(&self, face: &BRepFace, vertices: &[Vec3]) -> Option<(f32, f32, f32, f32)> {
         let inv_tol = face.tolerance.max(1e-3);
-        let mut um = f32::MAX; let mut uM = f32::MIN; let mut vm = f32::MAX; let mut vM = f32::MIN; let mut n = 0usize;
+        let mut um = f32::MAX; let mut u_max = f32::MIN; let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut n = 0usize;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = vertices.get(v.global_idx) else { continue; };
             let Some(uv) = face.surface.project(*p).or_else(|| face.surface.inverse_native_uv(*p, inv_tol)) else { continue; };
-            um = um.min(uv.0); uM = uM.max(uv.0); vm = vm.min(uv.1); vM = vM.max(uv.1); n += 1;
+            um = um.min(uv.0); u_max = u_max.max(uv.0); vm = vm.min(uv.1); v_max = v_max.max(uv.1); n += 1;
         }
-        if n < 2 { None } else { Some((um, uM, vm, vM)) }
+        if n < 2 { None } else { Some((um, u_max, vm, v_max)) }
     }
     pub fn revolution_v_bounds_from_3d(&self, face: &BRepFace, vertices: &[Vec3]) -> Option<(f32, f32)> {
         let SurfaceGeom::Revolution { axis_origin, axis_dir, .. } = &face.surface else { return None; };
         let axis = axis_dir.normalize(); let (x_dir, y_dir) = build_ortho_axes(axis);
-        let mut vm = f32::MAX; let mut vM = f32::MIN; let mut any = false;
+        let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut any = false;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = vertices.get(v.global_idx) else { continue; };
             let rel = *p - *axis_origin; let radial = rel - axis * rel.dot(axis);
             if radial.length_squared() < face.tolerance * face.tolerance { continue; }
             let u = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
             let a = if u < 0.0 { u + std::f32::consts::TAU } else { u };
-            vm = vm.min(a); vM = vM.max(a); any = true;
+            vm = vm.min(a); v_max = v_max.max(a); any = true;
         }
-        if any && vM > vm + 1e-4 { Some((vm, vM)) } else { None }
+        if any && v_max > vm + 1e-4 { Some((vm, v_max)) } else { None }
     }
 }
 
@@ -200,7 +200,7 @@ fn pip_even_odd(x: f32, y: f32, poly: &[(f32, f32)]) -> bool {
 pub fn collect_face_loops(
     face_key: FaceKey,
     face: &BRepFace,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
     global_vertices: &[Vec3],
@@ -300,7 +300,7 @@ fn collect_wire_loop(
     wire_key: WireKey,
     surface: &SurfaceGeom,
     inv_tol: f32,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
     global_vertices: &[Vec3],
@@ -848,6 +848,7 @@ pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vert
 
 // ── Revolution PCurve UV Handling ────────────────────────────
 
+#[allow(dead_code)]
 fn revolution_uv_for_oriented_wire(
     surface: &SurfaceGeom, orient: Orientation, raw_uv: Option<(f32, f32)>, pt: Option<Vec3>,
 ) -> Option<(f32, f32)> {
@@ -971,7 +972,7 @@ pub fn loops_from_boundary_indices(
 mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
-    use crate::store::BRepRegistry;
+    use crate::store::BRepStore;
     use crate::topo::{BRepFace, BRepWire};
 
     #[test]
@@ -998,7 +999,7 @@ mod tests {
     fn collect_face_loops_square_outer() {
         use crate::mesh::edge_disc::{discretize_edge, EdgeDiscConfig};
 
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {

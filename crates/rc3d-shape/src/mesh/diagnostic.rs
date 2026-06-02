@@ -9,7 +9,7 @@ use super::face_fill::FaceMeshRange;
 use super::face_uv::FaceUvLoops;
 use super::report::ShellMeshReport;
 use crate::geom::SurfaceGeom;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey};
 
 pub fn surface_kind(surface: &SurfaceGeom) -> &'static str {
@@ -161,7 +161,7 @@ impl DiagWriter {
 /// Dump all vertex coordinates and per-triangle vertex coordinates when env is set.
 pub fn log_mesh_coordinates_if_requested(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     vertices: &[Vec3],
     indices: &[i32],
     face_ranges: &[FaceMeshRange],

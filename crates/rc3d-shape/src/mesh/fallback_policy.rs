@@ -1,7 +1,7 @@
 use rc3d_core::math::Vec3;
 
 use crate::geom::SurfaceGeom;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use super::face_uv::{FaceUvLoops, uv_loop_is_degenerate};
 
 /// True when UV bounds cover most of the native period (untrimmed analytic sheet).
@@ -33,7 +33,7 @@ pub fn revolution_fallback_uv_bounds(
 }
 
 pub fn allows_trimmed_uv_grid(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     face: &crate::topo::BRepFace,
     loops: &FaceUvLoops,
     global_vertices: &[Vec3],
@@ -69,7 +69,7 @@ pub fn allows_trimmed_uv_grid(
 }
 
 pub fn allows_parametric_grid_fallback(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     face: &crate::topo::BRepFace,
     loops: &FaceUvLoops,
 ) -> bool {
@@ -97,7 +97,7 @@ pub fn allows_parametric_grid_fallback(
 }
 
 /// VERTEX_LOOP on a closed analytic surface: wire is only pole degeneracy (+ optional seam).
-pub fn uses_closed_parametric_mesh(reg: &BRepRegistry, face: &crate::topo::BRepFace) -> bool {
+pub fn uses_closed_parametric_mesh(reg: &BRepStore, face: &crate::topo::BRepFace) -> bool {
     if !face.inner_wires.is_empty() {
         return false;
     }

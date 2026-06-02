@@ -15,7 +15,7 @@ use super::face_uv::{
     cylinder_loop_needs_uv_rebuild, repair_cylinder_uv_loops,
 };
 use crate::geom::{plane_tangent_basis, SurfaceGeom};
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{BRepFace, EdgeKey, FaceKey};
 
 #[derive(Debug, Clone)]
@@ -200,6 +200,7 @@ fn compute_vertex_averaged_normal(
     }
 }
 
+#[allow(dead_code)]
 fn chain_closing_3d_len(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
     if chain.len() < 2 {
         return f32::MAX;
@@ -324,7 +325,7 @@ fn triangulate_loops_cdt(
     work_loops: &FaceUvLoops,
     face: &BRepFace,
     face_key: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -355,7 +356,7 @@ fn try_cdt_or_earcut(
     work_loops: &FaceUvLoops,
     face: &BRepFace,
     face_key: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
@@ -634,6 +635,7 @@ fn sort_plane_ring_by_angle(
     });
 }
 
+#[allow(dead_code)]
 fn sort_plane_indices_by_angle(
     order: &mut [usize],
     ring: &[Vec3],
@@ -654,6 +656,7 @@ fn sort_plane_indices_by_angle(
     });
 }
 
+#[allow(dead_code)]
 fn sort_plane_vertex_indices_by_angle(
     ring: &mut [usize],
     center: Vec3,
@@ -1372,7 +1375,7 @@ pub fn mesh_ruled_wire_polygons_3d(
                 SurfaceGeom::Offset { .. } | SurfaceGeom::BSpline(_) => {
                     if let Some(uv) = face.surface.project(pm) {
                         let pt = face.surface.d0_native(uv.0, uv.1);
-                        let mut n = face.surface.normal_native(uv.0, uv.1);
+                        let n = face.surface.normal_native(uv.0, uv.1);
                         (pt, n)
                     } else {
                         let e0 = p1 - p0;
@@ -1810,7 +1813,7 @@ pub fn fill_trimmed(
     face_key: FaceKey,
     loops: &FaceUvLoops,
     face: &BRepFace,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
@@ -2644,7 +2647,7 @@ fn accumulate_normals(
 mod tests {
     use super::*;
     use crate::mesh::face_uv::{point_in_trim, signed_area_2d, UvLoop, UvSource, UvVertex};
-    use crate::store::BRepRegistry;
+    use crate::store::BRepStore;
     use crate::topo::{BRepFace, FaceKey};
 
     #[test]
@@ -2697,7 +2700,7 @@ mod tests {
         let mut norms = vec![Vec3::Z; 8];
         let mut indices = Vec::new();
         let mut pos_map = HashMap::new();
-        let reg = BRepRegistry::new();
+        let reg = BRepStore::new();
         let fk = FaceKey::default();
         let range = fill_trimmed(
             fk,
