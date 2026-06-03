@@ -7,6 +7,7 @@
 //! 4. Face selection per boolean operation type
 //! 5. Stitch result into new B-rep shell
 
+pub mod aabb;
 pub mod intersect;
 pub mod classify;
 pub mod split;
