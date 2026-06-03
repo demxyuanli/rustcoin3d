@@ -14,6 +14,7 @@ pub mod shape;
 pub mod store;
 pub mod tessellation;
 pub mod topo;
+pub mod topo_iter;
 pub mod xde;
 
 pub use document::{PmiDataSet, PmiEntry, ProvenanceMap, ShapeDocument};
