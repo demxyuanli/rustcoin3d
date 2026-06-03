@@ -1,13 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
+use rc3d_core::utils::hash::f32x3_quantized_bits;
 use crate::geom::SurfaceGeom;
-use crate::topo::{EdgeKey, FaceKey, Orientation};
+use crate::topo::{BRepFace, EdgeKey, FaceKey, Orientation};
 use super::edge_disc::EdgePolygon;
 use super::edge_pool::FaceEdgeBoundaryIdx;
 use super::face_fill::{
-    measure_face_chord_error, FaceFillConfig, FaceMeshRange, mesh_ruled_two_wire_edges,
-    mesh_ruled_wire_polygons_3d, prefers_native_uv_ruled,
+    accumulate_normals, fix_tri_winding, measure_face_chord_error, FaceFillConfig,
+    FaceMeshRange, polyline_surface_uv, prefers_native_uv_ruled,
+    surface_is_revolution_like, surface_uv_basis, wire_pair_is_same_edge_seam,
+};
+use super::fill_revolution::{
+    resample_uv_polyline, revolution_ruled_grid_from_uv, revolution_wire_uv_polyline,
 };
 use super::grid::parametric_grid_segs;
 use super::config::min_adequate_trim_tris;
@@ -314,4 +319,371 @@ fn ruled_strip_uv_segs(
     }
     let segs_v = ((max_width / (defl * 0.85)).ceil() as u32).clamp(4, 48);
     (segs_u, segs_v)
+}
+
+pub fn sample_polyline(indices: &[usize], verts: &[Vec3], t: f32) -> Vec3 {
+    if indices.is_empty() {
+        return Vec3::ZERO;
+    }
+    if indices.len() == 1 {
+        return verts[indices[0]];
+    }
+    let f = t * (indices.len() - 1) as f32;
+    let i = f.floor() as usize;
+    let j = (i + 1).min(indices.len() - 1);
+    let u = f - i as f32;
+    verts[indices[i]].lerp(verts[indices[j]], u)
+}
+
+/// Ruled quad strip in surface (u,v): OCC-style ruled patch, not 3D linear blend.
+pub fn mesh_ruled_two_wire_edges(
+    face_key: FaceKey,
+    face: &BRepFace,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &FaceEdgeBoundaryIdx,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    segs_u: u32,
+    segs_v: u32,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    let mut boundary_global = HashSet::new();
+    if wire_edges.len() != 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global,
+            max_chord_error: 0.0,
+        };
+    }
+
+    let mut curves: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for (side, &(ek, ref pis)) in wire_edges.iter().enumerate() {
+        for &pi in pis {
+            if let Some(gi) = edge_boundary_idx.get(&(face_key, ek, pi)).copied() {
+                if curves[side].last() != Some(&gi) {
+                    curves[side].push(gi);
+                }
+                boundary_global.insert(gi);
+            }
+        }
+    }
+    if curves[0].len() < 2 || curves[1].len() < 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global,
+            max_chord_error: 0.0,
+        };
+    }
+
+    let nu = segs_u.max(2) as usize;
+    let nv = segs_v.max(2) as usize;
+
+    let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
+    let uv_surface = surface_uv_basis(&face.surface);
+    let rev_grid = if surface_is_revolution_like(&face.surface)
+        || wire_pair_is_same_edge_seam(wire_edges)
+    {
+        let uv0 = revolution_wire_uv_polyline(
+            face_key,
+            uv_surface,
+            wire_edges[0].0,
+            &wire_edges[0].1,
+            edge_polygons,
+            global_vertices,
+            &curves[0],
+        );
+        let uv1 = revolution_wire_uv_polyline(
+            face_key,
+            uv_surface,
+            wire_edges[1].0,
+            &wire_edges[1].1,
+            edge_polygons,
+            global_vertices,
+            &curves[1],
+        );
+        revolution_ruled_grid_from_uv(face, &uv0, &uv1, nu, nv)
+    } else {
+        None
+    };
+
+    if let Some(ref rg) = rev_grid {
+        for (i, row) in rg.iter().enumerate() {
+            for (j, &(pt, n)) in row.iter().enumerate() {
+                let idx = global_vertices.len();
+                global_vertices.push(pt);
+                global_normals.push(n);
+                grid[i][j] = idx;
+            }
+        }
+    } else {
+        let uv_surface = surface_uv_basis(&face.surface);
+        let uv0 = polyline_surface_uv(uv_surface, &curves[0], global_vertices);
+        let uv1 = polyline_surface_uv(uv_surface, &curves[1], global_vertices);
+        let use_native_uv = uv0.len() >= 2 && uv1.len() >= 2;
+        let resampled = if use_native_uv {
+            Some((
+                resample_uv_polyline(&uv0, nu),
+                resample_uv_polyline(&uv1, nu),
+            ))
+        } else {
+            None
+        };
+        for i in 0..=nu {
+            for j in 0..=nv {
+                let s = j as f32 / nv as f32;
+                let (pt, n) = if let Some((ref r0, ref r1)) = resampled {
+                    let (u0, v0) = r0[i];
+                    let (u1, v1) = r1[i];
+                    let u = u0 * (1.0 - s) + u1 * s;
+                    let v = v0 * (1.0 - s) + v1 * s;
+                    let pt = face.surface.d0_native(u, v);
+                    let mut n = face.surface.normal_native(u, v);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    (pt, n)
+                } else {
+                    let t = i as f32 / nu as f32;
+                    let p0 = sample_polyline(&curves[0], global_vertices, t);
+                    let p1 = sample_polyline(&curves[1], global_vertices, t);
+                    let pt = p0 * (1.0 - s) + p1 * s;
+                    (pt, Vec3::Z)
+                };
+                let gi = if use_native_uv {
+                    let idx = global_vertices.len();
+                    global_vertices.push(pt);
+                    global_normals.push(n);
+                    idx
+                } else {
+                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+                    *pos_to_idx.entry(hash).or_insert_with(|| {
+                        let idx = global_vertices.len();
+                        global_vertices.push(pt);
+                        global_normals.push(n);
+                        idx
+                    })
+                };
+                grid[i][j] = gi;
+            }
+        }
+    }
+
+    for i in 0..nu {
+        for j in 0..nv {
+            let i00 = grid[i][j] as i32;
+            let i10 = grid[i + 1][j] as i32;
+            let i11 = grid[i + 1][j + 1] as i32;
+            let i01 = grid[i][j + 1] as i32;
+            for (mut a, mut b, mut c) in [(i00, i10, i11), (i00, i11, i01)] {
+                if a == b || b == c || c == a {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[a, b, c, -1]);
+                accumulate_normals(a, b, c, global_vertices, global_normals);
+            }
+        }
+    }
+
+    let tri_count = all_indices.len() / 4 - first_tri;
+    FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count,
+        boundary_global,
+        max_chord_error: 0.0,
+    }
+}
+
+/// Ruled strip using raw edge polygon 3D samples (avoids boundary pool dedup collapsing wires).
+pub fn mesh_ruled_wire_polygons_3d(
+    face_key: FaceKey,
+    face: &BRepFace,
+    wire_edges: &[(EdgeKey, Orientation, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    all_indices: &mut Vec<i32>,
+    segs_u: u32,
+    segs_v: u32,
+) -> FaceMeshRange {
+    let first_tri = all_indices.len() / 4;
+    if wire_edges.len() != 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    for (side, &(ek, _orient, ref pis)) in wire_edges.iter().enumerate() {
+        let Some(poly) = edge_polygons.get(&ek) else {
+            return FaceMeshRange {
+                face_key,
+                first_tri,
+                tri_count: 0,
+                boundary_global: HashSet::new(),
+                max_chord_error: 0.0,
+            };
+        };
+        for &pi in pis {
+            let Some(&(_, pt)) = poly.params_3d.get(pi) else {
+                continue;
+            };
+            if curves[side]
+                .last()
+                .map(|p| (*p - pt).length_squared() > 1e-14)
+                .unwrap_or(true)
+            {
+                curves[side].push(pt);
+            }
+        }
+    }
+    if curves[0].len() < 2 || curves[1].len() < 2 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let sample_curve = |c: &[Vec3], t: f32| -> Vec3 {
+        if c.len() == 1 {
+            return c[0];
+        }
+        let f = t * (c.len() - 1) as f32;
+        let i = f.floor() as usize;
+        let j = (i + 1).min(c.len() - 1);
+        let u = f - i as f32;
+        c[i].lerp(c[j], u)
+    };
+    // If the two curves are nearly coincident, the ruled strip has zero width -> all degenerate.
+    let n_samples = curves[0].len().max(curves[1].len()).max(2);
+    let max_separation = (0..n_samples)
+        .map(|i| {
+            let t = i as f32 / (n_samples - 1) as f32;
+            let a = sample_curve(&curves[0], t);
+            let b = sample_curve(&curves[1], t);
+            (a - b).length_squared()
+        })
+        .fold(0.0f32, f32::max);
+    if max_separation < 1e-6 {
+        return FaceMeshRange {
+            face_key,
+            first_tri,
+            tri_count: 0,
+            boundary_global: HashSet::new(),
+            max_chord_error: 0.0,
+        };
+    }
+    let nu = segs_u.max(2) as usize;
+    let nv = segs_v.max(2) as usize;
+    let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
+    for i in 0..=nu {
+        let t = i as f32 / nu as f32;
+        let p0 = sample_curve(&curves[0], t);
+        let p1 = sample_curve(&curves[1], t);
+        for j in 0..=nv {
+            let s = j as f32 / nv as f32;
+            let pm = p0 * (1.0 - s) + p1 * s;
+            let (pt, mut n) = match &face.surface {
+                SurfaceGeom::Revolution { .. } => {
+                    let n = face
+                        .surface
+                        .revolution_native_uv_at(pm)
+                        .map(|(u, v)| face.surface.normal_native(u, v))
+                        .unwrap_or_else(|| {
+                            let e0 = p1 - p0;
+                            let e1 = pm - p0;
+                            e0.cross(e1)
+                        });
+                    (pm, n)
+                }
+                SurfaceGeom::Offset { .. } | SurfaceGeom::BSpline(_) => {
+                    if let Some(uv) = face.surface.project(pm) {
+                        let pt = face.surface.d0_native(uv.0, uv.1);
+                        let n = face.surface.normal_native(uv.0, uv.1);
+                        (pt, n)
+                    } else {
+                        let e0 = p1 - p0;
+                        let e1 = pm - p0;
+                        (pm, e0.cross(e1))
+                    }
+                }
+                _ => {
+                    let e0 = p1 - p0;
+                    let e1 = pm - p0;
+                    (pm, e0.cross(e1))
+                }
+            };
+            if n.length_squared() < 1e-12 {
+                n = Vec3::Y;
+            } else {
+                n = n.normalize();
+            }
+            if !face.same_sense {
+                n = -n;
+            }
+            let idx = global_vertices.len();
+            global_vertices.push(pt);
+            if global_normals.len() < global_vertices.len() {
+                global_normals.resize(global_vertices.len(), n);
+            }
+            global_normals[idx] = n;
+            grid[i][j] = idx;
+        }
+    }
+    for i in 0..nu {
+        for j in 0..nv {
+            let i00 = grid[i][j] as i32;
+            let i10 = grid[i + 1][j] as i32;
+            let i11 = grid[i + 1][j + 1] as i32;
+            let i01 = grid[i][j + 1] as i32;
+            for (mut a, mut b, mut c) in [(i00, i10, i11), (i00, i11, i01)] {
+                if a == b || b == c || c == a {
+                    continue;
+                }
+                fix_tri_winding(
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    global_vertices,
+                    &face.surface,
+                    face.same_sense,
+                );
+                all_indices.extend_from_slice(&[a, b, c, -1]);
+                accumulate_normals(a, b, c, global_vertices, global_normals);
+            }
+        }
+    }
+    let tri_count = all_indices.len() / 4 - first_tri;
+    let mut range = FaceMeshRange {
+        face_key,
+        first_tri,
+        tri_count,
+        boundary_global: HashSet::new(),
+        max_chord_error: 0.0,
+    };
+    if tri_count > 0 {
+        range.max_chord_error =
+            measure_face_chord_error(face, global_vertices, all_indices, &range);
+    }
+    range
 }
