@@ -430,7 +430,7 @@ pub(crate) fn surface_is_revolution_like(surface: &SurfaceGeom) -> bool {
     match surface {
         SurfaceGeom::Revolution { .. } | SurfaceGeom::Extrusion { .. } => true,
         SurfaceGeom::Offset { basis, .. } => {
-            matches!(basis.as_ref(), SurfaceGeom::Revolution { .. })
+            matches!(basis.as_ref(), SurfaceGeom::Revolution { .. } | SurfaceGeom::Extrusion { .. })
         }
         _ => false,
     }

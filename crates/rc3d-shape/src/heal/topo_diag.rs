@@ -81,20 +81,9 @@ pub fn check_shell_topo_diag(shell_key: ShellKey, reg: &BRepStore) -> TopoDiagRe
             }
         }
 
-        if let Some(wire) = reg.wires.get(face.outer_wire) {
-            for &(ek, _) in &wire.edges {
-                if let Some(drift) = measure_pcurve_drift(face_key, ek, tol, reg) {
-                    report.pcurve_drifts.push(drift);
-                }
-            }
-        }
-        for &iw in &face.inner_wires {
-            if let Some(wire) = reg.wires.get(iw) {
-                for &(ek, _) in &wire.edges {
-                    if let Some(drift) = measure_pcurve_drift(face_key, ek, tol, reg) {
-                        report.pcurve_drifts.push(drift);
-                    }
-                }
+        for ek in crate::topo_iter::iter_edges_of_face(face_key, reg) {
+            if let Some(drift) = measure_pcurve_drift(face_key, ek, tol, reg) {
+                report.pcurve_drifts.push(drift);
             }
         }
     }

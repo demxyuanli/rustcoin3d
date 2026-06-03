@@ -30,6 +30,30 @@ pub fn iter_edge_orientations_of_face(
         .collect()
 }
 
+/// Iterate all (EdgeKey, Orientation) pairs in a face's outer wire only.
+pub fn iter_edge_orientations_of_outer_wire(
+    face: FaceKey,
+    reg: &BRepStore,
+) -> Vec<(EdgeKey, Orientation)> {
+    let Some(face) = reg.faces.get(face) else {
+        return vec![];
+    };
+    reg.wires
+        .get(face.outer_wire)
+        .map(|w| w.edges.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// Iterate all EdgeKeys in a face's outer wire only (deduplicated).
+pub fn iter_edges_of_outer_wire(face: FaceKey, reg: &BRepStore) -> Vec<EdgeKey> {
+    iter_edge_orientations_of_outer_wire(face, reg)
+        .iter()
+        .map(|(ek, _)| *ek)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Iterate all EdgeKeys in a face's wires (deduplicated).
 pub fn iter_edges_of_face(face: FaceKey, reg: &BRepStore) -> Vec<EdgeKey> {
     iter_edge_orientations_of_face(face, reg)
