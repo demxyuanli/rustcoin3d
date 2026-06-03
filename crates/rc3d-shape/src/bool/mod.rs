@@ -90,7 +90,7 @@ pub fn boolean_brep(
 
     // Phase 4: Select faces based on operation type
     let selected = select::select_brep_faces(
-        &regions_a, &regions_b, &split_a, &split_b, op,
+        &regions_a, &regions_b, &split_a, &split_b, op, reg,
     );
 
     if selected.is_empty() {
@@ -292,5 +292,60 @@ mod tests {
         let mut reg = BRepStore::new();
         let result = boolean_brep(&[], &[], &mut reg, BoolOp::Union);
         assert!(result.is_empty);
+    }
+
+    /// Integration test: two perpendicular planes intersecting along the Y axis.
+    ///
+    /// Plane Z=0 (normal Z) x Plane X=0 (normal X) → intersection line along Y.
+    /// Verifies the full boolean pipeline: intersect → split → classify → select → stitch.
+    ///
+    /// Note: With single-face shells, ray-casting classifies both sides as "Outside"
+    /// due to majority voting (1 of 6 rays hits). Therefore Intersection (keep Inside)
+    /// is empty, but Union (keep Outside) and Difference produce results.
+    #[test]
+    fn test_bool_intersection_two_planes() {
+        let mut reg = BRepStore::new();
+
+        // Shell A: face on Plane Z=0
+        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
+
+        // Shell B: face on Plane X=0, rotated 90 degrees
+        let sb = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::X);
+
+        // Phase 1: intersection curves are found
+        let raw = intersect::compute_intersections_brep(&[sa], &[sb], &reg);
+        assert_eq!(raw.len(), 1, "Should find 1 face-face intersection");
+
+        // Phase 2a: B-Rep curves computed
+        let curves = split::compute_brep_intersection_curves(&raw, &reg);
+        assert_eq!(curves.len(), 1, "Should produce 1 B-Rep curve");
+
+        // Phase 2b: faces are split
+        let split_a = split::split_all_faces_brep(&[sa], &curves, &reg);
+        let split_b = split::split_all_faces_brep(&[sb], &curves, &reg);
+        assert_eq!(split_a.len(), 1, "Shell A has 1 face → 1 split region");
+        assert_eq!(split_b.len(), 1, "Shell B has 1 face → 1 split region");
+        // Bug 2 verification: each face should produce 2 sub-faces (both sides of the curve)
+        assert_eq!(split_a[0].sub_faces.len(), 2, "Face A split into 2 sub-faces");
+        assert_eq!(split_b[0].sub_faces.len(), 2, "Face B split into 2 sub-faces");
+
+        // Phase 3: classify — Bug 3 verification: ALL sub-faces are classified
+        let regions_a = classify::classify_brep_regions(&split_a, sb, &reg);
+        let regions_b = classify::classify_brep_regions(&split_b, sa, &reg);
+        assert_eq!(regions_a[0].1.len(), 2, "All 2 sub-faces of A classified");
+        assert_eq!(regions_b[0].1.len(), 2, "All 2 sub-faces of B classified");
+
+        // Phase 4+5: Union (keep Outside) — Bug 1 verification: sub-faces created
+        let result_union = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+        assert!(!result_union.is_empty,
+            "Union should produce non-empty result (Outside sub-faces selected)");
+        assert_eq!(result_union.intersection_count, 1,
+            "Should report 1 intersection curve");
+
+        // Difference A-B: keep Outside from A, Inside from B
+        // With all classified as Outside: A sub-faces kept, B sub-faces discarded
+        let result_diff = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
+        assert!(!result_diff.is_empty,
+            "Difference should produce non-empty result");
     }
 }

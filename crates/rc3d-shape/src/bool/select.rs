@@ -1,47 +1,76 @@
 //! Face selection per boolean operation type (B-Rep native).
 
+use crate::store::BRepStore;
 use crate::topo::FaceKey;
 use super::classify::PointClassification;
 use super::split::SplitFaceRegion;
 use super::BoolOp;
 
 /// Select B-Rep faces for the boolean result based on operation type.
+/// Each sub-face is individually classified; new B-Rep faces are created
+/// for sub-faces that have a non-empty UV boundary.
 pub fn select_brep_faces(
-    regions_a: &[(usize, PointClassification)],
-    regions_b: &[(usize, PointClassification)],
+    regions_a: &[(usize, Vec<PointClassification>)],
+    regions_b: &[(usize, Vec<PointClassification>)],
     split_a: &[SplitFaceRegion],
     split_b: &[SplitFaceRegion],
     op: BoolOp,
+    reg: &mut BRepStore,
 ) -> Vec<FaceKey> {
     let mut selected = Vec::new();
 
-    for &(i, class) in regions_a {
-        let keep = match op {
-            BoolOp::Union => class == PointClassification::Outside,
-            BoolOp::Intersection => class == PointClassification::Inside,
-            BoolOp::Difference => class == PointClassification::Outside,
-        };
-        if keep && i < split_a.len() {
-            for sub in &split_a[i].sub_faces {
-                selected.push(sub.original_face);
+    for (i, classes) in regions_a {
+        let i = *i;
+        if i >= split_a.len() { continue; }
+        for (j, sub) in split_a[i].sub_faces.iter().enumerate() {
+            let class = classes.get(j).copied().unwrap_or(PointClassification::Outside);
+            let keep = match op {
+                BoolOp::Union => class == PointClassification::Outside,
+                BoolOp::Intersection => class == PointClassification::Inside,
+                BoolOp::Difference => class == PointClassification::Outside,
+            };
+            if keep {
+                push_sub_face(sub, reg, &mut selected);
             }
         }
     }
 
-    for &(i, class) in regions_b {
-        let keep = match op {
-            BoolOp::Union => class == PointClassification::Outside,
-            BoolOp::Intersection => class == PointClassification::Inside,
-            BoolOp::Difference => class == PointClassification::Inside,
-        };
-        if keep && i < split_b.len() {
-            for sub in &split_b[i].sub_faces {
-                selected.push(sub.original_face);
+    for (i, classes) in regions_b {
+        let i = *i;
+        if i >= split_b.len() { continue; }
+        for (j, sub) in split_b[i].sub_faces.iter().enumerate() {
+            let class = classes.get(j).copied().unwrap_or(PointClassification::Outside);
+            let keep = match op {
+                BoolOp::Union => class == PointClassification::Outside,
+                BoolOp::Intersection => class == PointClassification::Inside,
+                BoolOp::Difference => class == PointClassification::Inside,
+            };
+            if keep {
+                push_sub_face(sub, reg, &mut selected);
             }
         }
     }
 
     selected
+}
+
+fn push_sub_face(
+    sub: &super::split::SubFaceRegion,
+    reg: &mut BRepStore,
+    selected: &mut Vec<FaceKey>,
+) {
+    if !sub.uv_boundary.is_empty() {
+        if let Some(new_fk) = super::split::create_sub_face(
+            sub.original_face,
+            &sub.uv_boundary[0],
+            reg,
+        ) {
+            selected.push(new_fk);
+        }
+    } else {
+        // No boundary = whole face region, keep original
+        selected.push(sub.original_face);
+    }
 }
 
 #[cfg(test)]
@@ -92,9 +121,9 @@ mod tests {
             }],
         }];
 
-        let regions_a = vec![(0, PointClassification::Outside)];
-        let regions_b = vec![(0, PointClassification::Inside)];
-        let selected = select_brep_faces(&regions_a, &regions_b, &split_a, &split_b, BoolOp::Union);
+        let regions_a = vec![(0, vec![PointClassification::Outside])];
+        let regions_b = vec![(0, vec![PointClassification::Inside])];
+        let selected = select_brep_faces(&regions_a, &regions_b, &split_a, &split_b, BoolOp::Union, &mut reg);
         assert_eq!(selected.len(), 1, "Union: only A outside should be selected");
         assert_eq!(selected[0], fk_a);
     }
@@ -124,9 +153,9 @@ mod tests {
             }],
         }];
 
-        let regions_a = vec![(0, PointClassification::Inside)];
-        let regions_b = vec![(0, PointClassification::Inside)];
-        let selected = select_brep_faces(&regions_a, &regions_b, &split_a, &split_b, BoolOp::Intersection);
+        let regions_a = vec![(0, vec![PointClassification::Inside])];
+        let regions_b = vec![(0, vec![PointClassification::Inside])];
+        let selected = select_brep_faces(&regions_a, &regions_b, &split_a, &split_b, BoolOp::Intersection, &mut reg);
         assert_eq!(selected.len(), 2, "Intersection: both inside should be selected");
     }
 }

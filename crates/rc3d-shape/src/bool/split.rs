@@ -118,7 +118,21 @@ pub fn split_face_along_curves(
     if curves.is_empty() {
         return vec![whole_face_region(face_key, face)];
     }
-    split_face_single_curve(face_key, face, curves[0], reg)
+    // Start with the whole face, then each curve further subdivides
+    let mut regions = vec![whole_face_region(face_key, face)];
+    for curve in curves {
+        let mut next = Vec::new();
+        for region in &regions {
+            let sub = split_face_single_curve(face_key, face, curve, reg);
+            if sub.len() > 1 {
+                next.extend(sub);
+            } else {
+                next.push(region.clone());
+            }
+        }
+        regions = next;
+    }
+    regions
 }
 
 fn whole_face_region(face_key: FaceKey, face: &BRepFace) -> SubFaceRegion {

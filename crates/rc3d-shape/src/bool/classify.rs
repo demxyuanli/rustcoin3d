@@ -198,12 +198,12 @@ pub fn classify_brep_regions(
     regions: &[SplitFaceRegion],
     other_shell: ShellKey,
     reg: &BRepStore,
-) -> Vec<(usize, PointClassification)> {
+) -> Vec<(usize, Vec<PointClassification>)> {
     regions.iter().enumerate().map(|(i, region)| {
-        let c = region.sub_faces.first()
+        let classes: Vec<PointClassification> = region.sub_faces.iter()
             .map(|sub| classify_point_solid(sub.interior_point_3d, other_shell, reg, 1e-4))
-            .unwrap_or(PointClassification::Outside);
-        (i, c)
+            .collect();
+        (i, classes)
     }).collect()
 }
 
