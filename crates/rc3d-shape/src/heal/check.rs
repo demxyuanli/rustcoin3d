@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::geom::signed_area_2d;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use crate::topo_iter;
 use super::geom2d::collect_wire_uv_polygon;
 use std::collections::HashSet;
 
@@ -101,15 +102,12 @@ pub fn check_euler_poincare(shell_key: ShellKey, reg: &BRepStore) -> Option<i32>
     let mut vertex_set: HashSet<VertexKey> = HashSet::new();
 
     for &(fk, _) in &shell.faces {
-        let face = reg.faces.get(fk)?;
-        for wire_key in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
-            let Some(wire) = reg.wires.get(*wire_key) else { continue };
-            for &(ek, _) in &wire.edges {
-                edge_set.insert(ek);
-                if let Some(edge) = reg.edges.get(ek) {
-                    vertex_set.insert(edge.v_low);
-                    vertex_set.insert(edge.v_high);
-                }
+        let _ = reg.faces.get(fk)?;
+        for ek in topo_iter::iter_edges_of_face(fk, reg) {
+            edge_set.insert(ek);
+            if let Some((vl, vh)) = topo_iter::iter_vertices_of_edge(ek, reg) {
+                vertex_set.insert(vl);
+                vertex_set.insert(vh);
             }
         }
     }
@@ -274,16 +272,8 @@ fn check_non_manifold(
     let mut warnings = Vec::new();
     let mut edge_face_count: HashMap<EdgeKey, usize> = HashMap::new();
     for &(face_key, _) in face_keys {
-        let Some(face) = reg.faces.get(face_key) else {
-            continue;
-        };
-        for wire_key in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
-            let Some(wire) = reg.wires.get(*wire_key) else {
-                continue;
-            };
-            for &(ek, _) in &wire.edges {
-                *edge_face_count.entry(ek).or_default() += 1;
-            }
+        for (ek, _) in topo_iter::iter_edge_orientations_of_face(face_key, reg) {
+            *edge_face_count.entry(ek).or_default() += 1;
         }
     }
     for (ek, count) in edge_face_count {
