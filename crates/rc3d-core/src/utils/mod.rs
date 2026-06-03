@@ -2,6 +2,7 @@
 //!
 //! These utilities are generic and reusable across all crates in the workspace.
 
+pub mod bspline;
 pub mod graph;
 pub mod hash;
 pub mod math;

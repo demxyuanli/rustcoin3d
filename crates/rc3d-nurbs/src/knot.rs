@@ -23,24 +23,7 @@ pub fn open_uniform_knots(degree: usize, n_control_points: usize) -> Vec<f32> {
     knots
 }
 
-/// Find the knot span index: the index `i` such that knots[i] <= t < knots[i+1].
-/// Returns `degree` if t < knots[degree], or `n-1-degree-1` if t >= knots[n-degree-1].
-pub fn find_span(degree: usize, knots: &[f32], t: f32) -> usize {
-    let n = knots.len();
-    let last = n - degree - 1;
-    if t >= knots[last] {
-        return last.saturating_sub(1);
-    }
-    if t <= knots[degree] {
-        return degree;
-    }
-    for i in degree..last {
-        if t >= knots[i] && t < knots[i + 1] {
-            return i;
-        }
-    }
-    degree
-}
+pub use rc3d_core::utils::bspline::find_span;
 
 #[cfg(test)]
 mod tests {

@@ -30,16 +30,7 @@ pub fn bspline_basis(i: usize, p: usize, t: f32, knots: &[f32]) -> f32 {
     left + right
 }
 
-/// Evaluate all non-zero B-spline basis functions at parameter t.
-/// Returns a Vec of (basis_index, value) pairs for the p+1 non-zero bases.
-pub fn bspline_bases(span: usize, p: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
-    let mut bases = Vec::with_capacity(p + 1);
-    for i in 0..=p {
-        let idx = span.saturating_sub(p) + i;
-        bases.push((idx, bspline_basis(idx, p, t, knots)));
-    }
-    bases
-}
+pub use rc3d_core::utils::bspline::bspline_bases;
 
 #[cfg(test)]
 mod tests {
