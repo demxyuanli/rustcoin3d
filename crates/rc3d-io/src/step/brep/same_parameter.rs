@@ -2,13 +2,13 @@
 
 use std::collections::HashSet;
 
-use super::registry::BRepRegistry;
+use super::registry::BRepStore;
 use super::topo::{EdgeKey, ShellKey};
 
 const SAMPLE_COUNT: usize = 32;
 
 /// Recompute edge tolerances from PCurve vs 3D curve deviation for every edge in a shell.
-pub fn same_parameter_shell(reg: &mut BRepRegistry, shell_key: ShellKey, base_tol: f32) -> usize {
+pub fn same_parameter_shell(reg: &mut BRepStore, shell_key: ShellKey, base_tol: f32) -> usize {
     let edges = shell_edge_keys(reg, shell_key);
     let mut updated = 0usize;
     for ek in edges {
@@ -19,7 +19,7 @@ pub fn same_parameter_shell(reg: &mut BRepRegistry, shell_key: ShellKey, base_to
     updated
 }
 
-fn shell_edge_keys(reg: &BRepRegistry, shell_key: ShellKey) -> Vec<EdgeKey> {
+fn shell_edge_keys(reg: &BRepStore, shell_key: ShellKey) -> Vec<EdgeKey> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let Some(shell) = reg.shells.get(shell_key) else {
@@ -55,7 +55,7 @@ fn shell_edge_keys(reg: &BRepRegistry, shell_key: ShellKey) -> Vec<EdgeKey> {
     out
 }
 
-fn update_edge_tolerance(reg: &mut BRepRegistry, ek: EdgeKey, base_tol: f32) -> bool {
+fn update_edge_tolerance(reg: &mut BRepStore, ek: EdgeKey, base_tol: f32) -> bool {
     let edge = match reg.edges.get(ek) {
         Some(e) => e,
         None => return false,
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn misaligned_pcurve_raises_edge_tolerance() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {

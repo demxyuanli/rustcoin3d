@@ -502,10 +502,16 @@ impl SurfaceGeom {
     }
 
     /// Surface normal = (∂S/∂u × ∂S/∂v) normalized.
+    /// For revolution surfaces we use (∂S/∂v × ∂S/∂u), which matches CAD outward
+    /// convention for the native `(u=profile, v=angle)` parameterization.
     /// Handles degeneracy by probing a neighborhood with small epsilon offsets.
     pub fn normal(&self, u: f32, v: f32) -> Vec3 {
         let (du, dv) = self.d1(u, v);
-        let n = du.cross(dv);
+        let n = if matches!(self, SurfaceGeom::Revolution { .. }) {
+            dv.cross(du)
+        } else {
+            du.cross(dv)
+        };
         let len = n.length();
         if len > 1e-6 {
             return n * (1.0 / len);
@@ -519,7 +525,11 @@ impl SurfaceGeom {
                 continue;
             }
             let (du2, dv2) = self.d1(up, vp);
-            let n2 = du2.cross(dv2);
+            let n2 = if matches!(self, SurfaceGeom::Revolution { .. }) {
+                dv2.cross(du2)
+            } else {
+                du2.cross(dv2)
+            };
             let l2 = n2.length();
             if l2 > best_len {
                 best_len = l2;
@@ -956,8 +966,8 @@ impl SurfaceGeom {
             // Extrusion/Revolution/Offset: numerical fallback.
             _ => {
                 let eps = 1e-4f32;
-                let (du_p, dv_p) = self.d1(u + eps, v);
-                let (du_m, dv_m) = self.d1(u - eps, v);
+                let (du_p, _dv_p) = self.d1(u + eps, v);
+                let (du_m, _dv_m) = self.d1(u - eps, v);
                 let (du_vp, dv_vp) = self.d1(u, v + eps);
                 let (du_vm, dv_vm) = self.d1(u, v - eps);
                 let duu = (du_p - du_m) / (2.0 * eps);
@@ -1167,7 +1177,7 @@ mod tests {
     #[test]
     fn test_sphere_project() {
         let sphere = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 5.0 };
-        let (u, v) = sphere.project(Vec3::new(0.0, 0.0, 5.0)).unwrap();
+        let (_u, v) = sphere.project(Vec3::new(0.0, 0.0, 5.0)).unwrap();
         assert!(v.abs() < 1e-4);
     }
 
@@ -1464,8 +1474,8 @@ mod tests {
                 let (duu_a, duv_a, dvv_a) = surf.d2(u, v);
 
                 // Numerical d2 (central differences on d1)
-                let (du_p, dv_p) = surf.d1(u + eps, v);
-                let (du_m, dv_m) = surf.d1(u - eps, v);
+                let (du_p, _dv_p) = surf.d1(u + eps, v);
+                let (du_m, _dv_m) = surf.d1(u - eps, v);
                 let (du_vp, dv_vp) = surf.d1(u, v + eps);
                 let (du_vm, dv_vm) = surf.d1(u, v - eps);
                 let duu_n = (du_p - du_m) / (2.0 * eps);

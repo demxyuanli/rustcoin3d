@@ -2,7 +2,7 @@
 //! The old `boolean()` StepShell-based API has been removed in Phase 1 cleanup.
 //! B-Rep boolean operations will be implemented in Phase 3.
 
-use rc3d_io::step::bool::{BoolOp, boolean_brep, BoolResult};
+use rc3d_io::step::bool::{BoolOp, boolean_brep};
 
 #[test]
 fn test_bool_op_enum() {
@@ -16,7 +16,7 @@ fn test_bool_op_enum() {
 fn test_boolean_brep_stub() {
     // boolean_brep is a stub that returns empty result
     // Full implementation comes in Phase 3
-    let reg = &mut rc3d_io::step::brep::registry::BRepRegistry::new();
+    let reg = &mut rc3d_io::step::brep::registry::BRepStore::new();
     let result = boolean_brep(&[], &[], reg, BoolOp::Union);
     assert!(result.is_empty);
 }

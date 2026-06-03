@@ -7,7 +7,7 @@ use std::f32::consts::PI;
 use rc3d_core::math::Vec3;
 use super::super::parser::EntityIndex;
 use super::super::topology;
-use super::super::geom;
+use super::super::entity_geom as geom;
 use super::super::value::StepValue;
 
 /// Compute the derivative dC/dt of a curve entity at parameter `t` in [0, 1].

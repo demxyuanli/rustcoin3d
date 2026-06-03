@@ -1,7 +1,7 @@
 //! Geometric continuity check along shared edges (OCC ShapeAnalysis).
 //! Detects G0 (positional gap) and G1 (tangential mismatch) defects.
 
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey};
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub enum ContinuityKind {
 /// Check G0/G1 continuity along all shared edges in a shell.
 pub fn check_shell_continuity(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     g0_tolerance: f32,
     g1_angle_tolerance_deg: f32,
 ) -> Vec<ContinuityDefect> {
@@ -61,7 +61,7 @@ fn check_edge_continuity(
     ek: EdgeKey,
     fa: FaceKey,
     fb: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     g0_tol: f32,
     g1_tol_deg: f32,
 ) -> Option<ContinuityDefect> {
@@ -124,7 +124,7 @@ mod tests {
     use crate::topo::{BRepFace, BRepWire, BRepShell, Orientation};
     use rc3d_core::math::Vec3;
 
-    fn make_plane_face(reg: &mut BRepRegistry, surface: SurfaceGeom) -> FaceKey {
+    fn make_plane_face(reg: &mut BRepStore, surface: SurfaceGeom) -> FaceKey {
         reg.faces.insert(BRepFace {
             surface,
             outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_g0_continuous_shell() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_g1_discontinuity_at_seam() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         // Two faces meeting at 90 degrees along a shared edge
         let surface1 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let surface2 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X };
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_g1_only_no_g0() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface1 = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,

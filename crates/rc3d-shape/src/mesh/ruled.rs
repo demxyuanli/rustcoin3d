@@ -1,13 +1,25 @@
 use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
+use crate::geom::SurfaceGeom;
 use crate::topo::{EdgeKey, FaceKey, Orientation};
-use super::edge_disc::{EdgePolygon};
+use super::edge_disc::EdgePolygon;
+use super::edge_pool::FaceEdgeBoundaryIdx;
 use super::face_fill::{
-    FaceFillConfig, FaceMeshRange, mesh_ruled_two_wire_edges, mesh_ruled_wire_polygons_3d,
-    prefers_native_uv_ruled,
+    measure_face_chord_error, FaceFillConfig, FaceMeshRange, mesh_ruled_two_wire_edges,
+    mesh_ruled_wire_polygons_3d, prefers_native_uv_ruled,
 };
 use super::grid::parametric_grid_segs;
+use super::config::min_adequate_trim_tris;
+
+const MAX_ADAPTIVE_RULED_PASSES: u32 = 3;
+
+fn needs_adaptive_ruled(surface: &SurfaceGeom, _wire_edges: &[(EdgeKey, Vec<usize>)]) -> bool {
+    matches!(
+        surface,
+        SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }
+    )
+}
 
 pub struct RuledMeshBuffers<'a> {
     pub global_vertices: &'a mut Vec<Vec3>,
@@ -22,9 +34,139 @@ pub fn try_ruled_two_wire_mesh(
     face: &crate::topo::BRepFace,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &FaceEdgeBoundaryIdx,
     buffers: RuledMeshBuffers<'_>,
     fill_config: &FaceFillConfig,
+) -> FaceMeshRange {
+    if needs_adaptive_ruled(&face.surface, wire_edges) {
+        return try_ruled_two_wire_mesh_adaptive(
+            face_key,
+            face,
+            wire_edges,
+            edge_polygons,
+            edge_boundary_idx,
+            buffers,
+            fill_config,
+        );
+    }
+    ruled_two_wire_once(
+        face_key,
+        face,
+        wire_edges,
+        edge_polygons,
+        edge_boundary_idx,
+        buffers,
+        fill_config,
+        None,
+    )
+}
+
+/// Freeform two-wire patches: double ruled grid until chord error meets deflection goal.
+fn try_ruled_two_wire_mesh_adaptive(
+    face_key: FaceKey,
+    face: &crate::topo::BRepFace,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &FaceEdgeBoundaryIdx,
+    buffers: RuledMeshBuffers<'_>,
+    fill_config: &FaceFillConfig,
+) -> FaceMeshRange {
+    let chord_goal = (fill_config.deflection_interior * 2.0).max(0.02);
+    let min_tris_goal = if matches!(face.surface, SurfaceGeom::Offset { .. }) {
+        min_adequate_trim_tris(&face.surface, wire_edges.len()).saturating_mul(8)
+    } else {
+        0
+    };
+    let (mut segs_u, mut segs_v) = initial_ruled_segs(face, wire_edges, edge_polygons, fill_config);
+    let base_tri = buffers.all_indices.len() / 4;
+    let mut last = FaceMeshRange {
+        face_key,
+        first_tri: base_tri,
+        tri_count: 0,
+        boundary_global: HashSet::new(),
+        max_chord_error: 0.0,
+    };
+
+    for pass in 0..MAX_ADAPTIVE_RULED_PASSES {
+        if pass > 0 {
+            buffers.all_indices.truncate(base_tri * 4);
+        }
+        last = ruled_two_wire_once(
+            face_key,
+            face,
+            wire_edges,
+            edge_polygons,
+            edge_boundary_idx,
+            RuledMeshBuffers {
+                global_vertices: buffers.global_vertices,
+                global_normals: buffers.global_normals,
+                all_indices: buffers.all_indices,
+                pos_to_idx: buffers.pos_to_idx,
+            },
+            fill_config,
+            Some((segs_u, segs_v)),
+        );
+        if last.tri_count == 0 {
+            break;
+        }
+        last.max_chord_error = measure_face_chord_error(
+            face,
+            buffers.global_vertices,
+            buffers.all_indices,
+            &last,
+        );
+        log::debug!(
+            "[BRep mesh] face {:?}: adaptive ruled pass {} segs={}/{} tris={} chord={:.4}",
+            face_key,
+            pass + 1,
+            segs_u,
+            segs_v,
+            last.tri_count,
+            last.max_chord_error,
+        );
+        let chord_ok = last.max_chord_error <= chord_goal;
+        let tris_ok = min_tris_goal == 0 || last.tri_count >= min_tris_goal;
+        let done = match &face.surface {
+            // Offset+Revolution: chord reports are unreliable; refine until tri budget met.
+            SurfaceGeom::Offset { .. } => tris_ok,
+            _ => chord_ok && tris_ok,
+        };
+        if done || pass + 1 == MAX_ADAPTIVE_RULED_PASSES {
+            break;
+        }
+        segs_u = (segs_u * 2).min(128);
+        segs_v = (segs_v * 2).min(64);
+    }
+
+    last
+}
+
+fn initial_ruled_segs(
+    face: &crate::topo::BRepFace,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    fill_config: &FaceFillConfig,
+) -> (u32, u32) {
+    let (mut segs_u, mut segs_v) = ruled_strip_uv_segs(wire_edges, edge_polygons, fill_config);
+    let base = parametric_grid_segs(face, fill_config);
+    segs_u = segs_u.max(base).max(16).min(64);
+    segs_v = segs_v.max(8).min(32);
+    if matches!(face.surface, SurfaceGeom::Offset { .. }) {
+        segs_u = segs_u.max(32);
+        segs_v = segs_v.max(16);
+    }
+    (segs_u, segs_v)
+}
+
+fn ruled_two_wire_once(
+    face_key: FaceKey,
+    face: &crate::topo::BRepFace,
+    wire_edges: &[(EdgeKey, Vec<usize>)],
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &FaceEdgeBoundaryIdx,
+    buffers: RuledMeshBuffers<'_>,
+    fill_config: &FaceFillConfig,
+    segs_override: Option<(u32, u32)>,
 ) -> FaceMeshRange {
     let RuledMeshBuffers {
         global_vertices,
@@ -43,10 +185,9 @@ pub fn try_ruled_two_wire_mesh(
         };
     }
 
-    let (mut segs_u, mut segs_v) = ruled_strip_uv_segs(wire_edges, edge_polygons, fill_config);
-    let base = parametric_grid_segs(face, fill_config);
-    segs_u = segs_u.max(base).min(64);
-    segs_v = segs_v.max(2).min(32);
+    let (segs_u, segs_v) = segs_override.unwrap_or_else(|| {
+        initial_ruled_segs(face, wire_edges, edge_polygons, fill_config)
+    });
 
     if prefers_native_uv_ruled(&face.surface, wire_edges) {
         return mesh_ruled_two_wire_edges(

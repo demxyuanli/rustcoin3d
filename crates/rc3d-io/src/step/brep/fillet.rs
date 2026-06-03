@@ -4,7 +4,7 @@
 //! Full implementation deferred to Phase 4+ (requires robust edge chain
 //! detection, variable radius support, and spring/back surface fitting).
 
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{EdgeKey, FaceKey};
 
 /// Result of a fillet or chamfer operation.
@@ -56,7 +56,7 @@ pub struct ChamferParams {
 pub fn constant_radius_fillet(
     edge: EdgeKey,
     radius: f32,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Result<FilletResult, String> {
     // Validate inputs
     if radius <= 0.0 {
@@ -110,7 +110,7 @@ pub fn constant_radius_fillet(
 pub fn chamfer_edge(
     edge: EdgeKey,
     distance: f32,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Result<FilletResult, String> {
     if distance <= 0.0 {
         return Err(format!("Chamfer distance must be positive, got {}", distance));
@@ -130,7 +130,7 @@ pub fn chamfer_edge(
 /// Returns results for each edge (success or error).
 pub fn fillet_edges(
     params: &[FilletParams],
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Vec<Result<FilletResult, String>> {
     params.iter()
         .map(|p| constant_radius_fillet(p.edge, p.radius, reg))
@@ -140,7 +140,7 @@ pub fn fillet_edges(
 /// Apply chamfers to multiple edges.
 pub fn chamfer_edges(
     params: &[ChamferParams],
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Vec<Result<FilletResult, String>> {
     params.iter()
         .map(|p| chamfer_edge(p.edge, p.distance_a, reg))
@@ -150,11 +150,11 @@ pub fn chamfer_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::registry::BRepRegistry;
+    use crate::step::brep::registry::BRepStore;
 
     #[test]
     fn test_fillet_api_exists() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         // Create a dummy edge
         use crate::step::brep::topo::*;
         use crate::step::brep::geom::CurveGeom;
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_fillet_rejects_negative_radius() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         use crate::step::brep::topo::*;
         let dummy_key = EdgeKey::from(slotmap::KeyData::from_ffi(0x1234));
         let result = constant_radius_fillet(dummy_key, -1.0, &mut reg);
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_chamfer_api_exists() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let dummy_key = EdgeKey::from(slotmap::KeyData::from_ffi(0x5678));
         let result = chamfer_edge(dummy_key, 1.0, &mut reg);
         assert!(result.is_err(), "Chamfer should return error (not implemented)");
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_fillet_edges_batch() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let params = vec![
             FilletParams { edge: EdgeKey::from(slotmap::KeyData::from_ffi(1)), radius: 0.5 },
             FilletParams { edge: EdgeKey::from(slotmap::KeyData::from_ffi(2)), radius: 0.5 },

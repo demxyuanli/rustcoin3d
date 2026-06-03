@@ -1,7 +1,7 @@
 //! Trim and split edge curves / PCurves at parameter values (OCC split support).
 
 use crate::geom::{CurveGeom, SurfaceGeom};
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 use rc3d_core::math::Vec3;
 
@@ -88,7 +88,7 @@ pub fn split_edge_at_params(
     face_key: FaceKey,
     orient: Orientation,
     splits: &[f32],
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Vec<(EdgeKey, Orientation)> {
     let mut params: Vec<f32> = splits
         .iter()
@@ -157,7 +157,7 @@ pub fn replace_wire_edge_with_splits(
     wire_key: WireKey,
     old_ek: EdgeKey,
     new_edges: &[(EdgeKey, Orientation)],
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) {
     let Some(wire) = reg.wires.get_mut(wire_key) else {
         return;
@@ -181,7 +181,7 @@ pub fn add_degenerated_edge_at_pole(
     pole_3d: Vec3,
     tolerance: f32,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> EdgeKey {
     let zero_curve = CurveGeom::Line {
         origin: pole_3d,
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn split_edge_produces_trimmed_segments() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let line = CurveGeom::Line {

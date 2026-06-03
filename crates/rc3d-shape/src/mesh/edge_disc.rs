@@ -141,6 +141,49 @@ pub fn discretize_edge(
     EdgePolygon { params_3d, params_2d }
 }
 
+/// Polyline for viewport edge overlay: per-face PCURVE when a single face owns the edge,
+/// otherwise the stored 3D topological curve (avoids primary-face bias on offset pairs).
+pub fn discretize_edge_overlay(
+    ek: EdgeKey,
+    reg: &BRepStore,
+    config: &EdgeDiscConfig,
+) -> Vec<Vec3> {
+    let edge = match reg.edges.get(ek) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    if edge.pcurves.len() <= 1 {
+        return discretize_edge(ek, reg, config)
+            .params_3d
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
+    }
+    let chord_len = (edge.curve.d0(1.0) - edge.curve.d0(0.0)).length();
+    let curve_len = if chord_len < 1e-10 {
+        estimate_curve_length(&edge.curve).max(1.0)
+    } else {
+        chord_len
+    };
+    let effective_deflection = if config.relative_deflection {
+        curve_len * config.deflection
+    } else {
+        config.deflection
+    };
+    let ec = EdgeDiscConfig {
+        deflection: effective_deflection,
+        angle_deflection: config.angle_deflection,
+        min_points: config.min_points,
+        max_points: config.max_points,
+        relative_deflection: config.relative_deflection,
+    };
+    let mesh_curve = mesh_curve_for_edge(edge, reg);
+    sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect()
+}
+
 /// True for healed seam edges or closed isoparam edges (v_low == v_high).
 fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepStore) -> bool {
     if edge.v_low == edge.v_high {
@@ -221,7 +264,7 @@ fn is_usable_pcurve(pcurve: &CurveGeom) -> bool {
 }
 
 /// Evaluate PCurve on surface at t (OCCT BRepAdaptor_Curve with face context).
-fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
+pub fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
     let uv = pcurve.d0(t);
     surface.d0_native(uv.x, uv.y)
 }

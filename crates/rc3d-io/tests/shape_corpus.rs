@@ -70,7 +70,6 @@ fn run_corpus_brep_adapter(file: &str, adapter_mode: AdapterMode) -> CorpusRun {
     let mut total_faces = 0usize;
     let mut grid_fallback = 0usize;
     let mut deflection = DeflectionMetrics::default();
-    let mut engine_mesh = MeshResult::default();
     for &sk in &brep.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
             let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &mesh_config, &skip_face_keys);
@@ -79,9 +78,9 @@ fn run_corpus_brep_adapter(file: &str, adapter_mode: AdapterMode) -> CorpusRun {
             meshed += out.report.meshed_faces;
             tris += out.mesh.indices.len() / 4;
             verts += out.mesh.vertices.len();
-            engine_mesh = out.mesh;
+            let mesh = out.mesh;
             deflection = deflection_from_report(&out.report);
-            try_hausdorff_vs_reference(file, &engine_mesh);
+            try_hausdorff_vs_reference(file, &mesh);
             if std::env::var("SHAPE_FACE_DIAG").is_ok() && file == "Shape.step" {
                 use rc3d_io::step::brep::geom::SurfaceGeom;
                 eprintln!("--- Shape.step per-face mesh ---");
@@ -117,7 +116,7 @@ fn run_corpus_brep_adapter(file: &str, adapter_mode: AdapterMode) -> CorpusRun {
                 eprintln!("--- mesh bbox ---");
                 let mut mn = Vec3::splat(f32::MAX);
                 let mut mx = Vec3::splat(f32::MIN);
-                for v in &engine_mesh.vertices {
+                for v in &mesh.vertices {
                     mn = mn.min(*v);
                     mx = mx.max(*v);
                 }

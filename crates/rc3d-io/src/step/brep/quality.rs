@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::ShellKey;
 
 /// Quality metrics for a single shell.
@@ -28,7 +28,7 @@ pub struct ShellQualityMetrics {
 /// Compute quality metrics for a shell.
 pub fn compute_shell_quality(
     shell_key: ShellKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> ShellQualityMetrics {
     let mut metrics = ShellQualityMetrics::default();
 
@@ -111,12 +111,12 @@ pub fn quality_score(metrics: &ShellQualityMetrics) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::registry::BRepRegistry;
+    use crate::step::brep::registry::BRepStore;
     use crate::step::brep::topo::*;
 
     #[test]
     fn test_quality_empty_registry() {
-        let reg = BRepRegistry::new();
+        let reg = BRepStore::new();
         let metrics = compute_shell_quality(ShellKey::default(), &reg);
         assert_eq!(metrics.face_count, 0);
         assert!(!metrics.euler_valid);
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_quality_single_face() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         // Create a simple triangular face
         let v0 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::Vec3::ZERO, tolerance: 1e-6 });
         let v1 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::Vec3::X, tolerance: 1e-6 });

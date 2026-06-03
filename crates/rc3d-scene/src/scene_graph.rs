@@ -410,7 +410,7 @@ mod serde_tests {
     fn make_test_scene() -> SceneGraph {
         let mut g = SceneGraph::new();
         let root = g.add_root(NodeData::Separator(SeparatorNode));
-        let mat_id = g.add_child(
+        let _mat_id = g.add_child(
             root,
             NodeData::Material(MaterialNode {
                 base_color: rc3d_core::math::Vec3::new(0.8, 0.2, 0.2),
@@ -419,16 +419,16 @@ mod serde_tests {
                 ..Default::default()
             }),
         );
-        let cube = g.add_child(root, NodeData::Cube(CubeNode::default()));
-        let light = g.add_child(
+        let _cube = g.add_child(root, NodeData::Cube(CubeNode::default()));
+        let _light = g.add_child(
             root,
             NodeData::DirectionalLight(DirectionalLightNode::default()),
         );
-        let camera = g.add_child(
+        let _camera = g.add_child(
             root,
             NodeData::PerspectiveCamera(PerspectiveCameraNode::default()),
         );
-        let markup = g.add_child(
+        let _markup = g.add_child(
             root,
             NodeData::Markup(MarkupNode {
                 elements: vec![MarkupElement::Line {

@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
-use crate::topo::{ShellKey, EdgeKey, FaceKey, Orientation, VertexKey};
+use crate::topo::{BRepFace, ShellKey, EdgeKey, FaceKey, Orientation, VertexKey};
 use crate::store::BRepStore;
 use crate::geom::SurfaceGeom;
 use crate::mesh_result::MeshResult;
@@ -23,16 +24,27 @@ use super::fallback_policy::{
 };
 use super::grid::{mesh_closed_surface, mesh_parametric_grid, mesh_trimmed_uv_grid, mesh_uv_bbox_grid};
 use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris};
+use super::edge_pool::build_face_boundary_pool;
 use super::ruled::{try_ruled_two_wire_mesh, RuledMeshBuffers};
 use super::refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map};
 use super::optimize::optimize_mesh;
 use super::same_param::apply_same_parameter;
-use super::edge_pool::{build_edge_boundary_pool, max_equivalent_edge_gap};
 use super::algo_factory::FaceMeshAlgo;
 use super::diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinates_if_requested};
 use super::report::{apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport};
 use super::face_dispatch::{algo_from_plan, plan_face_mesh, FaceMeshPlan};
 use super::shell_mesh::ShellMeshOutput;
+
+/// Shell orientation XOR face.same_sense for mesh normals and winding.
+fn mesh_face_view(face: &BRepFace, effective_same_sense: bool) -> Cow<'_, BRepFace> {
+    if effective_same_sense == face.same_sense {
+        Cow::Borrowed(face)
+    } else {
+        let mut f = face.clone();
+        f.same_sense = effective_same_sense;
+        Cow::Owned(f)
+    }
+}
 
 pub(crate) fn mesh_brep_shell_with_report_impl(
     shell_key: ShellKey,
@@ -97,20 +109,14 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     }
 
     let total_edge_pts: usize = edge_polygons.values().map(|p| p.params_3d.len()).sum();
-    let edge_boundary_idx = build_edge_boundary_pool(
+    let edge_boundary_idx = build_face_boundary_pool(
         reg,
+        shell_key,
         &edge_polygons,
         &mut global_vertices,
         &mut global_normals,
         &mut pos_to_idx,
         &vertex_mesh_idx,
-    );
-    report.max_equiv_edge_weld_gap = max_equivalent_edge_gap(
-        reg,
-        &edge_polygons,
-        &edge_boundary_idx,
-        &global_vertices,
-        config.same_parameter_tol,
     );
     log::debug!(
         "[BRep mesh] {} edge polygons, {} total edge pts -> {} unique boundary verts",
@@ -135,9 +141,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         })
         .collect();
 
-    for &(face_key, orient) in &shell.faces {
-        let _ = orient; // consumed in face_orient map above
-
+    for &(face_key, _orient) in &shell.faces {
         if skip_face_keys.contains(&face_key) {
             heal_skipped_faces.push(face_key);
             continue;
@@ -173,6 +177,13 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             });
         }
     }
+
+    // Save boundary vertex pool as immutable baseline for parallel face meshing.
+    // Each parallel chunk clones this to get its own independent mutable state.
+    let boundary_vertices: Vec<Vec3> = global_vertices.clone();
+    let boundary_normals: Vec<Vec3> = global_normals.clone();
+    let boundary_pos_to_idx: HashMap<[u32; 3], usize> = pos_to_idx.clone();
+    let boundary_vertex_count = boundary_vertices.len();
 
     let mut all_indices: Vec<i32> = Vec::new();
     let mut face_ranges: Vec<FaceMeshRange> = Vec::new();
@@ -210,13 +221,54 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         })
         .collect();
 
-    for fld in &face_loop_data {
+    // Phase 2b: Mesh faces in parallel. Each chunk clones the boundary vertex
+    // pool and processes its faces independently — no cross-face synchronization.
+    let num_threads = rayon::current_num_threads().max(1);
+    let chunk_size = (face_loop_data.len() + num_threads - 1) / num_threads;
+
+    struct ChunkOutput {
+        vertices: Vec<Vec3>,
+        normals: Vec<Vec3>,
+        indices: Vec<i32>,
+        face_ranges: Vec<FaceMeshRange>,
+        report: ShellMeshReport,
+        wire_diag: Vec<String>,
+    }
+
+    let chunk_outputs: Vec<ChunkOutput> = if face_loop_data.is_empty() {
+        Vec::new()
+    } else {
+        face_loop_data
+            .par_chunks(chunk_size)
+            .map(|chunk: &[FaceLoopData]| {
+                // Shadow mutable state with per-chunk local copies.
+                // The loop body below references these names — they resolve to
+                // the local copies, not the outer variables.
+                let mut global_vertices = boundary_vertices.clone();
+                let mut global_normals = boundary_normals.clone();
+                let mut pos_to_idx = boundary_pos_to_idx.clone();
+                let mut all_indices: Vec<i32> = Vec::new();
+                let mut face_ranges: Vec<FaceMeshRange> = Vec::new();
+                let mut report = ShellMeshReport {
+                    face_count: chunk.len(),
+                    shell_diag,
+                    ..Default::default()
+                };
+                let mut wire_diag: Vec<String> = Vec::new();
+
+                for fld in chunk {
         let info_face_key = fld.face_key;
         let info_wire_edges = &fld.wire_edges;
-        let face = match reg.faces.get(info_face_key) {
+        let face_raw = match reg.faces.get(info_face_key) {
             Some(f) => f,
             None => continue,
         };
+        let eff_sense = face_orient
+            .get(&info_face_key)
+            .copied()
+            .unwrap_or(face_raw.same_sense);
+        let mesh_face_owned = mesh_face_view(face_raw, eff_sense);
+        let face = mesh_face_owned.as_ref();
 
         if info_wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
             let tris_before = all_indices.len() / 4;
@@ -297,7 +349,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         let mut boundary_ordered = Vec::new();
         for &(ek, ref pis) in info_wire_edges {
             for &pi in pis {
-                if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
+                if let Some(gi) = edge_boundary_idx.get(&(info_face_key, ek, pi)).copied() {
                     if boundary_ordered.last() != Some(&gi) {
                         boundary_ordered.push(gi);
                     }
@@ -378,13 +430,38 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 ruled.first_tri,
                 ruled.tri_count,
             );
-            if valid >= min_adequate {
+            let offset_min_tris = if matches!(face.surface, SurfaceGeom::Offset { .. }) {
+                min_adequate.saturating_mul(8)
+            } else {
+                0
+            };
+            if valid >= min_adequate
+                && (offset_min_tris == 0 || valid >= offset_min_tris)
+            {
+                let mut max_chord = ruled.max_chord_error;
+                if matches!(face.surface, SurfaceGeom::Offset { .. })
+                    && !scaled_config.fast_export
+                {
+                    let ruled_range = FaceMeshRange {
+                        face_key: info_face_key,
+                        first_tri: ruled.first_tri,
+                        tri_count: valid,
+                        boundary_global: ruled.boundary_global.clone(),
+                        max_chord_error: 0.0,
+                    };
+                    max_chord = measure_face_chord_error(
+                        face,
+                        &global_vertices,
+                        &all_indices,
+                        &ruled_range,
+                    );
+                }
                 report.faces.push(FaceMeshStats {
                     face_key: info_face_key,
                     tri_count: valid,
                     first_tri: ruled.first_tri,
                     uv_source: UvSource::Synthetic,
-                    max_chord_error: ruled.max_chord_error,
+                    max_chord_error: max_chord,
                     grid_fallback: false,
                 });
                 face_ranges.push(FaceMeshRange {
@@ -392,15 +469,24 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                     first_tri: ruled.first_tri,
                     tri_count: valid,
                     boundary_global: ruled.boundary_global,
-                    max_chord_error: ruled.max_chord_error,
+                    max_chord_error: max_chord,
                 });
                 report.meshed_faces += 1;
                 log::debug!(
-                    "[BRep mesh] face {:?}: revolution-like ruled two-wire ({} tris)",
+                    "[BRep mesh] face {:?}: revolution-like ruled two-wire ({} tris, chord {:.4})",
                     info_face_key,
-                    valid
+                    valid,
+                    max_chord
                 );
                 continue;
+            }
+            if valid >= min_adequate {
+                log::debug!(
+                    "[BRep mesh] face {:?}: early ruled low tris ({}/{}), fall through",
+                    info_face_key,
+                    valid,
+                    offset_min_tris
+                );
             }
             all_indices.truncate(tris_before_face * 4);
         }
@@ -520,6 +606,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 &mut global_normals,
                 &mut all_indices,
                 &mut pos_to_idx,
+                &scaled_config.face,
             );
             if fan.tri_count > 0 {
                 let tri_n = fan.tri_count;
@@ -631,10 +718,14 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
 
         // Chord-error rejection for TrimmedCdt: retry with tighter deflection
         // when interior grid points fail to capture surface curvature.
+        // Only retry when the face is clearly under-tessellated (few tris AND high chord).
+        // Faces with adequate triangle count skip this expensive retry.
+        let retry_low_tri_count = range.tri_count < min_adequate.saturating_mul(2);
         if !used_surface_fill
             && !used_parametric_grid
             && range.tri_count > 0
             && range.max_chord_error > chord_reject
+            && retry_low_tri_count
             && scaled_config.face.deflection_interior > 1e-6
             && !scaled_config.fast_export
         {
@@ -766,7 +857,40 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             );
         }
 
-        if wire_len == 2 && (range.tri_count < min_adequate || used_surface_fill) {
+        if !scaled_config.fast_export
+            && wire_len == 2
+            && matches!(
+                face.surface,
+                SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }
+            )
+            && range.tri_count > 0
+        {
+            range.max_chord_error = measure_face_chord_error(
+                face,
+                &global_vertices,
+                &all_indices,
+                &range,
+            );
+        }
+
+        let deflection_goal = scaled_config.face.deflection_interior * 2.0;
+        let offset_low_tris = wire_len == 2
+            && matches!(face.surface, SurfaceGeom::Offset { .. })
+            && range.tri_count < min_adequate.saturating_mul(8);
+        let freeform_chord_bad = wire_len == 2
+            && matches!(
+                face.surface,
+                SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }
+            )
+            && range.tri_count > 0
+            && range.max_chord_error > deflection_goal;
+
+        if wire_len == 2
+            && (range.tri_count < min_adequate
+                || used_surface_fill
+                || freeform_chord_bad
+                || offset_low_tris)
+        {
             let try_surface_fill = boundary_ordered.len() >= 3
                 && range.tri_count < min_adequate
                 && (matches!(face.surface, SurfaceGeom::Offset { .. })
@@ -795,7 +919,9 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             }
 
             let skip_ruled = range.tri_count >= min_adequate
-                && (!used_surface_fill || range.max_chord_error <= chord_reject);
+                && (!used_surface_fill || range.max_chord_error <= chord_reject)
+                && !freeform_chord_bad
+                && !offset_low_tris;
 
             if skip_ruled {
                 // adequate trimmed / surface fill
@@ -857,7 +983,11 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             } else {
                 valid >= min_adequate.min(8) && valid_ratio >= 0.25
             };
-            if ruled_ok && !matches!(face.surface, SurfaceGeom::Plane { .. }) && !scaled_config.fast_export {
+            if ruled_ok
+                && !matches!(face.surface, SurfaceGeom::Plane { .. })
+                && !matches!(face.surface, SurfaceGeom::Offset { .. })
+                && !scaled_config.fast_export
+            {
                 range.max_chord_error = measure_face_chord_error(
                     face,
                     &global_vertices,
@@ -892,7 +1022,9 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             range.first_tri,
             range.tri_count,
         );
-        if (range.tri_count == 0 || grid_valid < min_adequate)
+        if (range.tri_count == 0
+            || grid_valid < min_adequate
+            || range.max_chord_error > chord_reject)
             && !multi_wire_rev
             && !matches!(face.surface, SurfaceGeom::Plane { .. })
             && allows_trimmed_uv_grid(reg, face, &grid_loops, &global_vertices)
@@ -962,7 +1094,9 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                         &trial_range,
                     );
                     let accept_grid = (grid_chord <= chord_reject
-                        || (saved_count > 0 && grid_chord <= saved_chord.max(chord_reject) * 1.5))
+                        || (saved_count > 0
+                            && grid_chord < saved_chord
+                            && grid_chord <= chord_reject * 2.0))
                         && (saved_count == 0 || new_tris >= saved_count / 4);
                     if accept_grid {
                         if saved_count > 0 {
@@ -1045,6 +1179,47 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             }
         }
 
+        if range.tri_count == 0 && wire_len == 2 {
+            let ruled = try_ruled_two_wire_mesh(
+                info_face_key,
+                face,
+                info_wire_edges,
+                &edge_polygons,
+                &edge_boundary_idx,
+                RuledMeshBuffers {
+                    global_vertices: &mut global_vertices,
+                    global_normals: &mut global_normals,
+                    all_indices: &mut all_indices,
+                    pos_to_idx: &mut pos_to_idx,
+                },
+                &scaled_config.face,
+            );
+            let valid = count_valid_tris_in_range(
+                &all_indices,
+                &global_vertices,
+                ruled.first_tri,
+                ruled.tri_count,
+            );
+            if valid > 0 {
+                range = ruled;
+                range.tri_count = valid;
+                range.face_key = info_face_key;
+                if !scaled_config.fast_export {
+                    range.max_chord_error = measure_face_chord_error(
+                        face,
+                        &global_vertices,
+                        &all_indices,
+                        &range,
+                    );
+                }
+                log::debug!(
+                    "[BRep mesh] face {:?}: last-resort ruled two-wire ({} tris)",
+                    info_face_key,
+                    valid
+                );
+            }
+        }
+
         report.faces.push(FaceMeshStats {
             face_key: info_face_key,
             tri_count: range.tri_count,
@@ -1064,6 +1239,73 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             );
             face_ranges.push(range);
             report.meshed_faces += 1;
+        }
+                } // end per-face loop (within par_chunks closure)
+
+                report.total_tris = all_indices.len() / 4;
+
+                ChunkOutput {
+                    vertices: global_vertices,
+                    normals: global_normals,
+                    indices: all_indices,
+                    face_ranges,
+                    report,
+                    wire_diag,
+                }
+            })
+            .collect()
+    };
+
+    // Phase 2c: Merge chunk outputs into global state.
+    // Chunk 0 is the base; interior vertices from subsequent chunks are remapped.
+    if !chunk_outputs.is_empty() {
+        let base = &chunk_outputs[0];
+        global_vertices = base.vertices.clone();
+        global_normals = base.normals.clone();
+        all_indices = base.indices.clone();
+        face_ranges = base.face_ranges.clone();
+        report = base.report.clone();
+        wire_diag = base.wire_diag.clone();
+
+        for chunk in &chunk_outputs[1..] {
+            let interior_offset = global_vertices.len() as i32;
+            let chunk_interior_start = boundary_vertex_count;
+
+            // Append interior vertices (skip boundary vertices already in base)
+            global_vertices.extend_from_slice(&chunk.vertices[chunk_interior_start..]);
+            global_normals.extend_from_slice(&chunk.normals[chunk_interior_start..]);
+
+            // Remap indices: boundary (< boundary_vertex_count) stay unchanged;
+            // interior (>= boundary_vertex_count) get shifted by offset.
+            let index_base = all_indices.len() / 4;
+            for &idx in &chunk.indices {
+                if idx < 0 {
+                    all_indices.push(idx); // terminator
+                } else if (idx as usize) < boundary_vertex_count {
+                    all_indices.push(idx); // boundary — shared across all chunks
+                } else {
+                    all_indices.push(idx + interior_offset - boundary_vertex_count as i32);
+                }
+            }
+
+            // Remap face_ranges: first_tri is relative to chunk's local index buffer
+            for mut fr in chunk.face_ranges.clone() {
+                fr.first_tri += index_base;
+                face_ranges.push(fr);
+            }
+
+            // Merge report stats
+            report.face_count += chunk.report.face_count;
+            report.meshed_faces += chunk.report.meshed_faces;
+            report.grid_fallback_count += chunk.report.grid_fallback_count;
+            report.total_tris += chunk.report.total_tris;
+            report.max_equiv_edge_weld_gap = report.max_equiv_edge_weld_gap
+                .max(chunk.report.max_equiv_edge_weld_gap);
+            report.faces.extend_from_slice(&chunk.report.faces);
+
+            if collect_diag {
+                wire_diag.extend_from_slice(&chunk.wire_diag);
+            }
         }
     }
 
@@ -1086,8 +1328,9 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 Some(f) => f,
                 None => continue,
             };
-            // Planes are exact; post-refine Steiner splits break watertight quads (Cube.step).
-            if matches!(face.surface, SurfaceGeom::Plane { .. }) {
+            // Analytic surfaces produce exact meshes; post-refine Steiner splits
+            // would waste time and potentially break watertight edges.
+            if surface_chord_error_is_trivial(&face.surface) {
                 continue;
             }
             let adj_start_raw = (range.first_tri as isize + tri_offset) * 4;
@@ -1137,6 +1380,12 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             let Some(face) = reg.faces.get(stats.face_key) else {
                 continue;
             };
+            // Skip chord-error measurement for analytic surfaces — their meshes
+            // are exact (within floating-point precision). Only BSpline and Offset
+            // surfaces benefit from chord verification.
+            if surface_chord_error_is_trivial(&face.surface) {
+                continue;
+            }
             stats.max_chord_error =
                 measure_face_chord_error(face, &global_vertices, &all_indices, range);
         }
@@ -1162,6 +1411,11 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     }
     compact_mesh_vertices(&mut mesh);
     report.total_tris = mesh.indices.len() / 4;
+    let weld_tol = scaled_config
+        .weld_tolerance
+        .max(shell_diag * 1e-5)
+        .max(1e-6);
+    mesh.weld_vertices(weld_tol);
     recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
     optimize_mesh(&mut mesh, &scaled_config.optimize);
     if collect_diag {
@@ -1176,4 +1430,19 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         );
     }
     ShellMeshOutput { mesh, report }
+}
+
+/// Analytic surfaces produce exact meshes — chord error is always negligible.
+/// Only freeform surfaces (BSpline, Offset) need post-mesh chord verification.
+fn surface_chord_error_is_trivial(surface: &SurfaceGeom) -> bool {
+    matches!(
+        surface,
+        SurfaceGeom::Plane { .. }
+            | SurfaceGeom::Cylinder { .. }
+            | SurfaceGeom::Cone { .. }
+            | SurfaceGeom::Sphere { .. }
+            | SurfaceGeom::Torus { .. }
+            | SurfaceGeom::Revolution { .. }
+            | SurfaceGeom::Extrusion { .. }
+    )
 }

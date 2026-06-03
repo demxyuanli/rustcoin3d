@@ -20,20 +20,18 @@ use std::sync::{Arc, Mutex};
 
 use rc3d_actions::CameraFitConfig;
 use rc3d_editor::{
-    preset_for_render_features_panel, RenderFeaturePanelHandle,
+    preset_for_render_features_panel,
     RenderFeaturePanelState,
 };
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::CameraController;
 use rc3d_core::NodeId;
 use rc3d_core::{math::Vec3, DisplayMode};
 use rc3d_engine::{Engine as EngineTrait, EngineRegistry};
 use rc3d_render::AdaptiveControl;
+use rc3d_examples::common::run_example_with_hooks;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
-use winit::event::{ElementState, Event, WindowEvent};
-use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowAttributes;
 
 #[derive(Debug)]
 struct RenderFeaturesPanelEngine {
@@ -201,14 +199,6 @@ fn main() {
         attach_panel_demo_lights(&mut graph);
     let debug_overlay_root = attach_render_debug_overlay(&mut graph);
 
-    let event_loop =
-        EventLoop::new().expect("failed to create render_features event loop");
-    let window = event_loop
-        .create_window(
-            WindowAttributes::default().with_title("Render Features"),
-        )
-        .expect("failed to create window");
-
     let panel_preset = preset_for_render_features_panel();
     let panel_title = panel_preset.config.title.clone();
     let panel_state = Arc::new(Mutex::new(panel_preset.state));
@@ -233,110 +223,58 @@ fn main() {
 
     let ctrl = CameraController::new(Vec3::ZERO, 5.0);
 
-    let mut engine = Engine::new(&window);
-    engine.load_scene(graph);
-    engine.controller = ctrl;
-    engine.world_mut().engines = Some(engines);
-    engine.set_display_mode(DisplayMode::Shaded);
-    engine.set_adaptive_quality(adaptive_control);
-    engine.continuous_redraw = !idle_mode;
-    if let Some(ref mut r) = engine.renderer {
-        r.hdr_post_processing = true;
-    }
+    run_example_with_hooks("Render Features", move |engine| {
+        engine.load_scene(graph);
+        engine.controller = ctrl;
+        engine.world_mut().engines = Some(engines);
+        engine.set_display_mode(DisplayMode::Shaded);
+        engine.set_adaptive_quality(adaptive_control);
+        engine.continuous_redraw = !idle_mode;
+        if let Some(ref mut r) = engine.renderer {
+            r.hdr_post_processing = true;
+        }
 
-    if !no_panel {
-        let panel_for_text = panel_state.clone();
-        let panel_for_key = panel_state.clone();
-        let selected = Arc::new(Mutex::new(0usize));
-        let selected_for_text = selected.clone();
-        let selected_for_key = selected.clone();
-        let selected_for_mouse = selected.clone();
-        let panel_for_mouse = panel_for_key.clone();
+        if !no_panel {
+            let panel_for_text = panel_state.clone();
+            let panel_for_key = panel_state.clone();
+            let selected = Arc::new(Mutex::new(0usize));
+            let selected_for_text = selected.clone();
+            let selected_for_key = selected.clone();
+            let selected_for_mouse = selected.clone();
+            let panel_for_mouse = panel_for_key.clone();
 
-        engine.hud_text_hook = Some(Box::new(move || {
-            let sel =
-                *selected_for_text.lock().expect("panel selected lock");
-            build_render_features_panel_overlay_with_selection(
-                &panel_for_text, sel,
-            )
-        }));
-        engine.panel_overlay_key_hook = Some(Box::new(
-            move |key: PhysicalKey| -> bool {
-                apply_render_features_panel_key(
-                    &panel_for_key,
-                    &selected_for_key,
-                    key,
-                );
-                false
-            },
-        ));
-        engine.panel_overlay_mouse_hook = Some(Box::new(
-            move |x, y, w, h| {
-                apply_render_features_panel_mouse(
-                    &panel_for_mouse,
-                    &selected_for_mouse,
-                    x, y, w, h,
+            engine.hud_text_hook = Some(Box::new(move || {
+                let sel =
+                    *selected_for_text.lock().expect("panel selected lock");
+                build_render_features_panel_overlay_with_selection(
+                    &panel_for_text, sel,
                 )
-            },
-        ));
-    }
+            }));
+            engine.panel_overlay_key_hook = Some(Box::new(
+                move |key: PhysicalKey| -> bool {
+                    apply_render_features_panel_key(
+                        &panel_for_key,
+                        &selected_for_key,
+                        key,
+                    );
+                    false
+                },
+            ));
+            engine.panel_overlay_mouse_hook = Some(Box::new(
+                move |x, y, w, h| {
+                    apply_render_features_panel_mouse(
+                        &panel_for_mouse,
+                        &selected_for_mouse,
+                        x, y, w, h,
+                    )
+                },
+            ));
+        }
+    });
 
     println!("Render features demo ready:");
     println!("  HDR:ON  TAA:ON  MotionBlur:ON  SSR:ON  DOF:ON  Fog:ON  Shadows:ON");
     println!("  Press 1-9 to toggle effects");
-
-    let mut cursor_pos: Option<(f32, f32)> = None;
-    let mut window_size: (u32, u32) = (800, 600);
-
-    let _ = event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::RedrawRequested => {
-                engine.render();
-                window.request_redraw();
-            }
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::Resized(size) => {
-                window_size = (size.width, size.height);
-                engine.resize(size.width, size.height);
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                cursor_pos =
-                    Some((position.x as f32, position.y as f32));
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => {
-                if let Some((x, y)) = cursor_pos {
-                    if let Some(ref mut hook) =
-                        engine.panel_overlay_mouse_hook
-                    {
-                        if hook(x, y, window_size.0, window_size.1) {
-                            window.request_redraw();
-                        }
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let Some(ref mut hook) =
-                        engine.panel_overlay_key_hook
-                    {
-                        if hook(event.physical_key) {
-                            window.request_redraw();
-                        }
-                    }
-                }
-            }
-            _ => {}
-        },
-        Event::AboutToWait => {
-            if engine.continuous_redraw {
-                window.request_redraw();
-            }
-        }
-        _ => {}
-    });
 }
 
 // -- Helper functions preserved from original example --

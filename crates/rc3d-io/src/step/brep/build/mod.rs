@@ -24,9 +24,9 @@ pub use pcurve::{build_2d_curve, resolve_edge_pcurve};
 use crate::step::parser::{EntityIndex, EntityRecord};
 use crate::step::value::StepValue;
 use crate::step::StepError;
-use crate::step::geom;
+use crate::step::entity_geom as geom;
 use crate::step::topology;
-use super::registry::BRepRegistry;
+use super::registry::BRepStore;
 use super::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
 use super::geom::curve_eval::approx_chordal_length;
@@ -58,7 +58,7 @@ impl BRepBuildOptions {
 
 #[derive(Debug)]
 pub struct BRepBuildResult {
-    pub registry: BRepRegistry,
+    pub registry: BRepStore,
     pub root_solids: Vec<SolidKey>,
     pub build_report: BRepBuildReport,
 }
@@ -71,7 +71,7 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
 }
 
 struct ShellBuildCtx<'a> {
-    reg: &'a mut BRepRegistry,
+    reg: &'a mut BRepStore,
     entities: &'a EntityIndex,
     tol: f32,
     face_colors: &'a std::collections::HashMap<u64, [f32; 3]>,
@@ -185,7 +185,7 @@ pub fn build_brep_with_options(
     entities: &EntityIndex,
     options: &BRepBuildOptions,
 ) -> Result<BRepBuildResult, StepError> {
-    let mut reg = BRepRegistry::new();
+    let mut reg = BRepStore::new();
 
     let solid_models = topology::collect_solid_models(entities);
     if solid_models.is_empty() {

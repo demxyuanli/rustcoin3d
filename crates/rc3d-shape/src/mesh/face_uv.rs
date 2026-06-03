@@ -202,7 +202,7 @@ pub fn collect_face_loops(
     face: &BRepFace,
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
     global_vertices: &[Vec3],
 ) -> FaceUvLoops {
     let (mut outer, outer_pcurve) = collect_wire_loop(
@@ -302,7 +302,7 @@ fn collect_wire_loop(
     inv_tol: f32,
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
     global_vertices: &[Vec3],
     is_hole: bool,
 ) -> (UvLoop, bool) {
@@ -324,7 +324,7 @@ fn collect_wire_loop(
             indices.reverse();
         }
         for pi in indices {
-            let Some(global_idx) = edge_boundary_idx.get(&(ek, pi)).copied() else {
+            let Some(global_idx) = edge_boundary_idx.get(&(face_key, ek, pi)).copied() else {
                 continue;
             };
             if boundary.last().map(|v: &UvVertex| v.global_idx) == Some(global_idx) {
@@ -848,7 +848,7 @@ pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vert
 
 // ── Revolution PCurve UV Handling ────────────────────────────
 
-#[allow(dead_code)]
+/// Reserved for revolution-surface UV diagnostics.
 fn revolution_uv_for_oriented_wire(
     surface: &SurfaceGeom, orient: Orientation, raw_uv: Option<(f32, f32)>, pt: Option<Vec3>,
 ) -> Option<(f32, f32)> {
@@ -870,7 +870,7 @@ pub fn loops_from_wire_edges(
     face_key: FaceKey, surface: &SurfaceGeom, inv_tol: f32,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
     global_vertices: &[Vec3],
 ) -> Option<FaceUvLoops> {
     let mut boundary = Vec::new();
@@ -879,7 +879,7 @@ pub fn loops_from_wire_edges(
         let poly = edge_polygons.get(&ek)?;
         let pcurve_pts = poly.params_2d.get(&face_key);
         for &pi in pis {
-            let global_idx = edge_boundary_idx.get(&(ek, pi)).copied()?;
+            let global_idx = edge_boundary_idx.get(&(face_key, ek, pi)).copied()?;
             if boundary.last().map(|v: &UvVertex| v.global_idx) == Some(global_idx) { continue; }
             let uv = if let Some(pts) = pcurve_pts { pts.get(pi).map(|&(_, uv)| uv) } else { None };
             let uv = match uv {
@@ -903,10 +903,10 @@ pub fn loops_from_wire_edges(
 }
 
 pub fn revolution_loops_from_wire_edges(
-    _face_key: FaceKey, face: &BRepFace,
+    face_key: FaceKey, face: &BRepFace,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
     global_vertices: &[Vec3],
 ) -> Option<FaceUvLoops> {
     let mut boundary = Vec::new();
@@ -914,7 +914,13 @@ pub fn revolution_loops_from_wire_edges(
     for &(ek, ref pis) in wire_edges {
         let _poly = match edge_polygons.get(&ek) { Some(p) => p, None => { fail_reason = Some("no_poly"); break; } };
         for &pi in pis {
-            let gi = match edge_boundary_idx.get(&(ek, pi)).copied() { Some(g) => g, None => { fail_reason = Some("no_bidx"); break; } };
+            let gi = match edge_boundary_idx.get(&(face_key, ek, pi)).copied() {
+                Some(g) => g,
+                None => {
+                    fail_reason = Some("no_bidx");
+                    break;
+                }
+            };
             if boundary.last().map(|v: &UvVertex| v.global_idx) == Some(gi) { continue; }
             let pt = match global_vertices.get(gi) { Some(p) => p, None => { fail_reason = Some("no_vtx"); break; } };
             let _ = pt;
@@ -971,6 +977,7 @@ pub fn loops_from_boundary_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh::edge_pool::FaceEdgeBoundaryIdx;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
     use crate::topo::{BRepFace, BRepWire};
@@ -1050,13 +1057,13 @@ mod tests {
         let config = EdgeDiscConfig::default();
         let mut edge_polygons = HashMap::new();
         let mut global_vertices = Vec::new();
-        let mut edge_boundary_idx = HashMap::new();
+        let mut edge_boundary_idx: FaceEdgeBoundaryIdx = HashMap::new();
         for &ek in &edge_keys {
             let poly = discretize_edge(ek, &reg, &config);
             for (pi, &(_, pt)) in poly.params_3d.iter().enumerate() {
                 let gi = global_vertices.len();
                 global_vertices.push(pt);
-                edge_boundary_idx.insert((ek, pi), gi);
+                edge_boundary_idx.insert((face_key, ek, pi), gi);
             }
             edge_polygons.insert(ek, poly);
         }

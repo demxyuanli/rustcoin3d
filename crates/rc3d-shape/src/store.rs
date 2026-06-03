@@ -25,9 +25,6 @@ pub struct BRepStore {
     pub edge_to_faces: HashMap<EdgeKey, Vec<FaceKey>>,
 }
 
-/// Deprecated alias — use [`BRepStore`].
-pub type BRepRegistry = BRepStore;
-
 impl BRepStore {
     pub fn new() -> Self {
         Self {
@@ -240,7 +237,7 @@ mod tests {
     use rc3d_core::math::Vec3;
     use crate::geom::SurfaceGeom;
 
-    fn make_plane_face(reg: &mut BRepRegistry) -> FaceKey {
+    fn make_plane_face(reg: &mut BRepStore) -> FaceKey {
         reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
             outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
@@ -253,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_find_or_add_vertex_dedup() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let a = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-4);
         let b = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-4);
         assert_eq!(a, b);
@@ -262,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_add_edge_with_pcurve_dedup() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
@@ -280,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_find_shared_edges() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
@@ -299,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_set_pcurve_replace() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
@@ -322,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_pcurve_mut() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
@@ -347,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_set_pcurve_new_face() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);

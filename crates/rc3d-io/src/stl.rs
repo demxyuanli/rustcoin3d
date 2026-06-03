@@ -103,7 +103,10 @@ pub fn write_ascii_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Resul
 pub fn write_binary_stl(path: &Path, vertices: &[Vec3], indices: &[i32]) -> Result<(), StlError> {
     let tris = mesh_to_stl_triangles(vertices, indices);
     let mut out = Vec::with_capacity(84 + tris.len() * 50);
-    out.extend_from_slice(b"rc3d-io T4 reference mesh             ");
+    let mut header = [0u8; 80];
+    let label = b"rc3d-io binary STL";
+    header[..label.len()].copy_from_slice(label);
+    out.extend_from_slice(&header);
     out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
     for tri in &tris {
         for f in tri.normal.iter().chain(tri.vertices[0].iter()).chain(tri.vertices[1].iter()).chain(tri.vertices[2].iter()) {
@@ -370,6 +373,24 @@ mod tests {
             buf.extend_from_slice(&[0u8; 2]); // attribute byte count
         }
         buf
+    }
+
+    #[test]
+    fn test_write_binary_stl_roundtrip() {
+        let verts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let indices = vec![0, 1, 2, -1];
+        let dir = std::env::temp_dir().join("rc3d_stl_roundtrip_test.stl");
+        write_binary_stl(&dir, &verts, &indices).expect("write");
+        let data = std::fs::read(&dir).expect("read");
+        assert_eq!(data.len(), 84 + 50, "one triangle binary STL size");
+        assert_eq!(&data[80..84], &1u32.to_le_bytes(), "tri count at byte 80");
+        let tris = parse_stl_triangles(&data).expect("parse written STL");
+        assert_eq!(tris.len(), 1);
+        let _ = std::fs::remove_file(dir);
     }
 
     #[test]

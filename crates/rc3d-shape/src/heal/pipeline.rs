@@ -2,7 +2,7 @@
 //! Runs heal passes, checks results, re-applies fixes until converged.
 
 use crate::topo::ShellKey;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use super::{CheckReport, HealConfig, HealReport, check_shell, heal_shell};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,7 +25,7 @@ impl Default for HealLevel {
 /// Each iteration uses a fresh `check_shell` result to drive `select_fixes`.
 pub fn auto_heal_shell(
     shell_key: ShellKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     level: HealLevel,
     max_iterations: usize,
 ) -> HealReport {
@@ -140,10 +140,10 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
-    use crate::store::BRepRegistry;
+    use crate::store::BRepStore;
     use rc3d_core::math::Vec3;
 
-    fn build_closed_triangle_shell(reg: &mut BRepRegistry) -> (ShellKey, crate::topo::FaceKey) {
+    fn build_closed_triangle_shell(reg: &mut BRepStore) -> (ShellKey, crate::topo::FaceKey) {
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_auto_heal_converges() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (sk, _) = build_closed_triangle_shell(&mut reg);
         let report = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 3);
         assert!(report.check_errors <= 1, "simple wire should converge quickly");
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_auto_heal_max_iterations() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_auto_heal_basic_vs_standard() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (sk, fk) = build_closed_triangle_shell(&mut reg);
         let report_basic = auto_heal_shell(sk, &mut reg, HealLevel::Basic, 2);
         let sk2 = reg.shells.insert(crate::topo::BRepShell {

@@ -1,28 +1,82 @@
-//! Quick test: export STL from Shape corpus STEP files.
+//! Verification STL export from the same import/emit pipeline used by visualization.
 //! Single file:  cargo test -p rc3d-io --test export_step_stl case_shape --release -- --exact case_shape
 //! All three:    cargo test -p rc3d-io --test export_step_stl case_all --release -- --exact case_all
 //! Optional cs.step: set RC3D_EXPORT_CS=1
+//! Layout: set RC3D_EXPORT_LAYOUT=merged|per_instance (default: CI->merged, local->per_instance)
+//! Format: set RC3D_EXPORT_STL=ascii|binary (default: ascii)
 
-use rc3d_io::step::brep::build_brep;
-use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
-use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
+use rc3d_core::math::Vec3;
+use rc3d_io::step::{emit_plan_options_from_step, import_step_file_with_options, StepImportOptions};
 use rc3d_io::step::mesh_result::MeshResult;
-use rc3d_io::step::parser;
-use rc3d_io::write_binary_stl;
+use rc3d_io::{write_ascii_stl, write_binary_stl, StlError};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportLayout {
+    Merged,
+    PerInstance,
+}
+
 fn test_data(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test_data")
-        .join(name)
+    let steps = std::env::var("RC3D_STEP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../steps"));
+    steps.join(name)
 }
 
-fn export_mesh_config() -> BRepMeshConfig {
-    BRepMeshConfig::preview()
+enum StlFormat {
+    Ascii,
+    Binary,
 }
 
-fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<PathBuf> {
+fn export_stl_format() -> StlFormat {
+    match std::env::var("RC3D_EXPORT_STL").ok().as_deref() {
+        Some("binary") => StlFormat::Binary,
+        _ => StlFormat::Ascii,
+    }
+}
+
+fn export_layout() -> ExportLayout {
+    match std::env::var("RC3D_EXPORT_LAYOUT").ok().as_deref() {
+        Some("merged") => ExportLayout::Merged,
+        Some("per_instance") => ExportLayout::PerInstance,
+        _ => {
+            if std::env::var("CI").is_ok() {
+                ExportLayout::Merged
+            } else {
+                ExportLayout::PerInstance
+            }
+        }
+    }
+}
+
+fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: rc3d_core::math::Mat4) {
+    let offset = dst.vertices.len() as i32;
+    for &v in &src.vertices {
+        let p = world * v.extend(1.0);
+        dst.vertices.push(Vec3::new(p.x, p.y, p.z));
+    }
+    for &n in &src.normals {
+        dst.normals.push(n);
+    }
+    for &idx in &src.indices {
+        if idx == -1 {
+            dst.indices.push(-1);
+        } else {
+            dst.indices.push(idx + offset);
+        }
+    }
+}
+
+fn write_mesh_stl(path: &Path, mesh: &MeshResult) -> Result<(), StlError> {
+    match export_stl_format() {
+        StlFormat::Ascii => write_ascii_stl(path, &mesh.vertices, &mesh.indices),
+        StlFormat::Binary => write_binary_stl(path, &mesh.vertices, &mesh.indices),
+    }
+}
+
+fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf>> {
     let step_path = test_data(step_name);
     if !step_path.exists() {
         println!("  SKIP: {} not found", step_name);
@@ -32,98 +86,79 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<PathBuf> {
     let t0 = Instant::now();
     println!("=== {} ===", step_name);
 
-    let text = std::fs::read_to_string(&step_path).expect("read step");
-    let exchange = parser::parse_exchange(&text).expect("parse step");
-    let brep = build_brep(&exchange.entities).expect("build brep");
-    let mut reg = brep.registry;
-    let t_parse = t0.elapsed();
+    let import_options = StepImportOptions::default();
+    let mut result = import_step_file_with_options(&step_path, &import_options).expect("import step");
 
-    let mut skip_face_keys = Vec::new();
-    let root_solids: Vec<_> = brep.root_solids.clone();
-    for &sk in &root_solids {
-        let outer_shell = match reg.solids.get(sk) {
-            Some(solid) => solid.outer_shell,
-            None => continue,
-        };
-        let heal = auto_heal_shell(outer_shell, &mut reg, HealLevel::Basic, 2);
-        let skip_count = heal.skip_face_keys.len();
-        skip_face_keys.extend(heal.skip_face_keys);
-        let face_count = reg
-            .shells
-            .get(outer_shell)
-            .map(|s| s.faces.len())
-            .unwrap_or(0);
-        println!(
-            "  solid {:?}: {} faces, skip={}",
-            sk,
-            face_count,
-            skip_count
-        );
-    }
-    let t_heal = t0.elapsed();
+    let mut plan_options = emit_plan_options_from_step(&import_options);
+    plan_options.heal_skip_faces = Vec::new();
+    let plan = result
+        .document
+        .build_emit_plan(&plan_options)
+        .expect("build emit plan");
 
-    let mesh_config = export_mesh_config();
-    let mut combined_mesh = MeshResult::default();
-    let mut total_tris = 0usize;
-
-    for &sk in &brep.root_solids {
-        let Some(solid) = reg.solids.get(sk) else {
-            continue;
-        };
-        let out = mesh_brep_shell_with_report(
-            solid.outer_shell,
-            &reg,
-            &mesh_config,
-            &skip_face_keys,
-        );
-        total_tris += out.report.total_tris;
-        println!(
-            "  mesh: {} verts, {} tris, meshed_faces={}, grid_fallback={}",
-            out.mesh.vertices.len(),
-            out.report.total_tris,
-            out.report.meshed_faces,
-            out.report.grid_fallback_count,
-        );
-        let offset = combined_mesh.vertices.len() as i32;
-        combined_mesh.vertices.extend_from_slice(&out.mesh.vertices);
-        if !out.mesh.normals.is_empty() {
-            combined_mesh.normals.extend_from_slice(&out.mesh.normals);
-        }
-        for &idx in &out.mesh.indices {
-            if idx == -1 {
-                combined_mesh.indices.push(-1);
-            } else {
-                combined_mesh.indices.push(idx + offset);
-            }
-        }
-    }
-    let t_mesh = t0.elapsed();
-
-    if combined_mesh.vertices.is_empty() {
-        println!("  WARN: no mesh produced");
-        return None;
-    }
-
+    let layout = export_layout();
     let stem = step_name.trim_end_matches(".step").trim_end_matches(".stp");
-    let stl_path = output_dir.join(format!("{}.stl", stem));
-    write_binary_stl(&stl_path, &combined_mesh.vertices, &combined_mesh.indices)
-        .expect("write binary stl");
-    let file_size = std::fs::metadata(&stl_path).map(|m| m.len()).unwrap_or(0);
+    let mut out_paths = Vec::new();
+
+    match layout {
+        ExportLayout::Merged => {
+            let mut merged = MeshResult::default();
+            let mut tris = 0usize;
+            for inst in &plan.instances {
+                let cached = plan
+                    .mesh_table
+                    .get(&inst.mesh_slot)
+                    .expect("mesh slot exists");
+                tris += cached.mesh.indices.len() / 4;
+                append_mesh_with_transform(&mut merged, &cached.mesh, inst.world_transform);
+            }
+            if merged.vertices.is_empty() {
+                println!("  WARN: no mesh produced");
+                return None;
+            }
+            let stl_path = output_dir.join(format!("{}.stl", stem));
+            write_mesh_stl(&stl_path, &merged).expect("write stl");
+            let file_size = std::fs::metadata(&stl_path).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "  merged: {} instances, {} verts, {} tris",
+                plan.instances.len(),
+                merged.vertices.len(),
+                tris
+            );
+            println!(
+                "  -> STL: {} ({} KB)",
+                stl_path.display(),
+                file_size / 1024,
+            );
+            out_paths.push(stl_path);
+        }
+        ExportLayout::PerInstance => {
+            let mut total_tris = 0usize;
+            for (i, inst) in plan.instances.iter().enumerate() {
+                let cached = plan
+                    .mesh_table
+                    .get(&inst.mesh_slot)
+                    .expect("mesh slot exists");
+                total_tris += cached.mesh.indices.len() / 4;
+                let mut mesh = MeshResult::default();
+                append_mesh_with_transform(&mut mesh, &cached.mesh, inst.world_transform);
+                let stl_path = output_dir.join(format!("{}__inst{:03}.stl", stem, i));
+                write_mesh_stl(&stl_path, &mesh).expect("write stl");
+                out_paths.push(stl_path);
+            }
+            println!(
+                "  per_instance: {} files, {} total tris",
+                out_paths.len(),
+                total_tris
+            );
+        }
+    }
+
     println!(
-        "  -> STL: {} ({} KB, {} verts, {} tris)",
-        stl_path.display(),
-        file_size / 1024,
-        combined_mesh.vertices.len(),
-        total_tris,
-    );
-    println!(
-        "  timing: parse={:.1}s heal={:.1}s mesh={:.1}s total={:.1}s",
-        t_parse.as_secs_f32(),
-        (t_heal - t_parse).as_secs_f32(),
-        (t_mesh - t_heal).as_secs_f32(),
+        "  timing: import+emit+export={:.1}s",
         t0.elapsed().as_secs_f32(),
     );
-    Some(stl_path)
+    Some(out_paths)
 }
 
 fn corpus_files() -> Vec<&'static str> {
@@ -131,20 +166,29 @@ fn corpus_files() -> Vec<&'static str> {
     if std::env::var("RC3D_EXPORT_CS").is_ok() {
         files.push("cs.step");
     }
+    files.extend(["Cube.step", "asse.step"]);
     files
+}
+
+fn assert_stl_paths(step_name: &str, paths: &[PathBuf]) {
+    assert!(!paths.is_empty(), "no STL files produced for {step_name}");
+    for stl_path in paths {
+        let size = std::fs::metadata(stl_path).unwrap().len();
+        assert!(
+            size > 100,
+            "STL too small for {}: {} ({} bytes)",
+            step_name,
+            stl_path.display(),
+            size
+        );
+    }
 }
 
 fn export_one(step_name: &str) {
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output");
     std::fs::create_dir_all(&output_dir).ok();
-    let stl_path = mesh_and_export_stl(step_name, &output_dir).expect("export failed");
-    let size = std::fs::metadata(&stl_path).unwrap().len();
-    assert!(
-        size > 100,
-        "STL too small: {} ({} bytes)",
-        stl_path.display(),
-        size
-    );
+    let stl_paths = mesh_and_export_stl(step_name, &output_dir).expect("export failed");
+    assert_stl_paths(step_name, &stl_paths);
 }
 
 #[test]
@@ -168,14 +212,7 @@ fn case_all() {
     std::fs::create_dir_all(&output_dir).ok();
 
     for name in corpus_files() {
-        let path = mesh_and_export_stl(name, &output_dir).expect("export failed");
-        let size = std::fs::metadata(&path).unwrap().len();
-        assert!(
-            size > 100,
-            "STL too small for {}: {} ({} bytes)",
-            name,
-            path.display(),
-            size
-        );
+        let paths = mesh_and_export_stl(name, &output_dir).expect("export failed");
+        assert_stl_paths(name, &paths);
     }
 }

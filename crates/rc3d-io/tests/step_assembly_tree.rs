@@ -196,16 +196,19 @@ fn import_result_exposes_assembly_tree_with_product_ids() {
     let result =
         import_step_with_options(&text, &StepImportOptions::default()).expect("import");
     assert!(result.report.assembly_node_count >= 2);
-    let with_shells: Vec<_> = result
-        .assembly_tree
-        .nodes
+    let with_shape: Vec<_> = result
+        .document
+        .labels
+        .labels
         .iter()
-        .filter(|n| !n.shells.is_empty())
+        .filter_map(|(_, label)| label.shape.map(|_| label))
         .collect();
-    assert!(with_shells.len() >= 2);
+    assert!(with_shape.len() >= 2);
     assert!(
-        with_shells.iter().any(|n| n.product_id > 0),
-        "assembly nodes should carry STEP product_id"
+        with_shape
+            .iter()
+            .any(|label| label.attrs.step_entity_id.unwrap_or(0) > 0),
+        "shaped labels should carry STEP product_id provenance"
     );
     assert!(!result.entities.is_empty());
 }
@@ -243,6 +246,10 @@ fn hierarchical_scene_graph_carries_part_transforms() {
     let graph = parse_step_with_options(&text, &StepImportOptions::default()).expect("import");
     let root = graph.roots()[0];
     let transforms = subtree_transforms(&graph, root);
+    assert!(
+        !transforms.is_empty(),
+        "hierarchical import should expose transform nodes"
+    );
     // cs.step may use identity placement; hierarchy must still attach Transform nodes per part.
     let part_count = graph
         .children(root)

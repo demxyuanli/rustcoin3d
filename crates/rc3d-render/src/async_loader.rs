@@ -101,7 +101,7 @@ pub struct AsyncAssetManager {
     pending_scenes: HashMap<PathBuf, Arc<Mutex<AssetState<SceneGraph>>>>,
     /// Number of background worker threads.
     worker_count: usize,
-    scene_loader: SceneLoadFn,
+    _scene_loader: SceneLoadFn,
 }
 
 impl AsyncAssetManager {
@@ -155,7 +155,7 @@ impl AsyncAssetManager {
             result_rx,
             pending_scenes: HashMap::new(),
             worker_count: workers,
-            scene_loader,
+            _scene_loader: scene_loader,
         }
     }
 

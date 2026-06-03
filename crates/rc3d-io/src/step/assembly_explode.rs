@@ -3,17 +3,17 @@
 use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_shape::{ShapeDocument, ShapeId};
 
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{ShellKey, SolidKey};
 use crate::step::import_options::StepImportMode;
-use crate::step::tree::AssemblyTree;
 
 /// Resolve explode factor: explicit > 0, else Preview + overlapping solids -> 0.35.
 pub fn effective_assembly_explode(
     requested: f32,
     import_mode: StepImportMode,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     root_solids: &[SolidKey],
 ) -> f32 {
     if requested > 0.0 {
@@ -31,15 +31,20 @@ pub fn effective_assembly_explode(
 
 /// Per-solid translation offsets for assembly preview explode.
 pub fn compute_assembly_explode_offsets(
-    reg: &BRepRegistry,
+    doc: &mut ShapeDocument,
     root_solids: &[SolidKey],
-    assembly_tree: &AssemblyTree,
-    assembly_geom_nodes: usize,
     explode: f32,
 ) -> HashMap<SolidKey, Vec3> {
     if explode <= 0.0 || root_solids.len() < 2 {
         return HashMap::new();
     }
+
+    let assembly_geom_nodes = doc
+        .labels
+        .labels
+        .iter()
+        .filter(|(_, label)| label.shape.is_some())
+        .count();
 
     let spread_dirs = [
         Vec3::X,
@@ -55,27 +60,31 @@ pub fn compute_assembly_explode_offsets(
     let mut union_max = Vec3::splat(f32::MIN);
 
     if assembly_geom_nodes > 1 {
-        assembly_tree.walk(&mut |node, world, _| {
-            if node.shells.is_empty() {
-                return;
-            }
-            for &shell_step_id in &node.shells {
-                let Some(sk) = solid_for_shell_step_id(reg, root_solids, shell_step_id) else {
-                    continue;
-                };
-                let Some(solid) = reg.solids.get(sk) else {
-                    continue;
-                };
-                let Some((min, max)) = shell_bbox(reg, solid.outer_shell) else {
-                    continue;
-                };
-                let local_center = (min + max) * 0.5;
-                let world_center = transform_point_mat4(world, local_center);
-                centers.push((sk, world_center));
-                union_min = union_min.min(min);
-                union_max = union_max.max(max);
-            }
-        });
+        let shaped: Vec<(ShapeId, SolidKey)> = doc
+            .labels
+            .labels
+            .iter()
+            .filter_map(|(_, label)| {
+                let shape_id = label.shape?;
+                let node = doc.shapes.get(shape_id)?;
+                let sk = node.kind.solid_key()?;
+                root_solids.contains(&sk).then_some((shape_id, sk))
+            })
+            .collect();
+        for (shape_id, sk) in shaped {
+            let Some(solid) = doc.store.solids.get(sk) else {
+                continue;
+            };
+            let Some((min, max)) = shell_bbox(&doc.store, solid.outer_shell) else {
+                continue;
+            };
+            let local_center = (min + max) * 0.5;
+            let world = doc.world_transform(shape_id);
+            let world_center = transform_point_mat4(&world, local_center);
+            centers.push((sk, world_center));
+            union_min = union_min.min(min);
+            union_max = union_max.max(max);
+        }
     }
 
     let mut seen = HashSet::new();
@@ -86,10 +95,10 @@ pub fn compute_assembly_explode_offsets(
         if seen.contains(&sk) {
             continue;
         }
-        let Some(solid) = reg.solids.get(sk) else {
+        let Some(solid) = doc.store.solids.get(sk) else {
             continue;
         };
-        let Some((min, max)) = shell_bbox(reg, solid.outer_shell) else {
+        let Some((min, max)) = shell_bbox(&doc.store, solid.outer_shell) else {
             continue;
         };
         let center = (min + max) * 0.5;
@@ -118,7 +127,7 @@ pub fn compute_assembly_explode_offsets(
     offsets
 }
 
-pub fn root_solids_overlap(reg: &BRepRegistry, root_solids: &[SolidKey]) -> bool {
+pub fn root_solids_overlap(reg: &BRepStore, root_solids: &[SolidKey]) -> bool {
     let mut bboxes = Vec::new();
     for &sk in root_solids {
         let Some(solid) = reg.solids.get(sk) else {
@@ -140,7 +149,7 @@ pub fn root_solids_overlap(reg: &BRepRegistry, root_solids: &[SolidKey]) -> bool
     false
 }
 
-fn shell_bbox(reg: &BRepRegistry, shell_key: ShellKey) -> Option<(Vec3, Vec3)> {
+fn shell_bbox(reg: &BRepStore, shell_key: ShellKey) -> Option<(Vec3, Vec3)> {
     let shell = reg.shells.get(shell_key)?;
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
@@ -181,19 +190,4 @@ fn aabb_overlap(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
 fn transform_point_mat4(m: &Mat4, p: Vec3) -> Vec3 {
     let v = *m * p.extend(1.0);
     Vec3::new(v.x, v.y, v.z)
-}
-
-fn solid_for_shell_step_id(
-    reg: &BRepRegistry,
-    root_solids: &[SolidKey],
-    shell_step_id: u64,
-) -> Option<SolidKey> {
-    for &sk in root_solids {
-        let solid = reg.solids.get(sk)?;
-        let sid = reg.shells.get(solid.outer_shell)?.step_id?;
-        if sid == shell_step_id {
-            return Some(sk);
-        }
-    }
-    None
 }

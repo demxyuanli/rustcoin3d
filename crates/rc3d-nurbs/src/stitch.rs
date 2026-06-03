@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn stitch_two_mismatched_boundaries_errors() {
         let a = flat_patch(0.0, 0.0);
-        let mut b = flat_patch(2.0, 1.0); // offset in y
+        let b = flat_patch(2.0, 1.0); // offset in y
         let result = stitch_two(&a, &b, UMax, UMin, StitchMode::PositionOnly, 0.001);
         assert!(result.is_err());
     }

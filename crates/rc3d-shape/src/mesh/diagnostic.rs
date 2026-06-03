@@ -5,6 +5,7 @@ use std::io::Write;
 
 use rc3d_core::math::Vec3;
 
+use super::edge_pool::FaceEdgeBoundaryIdx;
 use super::face_fill::FaceMeshRange;
 use super::face_uv::FaceUvLoops;
 use super::report::ShellMeshReport;
@@ -54,7 +55,7 @@ pub fn format_wire_loop_lines(
     face_key: FaceKey,
     loops: &FaceUvLoops,
     wire_edges: &[(EdgeKey, crate::topo::Orientation, Vec<usize>)],
-    edge_boundary_idx: &std::collections::HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &FaceEdgeBoundaryIdx,
     vertices: &[Vec3],
 ) -> Vec<String> {
     let mut lines = Vec::new();
@@ -95,8 +96,8 @@ pub fn format_wire_loop_lines(
     for (ek, _orient, pis) in wire_edges {
         let mut seg_lens = Vec::new();
         for w in pis.windows(2) {
-            let gi0 = edge_boundary_idx.get(&(*ek, w[0])).copied();
-            let gi1 = edge_boundary_idx.get(&(*ek, w[1])).copied();
+            let gi0 = edge_boundary_idx.get(&(face_key, *ek, w[0])).copied();
+            let gi1 = edge_boundary_idx.get(&(face_key, *ek, w[1])).copied();
             if let (Some(g0), Some(g1)) = (gi0, gi1) {
                 if g0 < vertices.len() && g1 < vertices.len() {
                     seg_lens.push((vertices[g1] - vertices[g0]).length());

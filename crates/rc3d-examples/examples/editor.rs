@@ -20,9 +20,92 @@ use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::EventLoop;
+use rc3d_examples::common::run_app;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowAttributes;
+
+struct EditorApp {
+    pending_graph: Option<SceneGraph>,
+    engine: Option<Engine>,
+    editor: Option<Editor>,
+    window: Option<winit::window::Window>,
+}
+
+impl EditorApp {
+    fn new(graph: SceneGraph) -> Self {
+        Self {
+            pending_graph: Some(graph),
+            engine: None,
+            editor: None,
+            window: None,
+        }
+    }
+}
+
+impl ApplicationHandler for EditorApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = event_loop
+            .create_window(
+                WindowAttributes::default().with_title("rustcoin3d Editor"),
+            )
+            .expect("failed to create window");
+        let graph = self.pending_graph.take().expect("demo scene");
+        let mut engine = Engine::new(&window);
+        engine.load_scene(graph);
+        engine.controller = CameraController::new(Vec3::ZERO, 10.0);
+        engine.set_display_mode(DisplayMode::Shaded);
+        let editor = Editor::new(&window, &engine);
+        self.engine = Some(engine);
+        self.editor = Some(editor);
+        self.window = Some(window);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        if editor.handle_event(window, &event) {
+            return;
+        }
+        match event {
+            WindowEvent::RedrawRequested => {
+                engine.render();
+                window.request_redraw();
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                engine.resize(size.width, size.height);
+                editor.resize(size.width, size.height, window.scale_factor() as f32);
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+}
 
 fn main() {
     env_logger::Builder::from_env(
@@ -34,58 +117,7 @@ fn main() {
     println!("  Menu bar, tools row, Hierarchy / Inspector, bottom status.");
     println!("  Open Help from the Help menu for shortcuts.");
 
-    let graph = build_demo_scene();
-
-    let event_loop =
-        EventLoop::new().expect("failed to create editor event loop");
-    let window = event_loop
-        .create_window(
-            WindowAttributes::default().with_title("rustcoin3d Editor"),
-        )
-        .expect("failed to create window");
-
-    let ctrl = CameraController::new(Vec3::ZERO, 10.0);
-
-    let mut engine = Engine::new(&window);
-    engine.load_scene(graph);
-    engine.controller = ctrl;
-    engine.set_display_mode(DisplayMode::Shaded);
-
-    let mut editor = Editor::new(&window, &engine);
-
-    let _ = event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent {
-            event: win_event, ..
-        } => {
-            // Let the editor handle the event first (egui consumes it if
-            // the user interacts with a widget)
-            let consumed =
-                editor.handle_event(&window, &win_event);
-            if consumed {
-                return;
-            }
-            match win_event {
-                WindowEvent::RedrawRequested => {
-                    engine.render();
-                    window.request_redraw();
-                }
-                WindowEvent::CloseRequested => elwt.exit(),
-                WindowEvent::Resized(size) => {
-                    engine.resize(size.width, size.height);
-                    editor.resize(
-                        size.width,
-                        size.height,
-                        window.scale_factor() as f32,
-                    );
-                }
-                _ => {}
-            }
-        }
-        Event::AboutToWait => {
-            window.request_redraw();
-        }
-        _ => {}
-    });
+    run_app(EditorApp::new(build_demo_scene()));
 }
 
 fn build_demo_scene() -> SceneGraph {

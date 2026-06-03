@@ -11,7 +11,7 @@ use crate::step::brep::mesh::face_uv::UvSource;
 use crate::step::brep::mesh::report::ShellMeshReport;
 use crate::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig, ShellMeshOutput};
 use crate::step::brep::topo::{BRepFace, BRepSolid, FaceKey};
-use crate::step::brep::BRepRegistry;
+use crate::step::brep::BRepStore;
 use crate::step::import_options::StepImportOptions;
 use crate::step::mesh_result::MeshResult;
 use crate::step::parser;
@@ -90,7 +90,7 @@ pub fn mesh_step_file(path: &Path, options: &MeshExportOptions) -> Result<StepMe
         combined.append_from(&out.mesh);
         report = merge_reports(&report, &out.report);
 
-        // Mesh void shells (interior cavities)
+        // Mesh void shells (OCC Reverse orientation relative to solid)
         for &vk in &solid.void_shells {
             let void_out = mesh_brep_shell_with_report(
                 vk,
@@ -98,8 +98,7 @@ pub fn mesh_step_file(path: &Path, options: &MeshExportOptions) -> Result<StepMe
                 &options.mesh_config,
                 &skip_face_keys,
             );
-            combined.append_from(&void_out.mesh);
-            report = merge_reports(&report, &void_out.report);
+            append_void_shell(void_out, &mut combined, &mut report);
         }
     }
 
@@ -148,7 +147,7 @@ pub fn export_step_per_face_ascii_stl(
         combined.append_from(&out.mesh);
         report = merge_reports(&report, &out.report);
 
-        // Process void shells
+        // Process void shells (Reversed winding for solid semantics)
         for &vk in &solid.void_shells {
             let void_out = mesh_brep_shell_with_report(
                 vk,
@@ -157,8 +156,7 @@ pub fn export_step_per_face_ascii_stl(
                 &skip_face_keys,
             );
             write_per_face_stl(&void_out, &reg, output_dir, &mut file_count)?;
-            combined.append_from(&void_out.mesh);
-            report = merge_reports(&report, &void_out.report);
+            append_void_shell(void_out, &mut combined, &mut report);
         }
     }
 
@@ -283,6 +281,20 @@ fn face_stl_name(
     format!("face_{fk_id}_{kind}{uv}_{}tris.stl", fs.tri_count)
 }
 
+/// Append a void shell mesh to a combined mesh with reversed winding for correct solid semantics.
+fn append_void_shell(
+    void_out: ShellMeshOutput,
+    combined: &mut MeshResult,
+    report: &mut ShellMeshReport,
+) {
+    let mut void_mesh = void_out.mesh;
+    if !void_mesh.vertices.is_empty() && !void_mesh.indices.is_empty() {
+        void_mesh.reverse_winding();
+        combined.append_from(&void_mesh);
+    }
+    *report = merge_reports(report, &void_out.report);
+}
+
 fn merge_reports(acc: &ShellMeshReport, shell: &ShellMeshReport) -> ShellMeshReport {
     let mut merged = acc.clone();
     merged.face_count += shell.face_count;
@@ -290,6 +302,9 @@ fn merge_reports(acc: &ShellMeshReport, shell: &ShellMeshReport) -> ShellMeshRep
     merged.grid_fallback_count += shell.grid_fallback_count;
     merged.total_tris += shell.total_tris;
     merged.shell_diag = merged.shell_diag.max(shell.shell_diag);
+    merged.max_equiv_edge_weld_gap = merged
+        .max_equiv_edge_weld_gap
+        .max(shell.max_equiv_edge_weld_gap);
     merged.faces.extend_from_slice(&shell.faces);
     merged
 }
@@ -298,7 +313,7 @@ fn merge_reports(acc: &ShellMeshReport, shell: &ShellMeshReport) -> ShellMeshRep
 fn prepare_brep(
     path: &Path,
     options: &MeshExportOptions,
-) -> Result<(BRepRegistry, Vec<BRepSolid>, Vec<FaceKey>), MeshExportError> {
+) -> Result<(BRepStore, Vec<BRepSolid>, Vec<FaceKey>), MeshExportError> {
     let text = std::fs::read_to_string(path)?;
     let exchange = parser::parse_exchange_with_options(&text, &options.import_options)
         .map_err(|e| MeshExportError::Step(format!("{e:?}")))?;
@@ -333,7 +348,7 @@ fn prepare_brep(
 /// Write per-face STL files from a shell mesh output.
 fn write_per_face_stl(
     out: &ShellMeshOutput,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     output_dir: &Path,
     file_count: &mut usize,
 ) -> Result<(), MeshExportError> {

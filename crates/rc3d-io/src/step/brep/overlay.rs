@@ -10,9 +10,9 @@ use rc3d_scene::node_data::{
 
 use crate::step::assembly::AssemblyTransform;
 use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
-use crate::step::brep::mesh::edge_disc::discretize_all_edges;
+use crate::step::brep::mesh::edge_disc::{discretize_edge_overlay, EdgeDiscConfig};
 use crate::step::brep::mesh::BRepMeshConfig;
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey, SolidKey};
 
 /// Pull seam/overlay lines slightly along the outward normal to avoid depth fighting.
@@ -24,12 +24,12 @@ const SURFACE_NORMAL_BIAS_FRAC: f32 = 3e-5;
 pub fn build_edge_curves(
     graph: &mut SceneGraph,
     root: rc3d_core::NodeId,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     root_solids: &[SolidKey],
     shell_instances: &[(u64, AssemblyTransform)],
     mesh_config: &BRepMeshConfig,
 ) -> Option<rc3d_core::NodeId> {
-    let edge_polys = discretize_all_edges(reg, &mesh_config.edge);
+    let edge_config = &mesh_config.edge;
 
     let mut points: Vec<Vec3> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
@@ -56,7 +56,7 @@ pub fn build_edge_curves(
         for xform in xform_list {
             append_edge_segments(
                 reg,
-                &edge_polys,
+                edge_config,
                 &edge_keys,
                 &seam_keys,
                 Some(xform),
@@ -106,7 +106,7 @@ pub fn build_edge_curves(
 }
 
 fn collect_shell_edge_keys(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     shell_key: ShellKey,
 ) -> (HashSet<EdgeKey>, HashSet<EdgeKey>) {
     let mut keys = HashSet::new();
@@ -140,8 +140,8 @@ fn collect_shell_edge_keys(
 }
 
 fn append_edge_segments(
-    reg: &BRepRegistry,
-    edge_polys: &std::collections::HashMap<EdgeKey, crate::step::brep::mesh::edge_disc::EdgePolygon>,
+    reg: &BRepStore,
+    edge_config: &EdgeDiscConfig,
     edge_keys: &HashSet<EdgeKey>,
     seam_keys: &HashSet<EdgeKey>,
     xform: Option<&AssemblyTransform>,
@@ -149,17 +149,14 @@ fn append_edge_segments(
     indices: &mut Vec<i32>,
 ) {
     for &ek in edge_keys {
-        let Some(poly) = edge_polys.get(&ek) else {
-            continue;
-        };
-        if poly.params_3d.len() < 2 {
+        let chain_src = discretize_edge_overlay(ek, reg, edge_config);
+        if chain_src.len() < 2 {
             continue;
         }
 
-        let mut chain: Vec<Vec3> = poly
-            .params_3d
+        let mut chain: Vec<Vec3> = chain_src
             .iter()
-            .map(|(_, p)| {
+            .map(|p| {
                 xform
                     .map(|t| t.transform_point(*p))
                     .unwrap_or(*p)
@@ -181,7 +178,7 @@ fn append_edge_segments(
     }
 }
 
-fn is_closed_edge(reg: &BRepRegistry, ek: EdgeKey) -> bool {
+fn is_closed_edge(reg: &BRepStore, ek: EdgeKey) -> bool {
     reg.edges
         .get(ek)
         .map(|e| e.v_low == e.v_high)
@@ -189,7 +186,7 @@ fn is_closed_edge(reg: &BRepRegistry, ek: EdgeKey) -> bool {
 }
 
 /// Offset seam polyline along the face outward normal so it renders in front of the mesh.
-fn pull_chain_on_surface(reg: &BRepRegistry, ek: EdgeKey, chain: &mut [Vec3]) {
+fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
     let Some(edge) = reg.edges.get(ek) else {
         return;
     };

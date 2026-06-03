@@ -202,8 +202,8 @@ impl NurbsSurface {
         let vp = (v + eps).clamp(v_min, v_max);
         let vm = (v - eps).clamp(v_min, v_max);
 
-        let (_pu, du_p, dv_p) = self.evaluate_with_derivative(up, v);
-        let (_mu, du_m, dv_m) = self.evaluate_with_derivative(um, v);
+        let (_pu, du_p, _dv_p) = self.evaluate_with_derivative(up, v);
+        let (_mu, du_m, _dv_m) = self.evaluate_with_derivative(um, v);
         let (_pv, du_vp, dv_vp) = self.evaluate_with_derivative(u, vp);
         let (_mv, du_vm, dv_vm) = self.evaluate_with_derivative(u, vm);
 

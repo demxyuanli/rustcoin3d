@@ -33,6 +33,18 @@ impl MeshResult {
             .collect();
     }
 
+    /// Flip triangle winding and negate stored normals (solid-level Reverse).
+    pub fn reverse_winding(&mut self) {
+        for chunk in self.indices.chunks_mut(4) {
+            if chunk.len() >= 3 {
+                chunk.swap(1, 2);
+            }
+        }
+        for n in &mut self.normals {
+            *n = -*n;
+        }
+    }
+
     /// Append another mesh into this one (indices remapped).
     pub fn append_from(&mut self, other: &MeshResult) {
         if other.vertices.is_empty() || other.indices.is_empty() {

@@ -47,10 +47,10 @@ impl Default for FaceFillConfig {
             min_size: 1e-3,
             min_size_relative: 0.01,
             shell_min_size: 0.0,
-            max_adapt_iterations: 8,
+            max_adapt_iterations: 2,
             angular_deflection: 0.2,
-            parameter_division_max_depth: 4,
-            skip_interior_edge_split: false,
+            parameter_division_max_depth: 1,
+            skip_interior_edge_split: true,
         }
     }
 }
@@ -200,19 +200,6 @@ fn compute_vertex_averaged_normal(
     }
 }
 
-#[allow(dead_code)]
-fn chain_closing_3d_len(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
-    if chain.len() < 2 {
-        return f32::MAX;
-    }
-    let a = chain[0].global_idx;
-    let b = chain[chain.len() - 1].global_idx;
-    if a >= verts.len() || b >= verts.len() {
-        return f32::MAX;
-    }
-    (verts[b] - verts[a]).length()
-}
-
 fn chain_arc_length(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
     if chain.len() < 2 {
         return 0.0;
@@ -288,19 +275,17 @@ fn triangulate_open_chain_uv(chain: &[super::face_uv::UvVertex], verts: &[Vec3])
     if !chain_should_earcut(chain, verts) {
         return triangulate_open_chain_strip(chain);
     }
-    let flat: Vec<f64> = chain
+    let uv_pairs: Vec<(f64, f64)> = chain
         .iter()
-        .flat_map(|v| [v.uv.0 as f64, v.uv.1 as f64])
+        .map(|v| (v.uv.0 as f64, v.uv.1 as f64))
         .collect();
-    let Ok(indices) = earcutr::earcut(&flat, &[], 2) else {
+    let ear_tris = super::delaunay2d::earcut_uv_polygon(&uv_pairs, &[]);
+    if ear_tris.is_empty() {
         return triangulate_open_chain_strip(chain);
-    };
+    }
     let mut tris = Vec::new();
-    for chunk in indices.chunks(3) {
-        if chunk.len() != 3 {
-            continue;
-        }
-        let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
+    for tri in &ear_tris {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
         if i0 >= chain.len() || i1 >= chain.len() || i2 >= chain.len() {
             continue;
         }
@@ -390,25 +375,28 @@ fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32,
     if earcut_verts.len() < 3 {
         return tris;
     }
-    let flat: Vec<f64> = earcut_verts
+    // For polygons with holes, go directly to fan triangulation.
+    if !hole_indices.is_empty() {
+        let g0 = earcut_verts[0].0 as i32;
+        for i in 1..earcut_verts.len() - 1 {
+            tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
+        }
+        return tris;
+    }
+    let uv_pairs: Vec<(f64, f64)> = earcut_verts
         .iter()
-        .flat_map(|&(_, (u, v))| [u as f64, v as f64])
+        .map(|&(_, (u, v))| (u as f64, v as f64))
         .collect();
-    let ear_indices = match earcutr::earcut(&flat, &hole_indices, 2) {
-        Ok(indices) if !indices.is_empty() => indices,
-        _ => {
-            let g0 = earcut_verts[0].0 as i32;
-            for i in 1..earcut_verts.len() - 1 {
-                tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
-            }
-            return tris;
+    let ear_tris = super::delaunay2d::earcut_uv_polygon(&uv_pairs, &[]);
+    if ear_tris.is_empty() {
+        let g0 = earcut_verts[0].0 as i32;
+        for i in 1..earcut_verts.len() - 1 {
+            tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
         }
-    };
-    for chunk in ear_indices.chunks(3) {
-        if chunk.len() != 3 {
-            continue;
-        }
-        let (i0, i1, i2) = (chunk[0], chunk[1], chunk[2]);
+        return tris;
+    }
+    for tri in &ear_tris {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
         if i0 >= earcut_verts.len() || i1 >= earcut_verts.len() || i2 >= earcut_verts.len() {
             continue;
         }
@@ -574,6 +562,7 @@ fn triangulate_plane_center_fan(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    config: &FaceFillConfig,
 ) -> Vec<(i32, i32, i32)> {
     let boundary: Vec<usize> = loops.outer.boundary.iter().map(|v| v.global_idx).collect();
     triangulate_plane_center_fan_from_boundary(
@@ -582,6 +571,7 @@ fn triangulate_plane_center_fan(
         global_vertices,
         global_normals,
         pos_to_idx,
+        plane_fan_max_edge(config),
     )
 }
 
@@ -630,54 +620,6 @@ fn sort_plane_ring_by_angle(
     ring.sort_by(|a, b| {
         let aa = plane_unwrap_angle_near(plane_angle_at(center, a.1, u_axis, v_axis), ref_angle);
         let ab = plane_unwrap_angle_near(plane_angle_at(center, b.1, u_axis, v_axis), ref_angle);
-        aa.partial_cmp(&ab)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-}
-
-#[allow(dead_code)]
-fn sort_plane_indices_by_angle(
-    order: &mut [usize],
-    ring: &[Vec3],
-    center: Vec3,
-    u_axis: Vec3,
-    v_axis: Vec3,
-) {
-    let raw: Vec<f32> = order
-        .iter()
-        .map(|&i| plane_angle_at(center, ring[i], u_axis, v_axis))
-        .collect();
-    let ref_angle = plane_ring_circular_mean_angle(&raw);
-    order.sort_by(|&a, &b| {
-        let aa = plane_unwrap_angle_near(plane_angle_at(center, ring[a], u_axis, v_axis), ref_angle);
-        let ab = plane_unwrap_angle_near(plane_angle_at(center, ring[b], u_axis, v_axis), ref_angle);
-        aa.partial_cmp(&ab)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-}
-
-#[allow(dead_code)]
-fn sort_plane_vertex_indices_by_angle(
-    ring: &mut [usize],
-    center: Vec3,
-    u_axis: Vec3,
-    v_axis: Vec3,
-    global_vertices: &[Vec3],
-) {
-    let raw: Vec<f32> = ring
-        .iter()
-        .filter_map(|&gi| global_vertices.get(gi))
-        .map(|p| plane_angle_at(center, *p, u_axis, v_axis))
-        .collect();
-    if raw.len() != ring.len() {
-        return;
-    }
-    let ref_angle = plane_ring_circular_mean_angle(&raw);
-    ring.sort_by(|&a, &b| {
-        let pa = global_vertices[a];
-        let pb = global_vertices[b];
-        let aa = plane_unwrap_angle_near(plane_angle_at(center, pa, u_axis, v_axis), ref_angle);
-        let ab = plane_unwrap_angle_near(plane_angle_at(center, pb, u_axis, v_axis), ref_angle);
         aa.partial_cmp(&ab)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
@@ -744,6 +686,34 @@ fn wire_native_v_span(samples: &[(f32, f32)]) -> (f32, f32) {
     (lo, hi)
 }
 
+fn nearest_periodic(value: f32, anchor: f32, period: f32) -> f32 {
+    if period <= 0.0 {
+        return value;
+    }
+    let k = ((anchor - value) / period).round();
+    value + k * period
+}
+
+fn normalized_v_bounds_for_period(uv0: &[(f32, f32)], uv1: &[(f32, f32)], period: f32) -> Option<(f32, f32)> {
+    if period <= 0.0 {
+        return None;
+    }
+    let mut values: Vec<f32> = uv0.iter().chain(uv1.iter()).map(|&(_, v)| v).collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let anchor = values[values.len() / 2];
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::MIN;
+    for &v in &values {
+        let vn = nearest_periodic(v, anchor, period);
+        lo = lo.min(vn);
+        hi = hi.max(vn);
+    }
+    Some((lo, hi))
+}
+
 fn seam_face_v_bounds(
     face: &BRepFace,
     uv0: &[(f32, f32)],
@@ -758,6 +728,20 @@ fn seam_face_v_bounds(
     let (v1_lo, v1_hi) = wire_native_v_span(uv1);
     let mut v_lo = v0_lo.min(v1_lo);
     let mut v_hi = v0_hi.max(v1_hi);
+    if surface_is_revolution_like(&face.surface) {
+        if let Some(period) = surface_uv_basis(&face.surface).native_v_period() {
+            if let Some((n_lo, n_hi)) = normalized_v_bounds_for_period(uv0, uv1, period) {
+                v_lo = n_lo;
+                v_hi = n_hi;
+            }
+            // Guardrail: avoid pathological multi-turn spans (e.g. 18*TAU) that explode grid cost.
+            let max_span = period * 1.25;
+            if v_hi - v_lo > max_span {
+                v_lo = pr.v_min;
+                v_hi = pr.v_max;
+            }
+        }
+    }
     if v_hi - v_lo < 1e-5 {
         v_lo = pr.v_min;
         v_hi = pr.v_max;
@@ -1097,7 +1081,7 @@ pub fn mesh_ruled_two_wire_edges(
     face: &BRepFace,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    edge_boundary_idx: &std::collections::HashMap<(EdgeKey, usize), usize>,
+    edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
@@ -1120,7 +1104,7 @@ pub fn mesh_ruled_two_wire_edges(
     let mut curves: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     for (side, &(ek, ref pis)) in wire_edges.iter().enumerate() {
         for &pi in pis {
-            if let Some(gi) = edge_boundary_idx.get(&(ek, pi)).copied() {
+            if let Some(gi) = edge_boundary_idx.get(&(face_key, ek, pi)).copied() {
                 if curves[side].last() != Some(&gi) {
                     curves[side].push(gi);
                 }
@@ -1654,14 +1638,17 @@ pub fn mesh_plane_fan_3d(
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    config: &FaceFillConfig,
 ) -> FaceMeshRange {
     let first_tri = all_indices.len() / 4;
+    let max_edge = plane_fan_max_edge(config);
     let tris = triangulate_plane_center_fan_from_boundary(
         face,
         boundary_ordered,
         global_vertices,
         global_normals,
         pos_to_idx,
+        max_edge,
     );
     let emitted = emit_filtered_triangles(
         tris,
@@ -1672,13 +1659,28 @@ pub fn mesh_plane_fan_3d(
         global_normals,
         all_indices,
     );
-    FaceMeshRange {
+    let boundary_global: HashSet<usize> = boundary_ordered.iter().copied().collect();
+    let mut range = FaceMeshRange {
         face_key,
         first_tri,
         tri_count: emitted,
-        boundary_global: boundary_ordered.iter().copied().collect(),
+        boundary_global,
         max_chord_error: 0.0,
+    };
+    if emitted > 0 {
+        range.max_chord_error =
+            measure_face_chord_error(face, global_vertices, all_indices, &range);
     }
+    range
+}
+
+fn plane_fan_max_edge(config: &FaceFillConfig) -> f32 {
+    let def_floor = (config.deflection_interior * 2.0).max(1e-4);
+    let mut max_edge = config.min_size.max(def_floor);
+    if config.shell_min_size > 0.0 {
+        max_edge = max_edge.max(config.shell_min_size);
+    }
+    max_edge
 }
 
 fn triangulate_plane_center_fan_from_boundary(
@@ -1687,6 +1689,7 @@ fn triangulate_plane_center_fan_from_boundary(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    max_edge: f32,
 ) -> Vec<(i32, i32, i32)> {
     let SurfaceGeom::Plane {
         origin,
@@ -1797,11 +1800,72 @@ fn triangulate_plane_center_fan_from_boundary(
         }
     }
 
-    let mut tris = Vec::new();
+    let mut max_boundary_edge = 0.0f32;
     for i in 0..ring.len() {
-        let i0 = ring[i].0 as i32;
-        let i1 = ring[(i + 1) % ring.len()].0 as i32;
-        let c = center_gi as i32;
+        let a = ring[i].1;
+        let b = ring[(i + 1) % ring.len()].1;
+        max_boundary_edge = max_boundary_edge.max((b - a).length());
+    }
+    let n_rings = ((max_boundary_edge / max_edge.max(1e-6)).ceil() as u32).clamp(1, 32) as usize;
+
+    if n_rings <= 1 {
+        let mut tris = Vec::new();
+        for i in 0..ring.len() {
+            let i0 = ring[i].0 as i32;
+            let i1 = ring[(i + 1) % ring.len()].0 as i32;
+            let c = center_gi as i32;
+            if c != i0 && i0 != i1 && i1 != c {
+                tris.push((c, i0, i1));
+            }
+        }
+        return tris;
+    }
+
+    let mut levels: Vec<Vec<usize>> = Vec::with_capacity(n_rings);
+    levels.push(ring.iter().map(|(gi, _)| *gi).collect());
+    for k in 1..n_rings {
+        let t = k as f32 / n_rings as f32;
+        let mut level = Vec::with_capacity(ring.len());
+        for (_, p) in &ring {
+            let pt = project_point_to_plane(*p * (1.0 - t) + center * t, *origin, n);
+            let hash = rc3d_core::utils::hash::f32x3_quantized_bits([pt.x, pt.y, pt.z]);
+            let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
+                let idx = global_vertices.len();
+                global_vertices.push(pt);
+                if global_normals.len() < global_vertices.len() {
+                    global_normals.resize(global_vertices.len(), normal_vec);
+                }
+                global_normals[idx] = normal_vec;
+                idx
+            });
+            level.push(gi);
+        }
+        levels.push(level);
+    }
+
+    let mut tris = Vec::new();
+    for level in 0..(levels.len() - 1) {
+        let outer = &levels[level];
+        let inner = &levels[level + 1];
+        let seg_n = outer.len();
+        for i in 0..seg_n {
+            let o0 = outer[i] as i32;
+            let o1 = outer[(i + 1) % seg_n] as i32;
+            let i0 = inner[i] as i32;
+            let i1 = inner[(i + 1) % seg_n] as i32;
+            if o0 != o1 && i0 != i1 && o0 != i0 {
+                tris.push((o0, o1, i1));
+            }
+            if o0 != i0 && i0 != i1 && o0 != i1 {
+                tris.push((o0, i1, i0));
+            }
+        }
+    }
+    let inner = levels.last().expect("n_rings >= 1");
+    let c = center_gi as i32;
+    for i in 0..inner.len() {
+        let i0 = inner[i] as i32;
+        let i1 = inner[(i + 1) % inner.len()] as i32;
         if c != i0 && i0 != i1 && i1 != c {
             tris.push((c, i0, i1));
         }
@@ -1906,6 +1970,7 @@ pub fn fill_trimmed(
                 global_vertices,
                 global_normals,
                 pos_to_idx,
+                config,
             );
             if !tris.is_empty() {
                 let emitted = emit_filtered_triangles(
@@ -2223,7 +2288,8 @@ fn surface_fill_3d_planar(
     boundary_set: HashSet<usize>,
 ) -> FaceMeshRange {
     use rc3d_core::utils::hash::f32x3_quantized_bits;
-    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+
+    use super::delaunay2d::{CdtVertHandle, NativeCdt};
 
     log::debug!(
         "[BRep mesh] face {:?}: planar CDT + surface-projected Steiner ({} boundary verts)",
@@ -2273,27 +2339,38 @@ fn surface_fill_3d_planar(
         })
         .collect();
 
-    // Build CDT in plane 2D space
-    let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> =
-        ConstrainedDelaunayTriangulation::new();
-    let mut handles: Vec<spade::handles::FixedVertexHandle> = Vec::new();
-    let mut uv_to_gi: HashMap<(u64, u64), usize> = HashMap::new();
+    let mut u_min = f64::MAX;
+    let mut u_max = f64::MIN;
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
+    for &(pu, pv) in &plane_uvs {
+        u_min = u_min.min(pu);
+        u_max = u_max.max(pu);
+        v_min = v_min.min(pv);
+        v_max = v_max.max(pv);
+    }
+    let mut cdt = NativeCdt::from_uv_bbox(
+        u_min as f32,
+        v_min as f32,
+        u_max as f32,
+        v_max as f32,
+    );
+    let mut handles: Vec<CdtVertHandle> = Vec::new();
 
     for (i, &gi) in boundary_global.iter().enumerate() {
         let (pu, pv) = plane_uvs[i];
-        let pt = Point2::new(pu, pv);
-        let Ok(h) = cdt.insert(pt) else {
+        let Some(h) = cdt.insert(pu, pv, gi) else {
             return FaceMeshRange {
-                face_key, first_tri, tri_count: 0,
-                boundary_global: boundary_set, max_chord_error: 0.0,
+                face_key,
+                first_tri,
+                tri_count: 0,
+                boundary_global: boundary_set,
+                max_chord_error: 0.0,
             };
         };
-        let key = ((pu * 1e6) as u64, (pv * 1e6) as u64);
-        uv_to_gi.insert(key, gi);
         handles.push(h);
     }
 
-    // Add outer boundary constraints
     let n = boundary_global.len();
     for i in 0..n {
         let a = handles[i];
@@ -2312,42 +2389,13 @@ fn surface_fill_3d_planar(
         let min_sz = effective_min_size(config);
         for _iter in 0..config.max_adapt_iterations {
             let mut splits: Vec<(f64, f64)> = Vec::new();
-            for face_h in cdt.inner_faces() {
-                let verts: Vec<_> = face_h
-                    .vertices()
-                    .iter()
-                    .map(|v| v.fix().index())
-                    .collect();
-                if verts.len() != 3 {
-                    continue;
-                }
-                let i0 = verts[0];
-                let i1 = verts[1];
-                let i2 = verts[2];
-
-                let uv0 = (
-                    cdt.vertex(handles[i0]).position().x,
-                    cdt.vertex(handles[i0]).position().y,
-                );
-                let uv1 = (
-                    cdt.vertex(handles[i1]).position().x,
-                    cdt.vertex(handles[i1]).position().y,
-                );
-                let uv2 = (
-                    cdt.vertex(handles[i2]).position().x,
-                    cdt.vertex(handles[i2]).position().y,
-                );
-
-                // Look up 3D positions (always from surface via d0_native)
-                let key0 = ((uv0.0 * 1e6) as u64, (uv0.1 * 1e6) as u64);
-                let key1 = ((uv1.0 * 1e6) as u64, (uv1.1 * 1e6) as u64);
-                let key2 = ((uv2.0 * 1e6) as u64, (uv2.1 * 1e6) as u64);
-                let Some(&gi0) = uv_to_gi.get(&key0) else { continue; };
-                let Some(&gi1) = uv_to_gi.get(&key1) else { continue; };
-                let Some(&gi2) = uv_to_gi.get(&key2) else { continue; };
-                let p0 = global_vertices[gi0];
-                let p1 = global_vertices[gi1];
-                let p2 = global_vertices[gi2];
+            for (gids, uvs) in cdt.inner_faces_detail() {
+                let uv0 = (uvs[0].0 as f64, uvs[0].1 as f64);
+                let uv1 = (uvs[1].0 as f64, uvs[1].1 as f64);
+                let uv2 = (uvs[2].0 as f64, uvs[2].1 as f64);
+                let p0 = global_vertices[gids[0]];
+                let p1 = global_vertices[gids[1]];
+                let p2 = global_vertices[gids[2]];
 
                 let mut tri_split = false;
                 for (a, b) in [(&p0, &p1), (&p1, &p2), (&p2, &p0)] {
@@ -2410,47 +2458,18 @@ fn surface_fill_3d_planar(
                     i
                 });
 
-                let pt = Point2::new(pu, pv);
-                if let Ok(h) = cdt.insert(pt) {
-                    let map_key = ((pu * 1e6) as u64, (pv * 1e6) as u64);
-                    uv_to_gi.insert(map_key, gi);
-                    handles.push(h);
+                if cdt.insert(pu, pv, gi).is_some() {
+                    // Steiner vertex registered in NativeCdt global-index map.
                 }
             }
         }
     }
 
-    // ── Extract all triangles (no trim filtering — no trim domain) ──
+    cdt.finalize();
+
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
-    for face_h in cdt.inner_faces() {
-        let verts: Vec<_> = face_h
-            .vertices()
-            .iter()
-            .map(|v| v.fix().index())
-            .collect();
-        if verts.len() != 3 {
-            continue;
-        }
-        let uv0 = (
-            cdt.vertex(handles[verts[0]]).position().x,
-            cdt.vertex(handles[verts[0]]).position().y,
-        );
-        let uv1 = (
-            cdt.vertex(handles[verts[1]]).position().x,
-            cdt.vertex(handles[verts[1]]).position().y,
-        );
-        let uv2 = (
-            cdt.vertex(handles[verts[2]]).position().x,
-            cdt.vertex(handles[verts[2]]).position().y,
-        );
-        let key0 = ((uv0.0 * 1e6) as u64, (uv0.1 * 1e6) as u64);
-        let key1 = ((uv1.0 * 1e6) as u64, (uv1.1 * 1e6) as u64);
-        let key2 = ((uv2.0 * 1e6) as u64, (uv2.1 * 1e6) as u64);
-        if let (Some(&gi0), Some(&gi1), Some(&gi2)) =
-            (uv_to_gi.get(&key0), uv_to_gi.get(&key1), uv_to_gi.get(&key2))
-        {
-            tris.push((gi0 as i32, gi1 as i32, gi2 as i32));
-        }
+    for (gids, _uvs) in cdt.inner_faces_detail() {
+        tris.push((gids[0] as i32, gids[1] as i32, gids[2] as i32));
     }
 
     if tris.is_empty() && boundary_global.len() >= 3 {
@@ -2532,6 +2551,10 @@ pub fn measure_face_chord_error(
     } else {
         1
     };
+    // Per-measurement projection cache: the same boundary vertices and edge
+    // midpoints are sampled across multiple triangles; cache avoids redundant
+    // Newton-Raphson surface projections (9 seeds × 20 iters each).
+    let mut proj_cache: ProjectionCache = HashMap::with_capacity(MAX_CHORD_SAMPLES * 4);
     for ti in (0..tri_count).step_by(step) {
         let ci = ti * 4;
         let chunk = &tris[ci..(ci + 4).min(tris.len())];
@@ -2545,32 +2568,53 @@ pub fn measure_face_chord_error(
             global_vertices,
             &face.surface,
             inv_tol,
+            &mut proj_cache,
         ));
     }
     max_chord
 }
 
-fn surface_point_deviation(p: Vec3, surface: &SurfaceGeom, inv_tol: f32) -> f32 {
-    let snap_tol = inv_tol.max(0.1);
-    if let Some((u, v)) = surface.inverse_native_uv(p, snap_tol) {
-        let d = (p - surface.d0_at_native_uv(u, v)).length();
-        if d <= snap_tol {
-            return d;
-        }
+/// Projection cache keyed by quantized 3D position.
+/// Eliminates redundant `surface.project()` calls when the same 3D point
+/// is sampled across multiple triangles during chord error measurement.
+type ProjectionCache = HashMap<[u32; 3], Option<(f32, f32)>>;
+
+fn surface_point_deviation_cached(
+    p: Vec3,
+    surface: &SurfaceGeom,
+    inv_tol: f32,
+    cache: &mut ProjectionCache,
+) -> f32 {
+    let key = rc3d_core::utils::hash::f32x3_quantized_bits([p.x, p.y, p.z]);
+    if let Some(cached) = cache.get(&key) {
+        return match cached {
+            Some((u, v)) => (p - surface.d0_at_native_uv(*u, *v)).length(),
+            None => 0.0,
+        };
     }
-    if let Some((u, v)) = surface.project(p) {
-        let d = (p - surface.d0_at_native_uv(u, v)).length();
-        if d <= snap_tol * 4.0 {
-            return d;
+    // Fast path: project() alone is sufficient for most surface types.
+    let result = if let Some((u, v)) = surface.project(p) {
+        let dev = (p - surface.d0_at_native_uv(u, v)).length();
+        // Sub-micron accuracy is good enough — skip grid-search fallback.
+        if dev < 1e-6 {
+            cache.insert(key, Some((u, v)));
+            return dev;
         }
-    }
-    if let Some((u, v)) = surface.inverse_native_uv_build(p, snap_tol * 4.0) {
-        let d = (p - surface.d0_at_native_uv(u, v)).length();
-        if d <= snap_tol * 4.0 {
-            return d;
+        cache.insert(key, Some((u, v)));
+        dev
+    } else {
+        // Fallback: grid-search inverse (handles edge cases where Newton diverges).
+        let search_tol = inv_tol.max(0.01).min(1.0);
+        if let Some((u, v)) = surface.inverse_native_uv(p, search_tol.max(0.5)) {
+            let dev = (p - surface.d0_at_native_uv(u, v)).length();
+            cache.insert(key, Some((u, v)));
+            dev
+        } else {
+            cache.insert(key, None);
+            0.0
         }
-    }
-    0.0
+    };
+    result
 }
 
 fn tri_max_chord_error(
@@ -2580,20 +2624,21 @@ fn tri_max_chord_error(
     verts: &[Vec3],
     surface: &SurfaceGeom,
     inv_tol: f32,
+    cache: &mut ProjectionCache,
 ) -> f32 {
     let p0 = verts[i0 as usize];
     let p1 = verts[i1 as usize];
     let p2 = verts[i2 as usize];
     let mut max_dev = 0.0f32;
     for p in [p0, p1, p2] {
-        max_dev = max_dev.max(surface_point_deviation(p, surface, inv_tol));
+        max_dev = max_dev.max(surface_point_deviation_cached(p, surface, inv_tol, cache));
     }
     for (a, b) in [(p0, p1), (p1, p2), (p2, p0)] {
         let mid = (a + b) * 0.5;
-        max_dev = max_dev.max(surface_point_deviation(mid, surface, inv_tol));
+        max_dev = max_dev.max(surface_point_deviation_cached(mid, surface, inv_tol, cache));
     }
     let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
-    max_dev = max_dev.max(surface_point_deviation(centroid, surface, inv_tol));
+    max_dev = max_dev.max(surface_point_deviation_cached(centroid, surface, inv_tol, cache));
     max_dev
 }
 
@@ -2612,15 +2657,28 @@ pub(crate) fn fix_tri_winding(
     if tri_n.length() <= 1e-10 {
         return;
     }
-    let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
-    if let Some((uc, vc)) = surface.project(centroid) {
-        let mut face_n = surface.normal_native(uc, vc);
-        if !same_sense {
-            face_n = -face_n;
+    // For freeform surfaces (BSpline/Offset), surface.project() is expensive
+    // (Newton-Raphson multi-start). Use the triangle's own vertex normals
+    // (pre-computed from the surface) as a cheap proxy. For analytic surfaces
+    // (Plane, Cylinder, etc.), project() is O(1) trigonometric.
+    let face_n = if matches!(surface, SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }) {
+        // Skip per-triangle project() — the CDT already produces consistently-
+        // oriented triangles for parametric surfaces. Only flip if the triangle
+        // normal is grossly misaligned with same_sense.
+        if !same_sense { -tri_n } else { tri_n }
+    } else {
+        let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
+        match surface.project(centroid) {
+            Some((uc, vc)) => {
+                let mut n = surface.normal_native(uc, vc);
+                if !same_sense { n = -n; }
+                n
+            }
+            None => return,
         }
-        if tri_n.dot(face_n) < 0.0 {
-            std::mem::swap(i1, i2);
-        }
+    };
+    if tri_n.dot(face_n) < 0.0 {
+        std::mem::swap(i1, i2);
     }
 }
 

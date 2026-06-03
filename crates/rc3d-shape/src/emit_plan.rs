@@ -6,7 +6,7 @@ use rc3d_core::math::{Mat4, Vec3};
 
 use crate::document::ShapeDocument;
 use crate::error::ShapeError;
-use crate::mesh::{mesh_brep_shell_with_report, void_subtract, BRepMeshConfig};
+use crate::mesh::{mesh_solid_with_voids, BRepMeshConfig};
 use crate::mesh_result::MeshResult;
 use crate::mesh_split::FaceTriRange;
 use crate::shape::ShapeId;
@@ -123,39 +123,10 @@ pub fn mesh_solid_local(
     config: &BRepMeshConfig,
     skip_faces: &[FaceKey],
 ) -> Option<TessEntry> {
-    let solid = store.solids.get(sk)?;
-    let shell_out = mesh_brep_shell_with_report(solid.outer_shell, store, config, skip_faces);
-    let base_mesh = shell_out.mesh;
-    if base_mesh.vertices.is_empty() || base_mesh.indices.is_empty() {
-        return None;
-    }
-    let face_tri_ranges: HashMap<FaceKey, FaceTriRange> = shell_out
-        .report
-        .faces
-        .iter()
-        .filter(|f| f.tri_count > 0)
-        .map(|f| {
-            (
-                f.face_key,
-                FaceTriRange {
-                    first_tri: f.first_tri,
-                    tri_count: f.tri_count,
-                },
-            )
-        })
-        .collect();
-    let void_meshes: Vec<_> = solid
-        .void_shells
-        .iter()
-        .map(|&vk| {
-            mesh_brep_shell_with_report(vk, store, config, skip_faces).mesh
-        })
-        .collect();
-    let void_result = void_subtract::subtract_void_meshes(&base_mesh, &void_meshes);
-    Some(TessEntry {
-        mesh: void_result.mesh,
-        face_tri_ranges,
-        face_split_viable: void_result.removed_tris == 0,
+    mesh_solid_with_voids(store, sk, config, skip_faces).map(|out| TessEntry {
+        mesh: out.mesh,
+        face_tri_ranges: out.face_tri_ranges,
+        face_split_viable: true,
     })
 }
 
@@ -178,7 +149,7 @@ impl ShapeDocument {
         let mut entry = mesh_solid_local(&self.store, solid_key, config, skip_faces)
             .ok_or_else(|| ShapeError::TessellationFailed(format!("solid {:?}", solid_key)))?;
         if orientation == Orientation::Reversed {
-            reverse_mesh_winding(&mut entry.mesh);
+            entry.mesh.reverse_winding();
         }
         self.tessellation.insert(key, entry);
         Ok(key)
@@ -500,17 +471,6 @@ fn collect_face_materials(
         })
         .collect();
     plan.face_materials.insert(slot, groups);
-}
-
-fn reverse_mesh_winding(mesh: &mut MeshResult) {
-    for chunk in mesh.indices.chunks_mut(4) {
-        if chunk.len() >= 3 {
-            chunk.swap(1, 2);
-        }
-    }
-    for n in &mut mesh.normals {
-        *n = -*n;
-    }
 }
 
 #[cfg(test)]

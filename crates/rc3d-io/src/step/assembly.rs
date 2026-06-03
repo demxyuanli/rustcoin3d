@@ -5,7 +5,7 @@ use rc3d_core::math::{Mat4, Vec3};
 use super::entity_types::EntityType;
 use super::parser::EntityIndex;
 use super::value::StepValue;
-use super::geom;
+use super::entity_geom as geom;
 use super::topology;
 
 /// RGBA color extracted from STYLED_ITEM.

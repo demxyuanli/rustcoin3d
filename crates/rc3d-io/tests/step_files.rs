@@ -198,7 +198,6 @@ fn t_end4() {
 /// Round-trip test: parse → write (Path B) → re-parse → compare mesh stats.
 #[test]
 fn t_roundtrip_write_entities() {
-    use rc3d_io::parse_step_file;
     use std::fs;
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test_data").join("Shape.step");
@@ -206,7 +205,7 @@ fn t_roundtrip_write_entities() {
 
     // Phase 1: Parse original via B-Rep pipeline
     let text = fs::read_to_string(&path).expect("read Shape.step");
-    let orig_result = rc3d_io::step::import_step_with_options(
+    let _orig_result = rc3d_io::step::import_step_with_options(
         &text, &rc3d_io::StepImportOptions::default(),
     ).expect("import original");
 
@@ -224,7 +223,7 @@ fn t_roundtrip_write_entities() {
     println!("  Written {} bytes, ~{} entities", written.len(), entity_count);
 
     // Phase 3: Re-parse written output via B-Rep pipeline
-    let result2 = rc3d_io::step::import_step_with_options(
+    let _result2 = rc3d_io::step::import_step_with_options(
         &written, &rc3d_io::StepImportOptions::default(),
     ).expect("re-import");
 

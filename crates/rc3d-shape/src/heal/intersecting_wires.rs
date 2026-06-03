@@ -1,7 +1,8 @@
 //! Multi-wire intersection detection and repair (OCC ShapeFix_Face::FixIntersectingWires).
 
 use super::curve_trim::split_edge_at_params;
-use crate::store::BRepRegistry;
+use super::geom2d::{point_in_polygon_winding as geom_point_in_polygon_winding, segment_intersection_strict};
+use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, WireKey};
 
 #[derive(Debug, Default)]
@@ -15,7 +16,7 @@ pub struct IntersectingWiresReport {
 /// Uses point-in-polygon tests with winding number.
 pub fn fix_intersecting_wires(
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> IntersectingWiresReport {
     let mut report = IntersectingWiresReport::default();
 
@@ -90,7 +91,7 @@ pub fn fix_intersecting_wires(
 }
 
 /// Read-only detection: inner wires outside/intersecting outer or each other.
-pub fn detect_intersecting_wires(face_key: FaceKey, reg: &BRepRegistry) -> bool {
+pub fn detect_intersecting_wires(face_key: FaceKey, reg: &BRepStore) -> bool {
     let (outer_wk, inner_wks) = {
         let Some(face) = reg.faces.get(face_key) else {
             return false;
@@ -138,20 +139,8 @@ fn segment_intersection_2d(
     b0: (f32, f32),
     b1: (f32, f32),
 ) -> Option<(f32, f32)> {
-    let da = (a1.0 - a0.0, a1.1 - a0.1);
-    let db = (b1.0 - b0.0, b1.1 - b0.1);
-    let det = da.0 * db.1 - da.1 * db.0;
-    if det.abs() < 1e-12 {
-        return None;
-    }
-    let d0 = (b0.0 - a0.0, b0.1 - a0.1);
-    let t = (d0.0 * db.1 - d0.1 * db.0) / det;
-    let u = (d0.0 * da.1 - d0.1 * da.0) / det;
-    if t > 1e-6 && t < 1.0 - 1e-6 && u > 1e-6 && u < 1.0 - 1e-6 {
-        Some((t, u))
-    } else {
-        None
-    }
+    segment_intersection_strict(a0, a1, b0, b1)
+        .filter(|(t, u)| *t > 1e-6 && *t < 1.0 - 1e-6 && *u > 1e-6 && *u < 1.0 - 1e-6)
 }
 
 /// Split inner wire edges at intersections with the outer boundary polygon.
@@ -159,7 +148,7 @@ fn trim_inner_wire_at_outer(
     inner_wk: WireKey,
     outer_poly: &[(f32, f32)],
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> bool {
     let edges: Vec<(crate::topo::EdgeKey, Orientation)> = {
         let Some(wire) = reg.wires.get(inner_wk) else {
@@ -207,7 +196,7 @@ fn trim_inner_wire_at_outer(
     trimmed
 }
 
-fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<Vec<(f32, f32)>> {
+fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<Vec<(f32, f32)>> {
     let wire = reg.wires.get(wk)?;
     let mut pts = Vec::new();
     for &(ek, _) in &wire.edges {
@@ -231,29 +220,13 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Opti
 }
 
 fn point_in_polygon_winding(u: f32, v: f32, poly: &[(f32, f32)]) -> bool {
-    let n = poly.len();
-    let mut wn = 0i32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let (x1, y1) = poly[i];
-        let (x2, y2) = poly[j];
-        if y1 <= v {
-            if y2 > v && cross_2d(x1, y1, x2, y2, u, v) > 0.0 {
-                wn += 1;
-            }
-        } else {
-            if y2 <= v && cross_2d(x1, y1, x2, y2, u, v) < 0.0 {
-                wn -= 1;
-            }
-        }
-    }
-    wn != 0
+    geom_point_in_polygon_winding(u, v, poly)
 }
 
 fn merge_intersecting_inner_wires(
     wires: &[WireKey],
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> Vec<WireKey> {
     let mut result: Vec<WireKey> = wires.to_vec();
     let mut i = 0;
@@ -282,7 +255,7 @@ fn merge_intersecting_inner_wires(
     result
 }
 
-fn wires_intersect_2d(wk_a: WireKey, wk_b: WireKey, fk: FaceKey, reg: &BRepRegistry) -> bool {
+fn wires_intersect_2d(wk_a: WireKey, wk_b: WireKey, fk: FaceKey, reg: &BRepStore) -> bool {
     let poly_a = match collect_wire_uv_polygon(wk_a, fk, reg) {
         Some(p) => p,
         None => return false,
@@ -316,10 +289,6 @@ fn polygon_bbox(poly: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
     ((min_x, min_y), (max_x, max_y))
 }
 
-fn cross_2d(x1: f32, y1: f32, x2: f32, y2: f32, u: f32, v: f32) -> f32 {
-    (x2 - x1) * (v - y1) - (u - x1) * (y2 - y1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_inner_outside_outer_removed() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
@@ -383,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_detect_intersecting_wires_before_fix() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
@@ -427,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_no_false_positive_separate_inners() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
@@ -474,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_inner_intersects_outer_trim() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -545,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_two_inners_intersect_merged() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -609,8 +578,7 @@ mod tests {
         if let Some(face) = reg.faces.get_mut(fk) {
             face.inner_wires = vec![wk_i1, wk_i2];
         }
-        let report = fix_intersecting_wires(fk, &mut reg);
-        // Verify the function completes without error
-        assert!(report.inner_wires_removed + report.inner_wires_merged >= 0);
+        let _report = fix_intersecting_wires(fk, &mut reg);
+        // Verify the function completes without panic.
     }
 }

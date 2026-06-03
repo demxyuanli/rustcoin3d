@@ -13,11 +13,145 @@ use rc3d_engine_api::{CameraController, Engine};
 use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_core::NodeId;
+use rc3d_examples::common::run_app;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::EventLoop;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowAttributes;
+
+struct AsyncImportApp {
+    load_rx: Option<mpsc::Receiver<rc3d_core::EngineResult<SceneGraph>>>,
+    graph_loaded: bool,
+    engine: Option<Engine>,
+    window: Option<winit::window::Window>,
+    cursor_prev: (f64, f64),
+}
+
+impl AsyncImportApp {
+    fn new(load_rx: mpsc::Receiver<rc3d_core::EngineResult<SceneGraph>>) -> Self {
+        Self {
+            load_rx: Some(load_rx),
+            graph_loaded: false,
+            engine: None,
+            window: None,
+            cursor_prev: (0.0, 0.0),
+        }
+    }
+
+    fn poll_load(&mut self) {
+        let Some(rx) = self.load_rx.as_ref() else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(mut graph) => {
+                let (target, orbit_radius) =
+                    fit_camera_to_scene(&mut graph, CameraFitConfig::default());
+                engine.load_scene(graph);
+                engine.controller = CameraController::new(target, orbit_radius);
+                println!(
+                    "Scene loaded: camera at {:?}, orbit={:.1}",
+                    target, orbit_radius
+                );
+            }
+            Err(e) => {
+                eprintln!("Async load error: {e}");
+            }
+        }
+        self.graph_loaded = true;
+        self.load_rx = None;
+    }
+}
+
+impl ApplicationHandler for AsyncImportApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = event_loop
+            .create_window(
+                WindowAttributes::default().with_title("Async Import Viewer"),
+            )
+            .expect("failed to create window");
+        let mut engine = Engine::new(&window);
+        engine.set_display_mode(DisplayMode::Shaded);
+        self.engine = Some(engine);
+        self.window = Some(window);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::RedrawRequested => {
+                self.poll_load();
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.render();
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.resize(size.width, size.height);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    let left_orbit = engine.on_pick.is_none();
+                    if engine.controller.dispatch_window_event(
+                        &event,
+                        self.cursor_prev,
+                        left_orbit,
+                    ) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                }
+                self.cursor_prev = (position.x, position.y);
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                if let Some(engine) = self.engine.as_mut() {
+                    let left_orbit = engine.on_pick.is_none();
+                    if engine.controller.dispatch_window_event(
+                        &event,
+                        self.cursor_prev,
+                        left_orbit,
+                    ) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if !self.graph_loaded {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+}
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
@@ -44,7 +178,6 @@ fn main() {
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    // Show STEP statistics for .step/.stp files
     if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
         if let Ok(text) = std::fs::read_to_string(&path_buf) {
             if let Ok(exchange) = rc3d_io::step::parser::parse_exchange(&text) {
@@ -69,66 +202,7 @@ fn main() {
     });
 
     println!("Loading in background: {}", path);
-
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = event_loop
-        .create_window(
-            WindowAttributes::default().with_title("Async Import Viewer"),
-        )
-        .expect("failed to create window");
-
-    let mut engine = Engine::new(&window);
-    engine.set_display_mode(DisplayMode::Shaded);
-    let load_rx = Some(rx);
-    let mut graph_loaded = false;
-
-    let _ = event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::RedrawRequested => {
-                // Check for async load completion
-                if let Some(ref rx) = load_rx {
-                    if let Ok(result) = rx.try_recv() {
-                        match result {
-                            Ok(mut graph) => {
-                                let (target, orbit_radius) =
-                                    fit_camera_to_scene(
-                                        &mut graph,
-                                        CameraFitConfig::default(),
-                                    );
-                                engine.load_scene(graph);
-                                engine.controller = CameraController::new(
-                                    target,
-                                    orbit_radius,
-                                );
-                                println!(
-                                    "Scene loaded: camera at {:?}, orbit={:.1}",
-                                    target, orbit_radius
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!("Async load error: {e}");
-                            }
-                        }
-                        graph_loaded = true;
-                    }
-                }
-                engine.render();
-                window.request_redraw();
-            }
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::Resized(size) => {
-                engine.resize(size.width, size.height);
-            }
-            _ => {}
-        },
-        Event::AboutToWait => {
-            // Keep polling until graph is loaded, then stop continuous redraw
-            if !graph_loaded {
-                window.request_redraw();
-            }
-        }
-        _ => {}
-    });
+    run_app(AsyncImportApp::new(rx));
 }
 
 fn print_import_viewer_async_help() {

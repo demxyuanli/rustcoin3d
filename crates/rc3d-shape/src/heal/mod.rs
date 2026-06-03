@@ -1,47 +1,38 @@
-pub mod reorder;
-pub mod gap;
-pub mod orient;
-pub mod seam;
+pub(crate) mod wire_ops;
+pub(crate) mod wire_join;
+pub(crate) mod pcurve_fix;
+pub(crate) mod face_fix;
+pub(crate) mod shell_fix;
+pub(crate) mod seam;
 pub mod check;
-pub mod connected;
-pub mod small;
-pub mod shifted;
-pub mod edge_curve;
-pub mod lacking;
-pub mod degenerated;
-pub mod periodic;
-pub mod self_intersect;
-pub mod intersecting_wires;
+pub(crate) mod lacking;
+pub(crate) mod degenerated;
+pub(crate) mod self_intersect;
+pub(crate) mod intersecting_wires;
 pub mod continuity;
-pub mod vertex_position;
-pub mod split_face;
 pub mod pipeline;
 pub mod curve_trim;
-pub mod natural_bound;
-pub mod reversed2d;
+pub(crate) mod geom2d;
+pub mod topo_diag;
 
 use std::collections::HashSet;
 
 use crate::topo::{FaceKey, ShellKey, WireKey};
-use crate::store::BRepRegistry;
-use reorder::reorder_wire_edges;
-use gap::{close_wire_gaps, close_wire_gaps_2d};
-use orient::fix_shell_orientation;
+use crate::store::BRepStore;
+use wire_ops::{reorder_wire_edges, remove_small_edges};
+use wire_join::{close_wire_gaps, close_wire_gaps_2d, fix_connected_wire};
+use pcurve_fix::{fix_shifted_pcurves, fix_edge_curves_wire};
+use face_fix::{fix_add_natural_bound, fix_reversed_2d};
+use shell_fix::{fix_shell_orientation, fix_split_face, fix_vertex_positions};
 use seam::fix_missing_seams;
-use connected::fix_connected_wire;
-use small::remove_small_edges;
-use shifted::fix_shifted_pcurves;
-use edge_curve::fix_edge_curves_wire;
 use lacking::fix_lacking_edges;
-use degenerated::fix_degenerated_edges;
-use periodic::fix_periodic_degenerated;
+use degenerated::{fix_degenerated_edges, fix_periodic_degenerated};
 use self_intersect::fix_self_intersecting_wire;
 use intersecting_wires::fix_intersecting_wires;
-use vertex_position::fix_vertex_positions;
-use split_face::fix_split_face;
-use natural_bound::fix_add_natural_bound;
-use reversed2d::fix_reversed_2d;
 pub use check::{check_shell, check_uv_self_intersection, CheckReport};
+pub use topo_diag::{
+    check_shell_topo_diag, log_shell_topo_diag, topo_diag_enabled, TopoDiagReport,
+};
 pub use continuity::check_shell_continuity;
 pub use pipeline::{auto_heal_shell, HealLevel};
 
@@ -240,7 +231,7 @@ impl Default for HealConfig {
     }
 }
 
-fn wire_is_closed(wire_key: WireKey, reg: &BRepRegistry) -> bool {
+fn wire_is_closed(wire_key: WireKey, reg: &BRepStore) -> bool {
     let Some(wire) = reg.wires.get(wire_key) else {
         return false;
     };
@@ -275,7 +266,7 @@ fn wire_is_closed(wire_key: WireKey, reg: &BRepRegistry) -> bool {
 fn heal_wire_passes(
     wire_key: WireKey,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     config: &HealConfig,
     seam_edges: &[crate::topo::EdgeKey],
     report: &mut HealReport,
@@ -348,7 +339,7 @@ fn heal_wire_passes(
 /// Face-level heal passes after all wires are processed.
 fn heal_face_passes(
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     config: &HealConfig,
     report: &mut HealReport,
 ) -> bool {
@@ -419,7 +410,7 @@ fn heal_face_passes(
 fn heal_lacking_on_wire(
     wire_key: WireKey,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     config: &HealConfig,
     report: &mut HealReport,
 ) -> bool {
@@ -445,7 +436,7 @@ fn heal_lacking_on_wire(
 fn heal_self_intersect_on_wire(
     wire_key: WireKey,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     config: &HealConfig,
     report: &mut HealReport,
 ) -> bool {
@@ -482,7 +473,7 @@ fn heal_self_intersect_on_wire(
 /// Run all healing passes on a shell.
 pub fn heal_shell(
     shell_key: ShellKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     config: &HealConfig,
 ) -> HealReport {
     let mut report = HealReport::default();
@@ -574,7 +565,7 @@ pub fn heal_shell(
     report
 }
 
-fn fix_vertex_tolerance(reg: &mut BRepRegistry) -> usize {
+fn fix_vertex_tolerance(reg: &mut BRepStore) -> usize {
     let mut fixed = 0usize;
     for (_, edge) in reg.edges.iter_mut() {
         let v_lo = reg.vertices.get(edge.v_low).map(|v| v.position);
@@ -592,7 +583,7 @@ fn fix_vertex_tolerance(reg: &mut BRepRegistry) -> usize {
     fixed
 }
 
-fn fix_small_area(shell_key: ShellKey, reg: &BRepRegistry) -> Vec<FaceKey> {
+fn fix_small_area(shell_key: ShellKey, reg: &BRepStore) -> Vec<FaceKey> {
     let Some(shell) = reg.shells.get(shell_key) else {
         return vec![];
     };
@@ -625,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_close_3d_gap_in_heal_shell() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,

@@ -29,15 +29,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::CameraController;
 use rc3d_core::math::Vec3;
 use rc3d_core::{DisplayMode, NodeId};
+use rc3d_examples::common::run_example_with_hooks;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
-use winit::event::{ElementState, Event, WindowEvent};
-use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowAttributes;
 
 // Toggle atomics — one per controllable effect
 struct EffectToggles {
@@ -143,25 +141,19 @@ fn main() {
     println!("[FULL]       F8=WireOverlay F9=ClusterLights F10=OmniShadow F11=XRay");
     println!("[FULL]       ,/.=DOFfocus ;/'=DOFaperture =/-=bloom [/]=vignette");
 
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = event_loop
-        .create_window(WindowAttributes::default().with_title("Full Effects Diagnostic"))
-        .expect("failed to create window");
+    run_example_with_hooks("Full Effects Diagnostic", move |engine| {
+        engine.load_scene(graph);
+        engine.scene_mut().add_root(NodeData::PointLight(PointLightNode {
+            location: Vec3::new(3.0, 4.0, 5.0),
+            color: Vec3::new(1.0, 0.3, 0.1),
+            intensity: 5000.0,
+            light_group: None,
+        }));
+        engine.controller = ctrl;
+        engine.set_display_mode(DisplayMode::ShadedWithEdges);
+        engine.continuous_redraw = true;
 
-    let mut engine = Engine::new(&window);
-    engine.load_scene(graph);
-    // Add point light as a root node so traversal visits it directly
-    engine.scene_mut().add_root(NodeData::PointLight(PointLightNode {
-        location: Vec3::new(3.0, 4.0, 5.0),
-        color: Vec3::new(1.0, 0.3, 0.1),
-        intensity: 5000.0,
-        light_group: None,
-    }));
-    engine.controller = ctrl;
-    engine.set_display_mode(DisplayMode::ShadedWithEdges);
-    engine.continuous_redraw = true;
-
-    // Pre-render hook: apply all effect toggles.
+        // Pre-render hook: apply all effect toggles.
     // Runs after reapply_cad_tier_constraints (which sets tier_wants_shadow/edges from
     // the default Visualization tier) but before GPU submit. Since we never call
     // set_display_tier, cad_tier_authoritative stays false and the inner
@@ -446,58 +438,6 @@ fn main() {
             _ => false,
         }
     }));
-
-    let mut cursor_prev: (f64, f64) = (0.0, 0.0);
-
-    let _ = event_loop.run(move |event, elwt| {
-        match &event {
-            Event::WindowEvent { event: win_event, .. } => match win_event {
-                WindowEvent::RedrawRequested => {
-                    engine.render();
-                    window.request_redraw();
-                }
-                WindowEvent::CloseRequested => elwt.exit(),
-                WindowEvent::Resized(size) => {
-                    engine.resize(size.width, size.height);
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    let left_orbit = engine.on_pick.is_none();
-                    engine.controller.dispatch_window_event(
-                        win_event,
-                        cursor_prev,
-                        left_orbit,
-                    );
-                    cursor_prev = (position.x, position.y);
-                }
-                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
-                    let left_orbit = engine.on_pick.is_none();
-                    engine.controller.dispatch_window_event(
-                        win_event,
-                        cursor_prev,
-                        left_orbit,
-                    );
-                    if let WindowEvent::MouseWheel { .. } = win_event {
-                        window.request_redraw();
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    if event.state == ElementState::Pressed {
-                        if let Some(ref mut hook) = engine.panel_overlay_key_hook {
-                            if hook(event.physical_key) {
-                                window.request_redraw();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Event::AboutToWait => {
-                if engine.continuous_redraw {
-                    window.request_redraw();
-                }
-            }
-            _ => {}
-        }
     });
 }
 

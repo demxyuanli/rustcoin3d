@@ -7,7 +7,7 @@ pub mod part21;
 pub mod schema;
 pub mod pmi;
 pub mod parser;
-pub mod geom;
+pub mod entity_geom;
 pub mod assembly;
 pub mod nurbs;
 pub mod write;
@@ -260,17 +260,16 @@ fn exchange_to_import_result(
 
     let assembly_ctx = assembly::AssemblyContext::build(&exchange.entities);
     let shell_instances = assembly_ctx.shell_instances(&exchange.entities);
-    let assembly_tree = assembly_ctx.assembly_tree(&exchange.entities);
-    let assembly_geom_nodes = assembly_tree
-        .nodes
+    let assembly_geom_nodes = document
+        .labels
+        .labels
         .iter()
-        .filter(|n| !n.shells.is_empty())
+        .filter(|(_, label)| label.shape.is_some())
         .count();
     import_report.assembly_node_count = assembly_geom_nodes;
-    if !assembly_tree.nodes.is_empty() && assembly_geom_nodes > 0 {
+    if assembly_geom_nodes > 0 {
         log::info!(
-            "[STEP] assembly tree: {} nodes, {} with geometry",
-            assembly_tree.nodes.len(),
+            "[STEP] assembly labels: {} shaped label(s)",
             assembly_geom_nodes,
         );
     }
@@ -310,10 +309,8 @@ fn exchange_to_import_result(
     let mut plan_options = emit_plan_options_from_step(options);
     plan_options.heal_skip_faces = total_heal.skip_face_keys.clone();
     plan_options.explode_offsets = assembly_explode::compute_assembly_explode_offsets(
-        &document.store,
+        &mut document,
         &root_solids,
-        &assembly_tree,
-        assembly_geom_nodes,
         explode_factor,
     );
     let plan = document
@@ -407,12 +404,10 @@ fn exchange_to_import_result(
         root_entry.display_mode = Some(DisplayMode::Shaded);
     }
 
-    #[allow(deprecated)]
     Ok(StepImportResult {
         document,
         graph,
         report: import_report,
-        assembly_tree,
         entities: exchange.entities,
     })
 }

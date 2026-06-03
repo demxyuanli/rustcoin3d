@@ -519,7 +519,7 @@ pub fn resolve_element(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_data::{AnnotationLabelMode, AnnotationSetNode, SeparatorNode, TransformNode};
+    use crate::node_data::{AnnotationLabelMode, SeparatorNode, TransformNode};
 
     #[test]
     fn effective_model_includes_transform_translation() {

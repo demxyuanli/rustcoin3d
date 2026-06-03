@@ -7,11 +7,43 @@ use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
 
+use crate::geom::curve_eval::find_param_on_curve;
+use crate::geom::{CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+
+use super::edge_disc::{eval_pcurve_on_surface, EdgePolygon};
+
+/// Boundary vertex index keyed by (face, edge, sample) — OCC BRepAdaptor_Curve(E, F).
+pub type FaceEdgeBoundaryIdx = HashMap<(FaceKey, EdgeKey, usize), usize>;
 
 use super::boundary::register_boundary_point;
-use super::edge_disc::EdgePolygon;
+
+/// True when two edges between the same vertices describe the same 3D curve (STEP duplicate),
+/// not a distinct curve on an adjacent offset/revolution face (wall thickness apart).
+fn curves_should_weld(reg: &BRepStore, ek_a: EdgeKey, ek_b: EdgeKey) -> bool {
+    let (Some(ea), Some(eb)) = (reg.edges.get(ek_a), reg.edges.get(ek_b)) else {
+        return false;
+    };
+    let p_lo = reg.vertices.get(ea.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
+    let p_hi = reg.vertices.get(ea.v_high).map(|v| v.position).unwrap_or(Vec3::ZERO);
+    let tol = ea.tolerance.max(eb.tolerance);
+    let chord = (p_hi - p_lo).length().max(tol);
+    let tight = (chord * 0.01).max(1e-4) + tol * 10.0;
+    let mid_a = ea.curve.d0(0.5);
+    let mid_b = eb.curve.d0(0.5);
+    if (mid_a - mid_b).length() <= tight {
+        return true;
+    }
+    // STEP duplicate-edge variants (polyline vs line) can differ at mid by a few % of chord.
+    let loose = chord * 0.055 + tol * 10.0;
+    let t_b = find_param_on_curve(&eb.curve, mid_a, 24, 3);
+    if (mid_a - eb.curve.d0(t_b)).length() <= loose {
+        return true;
+    }
+    let t_a = find_param_on_curve(&ea.curve, mid_b, 24, 3);
+    (mid_b - ea.curve.d0(t_a)).length() <= loose
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct EdgeSampleKey {
@@ -24,12 +56,35 @@ fn quantize_t(t: f32) -> u32 {
     (t.clamp(0.0, 1.0) * 1_000_000.0).round() as u32
 }
 
-/// Collect edge groups that share the same canonical vertex pair.
+/// Collect edge groups that share the same vertex pair AND the same 3D curve geometry.
+/// Offset/revolution wall pairs share vertices but must not weld (different radii).
 pub fn equivalent_edge_groups(reg: &BRepStore) -> Vec<Vec<EdgeKey>> {
     let mut out = Vec::new();
     for keys in reg.edge_hash_index.values() {
-        if keys.len() > 1 {
-            out.push(keys.clone());
+        if keys.len() <= 1 {
+            continue;
+        }
+        let mut clusters: Vec<Vec<EdgeKey>> = Vec::new();
+        for &ek in keys {
+            let mut placed = false;
+            for cluster in &mut clusters {
+                if cluster
+                    .iter()
+                    .any(|&other| curves_should_weld(reg, ek, other))
+                {
+                    cluster.push(ek);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                clusters.push(vec![ek]);
+            }
+        }
+        for cluster in clusters {
+            if cluster.len() > 1 {
+                out.push(cluster);
+            }
         }
     }
     out
@@ -247,6 +302,176 @@ pub fn build_edge_boundary_pool(
     }
 
     edge_boundary_idx
+}
+
+/// Per-face boundary pool: 3D points from each face's PCURVE on that face's surface.
+pub fn build_face_boundary_pool(
+    reg: &BRepStore,
+    shell_key: ShellKey,
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    global_vertices: &mut Vec<Vec3>,
+    global_normals: &mut Vec<Vec3>,
+    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    _vertex_mesh_idx: &HashMap<VertexKey, usize>,
+) -> FaceEdgeBoundaryIdx {
+    let mut out: FaceEdgeBoundaryIdx = HashMap::new();
+    let shell = match reg.shells.get(shell_key) {
+        Some(s) => s,
+        None => return out,
+    };
+
+    for &(face_key, _) in &shell.faces {
+        let face = match reg.faces.get(face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+        let wires: Vec<crate::topo::WireKey> = std::iter::once(face.outer_wire)
+            .chain(face.inner_wires.iter().copied())
+            .collect();
+        for wire_key in wires {
+            let wire = match reg.wires.get(wire_key) {
+                Some(w) => w,
+                None => continue,
+            };
+            for &(ek, _) in &wire.edges {
+                let Some(edge) = reg.edges.get(ek) else {
+                    continue;
+                };
+                let Some(pcurve) = edge.pcurves.get(&face_key) else {
+                    continue;
+                };
+                let Some(poly) = edge_polygons.get(&ek) else {
+                    continue;
+                };
+                let surface = &face.surface;
+                let n = poly.params_3d.len();
+                for (pi, &(t, _)) in poly.params_3d.iter().enumerate() {
+                    let pt = boundary_point_on_face(
+                        face_key,
+                        edge,
+                        pcurve,
+                        surface,
+                        pi,
+                        n,
+                        t,
+                        poly,
+                        reg,
+                    );
+                    let gi = register_boundary_point(
+                        pt,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                    );
+                    out.insert((face_key, ek, pi), gi);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 3D point on `face_key` for boundary sample `pi` (OCC BRepAdaptor_Curve(E, F)).
+fn boundary_point_on_face(
+    face_key: FaceKey,
+    edge: &crate::topo::BRepEdge,
+    pcurve: &CurveGeom,
+    surface: &SurfaceGeom,
+    pi: usize,
+    _n: usize,
+    t: f32,
+    poly: &EdgePolygon,
+    _reg: &BRepStore,
+) -> Vec3 {
+    if let Some(pts) = poly.params_2d.get(&face_key) {
+        if let Some(&(_, (u, v))) = pts.get(pi) {
+            return surface.d0_native(u, v);
+        }
+    }
+    let _ = edge;
+    eval_pcurve_on_surface(pcurve, surface, t)
+}
+
+/// Max distance between per-face boundary samples and the face surface (PCURVE UV → `d0_native`).
+pub fn measure_face_boundary_surface_gap(
+    reg: &BRepStore,
+    shell_key: ShellKey,
+    config: &super::edge_disc::EdgeDiscConfig,
+) -> f32 {
+    let edge_polygons = super::edge_disc::discretize_all_edges(reg, config);
+    let shell = match reg.shells.get(shell_key) {
+        Some(s) => s,
+        None => return 0.0,
+    };
+    let mut max_gap = 0.0f32;
+
+    for &(face_key, _) in &shell.faces {
+        let face = match reg.faces.get(face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+        let wires: Vec<crate::topo::WireKey> = std::iter::once(face.outer_wire)
+            .chain(face.inner_wires.iter().copied())
+            .collect();
+        for wire_key in wires {
+            let wire = match reg.wires.get(wire_key) {
+                Some(w) => w,
+                None => continue,
+            };
+            for &(ek, _) in &wire.edges {
+                let edge = match reg.edges.get(ek) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let pcurve = match edge.pcurves.get(&face_key) {
+                    Some(pc) => pc,
+                    None => continue,
+                };
+                let poly = match edge_polygons.get(&ek) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let n = poly.params_3d.len();
+                for (pi, &(t, _)) in poly.params_3d.iter().enumerate() {
+                    let intended = boundary_point_on_face(
+                        face_key, edge, pcurve, &face.surface, pi, n, t, poly, reg,
+                    );
+                    max_gap = max_gap.max(surface_gap_at_pcurve_uv(
+                        &face.surface, intended, pcurve, t,
+                    ));
+                }
+            }
+        }
+    }
+    max_gap
+}
+
+fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &CurveGeom, t: f32) -> f32 {
+    let uv = pcurve.d0(t);
+    let mut best = (pt - surface.d0_native(uv.x, uv.y)).length();
+    if matches!(surface, SurfaceGeom::Revolution { .. }) {
+        const TAU: f32 = std::f32::consts::TAU;
+        if uv.x <= 1.0 + 1e-4 {
+            best = best.min((pt - surface.d0_native(uv.x * TAU, uv.y)).length());
+        }
+        if uv.x >= TAU * 0.25 {
+            let un = uv.x / TAU;
+            if (un - uv.x).abs() > 1e-6 {
+                best = best.min((pt - surface.d0_native(un, uv.y)).length());
+            }
+        }
+    }
+    if let Some(pu) = surface.native_u_period() {
+        for shift in [-1.0f32, 1.0] {
+            best = best.min((pt - surface.d0_native(uv.x + shift * pu, uv.y)).length());
+        }
+    }
+    if let Some(pv) = surface.native_v_period() {
+        for shift in [-1.0f32, 1.0] {
+            best = best.min((pt - surface.d0_native(uv.x, uv.y + shift * pv)).length());
+        }
+    }
+    best
 }
 
 /// Discretize edges and measure max positional gap between welded equivalent-edge samples.

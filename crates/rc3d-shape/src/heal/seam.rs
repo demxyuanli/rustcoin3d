@@ -4,12 +4,12 @@ use rc3d_core::math::Vec3;
 
 use crate::geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
 use crate::mesh::MESH_CLOSED_SURFACE_SEGS;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation};
 
 /// Add parametric seam edges for closed faces and trimmed periodic faces.
-pub fn fix_missing_seams(reg: &mut BRepRegistry, face_key: FaceKey) -> usize {
-    let (surface, tolerance, wire_empty) = {
+pub fn fix_missing_seams(reg: &mut BRepStore, face_key: FaceKey) -> usize {
+    let (surface, tolerance, _wire_empty) = {
         let Some(face) = reg.faces.get(face_key) else {
             return 0;
         };
@@ -35,7 +35,7 @@ pub fn fix_missing_seams(reg: &mut BRepRegistry, face_key: FaceKey) -> usize {
 }
 
 fn add_vertex_loop_seams(
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
     tolerance: f32,
@@ -81,7 +81,7 @@ fn add_vertex_loop_seams(
 }
 
 /// Empty wire, degenerate-only wire, or degenerate + already-inserted seam (OCCT VERTEX_LOOP path).
-fn wire_needs_vertex_loop_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
+fn wire_needs_vertex_loop_seam(reg: &BRepStore, face_key: FaceKey) -> bool {
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
         None => return false,
@@ -101,7 +101,7 @@ fn wire_needs_vertex_loop_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
     })
 }
 
-fn wire_has_parametric_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
+fn wire_has_parametric_seam(reg: &BRepStore, face_key: FaceKey) -> bool {
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
         None => return false,
@@ -127,7 +127,7 @@ fn wire_has_parametric_seam(reg: &BRepRegistry, face_key: FaceKey) -> bool {
 
 /// Insert u=period seam when a trimmed periodic face wire does not touch the seam.
 fn fix_trimmed_periodic_seam(
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
     tol: f32,
@@ -202,7 +202,7 @@ fn fix_trimmed_periodic_seam(
     }
 }
 
-fn face_native_uv_bounds(reg: &BRepRegistry, face_key: FaceKey) -> Option<SurfaceParamRange> {
+fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfaceParamRange> {
     let face = reg.faces.get(face_key)?;
     let mut u_min = f32::MAX;
     let mut u_max = f32::MIN;
@@ -256,7 +256,7 @@ fn face_native_uv_bounds(reg: &BRepRegistry, face_key: FaceKey) -> Option<Surfac
 
 /// Effective UV span for seam sampling: face trim bounds when available, else surface `param_range`.
 fn seam_sample_range(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
 ) -> SurfaceParamRange {
@@ -278,7 +278,7 @@ fn seam_v(surface: &SurfaceGeom, normalized: f32) -> f32 {
 
 /// Seam along fixed u, v spans native param range.
 fn build_u_isoparam_seam(
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
     u: f32,
@@ -323,7 +323,7 @@ fn build_u_isoparam_seam(
 
 /// Seam along fixed v, u spans native param range.
 fn build_v_isoparam_seam(
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
     v: f32,
@@ -363,7 +363,7 @@ fn build_v_isoparam_seam(
 
 /// Reject seam polylines that extend far outside the face wire 3D bbox (prevents tearing spikes).
 fn seam_polyline_within_face(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     face_key: FaceKey,
     pts: &[Vec3],
     tol: f32,
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn sphere_vertex_loop_gets_seam_edge() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Sphere {
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn cylinder_trimmed_face_gets_periodic_seam() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0),
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn cylinder_full_wrap_gets_periodic_seam() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0),

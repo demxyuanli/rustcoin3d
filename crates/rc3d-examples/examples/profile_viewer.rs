@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::CameraController;
 use rc3d_core::math::Vec3;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;

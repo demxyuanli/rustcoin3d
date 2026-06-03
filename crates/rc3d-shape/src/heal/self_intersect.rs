@@ -1,8 +1,9 @@
 //! UV boundary self-intersection repair (OCC ShapeFix_Wire::FixSelfIntersection).
 
 use super::curve_trim::split_edge_at_params;
-use super::reorder::reorder_wire_edges;
-use crate::store::BRepRegistry;
+use super::geom2d::segment_intersection_strict;
+use super::wire_ops::reorder_wire_edges;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
 
 /// Represents an intersection point between two PCurve segments.
@@ -28,7 +29,7 @@ pub struct SelfIntersectReport {
 pub fn fix_self_intersecting_wire(
     wire_key: WireKey,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> SelfIntersectReport {
     let mut report = SelfIntersectReport::default();
 
@@ -176,20 +177,7 @@ fn segment_intersection_2d(
     b0: (f32, f32),
     b1: (f32, f32),
 ) -> Option<(f32, f32)> {
-    let da = (a1.0 - a0.0, a1.1 - a0.1);
-    let db = (b1.0 - b0.0, b1.1 - b0.1);
-    let det = da.0 * db.1 - da.1 * db.0;
-    if det.abs() < 1e-12 {
-        return None; // parallel
-    }
-    let d0 = (b0.0 - a0.0, b0.1 - a0.1);
-    let t = (d0.0 * db.1 - d0.1 * db.0) / det;
-    let u = (d0.0 * da.1 - d0.1 * da.0) / det;
-    if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
-        Some((t, u))
-    } else {
-        None
-    }
+    segment_intersection_strict(a0, a1, b0, b1)
 }
 
 #[cfg(test)]
@@ -199,7 +187,7 @@ mod tests {
     use crate::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
-    fn make_self_intersecting_wire(reg: &mut BRepRegistry) -> (WireKey, FaceKey) {
+    fn make_self_intersecting_wire(reg: &mut BRepStore) -> (WireKey, FaceKey) {
         // Create wire first so the face can reference it
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
 
@@ -264,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_fix_self_intersect_simple_cross() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (wk, fk) = make_self_intersecting_wire(&mut reg);
         let report = fix_self_intersecting_wire(wk, fk, &mut reg);
         assert!(
@@ -277,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_no_false_positive_adjacent() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
 
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let surface = SurfaceGeom::Plane {
@@ -323,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_fix_self_intersect_too_many() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let fk = reg.faces.insert(crate::topo::BRepFace {
@@ -350,7 +338,7 @@ mod tests {
             edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = edges;
-        let report = fix_self_intersecting_wire(wk, fk, &mut reg);
+        let _report = fix_self_intersecting_wire(wk, fk, &mut reg);
         // Should detect many intersections and clear the wire (>50 cap)
         let wire_empty = reg.wires.get(wk).unwrap().edges.is_empty();
         assert!(wire_empty, ">50 intersections should clear the wire");

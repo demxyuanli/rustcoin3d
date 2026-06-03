@@ -1,7 +1,7 @@
 //! Missing 2D edge detection (OCC ShapeFix_Wire::FixLacking).
 //! Detects edges connected in 3D but disconnected in UV space.
 
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
 #[derive(Debug, Default)]
@@ -15,7 +15,7 @@ pub struct LackingReport {
 pub fn fix_lacking_edges(
     wire_key: WireKey,
     face_key: FaceKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     tol_3d: f32,
     tol_uv: f32,
 ) -> LackingReport {
@@ -93,7 +93,7 @@ pub fn fix_lacking_edges(
     report
 }
 
-fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepRegistry) -> Option<rc3d_core::math::Vec3> {
+fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepStore) -> Option<rc3d_core::math::Vec3> {
     let edge = reg.edges.get(ek)?;
     let vk = match (orient, is_start) {
         (Orientation::Forward, true) | (Orientation::Reversed, false) => edge.v_low,
@@ -102,7 +102,7 @@ fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepR
     reg.vertices.get(vk).map(|v| v.position)
 }
 
-fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRepRegistry) -> Option<VertexKey> {
+fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRepStore) -> Option<VertexKey> {
     let edge = reg.edges.get(ek)?;
     if (orient == Orientation::Forward) != is_end {
         Some(edge.v_low)
@@ -111,7 +111,7 @@ fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRe
     }
 }
 
-fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepRegistry) -> Option<(f32, f32)> {
+fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepStore) -> Option<(f32, f32)> {
     let edge = reg.edges.get(ek)?;
     let pc = edge.pcurves.get(&face_key)?;
     let t = if (orient == Orientation::Forward) == is_start { 0.0 } else { 1.0 };
@@ -126,7 +126,7 @@ mod tests {
     use crate::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
-    fn make_wire_with_uv_gap(reg: &mut BRepRegistry, uv_gap: f32) -> (WireKey, FaceKey) {
+    fn make_wire_with_uv_gap(reg: &mut BRepStore, uv_gap: f32) -> (WireKey, FaceKey) {
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_lacking_small_gap_tolerance() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (wk, fk) = make_wire_with_uv_gap(&mut reg, 0.001);
         let report = fix_lacking_edges(wk, fk, &mut reg, 1e-3, 2e-4);
         assert!(report.tolerance_fixes > 0, "small UV gap should get tolerance fix");
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_lacking_no_3d_connection() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (wk, fk) = make_wire_with_uv_gap(&mut reg, 0.001);
         let report = fix_lacking_edges(wk, fk, &mut reg, 1e-8, 1e-8);
         assert_eq!(report.tolerance_fixes, 0, "no fix when 3D gap check fails");
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_lacking_no_uv_gap() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (wk, fk) = make_wire_with_uv_gap(&mut reg, 0.0);
         let report = fix_lacking_edges(wk, fk, &mut reg, 1e-3, 2e-4);
         assert_eq!(report.tolerance_fixes, 0, "no fix when UV gap is zero");
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_lacking_large_gap_new_edge() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let (wk, fk) = make_wire_with_uv_gap(&mut reg, 0.01);
         let report = fix_lacking_edges(wk, fk, &mut reg, 1e-3, 1e-4);
         // Large UV gap should trigger edge insertion (dist_uv >= tol_uv * 10)

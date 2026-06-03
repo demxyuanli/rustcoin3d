@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig, ShellMeshOutput};
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{FaceKey, ShellKey};
 
 /// Report of incremental mesh update.
@@ -27,7 +27,7 @@ pub struct RemeshReport {
 pub fn remesh_modified_faces(
     shell_key: ShellKey,
     modified: &[FaceKey],
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     config: &BRepMeshConfig,
     existing: &mut ShellMeshOutput,
 ) -> RemeshReport {
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_remesh_empty_modified_is_noop() {
-        let reg = BRepRegistry::new();
+        let reg = BRepStore::new();
         let config = BRepMeshConfig::default();
         let shell_key = ShellKey::default();
         let mut output = ShellMeshOutput {

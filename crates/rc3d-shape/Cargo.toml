@@ -14,5 +14,3 @@ slotmap = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
-earcutr = "0.4"
-spade = "2"

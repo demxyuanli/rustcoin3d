@@ -2,15 +2,17 @@
 
 use rc3d_core::math::Vec3;
 
-use crate::step::brep::heal::{auto_heal_shell, check_shell_continuity, HealLevel, HealReport};
-use crate::step::brep::registry::BRepRegistry;
+use crate::step::brep::heal::{
+    auto_heal_shell, check_shell_continuity, log_shell_topo_diag, HealLevel, HealReport,
+};
+use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::SolidKey;
 use crate::step::import_options::StepImportReport;
 use crate::step::mesh_result::MeshResult;
 
 /// Run auto-heal on all root solids and aggregate reports.
 pub fn run_heal_pipeline(
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
     root_solids: &[SolidKey],
     heal_level: HealLevel,
     max_iterations: usize,
@@ -34,6 +36,7 @@ pub fn run_heal_pipeline(
                 heal_level,
                 max_iterations,
             ));
+            log_shell_topo_diag(shell_key, reg);
         }
     }
     log::info!("[STEP] healed: {:?}", total_heal);
@@ -42,7 +45,7 @@ pub fn run_heal_pipeline(
 
 /// Continuity check pass; updates `import_report.continuity_defects`.
 pub fn run_continuity_checks(
-    reg: &BRepRegistry,
+    reg: &BRepStore,
     root_solids: &[SolidKey],
     g0_tol: f32,
     import_report: &mut StepImportReport,

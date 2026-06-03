@@ -14,7 +14,11 @@ use std::sync::{Arc, Mutex};
 use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_engine_api::Engine;
+use rc3d_examples::common::run_app;
 use rc3d_scene::node_data::*;
+use winit::application::ApplicationHandler;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::WindowAttributes;
 
 static TEST_LOG: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 
@@ -42,22 +46,41 @@ fn render_frames_safe(engine: &mut Engine, count: usize) -> bool {
     .is_ok()
 }
 
-fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+struct EffectToggleTestApp {
+    stl_path: String,
+    started: bool,
+}
 
-    let args: Vec<String> = std::env::args().collect();
-    let stl_path = args.get(1).map(|s| s.as_str()).unwrap_or("test_data/car engine.stl");
+impl ApplicationHandler for EffectToggleTestApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.started {
+            return;
+        }
+        self.started = true;
 
-    println!("=== stl_diagnostic_full Effect Toggle Test ===");
-    println!("Scene: {stl_path}\n");
+        let window = event_loop
+            .create_window(
+                WindowAttributes::default().with_title("Effect Toggle Test"),
+            )
+            .expect("window");
 
-    // ── Create engine, load scene ──
-    let event_loop = winit::event_loop::EventLoop::new().expect("event loop");
-    let window = event_loop
-        .create_window(winit::window::WindowAttributes::default().with_title("Effect Toggle Test"))
-        .expect("window");
+        let mut engine = Engine::new(&window);
+        if let Err(code) = run_effect_toggle_tests(&mut engine, &self.stl_path) {
+            std::process::exit(code);
+        }
+        event_loop.exit();
+    }
 
-    let mut engine = Engine::new(&window);
+    fn window_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        _event: winit::event::WindowEvent,
+    ) {
+    }
+}
+
+fn run_effect_toggle_tests(engine: &mut Engine, stl_path: &str) -> Result<(), i32> {
     match engine.import(stl_path) {
         Ok(root_id) => {
             println!("Imported: root={root_id:?}");
@@ -81,7 +104,7 @@ fn main() {
                 ..Default::default()
             }));
         }
-        Err(e) => { eprintln!("Import error: {e}"); std::process::exit(1); }
+        Err(e) => { eprintln!("Import error: {e}"); return Err(1); }
     }
     engine.set_display_mode(DisplayMode::ShadedWithEdges);
     engine.continuous_redraw = false;
@@ -129,7 +152,7 @@ fn main() {
     }
 
     // Warm-up
-    render_frames_safe(&mut engine, 2);
+    render_frames_safe(engine, 2);
 
     // ── Helper: apply toggle set and test ──
     let set_hdr = |v: bool| hdr.store(v, Ordering::Relaxed);
@@ -163,29 +186,29 @@ fn main() {
     println!("--- Phase 1: Independent Toggles ---");
 
     reset!(); set_hdr(true);
-    log_result("HDR ON", render_frames_safe(&mut engine, 3));
+    log_result("HDR ON", render_frames_safe(engine, 3));
     reset!(); // hdr=false
-    log_result("HDR OFF", render_frames_safe(&mut engine, 3));
+    log_result("HDR OFF", render_frames_safe(engine, 3));
 
     reset!(); set_wf(true);
-    log_result("WireframeOverlay ON", render_frames_safe(&mut engine, 3));
+    log_result("WireframeOverlay ON", render_frames_safe(engine, 3));
     reset!(); // wf=false
-    log_result("WireframeOverlay OFF", render_frames_safe(&mut engine, 3));
+    log_result("WireframeOverlay OFF", render_frames_safe(engine, 3));
 
     reset!(); set_cl(false);
-    log_result("ClusterLights OFF", render_frames_safe(&mut engine, 3));
+    log_result("ClusterLights OFF", render_frames_safe(engine, 3));
     reset!(); // cl=true
-    log_result("ClusterLights ON", render_frames_safe(&mut engine, 3));
+    log_result("ClusterLights ON", render_frames_safe(engine, 3));
 
     reset!(); set_os(true);
-    log_result("OmniShadows ON", render_frames_safe(&mut engine, 3));
+    log_result("OmniShadows ON", render_frames_safe(engine, 3));
     reset!();
-    log_result("OmniShadows OFF", render_frames_safe(&mut engine, 3));
+    log_result("OmniShadows OFF", render_frames_safe(engine, 3));
 
     reset!(); set_xr(true);
-    log_result("XRay ON", render_frames_safe(&mut engine, 3));
+    log_result("XRay ON", render_frames_safe(engine, 3));
     reset!();
-    log_result("XRay OFF", render_frames_safe(&mut engine, 3));
+    log_result("XRay OFF", render_frames_safe(engine, 3));
 
     // ══════════════════════════════════════════
     // Phase 2: HDR-dependent effects
@@ -194,51 +217,51 @@ fn main() {
 
     // SSR
     reset!(); set_hdr(true); set_ssr(true);
-    log_result("SSR ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("SSR ON (HDR=ON)", render_frames_safe(engine, 3));
     set_ssr(false);
-    log_result("SSR OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("SSR OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_ssr(true); // HDR=OFF, pre_render_hook will disable
-    log_result("SSR ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("SSR ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // TAA
     reset!(); set_hdr(true); set_taa(true);
-    log_result("TAA ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("TAA ON (HDR=ON)", render_frames_safe(engine, 3));
     set_taa(false);
-    log_result("TAA OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("TAA OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_taa(true);
-    log_result("TAA ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("TAA ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // Motion Blur
     reset!(); set_hdr(true); set_mb(true);
-    log_result("MotionBlur ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("MotionBlur ON (HDR=ON)", render_frames_safe(engine, 3));
     set_mb(false);
-    log_result("MotionBlur OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("MotionBlur OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_mb(true);
-    log_result("MotionBlur ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("MotionBlur ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // DOF
     reset!(); set_hdr(true); set_dof(true);
-    log_result("DOF ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("DOF ON (HDR=ON)", render_frames_safe(engine, 3));
     set_dof(false);
-    log_result("DOF OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("DOF OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_dof(true);
-    log_result("DOF ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("DOF ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // Color Grading
     reset!(); set_hdr(true); set_cg(true);
-    log_result("ColorGrading ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("ColorGrading ON (HDR=ON)", render_frames_safe(engine, 3));
     set_cg(false);
-    log_result("ColorGrading OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("ColorGrading OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_cg(true);
-    log_result("ColorGrading ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("ColorGrading ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // Volumetric Fog
     reset!(); set_hdr(true); set_fog(true);
-    log_result("VolumetricFog ON (HDR=ON)", render_frames_safe(&mut engine, 3));
+    log_result("VolumetricFog ON (HDR=ON)", render_frames_safe(engine, 3));
     set_fog(false);
-    log_result("VolumetricFog OFF (HDR=ON)", render_frames_safe(&mut engine, 2));
+    log_result("VolumetricFog OFF (HDR=ON)", render_frames_safe(engine, 2));
     reset!(); set_fog(true);
-    log_result("VolumetricFog ON (HDR=OFF)", render_frames_safe(&mut engine, 3));
+    log_result("VolumetricFog ON (HDR=OFF)", render_frames_safe(engine, 3));
 
     // ══════════════════════════════════════════
     // Phase 3: Combinations
@@ -248,14 +271,14 @@ fn main() {
     reset!(); set_hdr(true);
     set_ssr(true); set_taa(true); set_mb(true); set_dof(true);
     set_cg(true); set_fog(true); set_cl(false); set_os(true);
-    log_result("All HDR effects ON + OmniShadow", render_frames_safe(&mut engine, 3));
+    log_result("All HDR effects ON + OmniShadow", render_frames_safe(engine, 3));
 
     reset!(); set_hdr(true);
     set_ssr(true); set_taa(true); set_fog(true); set_wf(true);
-    log_result("HDR+SSR+TAA+Fog+Wireframe", render_frames_safe(&mut engine, 3));
+    log_result("HDR+SSR+TAA+Fog+Wireframe", render_frames_safe(engine, 3));
 
     reset!();
-    log_result("All OFF (baseline)", render_frames_safe(&mut engine, 3));
+    log_result("All OFF (baseline)", render_frames_safe(engine, 3));
 
     // ══════════════════════════════════════════
     // Summary
@@ -274,10 +297,26 @@ fn main() {
     if !failed.is_empty() {
         println!("\nFAILED:");
         for (name, _) in &failed { println!("  - {name}"); }
-        std::process::exit(1);
-    } else {
-        println!("All tests passed.");
+        return Err(1);
     }
+    println!("All tests passed.");
+    Ok(())
+}
 
-    let _ = event_loop.run(move |_event, elwt| { elwt.exit(); });
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
+    let args: Vec<String> = std::env::args().collect();
+    let stl_path = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "test_data/car engine.stl".to_string());
+
+    println!("=== stl_diagnostic_full Effect Toggle Test ===");
+    println!("Scene: {stl_path}\n");
+
+    run_app(EffectToggleTestApp {
+        stl_path,
+        started: false,
+    });
 }

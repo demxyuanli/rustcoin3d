@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use crate::mesh::face_uv::signed_area_2d;
-use crate::store::BRepRegistry;
+use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use super::geom2d::collect_wire_uv_polygon;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default)]
@@ -40,7 +41,7 @@ impl CheckReport {
 }
 
 /// Validate shell topology before meshing.
-pub fn check_shell(shell_key: ShellKey, reg: &BRepRegistry) -> CheckReport {
+pub fn check_shell(shell_key: ShellKey, reg: &BRepStore) -> CheckReport {
     let mut report = CheckReport::default();
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s,
@@ -90,7 +91,7 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepRegistry) -> CheckReport {
 /// For a closed manifold shell: V - E + F = 2(1 - genus)
 /// genus=0 (sphere-like) → V - E + F = 2
 /// Returns None if shell has no faces.
-pub fn check_euler_poincare(shell_key: ShellKey, reg: &BRepRegistry) -> Option<i32> {
+pub fn check_euler_poincare(shell_key: ShellKey, reg: &BRepStore) -> Option<i32> {
     let shell = reg.shells.get(shell_key)?;
     if shell.faces.is_empty() {
         return None;
@@ -120,7 +121,7 @@ pub fn check_euler_poincare(shell_key: ShellKey, reg: &BRepRegistry) -> Option<i
     Some(v - e + f)
 }
 
-fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
+fn check_face(face_key: FaceKey, reg: &BRepStore, report: &mut CheckReport) {
     let errors_before = report.errors.len();
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
@@ -256,7 +257,7 @@ fn check_face(face_key: FaceKey, reg: &BRepRegistry, report: &mut CheckReport) {
 fn vertex_gap(
     a: crate::topo::VertexKey,
     b: crate::topo::VertexKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> f32 {
     let pa = reg.vertices.get(a).map(|v| v.position);
     let pb = reg.vertices.get(b).map(|v| v.position);
@@ -268,7 +269,7 @@ fn vertex_gap(
 
 fn check_non_manifold(
     face_keys: &[(FaceKey, crate::topo::Orientation)],
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let mut edge_face_count: HashMap<EdgeKey, usize> = HashMap::new();
@@ -296,7 +297,7 @@ fn check_non_manifold(
     warnings
 }
 
-pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepRegistry) -> Vec<String> {
+pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepStore) -> Vec<String> {
     let mut warnings = Vec::new();
     let Some(face) = reg.faces.get(face_key) else {
         return warnings;
@@ -354,7 +355,7 @@ fn segments_intersect_2d(
 }
 
 /// Check edge tolerance validity (OCC BRepCheck_Edge).
-fn check_edge_tolerance(ek: EdgeKey, reg: &BRepRegistry) -> Vec<String> {
+fn check_edge_tolerance(ek: EdgeKey, reg: &BRepStore) -> Vec<String> {
     let mut warnings = Vec::new();
     let edge = match reg.edges.get(ek) {
         Some(e) => e,
@@ -388,7 +389,7 @@ fn check_edge_tolerance(ek: EdgeKey, reg: &BRepRegistry) -> Vec<String> {
 /// Check for surface singularities on the trim boundary (OCC BRepCheck_Face).
 fn check_surface_singularities(
     face_key: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let face = match reg.faces.get(face_key) {
@@ -450,7 +451,7 @@ fn check_surface_singularities(
 /// Check that PCurve UV coordinates fall within the surface's natural domain.
 fn check_parameter_range(
     face_key: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let face = match reg.faces.get(face_key) {
@@ -506,7 +507,7 @@ fn check_parameter_range(
 /// Check wire orientation consistency using signed area in UV space.
 fn check_wire_orientation(
     face_key: FaceKey,
-    reg: &BRepRegistry,
+    reg: &BRepStore,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     let face = match reg.faces.get(face_key) {
@@ -547,33 +548,6 @@ fn check_wire_orientation(
     warnings
 }
 
-fn collect_wire_uv_polygon(
-    wire: &crate::topo::BRepWire,
-    face_key: FaceKey,
-    reg: &BRepRegistry,
-) -> Vec<(f32, f32)> {
-    let mut points = Vec::new();
-    for &(ek, _) in &wire.edges {
-        if let Some(edge) = reg.edges.get(ek) {
-            if let Some(pc) = edge.pcurves.get(&face_key) {
-                let uv = pc.d0(0.0);
-                points.push((uv.x, uv.y));
-            }
-        }
-    }
-    if points.len() >= 2 {
-        if let Some(last_edge) = wire.edges.last().and_then(|&(ek, _)| {
-            reg.edges.get(ek).and_then(|e| e.pcurves.get(&face_key)).map(|pc| {
-                let uv = pc.d0(1.0);
-                (uv.x, uv.y)
-            })
-        }) {
-            points.push(last_edge);
-        }
-    }
-    points
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,7 +555,7 @@ mod tests {
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
     use rc3d_core::math::Vec3;
 
-    fn closed_cube_shell(reg: &mut BRepRegistry) -> ShellKey {
+    fn closed_cube_shell(reg: &mut BRepStore) -> ShellKey {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
@@ -634,7 +608,7 @@ mod tests {
 
     #[test]
     fn valid_plane_face_has_no_errors() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let sk = closed_cube_shell(&mut reg);
         let report = check_shell(sk, &reg);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -642,7 +616,7 @@ mod tests {
 
     #[test]
     fn open_wire_reports_error() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
@@ -703,7 +677,7 @@ mod tests {
 
     #[test]
     fn zero_area_face_yields_error() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
@@ -733,7 +707,7 @@ mod tests {
 
     #[test]
     fn test_check_edge_tolerance_oversized() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(0.01, 0.0, 0.0), 1e-4);
         let surface = SurfaceGeom::Plane {
@@ -771,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_check_surface_singularity_sphere_pole() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Sphere {
             center: Vec3::ZERO,
             radius: 1.0,
@@ -810,7 +784,7 @@ mod tests {
 
     #[test]
     fn non_manifold_edge_yields_warning() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let curve = CurveGeom::Line {
@@ -863,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_parameter_range_oob() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -900,7 +874,7 @@ mod tests {
     #[test]
     fn test_euler_poincare_single_face() {
         // Single face with 4 edges and 4 vertices: χ = V - E + F = 4 - 4 + 1 = 1
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let sk = closed_cube_shell(&mut reg);
         let chi = check_euler_poincare(sk, &reg);
         assert_eq!(chi, Some(1), "single-face shell should have χ=1");
@@ -908,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_euler_poincare_empty_shell() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let sk = reg.shells.insert(BRepShell {
             faces: vec![],
             closed: false,
@@ -920,7 +894,7 @@ mod tests {
 
     #[test]
     fn test_wire_orientation_inconsistent() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -965,11 +939,7 @@ mod tests {
             (e2, Orientation::Forward),
             (e3, Orientation::Forward),
         ];
-        let warnings = check_wire_orientation(fk, &reg);
-        // The test verifies the function runs without panic for a non-trivial wire
-        assert!(
-            warnings.len() >= 0,
-            "orientation check should complete"
-        );
+        let _warnings = check_wire_orientation(fk, &reg);
+        // The test verifies the function runs without panic for a non-trivial wire.
     }
 }

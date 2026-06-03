@@ -18,16 +18,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::CameraController;
 use rc3d_core::math::Vec3;
 use rc3d_core::{DisplayMode, NodeId};
 use rc3d_render::renderer::CadDisplayTier;
 use rc3d_scene::node_data::*;
+use rc3d_examples::common::run_example_with_hooks;
 use rc3d_scene::SceneGraph;
-use winit::event::{ElementState, Event, WindowEvent};
-use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowAttributes;
 
 fn main() {
     env_logger::Builder::from_env(
@@ -88,145 +86,81 @@ fn main() {
         "Orbit camera to observe tier degradation during interaction"
     );
 
-    // Track last-applied tier so we only call set_display_tier on change.
-    let mut last_tier: u32 = initial_tier;
-    let mut last_wf: bool = false;
+    run_example_with_hooks("STL Diagnostic", move |engine| {
+        engine.load_scene(graph);
+        engine.controller = ctrl;
+        engine.set_display_mode(DisplayMode::Shaded);
+        engine.continuous_redraw = true;
 
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = event_loop
-        .create_window(WindowAttributes::default().with_title("STL Diagnostic"))
-        .expect("failed to create window");
-
-    let mut engine = Engine::new(&window);
-    engine.load_scene(graph);
-    engine.controller = ctrl;
-    engine.set_display_mode(DisplayMode::Shaded);
-    engine.continuous_redraw = true;
-
-    // Enable HDR post-processing
-    if let Some(ref mut r) = engine.renderer {
-        r.set_hdr_post_processing(true);
-    }
-
-    // Pre-render hook: apply CAD tier and wireframe overlay
-    engine.pre_render_hook = Some(Box::new(move |renderer| {
-        let t = tier_render.load(Ordering::Relaxed);
-        if t != last_tier {
-            last_tier = t;
-            renderer.set_display_tier(CadDisplayTier::from_u32(t));
+        if let Some(ref mut r) = engine.renderer {
+            r.set_hdr_post_processing(true);
         }
-        let wf = wf_render.load(Ordering::Relaxed);
-        if wf != last_wf {
-            last_wf = wf;
-            renderer.wireframe_overlay = wf;
-        }
-        if wf {
-            renderer.set_display_mode(DisplayMode::FlatWithEdge);
-        }
-    }));
 
-    // HUD text overlay: show current tier and wireframe state
-    engine.hud_text_hook = Some(Box::new(move || {
-        let t = tier_text.load(Ordering::Relaxed);
-        let tier = CadDisplayTier::from_u32(t);
-        let wf = wf_text.load(Ordering::Relaxed);
-        let mode_line = if wf {
-            " | FullMeshEdges ON"
-        } else {
-            ""
-        };
-        format!(
-            "+--- CAD Tier: {:<16} ---+\n\
-             | 1=DesignCreation 2=Visualization |\n\
-             | 3=IndustrialDisplay 4=ProductRen |\n\
-             | F5=Flat+MeshEdges{:>13} |\n\
-             +-----------------------------------+",
-            tier_name(tier),
-            mode_line
-        )
-    }));
+        let mut last_tier: u32 = initial_tier;
+        let mut last_wf: bool = false;
 
-    // Keyboard hook: F5 for wireframe, 1-4 for tier switching
-    engine.panel_overlay_key_hook = Some(Box::new(move |key: PhysicalKey| -> bool {
-        let code = match key {
-            PhysicalKey::Code(c) => c,
-            _ => return false,
-        };
-        if code == KeyCode::F5 {
-            let prev = wf_key.load(Ordering::Relaxed);
-            wf_key.store(!prev, Ordering::Relaxed);
-            println!(
-                "[DIAG] Flat+MeshEdges: {}",
-                if !prev { "ON" } else { "OFF" }
-            );
-            return true;
-        }
-        let ti: u32 = match code {
-            KeyCode::Digit1 => 0,
-            KeyCode::Digit2 => 1,
-            KeyCode::Digit3 => 2,
-            KeyCode::Digit4 => 3,
-            _ => return false,
-        };
-        tier_key.store(ti, Ordering::Relaxed);
-        let tier = CadDisplayTier::from_u32(ti);
-        println!("[DIAG] Tier: {tier:?}");
-        true
-    }));
-
-    let mut cursor_prev: (f64, f64) = (0.0, 0.0);
-
-    let _ = event_loop.run(move |event, elwt| {
-        match &event {
-            Event::WindowEvent { event: win_event, .. } => {
-                match win_event {
-                    WindowEvent::RedrawRequested => {
-                        engine.render();
-                        window.request_redraw();
-                    }
-                    WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(size) => {
-                        engine.resize(size.width, size.height);
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        let left_orbit = engine.on_pick.is_none();
-                        engine.controller.dispatch_window_event(
-                            win_event,
-                            cursor_prev,
-                            left_orbit,
-                        );
-                        cursor_prev = (position.x, position.y);
-                    }
-                    WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
-                        let left_orbit = engine.on_pick.is_none();
-                        engine.controller.dispatch_window_event(
-                            win_event,
-                            cursor_prev,
-                            left_orbit,
-                        );
-                        if let WindowEvent::MouseWheel { .. } = win_event {
-                            window.request_redraw();
-                        }
-                    }
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if event.state == ElementState::Pressed {
-                            if let Some(ref mut hook) = engine.panel_overlay_key_hook {
-                                if hook(event.physical_key) {
-                                    window.request_redraw();
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+        engine.pre_render_hook = Some(Box::new(move |renderer| {
+            let t = tier_render.load(Ordering::Relaxed);
+            if t != last_tier {
+                last_tier = t;
+                renderer.set_display_tier(CadDisplayTier::from_u32(t));
             }
-            Event::AboutToWait => {
-                if engine.continuous_redraw {
-                    window.request_redraw();
-                }
+            let wf = wf_render.load(Ordering::Relaxed);
+            if wf != last_wf {
+                last_wf = wf;
+                renderer.wireframe_overlay = wf;
             }
-            _ => {}
-        }
+            if wf {
+                renderer.set_display_mode(DisplayMode::FlatWithEdge);
+            }
+        }));
+
+        engine.hud_text_hook = Some(Box::new(move || {
+            let t = tier_text.load(Ordering::Relaxed);
+            let tier = CadDisplayTier::from_u32(t);
+            let wf = wf_text.load(Ordering::Relaxed);
+            let mode_line = if wf {
+                " | FullMeshEdges ON"
+            } else {
+                ""
+            };
+            format!(
+                "+--- CAD Tier: {:<16} ---+\n\
+                 | 1=DesignCreation 2=Visualization |\n\
+                 | 3=IndustrialDisplay 4=ProductRen |\n\
+                 | F5=Flat+MeshEdges{:>13} |\n\
+                 +-----------------------------------+",
+                tier_name(tier),
+                mode_line
+            )
+        }));
+
+        engine.panel_overlay_key_hook = Some(Box::new(move |key: PhysicalKey| -> bool {
+            let code = match key {
+                PhysicalKey::Code(c) => c,
+                _ => return false,
+            };
+            if code == KeyCode::F5 {
+                let prev = wf_key.load(Ordering::Relaxed);
+                wf_key.store(!prev, Ordering::Relaxed);
+                println!(
+                    "[DIAG] Flat+MeshEdges: {}",
+                    if !prev { "ON" } else { "OFF" }
+                );
+                return true;
+            }
+            let ti: u32 = match code {
+                KeyCode::Digit1 => 0,
+                KeyCode::Digit2 => 1,
+                KeyCode::Digit3 => 2,
+                KeyCode::Digit4 => 3,
+                _ => return false,
+            };
+            tier_key.store(ti, Ordering::Relaxed);
+            let tier = CadDisplayTier::from_u32(ti);
+            println!("[DIAG] Tier: {tier:?}");
+            true
+        }));
     });
 }
 

@@ -6,7 +6,6 @@ use rc3d_shape::ShapeDocument;
 use crate::step::adapter::{AdapterMode, AdapterOptions};
 use crate::step::brep::heal::HealLevel;
 use crate::step::parser::EntityIndex;
-use crate::step::tree::AssemblyTree;
 
 /// How strictly STEP import treats parse/build/heal issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,8 +43,6 @@ pub struct StepImportResult {
     pub document: ShapeDocument,
     pub graph: SceneGraph,
     pub report: StepImportReport,
-    #[deprecated(note = "use ShapeDocument.labels (XdeLabelForest) instead")]
-    pub assembly_tree: AssemblyTree,
     pub entities: EntityIndex,
 }
 

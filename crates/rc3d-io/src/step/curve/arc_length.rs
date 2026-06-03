@@ -4,7 +4,7 @@
 
 use rc3d_core::math::Vec3;
 use super::super::parser::EntityIndex;
-use super::super::geom;
+use super::super::entity_geom as geom;
 
 /// Estimate the arc length of a curve entity from `t0` to `t1` using
 /// adaptive chordal sampling with the given tolerance.

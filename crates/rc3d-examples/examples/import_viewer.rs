@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use rc3d_actions::{fit_camera_to_scene, CameraFitConfig};
 use rc3d_editor::{
-    preset_for_import_viewer_panel, PanelConfig, RenderFeaturePanelHandle,
+    preset_for_import_viewer_panel,
     RenderFeaturePanelState,
 };
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::CameraController;
 use rc3d_core::NodeId;
 use rc3d_core::{
     math::{Mat4, Vec3},
@@ -19,12 +19,10 @@ use rc3d_core::{
 };
 use rc3d_engine::{Engine as EngineTrait, EngineRegistry};
 use rc3d_render::AdaptiveControl;
+use rc3d_examples::common::run_example_with_hooks;
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
-use winit::event::{ElementState, Event, WindowEvent};
-use winit::event_loop::EventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::WindowAttributes;
 
 #[derive(Debug)]
 struct ModelAnimationEngine {
@@ -194,12 +192,6 @@ fn main() {
     let brep_edges_root = find_brep_edges_transform(&graph);
     let ctrl = CameraController::new(target, orbit_radius);
 
-    let event_loop =
-        EventLoop::new().expect("failed to create import_viewer event loop");
-    let window = event_loop
-        .create_window(WindowAttributes::default().with_title("Import Viewer"))
-        .expect("failed to create window");
-
     let panel_preset = preset_for_import_viewer_panel();
     let panel_title = panel_preset.config.title.clone();
     let panel_state = Arc::new(Mutex::new(panel_preset.state));
@@ -219,115 +211,44 @@ fn main() {
         panel_state.clone(),
     ));
 
-    let mut engine = Engine::new(&window);
-    engine.load_scene(graph);
-    engine.controller = ctrl;
-    engine.world_mut().engines = Some(engines);
-    engine.set_display_mode(DisplayMode::Shaded);
-    engine.set_adaptive_quality(adaptive_control);
-    if let Some(ref mut r) = engine.renderer {
-        r.hdr_post_processing = true;
-    }
-
-    if !no_panel {
-        let panel_for_text = panel_state.clone();
-        let panel_for_key = panel_state.clone();
-        let selected = Arc::new(Mutex::new(0usize));
-        let selected_for_text = selected.clone();
-        let selected_for_key = selected.clone();
-        let selected_for_mouse = selected.clone();
-        let panel_for_mouse = panel_for_key.clone();
-
-        engine.hud_text_hook = Some(Box::new(move || {
-            let sel = *selected_for_text.lock().expect("panel selected lock");
-            build_import_viewer_panel_overlay_with_selection(&panel_for_text, sel)
-        }));
-        engine.panel_overlay_key_hook = Some(Box::new(move |key: PhysicalKey| -> bool {
-            apply_import_viewer_panel_key(&panel_for_key, &selected_for_key, key);
-            false
-        }));
-        engine.panel_overlay_mouse_hook = Some(Box::new(
-            move |x, y, w, h| {
-                apply_import_viewer_panel_mouse(
-                    &panel_for_mouse,
-                    &selected_for_mouse,
-                    x, y, w, h,
-                )
-            },
-        ));
-    }
-
-    let mut cursor_pos: Option<(f32, f32)> = None;
-    let mut cursor_prev: (f64, f64) = (0.0, 0.0);
-    let mut window_size: (u32, u32) = (800, 600);
-
-    let _ = event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent { event, .. } => match event {
-            WindowEvent::RedrawRequested => {
-                engine.render();
-                window.request_redraw();
-            }
-            WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::Resized(size) => {
-                window_size = (size.width, size.height);
-                engine.resize(size.width, size.height);
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                let left_orbit = engine.on_pick.is_none();
-                if engine.controller.dispatch_window_event(
-                    &event,
-                    cursor_prev,
-                    left_orbit,
-                ) {
-                    window.request_redraw();
-                }
-                cursor_pos = Some((position.x as f32, position.y as f32));
-                cursor_prev = (position.x, position.y);
-            }
-            WindowEvent::MouseInput { state: _, .. } => {
-                // Handle panel mouse hook first
-                if let Some((x, y)) = cursor_pos {
-                    if let Some(ref mut hook) = engine.panel_overlay_mouse_hook {
-                        if hook(x, y, window_size.0, window_size.1) {
-                            window.request_redraw();
-                        }
-                    }
-                }
-                // Also dispatch to camera controller for orbit/pan
-                let left_orbit = engine.on_pick.is_none();
-                if engine.controller.dispatch_window_event(
-                    &event,
-                    cursor_prev,
-                    left_orbit,
-                ) {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::MouseWheel { .. } => {
-                let left_orbit = engine.on_pick.is_none();
-                if engine.controller.dispatch_window_event(
-                    &event,
-                    cursor_prev,
-                    left_orbit,
-                ) {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let Some(ref mut hook) = engine.panel_overlay_key_hook {
-                        if hook(event.physical_key) {
-                            window.request_redraw();
-                        }
-                    }
-                }
-            }
-            _ => {}
-        },
-        Event::AboutToWait => {
-            window.request_redraw();
+    run_example_with_hooks("Import Viewer", move |engine| {
+        engine.load_scene(graph);
+        engine.controller = ctrl;
+        engine.world_mut().engines = Some(engines);
+        engine.set_display_mode(DisplayMode::Shaded);
+        engine.set_adaptive_quality(adaptive_control);
+        engine.continuous_redraw = true;
+        if let Some(ref mut r) = engine.renderer {
+            r.hdr_post_processing = true;
         }
-        _ => {}
+
+        if !no_panel {
+            let panel_for_text = panel_state.clone();
+            let panel_for_key = panel_state.clone();
+            let selected = Arc::new(Mutex::new(0usize));
+            let selected_for_text = selected.clone();
+            let selected_for_key = selected.clone();
+            let selected_for_mouse = selected.clone();
+            let panel_for_mouse = panel_for_key.clone();
+
+            engine.hud_text_hook = Some(Box::new(move || {
+                let sel = *selected_for_text.lock().expect("panel selected lock");
+                build_import_viewer_panel_overlay_with_selection(&panel_for_text, sel)
+            }));
+            engine.panel_overlay_key_hook = Some(Box::new(move |key: PhysicalKey| -> bool {
+                apply_import_viewer_panel_key(&panel_for_key, &selected_for_key, key);
+                false
+            }));
+            engine.panel_overlay_mouse_hook = Some(Box::new(
+                move |x, y, w, h| {
+                    apply_import_viewer_panel_mouse(
+                        &panel_for_mouse,
+                        &selected_for_mouse,
+                        x, y, w, h,
+                    )
+                },
+            ));
+        }
     });
 }
 
@@ -920,6 +841,7 @@ fn boost_contrast_recursive(graph: &mut SceneGraph, node: NodeId) {
     }
 }
 
+#[allow(dead_code)]
 fn find_first_camera_node(graph: &SceneGraph) -> Option<NodeId> {
     for &root in graph.roots() {
         if let Some(id) = find_camera_recursive(graph, root) {
@@ -929,6 +851,7 @@ fn find_first_camera_node(graph: &SceneGraph) -> Option<NodeId> {
     None
 }
 
+#[allow(dead_code)]
 fn find_camera_recursive(graph: &SceneGraph, node: NodeId) -> Option<NodeId> {
     let entry = graph.get(node)?;
     if matches!(

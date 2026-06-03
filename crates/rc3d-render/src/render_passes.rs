@@ -939,15 +939,15 @@ fn capture_depth_for_occlusion(
 ) {
     let Some(depth_tex) = depth_tex else { return };
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: depth_tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::DepthOnly,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: dst_buf,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(dst_row_bytes),
                 rows_per_image: Some(dst_h),

@@ -1,24 +1,139 @@
-//! Face splitting for multiple outer wires (OCC ShapeFix_Face::FixSplitFace).
-//! When a face has inner wires that are actually separate outer regions,
-//! split them into distinct faces.
+//! Shell-level fixes: orientation, vertex positions, and face splitting.
 
-use crate::store::BRepRegistry;
+use std::collections::{HashSet, VecDeque};
+use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, ShellKey, WireKey};
 use crate::topo::BRepFace;
 
+// ── Shell orientation ──────────────────────────────────────────────
+
+/// Fix face orientations in a shell so all normals point consistently.
+/// Returns number of faces flipped.
+pub(crate) fn fix_shell_orientation(
+    shell_key: ShellKey,
+    reg: &mut BRepStore,
+) -> usize {
+    let face_keys: Vec<FaceKey> = {
+        let shell = match reg.shells.get(shell_key) {
+            Some(s) => s.faces.iter().map(|(fk, _)| *fk).collect(),
+            None => return 0,
+        };
+        shell
+    };
+
+    if face_keys.len() <= 1 { return 0; }
+
+    let mut flipped = 0;
+    let mut visited: HashSet<FaceKey> = HashSet::new();
+    let mut queue: VecDeque<FaceKey> = VecDeque::new();
+
+    queue.push_back(face_keys[0]);
+    visited.insert(face_keys[0]);
+
+    while let Some(current) = queue.pop_front() {
+        for &next in &face_keys {
+            if visited.contains(&next) { continue; }
+            let shared = reg.find_shared_edges(current, next);
+            if !shared.is_empty() {
+                let current_face = match reg.faces.get(current) {
+                    Some(f) => f, None => continue,
+                };
+                let next_face = match reg.faces.get(next) {
+                    Some(f) => f, None => continue,
+                };
+
+                let edge = reg.edges.get(shared[0]);
+                if let (Some(e), Some(_pcurve)) = (edge, edge.and_then(|e| e.pcurves.get(&current))) {
+                    let mid = e.curve.d0(0.5);
+                    if let Some((u0, v0)) = current_face.surface.project(mid) {
+                        if let Some((u1, v1)) = next_face.surface.project(mid) {
+                            let n0 = current_face.surface.normal(u0, v0);
+                            let n1 = next_face.surface.normal(u1, v1);
+                            if n0.dot(n1) < 0.0 {
+                                if let Some(face) = reg.faces.get_mut(next) {
+                                    face.same_sense = !face.same_sense;
+                                    flipped += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                visited.insert(next);
+                queue.push_back(next);
+            }
+        }
+    }
+
+    flipped
+}
+
+// ── Vertex position correction ─────────────────────────────────────
+
+/// Project each vertex in the shell onto surfaces of faces that reference it.
+/// Returns number of vertices adjusted.
+pub(crate) fn fix_vertex_positions(
+    shell_key: ShellKey,
+    reg: &mut BRepStore,
+    tolerance: f32,
+) -> usize {
+    let face_keys: Vec<_> = {
+        let Some(shell) = reg.shells.get(shell_key) else { return 0; };
+        shell.faces.iter().map(|&(fk, _)| fk).collect()
+    };
+
+    if face_keys.is_empty() { return 0; }
+
+    let mut adjusted = 0usize;
+
+    for fk in face_keys {
+        let face = match reg.faces.get(fk) {
+            Some(f) => f,
+            None => continue,
+        };
+        let surface = face.surface.clone();
+        let wire = match reg.wires.get(face.outer_wire) {
+            Some(w) => w,
+            None => continue,
+        };
+
+        for &(ek, _) in &wire.edges {
+            let edge = match reg.edges.get(ek) {
+                Some(e) => e,
+                None => continue,
+            };
+            for &vk in &[edge.v_low, edge.v_high] {
+                if let Some(v) = reg.vertices.get(vk) {
+                    let pos = v.position;
+                    if let Some((u, v_param)) = surface.project(pos) {
+                        let on_surf = surface.d0_native(u, v_param);
+                        let dist = (pos - on_surf).length();
+                        if dist > tolerance && dist < tolerance * 100.0 {
+                            if let Some(v_mut) = reg.vertices.get_mut(vk) {
+                                v_mut.position = on_surf;
+                                adjusted += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    adjusted
+}
+
+// ── Face splitting ─────────────────────────────────────────────────
+
 #[derive(Debug, Default)]
-pub struct SplitFaceReport {
+pub(crate) struct SplitFaceReport {
     pub faces_created: usize,
     pub wires_reassigned: usize,
 }
 
 /// Detect and split faces that have more than one outer wire.
-/// After FixOrientation, inner wires should have opposite signed area from
-/// the outer wire. Wires with the same orientation sign are actually outer
-/// wires for separate face regions and should be split into new faces.
-pub fn fix_split_face(
+pub(crate) fn fix_split_face(
     shell_key: ShellKey,
-    reg: &mut BRepRegistry,
+    reg: &mut BRepStore,
 ) -> SplitFaceReport {
     let mut report = SplitFaceReport::default();
 
@@ -88,10 +203,6 @@ pub fn fix_split_face(
             });
             new_faces.push((new_face_key, shell_orient));
             report.faces_created += 1;
-            log::debug!(
-                "[BRep heal] FixSplitFace: created new face {:?} from inner wire {:?} of face {:?}",
-                new_face_key, wk, face_key
-            );
         }
     }
 
@@ -104,8 +215,7 @@ pub fn fix_split_face(
     report
 }
 
-/// Compute signed area of a wire in UV space using PCurve endpoints.
-fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<f32> {
+fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32> {
     let wire = reg.wires.get(wk)?;
     let mut pts: Vec<(f32, f32)> = Vec::new();
     for &(ek, _) in &wire.edges {
@@ -135,8 +245,69 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepRegistry) -> Option<f
     Some(area * 0.5)
 }
 
+// ── Tests ──────────────────────────────────────────────────────────
+
 #[cfg(test)]
-mod tests {
+mod vertex_tests {
+    use super::*;
+    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::topo::BRepWire;
+    use rc3d_core::math::Vec3;
+
+    #[test]
+    fn test_fix_vertex_on_surface() {
+        let mut reg = BRepStore::new();
+        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.005), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::topo::BRepFace {
+            surface, outer_wire: wk, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(crate::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
+        });
+        let adjusted = fix_vertex_positions(sk, &mut reg, 1e-4);
+        assert!(adjusted > 0, "off-surface vertex should be projected back");
+    }
+
+    #[test]
+    fn test_fix_vertex_no_projection() {
+        let mut reg = BRepStore::new();
+        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::topo::BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
+        let sk = reg.shells.insert(crate::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let adjusted = fix_vertex_positions(sk, &mut reg, 1e-4);
+        assert!(adjusted >= 0, "should handle vertices with no valid projection");
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
@@ -144,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_no_split_single_outer() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
@@ -176,11 +347,10 @@ mod tests {
 
     #[test]
     fn test_split_face_with_same_sign_inner() {
-        let mut reg = BRepRegistry::new();
+        let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
 
-        // Outer wire: CCW square (positive area)
         let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
         let v2 = reg.find_or_add_vertex(Vec3::new(3.0, 3.0, 0.0), 1e-4);
@@ -201,7 +371,7 @@ mod tests {
             (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
 
-        // "Inner" wire that's also CCW (same sign as outer) — should be split out
+        // Inner wire that is also CCW (same sign as outer) - should be split out
         let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);

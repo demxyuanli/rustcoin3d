@@ -10,13 +10,15 @@
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_engine_api::{CameraController, Engine};
+use rc3d_examples::common::run_app;
 use rc3d_scene::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 use rc3d_scene::node_data::*;
 use rc3d_scene::SceneGraph;
 use std::cell::RefCell;
 use std::rc::Rc;
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
-use winit::event_loop::EventLoop;
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowAttributes;
 
 /// A draggable handle on an annotation point.
@@ -118,22 +120,172 @@ fn build_scene(graph: &mut SceneGraph) {
     );
 }
 
+struct AnnotationEditApp {
+    engine: Option<Engine>,
+    window: Option<winit::window::Window>,
+    drag: Rc<RefCell<DragState>>,
+    cursor_prev: (f64, f64),
+}
+
+impl ApplicationHandler for AnnotationEditApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = event_loop
+            .create_window(WindowAttributes::default().with_title("Annotation Edit"))
+            .expect("failed to create window");
+        let mut engine = Engine::new(&window);
+        build_scene(engine.scene_mut());
+        self.drag.borrow_mut().win_w = window.inner_size().width;
+        self.drag.borrow_mut().win_h = window.inner_size().height;
+        self.engine = Some(engine);
+        self.window = Some(window);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        match &event {
+            WindowEvent::RedrawRequested => {
+                engine.render();
+                window.request_redraw();
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                engine.resize(size.width, size.height);
+                self.drag.borrow_mut().win_w = size.width;
+                self.drag.borrow_mut().win_h = size.height;
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let cursor = (position.x, position.y);
+                let mut ds = self.drag.borrow_mut();
+                ds.cursor = cursor;
+
+                if ds.active.is_some() {
+                    update_drag_position(engine.scene_mut(), &mut ds);
+                    window.request_redraw();
+                } else {
+                    engine.controller.dispatch_window_event(
+                        &event,
+                        self.cursor_prev,
+                        engine.on_pick.is_none(),
+                    );
+                }
+                self.cursor_prev = cursor;
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if *button == MouseButton::Left && *state == ElementState::Pressed {
+                    let mut ds = self.drag.borrow_mut();
+                    ds.camera_vp = compute_vp(
+                        &engine.controller,
+                        ds.win_w,
+                        ds.win_h,
+                        engine.scene(),
+                    );
+                    ds.camera_eye = engine.controller.eye_position();
+
+                    if let Some(handle) = pick_annotation_handle(
+                        engine.scene(),
+                        ds.camera_vp,
+                        ds.cursor,
+                        ds.win_w,
+                        ds.win_h,
+                    ) {
+                        save_undo_snapshot(engine.scene(), handle.set_id, &mut ds);
+                        ds.active = Some(handle);
+                    }
+                }
+                if *button == MouseButton::Left && *state == ElementState::Released {
+                    self.drag.borrow_mut().active = None;
+                }
+                if self.drag.borrow().active.is_none() {
+                    engine.controller.dispatch_window_event(
+                        &event,
+                        self.cursor_prev,
+                        engine.on_pick.is_none(),
+                    );
+                }
+            }
+            WindowEvent::MouseWheel { .. } => {
+                engine.controller.dispatch_window_event(
+                    &event,
+                    self.cursor_prev,
+                    true,
+                );
+                window.request_redraw();
+            }
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                use winit::keyboard::PhysicalKey;
+                match &key_event.physical_key {
+                    PhysicalKey::Code(winit::keyboard::KeyCode::ShiftLeft)
+                    | PhysicalKey::Code(winit::keyboard::KeyCode::ShiftRight) => {
+                        self.drag.borrow_mut().shift_held =
+                            key_event.state == ElementState::Pressed;
+                    }
+                    PhysicalKey::Code(winit::keyboard::KeyCode::Escape) => {
+                        if key_event.state == ElementState::Pressed {
+                            event_loop.exit();
+                        }
+                    }
+                    PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
+                        if key_event.state == ElementState::Pressed && self.drag.borrow().shift_held {
+                            let mut ds = self.drag.borrow_mut();
+                            if let Some(snap) = ds.redo_stack.pop() {
+                                save_undo_snapshot_no_clear(engine.scene(), snap.set_id, &mut ds);
+                                apply_snapshot(engine.scene_mut(), &snap);
+                                window.request_redraw();
+                            }
+                        } else if key_event.state == ElementState::Pressed {
+                            let mut ds = self.drag.borrow_mut();
+                            if let Some(snap) = ds.undo_stack.pop() {
+                                if let Some(entry) = engine.scene().get(snap.set_id) {
+                                    if let NodeData::AnnotationSet(ann) = &entry.data {
+                                        ds.redo_stack.push(AnnotationSnapshot {
+                                            set_id: snap.set_id,
+                                            elements: ann.elements.clone(),
+                                        });
+                                    }
+                                }
+                                apply_snapshot(engine.scene_mut(), &snap);
+                                window.request_redraw();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+}
+
 fn main() {
     let _ = env_logger::try_init();
-
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = event_loop
-        .create_window(WindowAttributes::default().with_title("Annotation Edit"))
-        .expect("failed to create window");
-
-    let mut engine = Engine::new(&window);
-    build_scene(engine.scene_mut());
 
     let drag = Rc::new(RefCell::new(DragState {
         active: None,
         cursor: (0.0, 0.0),
-        win_w: window.inner_size().width,
-        win_h: window.inner_size().height,
+        win_w: 800,
+        win_h: 600,
         camera_vp: Mat4::IDENTITY,
         camera_eye: Vec3::ZERO,
         shift_held: false,
@@ -141,125 +293,11 @@ fn main() {
         redo_stack: Vec::new(),
     }));
 
-    let mut cursor_prev: (f64, f64) = (0.0, 0.0);
-    let drag_clone = Rc::clone(&drag);
-
-    let _ = event_loop.run(move |event, elwt| {
-        match &event {
-            Event::WindowEvent { event: win_event, .. } => match win_event {
-                WindowEvent::RedrawRequested => {
-                    engine.render();
-                    window.request_redraw();
-                }
-                WindowEvent::CloseRequested => elwt.exit(),
-                WindowEvent::Resized(size) => {
-                    engine.resize(size.width, size.height);
-                    drag_clone.borrow_mut().win_w = size.width;
-                    drag_clone.borrow_mut().win_h = size.height;
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    let cursor = (position.x, position.y);
-                    let mut ds = drag_clone.borrow_mut();
-                    ds.cursor = cursor;
-
-                    if ds.active.is_some() {
-                        update_drag_position(engine.scene_mut(), &mut ds);
-                        window.request_redraw();
-                    } else {
-                        engine.controller.dispatch_window_event(
-                            win_event, cursor_prev, engine.on_pick.is_none(),
-                        );
-                    }
-                    cursor_prev = cursor;
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    if *button == MouseButton::Left && *state == ElementState::Pressed {
-                        let mut ds = drag_clone.borrow_mut();
-                        // Update camera state for VP computation
-                        ds.camera_vp = compute_vp(
-                            &engine.controller,
-                            ds.win_w,
-                            ds.win_h,
-                            engine.scene(),
-                        );
-                        ds.camera_eye = engine.controller.eye_position();
-
-                        if let Some(handle) = pick_annotation_handle(
-                            engine.scene(),
-                            ds.camera_vp,
-                            ds.cursor,
-                            ds.win_w,
-                            ds.win_h,
-                        ) {
-                            save_undo_snapshot(engine.scene(), handle.set_id, &mut ds);
-                            ds.active = Some(handle);
-                        }
-                    }
-                    if *button == MouseButton::Left && *state == ElementState::Released {
-                        drag_clone.borrow_mut().active = None;
-                    }
-                    // Camera orbit: only when not in a drag
-                    if drag_clone.borrow().active.is_none() {
-                        engine.controller.dispatch_window_event(
-                            win_event, cursor_prev, engine.on_pick.is_none(),
-                        );
-                    }
-                }
-                WindowEvent::MouseWheel { .. } => {
-                    engine.controller.dispatch_window_event(
-                        win_event, cursor_prev, true,
-                    );
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event: key_event, .. } => {
-                    use winit::keyboard::PhysicalKey;
-                    match &key_event.physical_key {
-                        PhysicalKey::Code(winit::keyboard::KeyCode::ShiftLeft)
-                        | PhysicalKey::Code(winit::keyboard::KeyCode::ShiftRight) => {
-                            drag_clone.borrow_mut().shift_held = key_event.state == ElementState::Pressed;
-                        }
-                        PhysicalKey::Code(winit::keyboard::KeyCode::Escape) => {
-                            if key_event.state == ElementState::Pressed {
-                                elwt.exit();
-                            }
-                        }
-                        PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
-                            if key_event.state == ElementState::Pressed && drag_clone.borrow().shift_held {
-                                // Ctrl+Shift+Z = redo (or just Ctrl+Z with redo)
-                                let mut ds = drag_clone.borrow_mut();
-                                if let Some(snap) = ds.redo_stack.pop() {
-                                    save_undo_snapshot_no_clear(engine.scene(), snap.set_id, &mut ds);
-                                    apply_snapshot(engine.scene_mut(), &snap);
-                                    window.request_redraw();
-                                }
-                            } else if key_event.state == ElementState::Pressed {
-                                // Ctrl+Z = undo
-                                let mut ds = drag_clone.borrow_mut();
-                                if let Some(snap) = ds.undo_stack.pop() {
-                                    // Save current state to redo stack
-                                    if let Some(entry) = engine.scene().get(snap.set_id) {
-                                        if let NodeData::AnnotationSet(ann) = &entry.data {
-                                            ds.redo_stack.push(AnnotationSnapshot {
-                                                set_id: snap.set_id,
-                                                elements: ann.elements.clone(),
-                                            });
-                                        }
-                                    }
-                                    apply_snapshot(engine.scene_mut(), &snap);
-                                    window.request_redraw();
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            },
-            Event::AboutToWait => {
-                window.request_redraw();
-            }
-            _ => {}
-        }
+    run_app(AnnotationEditApp {
+        engine: None,
+        window: None,
+        drag,
+        cursor_prev: (0.0, 0.0),
     });
 }
 
@@ -563,7 +601,7 @@ fn update_element_point(
             let old_mid = old_handles.iter().find(|(k, _)| *k == "all")
                 .map(|(_, p)| Vec3::from(*p)).unwrap_or(Vec3::ZERO);
             let delta = Vec3::from(new_local) - old_mid;
-            let first_pt = old_handles.first().map(|(_, p)| Vec3::from(*p) + delta).unwrap_or(Vec3::ZERO);
+            let _first_pt = old_handles.first().map(|(_, p)| Vec3::from(*p) + delta).unwrap_or(Vec3::ZERO);
             // Apply to all points via concrete key handling
             // We need to shift all points by delta
             match elem {
