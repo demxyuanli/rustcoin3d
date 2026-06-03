@@ -94,8 +94,132 @@ fn ray_surface_intersect(
         SurfaceGeom::Sphere { center, radius } => {
             ray_sphere_intersect(origin, dir, *center, *radius, face, face_key, reg, tolerance)
         }
-        _ => RayHit::Miss,
+        SurfaceGeom::Cone { apex, axis, semi_angle, .. } => {
+            ray_cone_intersect(origin, dir, *apex, *axis, *semi_angle, face, face_key, reg, tolerance)
+        }
+        SurfaceGeom::Torus { center, axis, major_r, minor_r, .. } => {
+            ray_torus_intersect(origin, dir, *center, *axis, *major_r, *minor_r, face, face_key, reg, tolerance)
+        }
+        SurfaceGeom::BSpline(_)
+        | SurfaceGeom::Revolution { .. }
+        | SurfaceGeom::Extrusion { .. }
+        | SurfaceGeom::Offset { .. } => {
+            ray_general_intersect(origin, dir, face, face_key, reg, tolerance)
+        }
     }
+}
+
+// Helper: given quadratic A*t^2 + B*t + C = 0, find ray hits
+fn solve_quadratic_ray(
+    a: f32, b: f32, c: f32,
+    origin: Vec3, dir: Vec3,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+) -> RayHit {
+    if a.abs() < 1e-10 {
+        if b.abs() < 1e-10 { return RayHit::Miss; }
+        let t = -c / b;
+        if t.abs() < tolerance { return RayHit::Boundary; }
+        if t > 0.0 {
+            let hit = origin + dir * t;
+            if point_in_face_uv(hit, face, face_key, reg) { return RayHit::Hit; }
+        }
+        return RayHit::Miss;
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 { return RayHit::Miss; }
+    let sqrt_disc = disc.sqrt();
+    for &t in &[(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)] {
+        if t.abs() < tolerance { return RayHit::Boundary; }
+        if t > 0.0 {
+            let hit = origin + dir * t;
+            if point_in_face_uv(hit, face, face_key, reg) { return RayHit::Hit; }
+        }
+    }
+    RayHit::Miss
+}
+
+fn ray_cone_intersect(
+    origin: Vec3, dir: Vec3,
+    apex: Vec3, axis: Vec3, semi_angle: f32,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+) -> RayHit {
+    let a = axis.normalize();
+    let tan_a = semi_angle.tan();
+
+    let delta = origin - apex;
+    let d_par = dir.dot(a);
+    let d_perp = dir - a * d_par;
+    let o_par = delta.dot(a);
+    let o_perp = delta - a * o_par;
+
+    // Cone equation: |P_perp|^2 = (P_par * tan_a)^2
+    // Quadratic in t: A*t^2 + B*t + C = 0
+    let cap_a = d_perp.length_squared() - d_par * d_par * tan_a * tan_a;
+    let cap_b = 2.0 * (d_perp.dot(o_perp) - d_par * o_par * tan_a * tan_a);
+    let cap_c = o_perp.length_squared() - o_par * o_par * tan_a * tan_a;
+
+    solve_quadratic_ray(cap_a, cap_b, cap_c, origin, dir, face, face_key, reg, tolerance)
+}
+
+fn ray_torus_intersect(
+    origin: Vec3, dir: Vec3,
+    center: Vec3, axis: Vec3, major_r: f32, minor_r: f32,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+) -> RayHit {
+    // Numerical approach: sample along ray, project to surface
+    let a = axis.normalize();
+    let ray_len = dir.length();
+    if ray_len < 1e-10 { return RayHit::Miss; }
+    let step = major_r.min(minor_r) * 0.1;
+    let max_t = (major_r + minor_r) * 4.0;
+    let mut t = step;
+    while t < max_t {
+        let pt = origin + dir * (t / ray_len);
+        // Project onto torus: find closest surface point
+        let rel = pt - center;
+        let axial = a * rel.dot(a);
+        let radial = rel - axial;
+        let radial_dist = radial.length();
+        if radial_dist < 1e-10 { t += step; continue; }
+        let radial_dir = radial / radial_dist;
+        // Project to tube center circle
+        let tube_center = center + radial_dir * major_r;
+        let to_pt = pt - tube_center;
+        let dist = to_pt.length();
+        if dist <= minor_r + tolerance {
+            let surf_pt = tube_center + to_pt.normalize() * minor_r;
+            if (surf_pt - pt).length() < tolerance * 2.0 {
+                if point_in_face_uv(surf_pt, face, face_key, reg) { return RayHit::Hit; }
+            }
+        }
+        t += step;
+    }
+    RayHit::Miss
+}
+
+fn ray_general_intersect(
+    origin: Vec3, dir: Vec3,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+) -> RayHit {
+    let ray_len = dir.length();
+    if ray_len < 1e-10 { return RayHit::Miss; }
+    let d = dir / ray_len;
+    let face_surface = &face.surface;
+    // Sample along ray, project to surface
+    // Use adaptive stepping: coarse first, then refine
+    let steps = 100;
+    let max_dist = 100.0; // reasonable search range
+    for i in 0..steps {
+        let t = max_dist * (i as f32 + 0.5) / steps as f32;
+        let pt = origin + d * t;
+        if let Some((u, v)) = face_surface.project(pt) {
+            let surf_pt = face_surface.d0_native(u, v);
+            if (surf_pt - pt).length() < tolerance * 10.0 {
+                if point_in_face_uv(surf_pt, face, face_key, reg) { return RayHit::Hit; }
+            }
+        }
+    }
+    RayHit::Miss
 }
 
 fn ray_cylinder_intersect(

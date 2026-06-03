@@ -113,6 +113,64 @@ pub fn intersect_surfaces_brep(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  B-spline construction helper
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Convert a sampled polyline to a degree-3 B-spline curve using chord-length parameterization.
+fn polyline_to_bspline(points: &[Vec3], degree: usize) -> CurveGeom {
+    let n = points.len();
+    if n == 0 {
+        return CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::ZERO };
+    }
+    if n < 2 {
+        return CurveGeom::Line { origin: points[0], direction: Vec3::ZERO };
+    }
+    if n <= 3 {
+        // Not enough points for cubic — use degree 2
+        let cps = points.to_vec();
+        let n_cp = cps.len();
+        let knot_count = n_cp + 2 + 1; // degree 2
+        let knots: Vec<f32> = (0..knot_count).map(|i| i as f32).collect();
+        return CurveGeom::BSpline {
+            degree: 2,
+            control_points: cps,
+            knots,
+            weights: None,
+        };
+    }
+
+    // Chord-length parameterization
+    let mut chord_lengths = vec![0.0f32];
+    for i in 1..n {
+        let d = (points[i] - points[i-1]).length();
+        chord_lengths.push(chord_lengths[i-1] + d);
+    }
+    let _total = chord_lengths[n-1];
+
+    // Control points are the sampled points
+    let cps = points.to_vec();
+
+    // Uniform knot vector with multiplicity at ends for clamped B-spline
+    let deg = degree.min(n - 1);
+    let n_knots = cps.len() + deg + 1;
+    let mut knots = Vec::with_capacity(n_knots);
+    // Clamped: first deg+1 knots = 0, last deg+1 knots = 1
+    for _ in 0..=deg { knots.push(0.0); }
+    let internal = n_knots.saturating_sub(2 * (deg + 1));
+    for i in 1..=internal {
+        knots.push(i as f32 / (internal + 1) as f32);
+    }
+    for _ in 0..=deg { knots.push(1.0); }
+
+    CurveGeom::BSpline {
+        degree: deg,
+        control_points: cps,
+        knots,
+        weights: None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Analytic SSI functions
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -209,8 +267,7 @@ fn plane_cone(
         if t > 0.0 && t.is_finite() { pts.push(apex + ray_dir * t); }
     }
     if pts.len() < 4 { return None; }
-    // Return sampled polyline as null for now (P3: convert to NurbsCurve)
-    None
+    Some(vec![polyline_to_bspline(&pts, 3)])
 }
 
 // ── Plane × Torus ─────────────────────────────────────────────────────
@@ -236,7 +293,7 @@ fn plane_torus(
         pts.push(tube_center + perp * h);
     }
     if pts.len() < 4 { return None; }
-    None // P3: sampled Villarceau curve → NurbsCurve
+    Some(vec![polyline_to_bspline(&pts, 3)])
 }
 
 // ── Cylinder × Cylinder ───────────────────────────────────────────────
@@ -272,7 +329,7 @@ fn cylinder_cylinder(
         }
     }
     if pts.len() < 4 { return None; }
-    None // P3: sampled space curve → NurbsCurve
+    Some(vec![polyline_to_bspline(&pts, 3)])
 }
 
 // ── Sphere × Sphere ───────────────────────────────────────────────────
@@ -323,7 +380,7 @@ fn cylinder_cone(
         }
     }
     if pts.len() < 4 { return None; }
-    None // P3: sampled space curve → NurbsCurve
+    Some(vec![polyline_to_bspline(&pts, 3)])
 }
 
 // ═══════════════════════════════════════════════════════════════════════
