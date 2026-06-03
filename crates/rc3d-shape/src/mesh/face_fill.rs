@@ -428,7 +428,7 @@ pub(crate) fn emit_filtered_triangles(
 
 pub(crate) fn surface_is_revolution_like(surface: &SurfaceGeom) -> bool {
     match surface {
-        SurfaceGeom::Revolution { .. } => true,
+        SurfaceGeom::Revolution { .. } | SurfaceGeom::Extrusion { .. } => true,
         SurfaceGeom::Offset { basis, .. } => {
             matches!(basis.as_ref(), SurfaceGeom::Revolution { .. })
         }
