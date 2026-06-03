@@ -22,8 +22,9 @@ pub struct RemeshReport {
 /// - Boolean operations modify specific faces
 /// - Interactive editing changes a subset of faces
 ///
-/// Phase 4 initial implementation: full re-mesh with face filtering.
-/// True incremental (per-face triangle tracking) is deferred.
+/// Computes the set of unmodified faces (all faces in the shell minus `modified`)
+/// and passes them as `skip_face_keys` to `mesh_brep_shell_with_report`, so only
+/// the modified faces are remeshed.
 pub fn remesh_modified_faces(
     shell_key: ShellKey,
     modified: &[FaceKey],
@@ -39,18 +40,43 @@ pub fn remesh_modified_faces(
     };
 
     if modified.is_empty() {
-        report.faces_unchanged = existing.report.face_count;
+        report.faces_unchanged = reg
+            .shells
+            .get(shell_key)
+            .map(|s| s.faces.len())
+            .unwrap_or(existing.report.face_count);
         return report;
     }
 
-    let _modified_set: HashSet<FaceKey> = modified.iter().copied().collect();
+    let modified_set: HashSet<FaceKey> = modified.iter().copied().collect();
 
-    // Phase 4: re-mesh entire shell but report only modified face counts.
-    // True incremental requires per-face triangle range tracking (deferred).
-    let new_output = mesh_brep_shell_with_report(shell_key, reg, config, &[]);
+    // Collect all face keys in the shell to determine unmodified faces
+    let all_faces: Vec<FaceKey> = match reg.shells.get(shell_key) {
+        Some(shell) => shell.faces.iter().map(|&(fk, _)| fk).collect(),
+        None => {
+            // Shell not found — fall back to full remesh
+            let new_output = mesh_brep_shell_with_report(shell_key, reg, config, &[]);
+            *existing = new_output;
+            report.faces_remeshed = modified.len();
+            report.total_vertices = existing.mesh.vertices.len();
+            report.total_triangles = existing.mesh.indices.len() / 4;
+            return report;
+        }
+    };
 
+    // Unmodified faces = all faces not in modified set
+    let skip_faces: Vec<FaceKey> = all_faces
+        .iter()
+        .filter(|fk| !modified_set.contains(fk))
+        .copied()
+        .collect();
+
+    report.faces_unchanged = skip_faces.len();
     report.faces_remeshed = modified.len();
-    report.faces_unchanged = existing.report.face_count.saturating_sub(modified.len());
+
+    // Mesh only modified faces (skip unmodified)
+    let new_output = mesh_brep_shell_with_report(shell_key, reg, config, &skip_faces);
+
     report.total_vertices = new_output.mesh.vertices.len();
     report.total_triangles = new_output.mesh.indices.len() / 4;
 
