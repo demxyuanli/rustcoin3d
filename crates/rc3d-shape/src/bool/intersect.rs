@@ -31,25 +31,85 @@ pub fn compute_intersections_brep(
     shells_b: &[ShellKey],
     reg: &BRepStore,
 ) -> Vec<FaceIntersectionResult> {
-    let mut results = Vec::new();
-    for &sk_a in shells_a {
-        let shell_a = match reg.shells.get(sk_a) { Some(s) => s, None => continue };
-        for &(face_a_key, _) in &shell_a.faces {
-            let face_a = match reg.faces.get(face_a_key) { Some(f) => f, None => continue };
-            for &sk_b in shells_b {
-                let shell_b = match reg.shells.get(sk_b) { Some(s) => s, None => continue };
-                for &(face_b_key, _) in &shell_b.faces {
-                    let face_b = match reg.faces.get(face_b_key) { Some(f) => f, None => continue };
-                    if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
-                        results.push(FaceIntersectionResult {
-                            face_a: face_a_key, face_b: face_b_key,
-                            curves_3d: curves, pcurves_on_a: vec![], pcurves_on_b: vec![],
-                        });
-                    }
-                }
+    use crate::bool::aabb::{self, AABB};
+
+    // Collect all faces with their AABBs (faces without geometry get no AABB but
+    // are still tested unconditionally — e.g. faces with empty wires).
+    let mut faces_a_bbox: Vec<(FaceKey, AABB)> = Vec::new();
+    let mut faces_a_no_bbox: Vec<FaceKey> = Vec::new();
+    for &sk in shells_a {
+        let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
+        for &(fk, _) in &shell.faces {
+            if let Some(bbox) = aabb::face_vertex_bbox(fk, reg) {
+                faces_a_bbox.push((fk, bbox));
+            } else {
+                faces_a_no_bbox.push(fk);
             }
         }
     }
+
+    let mut faces_b_bbox: Vec<(FaceKey, AABB)> = Vec::new();
+    let mut faces_b_no_bbox: Vec<FaceKey> = Vec::new();
+    for &sk in shells_b {
+        let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
+        for &(fk, _) in &shell.faces {
+            if let Some(bbox) = aabb::face_vertex_bbox(fk, reg) {
+                faces_b_bbox.push((fk, bbox));
+            } else {
+                faces_b_no_bbox.push(fk);
+            }
+        }
+    }
+
+    // Sweep-and-prune along X axis for overlapping pairs (AABB-filtered)
+    let mut results = Vec::new();
+    let mut sorted_a: Vec<_> = faces_a_bbox.iter().collect();
+    let mut sorted_b: Vec<_> = faces_b_bbox.iter().collect();
+    sorted_a.sort_by(|a, b| a.1.min.x.partial_cmp(&b.1.min.x).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_b.sort_by(|a, b| a.1.min.x.partial_cmp(&b.1.min.x).unwrap_or(std::cmp::Ordering::Equal));
+
+    for &(fka, ref bbox_a) in &sorted_a {
+        for &(fkb, ref bbox_b) in &sorted_b {
+            if bbox_b.min.x > bbox_a.max.x {
+                break; // remaining B faces are past A in X
+            }
+            if !bbox_a.overlaps(bbox_b) {
+                continue;
+            }
+            let face_a = match reg.faces.get(*fka) { Some(f) => f, None => continue };
+            let face_b = match reg.faces.get(*fkb) { Some(f) => f, None => continue };
+            if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
+                results.push(FaceIntersectionResult {
+                    face_a: *fka, face_b: *fkb,
+                    curves_3d: curves, pcurves_on_a: vec![], pcurves_on_b: vec![],
+                });
+            }
+        }
+    }
+
+    // Faces without AABB (empty wires etc.) — test unconditionally against all
+    // faces from the other set that weren't already paired above.
+    let push_result = |results: &mut Vec<FaceIntersectionResult>, fka: FaceKey, fkb: FaceKey| {
+        let face_a = match reg.faces.get(fka) { Some(f) => f, None => return };
+        let face_b = match reg.faces.get(fkb) { Some(f) => f, None => return };
+        if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
+            results.push(FaceIntersectionResult {
+                face_a: fka, face_b: fkb,
+                curves_3d: curves, pcurves_on_a: vec![], pcurves_on_b: vec![],
+            });
+        }
+    };
+
+    // no-bbox A faces × all B faces (both bbox and no-bbox)
+    for &fka in &faces_a_no_bbox {
+        for &(fkb, _) in &faces_b_bbox { push_result(&mut results, fka, fkb); }
+        for &fkb in &faces_b_no_bbox { push_result(&mut results, fka, fkb); }
+    }
+    // all A bbox faces × no-bbox B faces
+    for &(fka, _) in &faces_a_bbox {
+        for &fkb in &faces_b_no_bbox { push_result(&mut results, fka, fkb); }
+    }
+
     results
 }
 
@@ -425,7 +485,8 @@ pub fn is_tangent_intersection(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topo::BRepWire;
+    use crate::topo::{BRepWire, BRepEdge, BRepShell, Orientation};
+    use std::collections::HashMap;
 
     fn make_test_face(surface: SurfaceGeom) -> BRepFace {
         BRepFace {
@@ -514,5 +575,64 @@ mod tests {
         let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
         let fb = make_test_face(SurfaceGeom::Sphere { center: Vec3::new(0.0, 0.0, 2.0), radius: 2.0 });
         assert!(is_tangent_intersection(&fa, &fb, 1e-4));
+    }
+
+    /// Two perpendicular planes that intersect via AABB-filtered shell intersection.
+    #[test]
+    fn test_intersect_finds_crossing_planes() {
+        let mut reg = BRepStore::new();
+
+        // Plane A: z=0, rectangle near origin
+        let v0 = reg.find_or_add_vertex(Vec3::new(-1.0, -1.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, -1.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(-1.0, 1.0, 0.0), 1e-4);
+
+        let (lo01, hi01) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+        let (lo12, hi12) = if v1 < v2 { (v1, v2) } else { (v2, v1) };
+        let (lo23, hi23) = if v2 < v3 { (v2, v3) } else { (v3, v2) };
+        let (lo30, hi30) = if v3 < v0 { (v3, v0) } else { (v0, v3) };
+
+        let e01 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, -1.0, 0.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo01, v_high: hi01, pcurves: HashMap::new() });
+        let e12 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, -1.0, 0.0), direction: Vec3::new(0.0, 2.0, 0.0) }, tolerance: 1e-4, v_low: lo12, v_high: hi12, pcurves: HashMap::new() });
+        let e23 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo23, v_high: hi23, pcurves: HashMap::new() });
+        let e30 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 1.0, 0.0), direction: Vec3::new(0.0, -2.0, 0.0) }, tolerance: 1e-4, v_low: lo30, v_high: hi30, pcurves: HashMap::new() });
+
+        let w_a = reg.wires.insert(BRepWire { edges: vec![(e01, Orientation::Forward), (e12, Orientation::Forward), (e23, Orientation::Forward), (e30, Orientation::Forward)] });
+        let f_a = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            outer_wire: w_a, inner_wires: vec![], same_sense: true, tolerance: 1e-4,
+            seam_edges: vec![], color: None, degenerated_edges: vec![],
+        });
+
+        // Plane B: y=0, rectangle crossing Plane A
+        let v4 = reg.find_or_add_vertex(Vec3::new(-1.0, 0.0, -1.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, -1.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let v7 = reg.find_or_add_vertex(Vec3::new(-1.0, 0.0, 1.0), 1e-4);
+
+        let (lo45, hi45) = if v4 < v5 { (v4, v5) } else { (v5, v4) };
+        let (lo56, hi56) = if v5 < v6 { (v5, v6) } else { (v6, v5) };
+        let (lo67, hi67) = if v6 < v7 { (v6, v7) } else { (v7, v6) };
+        let (lo74, hi74) = if v7 < v4 { (v7, v4) } else { (v4, v7) };
+
+        let e45 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, -1.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo45, v_high: hi45, pcurves: HashMap::new() });
+        let e56 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, -1.0), direction: Vec3::new(0.0, 0.0, 2.0) }, tolerance: 1e-4, v_low: lo56, v_high: hi56, pcurves: HashMap::new() });
+        let e67 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 1.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo67, v_high: hi67, pcurves: HashMap::new() });
+        let e74 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, 1.0), direction: Vec3::new(0.0, 0.0, -2.0) }, tolerance: 1e-4, v_low: lo74, v_high: hi74, pcurves: HashMap::new() });
+
+        let w_b = reg.wires.insert(BRepWire { edges: vec![(e45, Orientation::Forward), (e56, Orientation::Forward), (e67, Orientation::Forward), (e74, Orientation::Forward)] });
+        let f_b = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X },
+            outer_wire: w_b, inner_wires: vec![], same_sense: true, tolerance: 1e-4,
+            seam_edges: vec![], color: None, degenerated_edges: vec![],
+        });
+
+        let sk_a = reg.shells.insert(BRepShell { faces: vec![(f_a, Orientation::Forward)], closed: false, step_id: None });
+        let sk_b = reg.shells.insert(BRepShell { faces: vec![(f_b, Orientation::Forward)], closed: false, step_id: None });
+
+        let results = compute_intersections_brep(&[sk_a], &[sk_b], &reg);
+        assert_eq!(results.len(), 1, "Two crossing planes should produce 1 intersection");
+        assert_eq!(results[0].curves_3d.len(), 1, "Should produce 1 curve");
     }
 }
