@@ -5,9 +5,7 @@ use std::io::Write;
 
 use rc3d_core::math::Vec3;
 
-use crate::geom::{CurveGeom, SurfaceGeom};
-use crate::mesh::edge_disc::eval_pcurve_on_surface;
-use crate::mesh::face_uv::signed_area_2d;
+use crate::geom::{CurveGeom, SurfaceGeom, eval_pcurve_on_surface, signed_area_2d};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, WireKey};
 use super::geom2d::collect_wire_uv_polygon;

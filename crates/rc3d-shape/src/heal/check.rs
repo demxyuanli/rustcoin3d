@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::mesh::face_uv::signed_area_2d;
+use crate::geom::signed_area_2d;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use super::geom2d::collect_wire_uv_polygon;

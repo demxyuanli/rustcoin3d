@@ -263,11 +263,7 @@ fn is_usable_pcurve(pcurve: &CurveGeom) -> bool {
     (pmid - p0).length_squared() >= 1e-12
 }
 
-/// Evaluate PCurve on surface at t (OCCT BRepAdaptor_Curve with face context).
-pub fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
-    let uv = pcurve.d0(t);
-    surface.d0_native(uv.x, uv.y)
-}
+pub use crate::geom::eval_pcurve_on_surface;
 
 fn eval_pcurve_on_surface_d1(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
     let uv = pcurve.d0(t);

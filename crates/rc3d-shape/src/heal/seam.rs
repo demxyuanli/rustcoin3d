@@ -3,9 +3,11 @@
 use rc3d_core::math::Vec3;
 
 use crate::geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
-use crate::mesh::MESH_CLOSED_SURFACE_SEGS;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation};
+
+/// Sampling resolution for isoparametric seam curves on closed surfaces.
+const CLOSED_SURFACE_SEGS: u32 = 48;
 
 /// Add parametric seam edges for closed faces and trimmed periodic faces.
 pub fn fix_missing_seams(reg: &mut BRepStore, face_key: FaceKey) -> usize {
@@ -284,7 +286,7 @@ fn build_u_isoparam_seam(
     u: f32,
     tol: f32,
 ) -> Option<EdgeKey> {
-    let segs = MESH_CLOSED_SURFACE_SEGS;
+    let segs = CLOSED_SURFACE_SEGS;
     let pr = seam_sample_range(reg, face_key, surface);
     if matches!(surface, SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. })
         && pr.v_max - pr.v_min > 1e4
@@ -329,7 +331,7 @@ fn build_v_isoparam_seam(
     v: f32,
     tol: f32,
 ) -> Option<EdgeKey> {
-    let segs = MESH_CLOSED_SURFACE_SEGS;
+    let segs = CLOSED_SURFACE_SEGS;
     let pr = seam_sample_range(reg, face_key, surface);
     let p_lo = surface.d0_native(pr.u_min, v);
     let p_hi = surface.d0_native(pr.u_max, v);

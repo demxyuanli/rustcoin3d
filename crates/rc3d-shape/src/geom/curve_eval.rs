@@ -760,6 +760,27 @@ pub fn normalize_edge_curve_to_vertices(
     curve
 }
 
+/// Signed area of a 2D polygon (shoelace formula). Returns positive for CCW winding.
+pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
+    let n = uv.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0f64;
+    for i in 0..n {
+        let (u0, v0) = uv[i];
+        let (u1, v1) = uv[(i + 1) % n];
+        a += u0 as f64 * v1 as f64 - u1 as f64 * v0 as f64;
+    }
+    a * 0.5
+}
+
+/// Evaluate PCurve on surface at t (OCCT BRepAdaptor_Curve with face context).
+pub fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &super::SurfaceGeom, t: f32) -> Vec3 {
+    let uv = pcurve.d0(t);
+    surface.d0_native(uv.x, uv.y)
+}
+
 // ── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]

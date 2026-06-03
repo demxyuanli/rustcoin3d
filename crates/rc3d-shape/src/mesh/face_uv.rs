@@ -59,19 +59,7 @@ impl FaceUvLoops {
     }
 }
 
-pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
-    let n = uv.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut a = 0.0f64;
-    for i in 0..n {
-        let (u0, v0) = uv[i];
-        let (u1, v1) = uv[(i + 1) % n];
-        a += u0 as f64 * v1 as f64 - u1 as f64 * v0 as f64;
-    }
-    a * 0.5
-}
+pub use crate::geom::signed_area_2d;
 
 /// True when the outer UV loop has fewer than 3 vertices or zero signed area.
 pub fn uv_loop_is_degenerate(loops: &FaceUvLoops) -> bool {
