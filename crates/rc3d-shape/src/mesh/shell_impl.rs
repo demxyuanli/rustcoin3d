@@ -34,6 +34,7 @@ use super::diagnostic::{diag_enabled, format_wire_loop_lines, log_mesh_coordinat
 use super::report::{apply_relative_deflection, shell_bbox_diagonal, FaceMeshStats, ShellMeshReport};
 use super::face_dispatch::{algo_from_plan, plan_face_mesh, FaceMeshPlan};
 use super::shell_mesh::ShellMeshOutput;
+use rayon::prelude::*;
 
 /// Shell orientation XOR face.same_sense for mesh normals and winding.
 fn mesh_face_view(face: &BRepFace, effective_same_sense: bool) -> Cow<'_, BRepFace> {
@@ -46,12 +47,48 @@ fn mesh_face_view(face: &BRepFace, effective_same_sense: bool) -> Cow<'_, BRepFa
     }
 }
 
-pub(crate) fn mesh_brep_shell_with_report_impl(
+// ── Shared data types for the mesh pipeline ─────────────────────────────
+
+struct FaceWireInfo {
+    face_key: FaceKey,
+    wire_edges: Vec<(EdgeKey, Vec<usize>)>,
+}
+
+struct FaceLoopData {
+    face_key: FaceKey,
+    wire_edges: Vec<(EdgeKey, Vec<usize>)>,
+    loops: Option<FaceUvLoops>,
+}
+
+struct ChunkOutput {
+    vertices: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    indices: Vec<i32>,
+    face_ranges: Vec<FaceMeshRange>,
+    report: ShellMeshReport,
+    wire_diag: Vec<String>,
+}
+
+struct BoundaryPoolResult {
+    boundary_vertices: Vec<Vec3>,
+    boundary_normals: Vec<Vec3>,
+    boundary_pos_to_idx: HashMap<[u32; 3], usize>,
+    boundary_vertex_count: usize,
+    edge_boundary_idx: HashMap<(FaceKey, EdgeKey, usize), usize>,
+    face_infos: Vec<FaceWireInfo>,
+    face_orient: HashMap<FaceKey, bool>,
+    heal_skipped_faces: Vec<FaceKey>,
+    global_vertices: Vec<Vec3>,
+}
+
+// ── Phase 1: config scaling, shell lookup, edge discretization ──────────
+
+/// Returns `None` when the shell key does not exist in the store.
+fn init_shell_mesh(
     shell_key: ShellKey,
     reg: &BRepStore,
     config: &BRepMeshConfig,
-    skip_face_keys: &[FaceKey],
-) -> ShellMeshOutput {
+) -> Option<(BRepMeshConfig, f32, ShellMeshReport, HashMap<EdgeKey, EdgePolygon>)> {
     let shell_diag = shell_bbox_diagonal(shell_key, reg);
     let mut scaled_config = config.clone();
     apply_relative_deflection(&mut scaled_config, shell_diag);
@@ -60,20 +97,9 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             shell_diag * scaled_config.face.min_size_relative;
     }
 
-    let shell = match reg.shells.get(shell_key) {
-        Some(s) => s,
-        None => {
-            return ShellMeshOutput {
-                mesh: MeshResult::default(),
-                report: ShellMeshReport {
-                    shell_diag,
-                    ..Default::default()
-                },
-            };
-        }
-    };
+    let shell = reg.shells.get(shell_key)?;
 
-    let mut report = ShellMeshReport {
+    let report = ShellMeshReport {
         face_count: shell.faces.len(),
         shell_diag,
         ..Default::default()
@@ -92,7 +118,17 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         );
     }
 
-    // Phase 2: shared boundary vertex pool (B-Rep vertices own canonical indices)
+    Some((scaled_config, shell_diag, report, edge_polygons))
+}
+
+// ── Phase 2: shared boundary vertex pool ────────────────────────────────
+
+fn build_shell_boundary_pool(
+    shell_key: ShellKey,
+    reg: &BRepStore,
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    skip_face_keys: &[FaceKey],
+) -> BoundaryPoolResult {
     let mut global_vertices: Vec<Vec3> = Vec::new();
     let mut global_normals: Vec<Vec3> = Vec::new();
     let mut pos_to_idx: HashMap<[u32; 3], usize> = HashMap::new();
@@ -112,7 +148,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     let edge_boundary_idx = build_face_boundary_pool(
         reg,
         shell_key,
-        &edge_polygons,
+        edge_polygons,
         &mut global_vertices,
         &mut global_normals,
         &mut pos_to_idx,
@@ -125,10 +161,22 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         global_vertices.len()
     );
 
-    struct FaceWireInfo {
-        face_key: FaceKey,
-        wire_edges: Vec<(EdgeKey, Vec<usize>)>,
-    }
+    let shell = match reg.shells.get(shell_key) {
+        Some(s) => s,
+        None => {
+            return BoundaryPoolResult {
+                boundary_vertices: global_vertices.clone(),
+                boundary_normals: global_normals.clone(),
+                boundary_pos_to_idx: pos_to_idx.clone(),
+                boundary_vertex_count: global_vertices.len(),
+                edge_boundary_idx,
+                face_infos: Vec::new(),
+                face_orient: HashMap::new(),
+                heal_skipped_faces: Vec::new(),
+                global_vertices,
+            };
+        }
+    };
 
     let mut face_infos: Vec<FaceWireInfo> = Vec::new();
     let mut heal_skipped_faces: Vec<FaceKey> = Vec::new();
@@ -185,19 +233,29 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
     let boundary_pos_to_idx: HashMap<[u32; 3], usize> = pos_to_idx.clone();
     let boundary_vertex_count = boundary_vertices.len();
 
-    let mut all_indices: Vec<i32> = Vec::new();
-    let mut face_ranges: Vec<FaceMeshRange> = Vec::new();
-    let collect_diag = diag_enabled();
-    let mut wire_diag: Vec<String> = Vec::new();
-
-    // Phase 2a: Pre-compute UV loops in parallel (read-only, rayon par_iter)
-    use rayon::prelude::*;
-    struct FaceLoopData {
-        face_key: FaceKey,
-        wire_edges: Vec<(EdgeKey, Vec<usize>)>,
-        loops: Option<FaceUvLoops>,
+    BoundaryPoolResult {
+        boundary_vertices,
+        boundary_normals,
+        boundary_pos_to_idx,
+        boundary_vertex_count,
+        edge_boundary_idx,
+        face_infos,
+        face_orient,
+        heal_skipped_faces,
+        global_vertices,
     }
-    let face_loop_data: Vec<FaceLoopData> = face_infos
+}
+
+// ── Phase 2a: pre-compute UV loops in parallel (read-only) ──────────────
+
+fn precompute_face_uv_loops(
+    face_infos: &[FaceWireInfo],
+    reg: &BRepStore,
+    edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
+    edge_boundary_idx: &HashMap<(FaceKey, EdgeKey, usize), usize>,
+    global_vertices: &[Vec3],
+) -> Vec<FaceLoopData> {
+    face_infos
         .par_iter()
         .filter_map(|finfo| {
             let face = reg.faces.get(finfo.face_key)?;
@@ -210,8 +268,8 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 });
             }
             let loops = collect_face_loops(
-                finfo.face_key, face, reg, &edge_polygons,
-                &edge_boundary_idx, &global_vertices,
+                finfo.face_key, face, reg, edge_polygons,
+                edge_boundary_idx, global_vertices,
             );
             Some(FaceLoopData {
                 face_key: finfo.face_key,
@@ -219,21 +277,280 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 loops: Some(loops),
             })
         })
-        .collect();
+        .collect()
+}
+
+// ── Phase 2c: merge chunk outputs into global state ─────────────────────
+
+fn merge_chunk_outputs(
+    chunk_outputs: Vec<ChunkOutput>,
+    boundary_vertex_count: usize,
+    collect_diag: bool,
+) -> (Vec<Vec3>, Vec<Vec3>, Vec<i32>, Vec<FaceMeshRange>, ShellMeshReport, Vec<String>) {
+    if chunk_outputs.is_empty() {
+        return (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ShellMeshReport::default(),
+            Vec::new(),
+        );
+    }
+
+    let base = &chunk_outputs[0];
+    let mut global_vertices = base.vertices.clone();
+    let mut global_normals = base.normals.clone();
+    let mut all_indices = base.indices.clone();
+    let mut face_ranges = base.face_ranges.clone();
+    let mut report = base.report.clone();
+    let mut wire_diag = base.wire_diag.clone();
+
+    for chunk in &chunk_outputs[1..] {
+        let interior_offset = global_vertices.len() as i32;
+        let chunk_interior_start = boundary_vertex_count;
+
+        // Append interior vertices (skip boundary vertices already in base)
+        global_vertices.extend_from_slice(&chunk.vertices[chunk_interior_start..]);
+        global_normals.extend_from_slice(&chunk.normals[chunk_interior_start..]);
+
+        // Remap indices: boundary (< boundary_vertex_count) stay unchanged;
+        // interior (>= boundary_vertex_count) get shifted by offset.
+        let index_base = all_indices.len() / 4;
+        for &idx in &chunk.indices {
+            if idx < 0 {
+                all_indices.push(idx); // terminator
+            } else if (idx as usize) < boundary_vertex_count {
+                all_indices.push(idx); // boundary — shared across all chunks
+            } else {
+                all_indices.push(idx + interior_offset - boundary_vertex_count as i32);
+            }
+        }
+
+        // Remap face_ranges: first_tri is relative to chunk's local index buffer
+        for mut fr in chunk.face_ranges.clone() {
+            fr.first_tri += index_base;
+            face_ranges.push(fr);
+        }
+
+        // Merge report stats
+        report.face_count += chunk.report.face_count;
+        report.meshed_faces += chunk.report.meshed_faces;
+        report.grid_fallback_count += chunk.report.grid_fallback_count;
+        report.total_tris += chunk.report.total_tris;
+        report.max_equiv_edge_weld_gap = report.max_equiv_edge_weld_gap
+            .max(chunk.report.max_equiv_edge_weld_gap);
+        report.faces.extend_from_slice(&chunk.report.faces);
+
+        if collect_diag {
+            wire_diag.extend_from_slice(&chunk.wire_diag);
+        }
+    }
+
+    (
+        global_vertices,
+        global_normals,
+        all_indices,
+        face_ranges,
+        report,
+        wire_diag,
+    )
+}
+
+// ── Post-processing: refine, cull, compact, weld, optimize ──────────────
+
+fn finalize_shell_mesh(
+    shell_key: ShellKey,
+    reg: &BRepStore,
+    face_ranges: &[FaceMeshRange],
+    mut all_indices: Vec<i32>,
+    mut global_vertices: Vec<Vec3>,
+    mut global_normals: Vec<Vec3>,
+    mut report: ShellMeshReport,
+    heal_skipped_faces: &[FaceKey],
+    scaled_config: &BRepMeshConfig,
+    shell_diag: f32,
+    face_infos_len: usize,
+    wire_diag: &[String],
+    collect_diag: bool,
+) -> ShellMeshOutput {
+    for face_key in heal_skipped_faces {
+        report.faces.push(FaceMeshStats {
+            face_key: *face_key,
+            tri_count: 0,
+            first_tri: 0,
+            uv_source: UvSource::SurfaceFill,
+            max_chord_error: 0.0,
+            grid_fallback: false,
+        });
+        log::debug!("[BRep mesh] face {:?} skipped by heal (no grid fallback)", face_key);
+    }
+
+    if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
+        let mut tri_offset: isize = 0;
+        for range in face_ranges {
+            let face = match reg.faces.get(range.face_key) {
+                Some(f) => f,
+                None => continue,
+            };
+            // Analytic surfaces produce exact meshes; post-refine Steiner splits
+            // would waste time and potentially break watertight edges.
+            if surface_chord_error_is_trivial(&face.surface) {
+                continue;
+            }
+            let adj_start_raw = (range.first_tri as isize + tri_offset) * 4;
+            if adj_start_raw < 0 { tri_offset -= adj_start_raw / 4; continue; }
+            let adj_start = adj_start_raw as usize;
+            let adj_end = adj_start + range.tri_count * 4;
+            let (local_mesh, local_to_global) = extract_face_mesh_with_map(
+                &global_vertices,
+                &global_normals,
+                &all_indices,
+                adj_start,
+                adj_end,
+            );
+            let local_boundary: std::collections::HashSet<usize> = local_to_global
+                .iter()
+                .filter(|(_, &g)| range.boundary_global.contains(&g))
+                .map(|(&l, _)| l)
+                .collect();
+            let refined = refine_mesh_interior(
+                &local_mesh,
+                face,
+                &local_boundary,
+                &scaled_config.refine,
+            );
+            let new_tri_count = merge_refined_face(
+                &mut global_vertices,
+                &mut global_normals,
+                &mut all_indices,
+                adj_start / 4,
+                adj_end / 4,
+                &refined,
+                &local_to_global,
+            );
+            tri_offset += new_tri_count as isize - range.tri_count as isize;
+        }
+    }
+
+    report.total_tris = all_indices.len() / 4;
+    if !scaled_config.fast_export {
+        for stats in &mut report.faces {
+            if stats.grid_fallback || stats.tri_count == 0 {
+                continue;
+            }
+            let Some(range) = face_ranges.iter().find(|r| r.face_key == stats.face_key) else {
+                continue;
+            };
+            let Some(face) = reg.faces.get(stats.face_key) else {
+                continue;
+            };
+            // Skip chord-error measurement for analytic surfaces — their meshes
+            // are exact (within floating-point precision). Only BSpline and Offset
+            // surfaces benefit from chord verification.
+            if surface_chord_error_is_trivial(&face.surface) {
+                continue;
+            }
+            stats.max_chord_error =
+                measure_face_chord_error(face, &global_vertices, &all_indices, range);
+        }
+    }
+    report.log_summary(shell_key);
+
+    log::debug!(
+        "[BRep mesh] shell {:?}: {} boundary verts, {} faces, {} tris total",
+        shell_key,
+        global_vertices.len(),
+        face_infos_len,
+        report.total_tris
+    );
+    let mut mesh = MeshResult {
+        vertices: global_vertices,
+        indices: all_indices,
+        normals: global_normals,
+    };
+    let culled = { let _c = cull_degenerate_tris(&mut mesh.indices, &mesh.vertices); log::info!("[BRep mesh] culled {} degenerate tris, {} remain", _c, mesh.indices.len()/4); _c };
+    if culled > 0 {
+        log::debug!("[BRep mesh] culled {culled} degenerate triangle(s)");
+        report.total_tris = mesh.indices.len() / 4;
+    }
+    compact_mesh_vertices(&mut mesh);
+    report.total_tris = mesh.indices.len() / 4;
+    let weld_tol = scaled_config
+        .weld_tolerance
+        .max(shell_diag * 1e-5)
+        .max(1e-6);
+    mesh.weld_vertices(weld_tol);
+    recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
+    optimize_mesh(&mut mesh, &scaled_config.optimize);
+    if collect_diag {
+        log_mesh_coordinates_if_requested(
+            shell_key,
+            reg,
+            &mesh.vertices,
+            &mesh.indices,
+            face_ranges,
+            &report,
+            wire_diag,
+        );
+    }
+    ShellMeshOutput { mesh, report }
+}
+
+// ── Main orchestration ──────────────────────────────────────────────────
+
+pub(crate) fn mesh_brep_shell_with_report_impl(
+    shell_key: ShellKey,
+    reg: &BRepStore,
+    config: &BRepMeshConfig,
+    skip_face_keys: &[FaceKey],
+) -> ShellMeshOutput {
+    // Phase 1: config scaling, shell lookup, edge discretization, same parameter
+    let Some((scaled_config, shell_diag, _report, edge_polygons)) =
+        init_shell_mesh(shell_key, reg, config)
+    else {
+        return ShellMeshOutput {
+            mesh: MeshResult::default(),
+            report: ShellMeshReport {
+                shell_diag: shell_bbox_diagonal(shell_key, reg),
+                ..Default::default()
+            },
+        };
+    };
+
+    // Phase 2: shared boundary vertex pool (B-Rep vertices own canonical indices)
+    let BoundaryPoolResult {
+        boundary_vertices,
+        boundary_normals,
+        boundary_pos_to_idx,
+        boundary_vertex_count,
+        edge_boundary_idx,
+        face_infos,
+        face_orient,
+        heal_skipped_faces,
+        global_vertices,
+    } = build_shell_boundary_pool(
+        shell_key,
+        reg,
+        &edge_polygons,
+        skip_face_keys,
+    );
+
+    // Phase 2a: Pre-compute UV loops in parallel (read-only, rayon par_iter)
+    let face_loop_data = precompute_face_uv_loops(
+        &face_infos,
+        reg,
+        &edge_polygons,
+        &edge_boundary_idx,
+        &global_vertices,
+    );
+
+    let collect_diag = diag_enabled();
 
     // Phase 2b: Mesh faces in parallel. Each chunk clones the boundary vertex
     // pool and processes its faces independently — no cross-face synchronization.
     let num_threads = rayon::current_num_threads().max(1);
     let chunk_size = (face_loop_data.len() + num_threads - 1) / num_threads;
-
-    struct ChunkOutput {
-        vertices: Vec<Vec3>,
-        normals: Vec<Vec3>,
-        indices: Vec<i32>,
-        face_ranges: Vec<FaceMeshRange>,
-        report: ShellMeshReport,
-        wire_diag: Vec<String>,
-    }
 
     let chunk_outputs: Vec<ChunkOutput> = if face_loop_data.is_empty() {
         Vec::new()
@@ -1258,178 +1575,27 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
 
     // Phase 2c: Merge chunk outputs into global state.
     // Chunk 0 is the base; interior vertices from subsequent chunks are remapped.
-    if !chunk_outputs.is_empty() {
-        let base = &chunk_outputs[0];
-        global_vertices = base.vertices.clone();
-        global_normals = base.normals.clone();
-        all_indices = base.indices.clone();
-        face_ranges = base.face_ranges.clone();
-        report = base.report.clone();
-        wire_diag = base.wire_diag.clone();
+    let (global_vertices, global_normals, all_indices, face_ranges, report, wire_diag) =
+        merge_chunk_outputs(chunk_outputs, boundary_vertex_count, collect_diag);
 
-        for chunk in &chunk_outputs[1..] {
-            let interior_offset = global_vertices.len() as i32;
-            let chunk_interior_start = boundary_vertex_count;
+    let face_infos_len = face_infos.len();
 
-            // Append interior vertices (skip boundary vertices already in base)
-            global_vertices.extend_from_slice(&chunk.vertices[chunk_interior_start..]);
-            global_normals.extend_from_slice(&chunk.normals[chunk_interior_start..]);
-
-            // Remap indices: boundary (< boundary_vertex_count) stay unchanged;
-            // interior (>= boundary_vertex_count) get shifted by offset.
-            let index_base = all_indices.len() / 4;
-            for &idx in &chunk.indices {
-                if idx < 0 {
-                    all_indices.push(idx); // terminator
-                } else if (idx as usize) < boundary_vertex_count {
-                    all_indices.push(idx); // boundary — shared across all chunks
-                } else {
-                    all_indices.push(idx + interior_offset - boundary_vertex_count as i32);
-                }
-            }
-
-            // Remap face_ranges: first_tri is relative to chunk's local index buffer
-            for mut fr in chunk.face_ranges.clone() {
-                fr.first_tri += index_base;
-                face_ranges.push(fr);
-            }
-
-            // Merge report stats
-            report.face_count += chunk.report.face_count;
-            report.meshed_faces += chunk.report.meshed_faces;
-            report.grid_fallback_count += chunk.report.grid_fallback_count;
-            report.total_tris += chunk.report.total_tris;
-            report.max_equiv_edge_weld_gap = report.max_equiv_edge_weld_gap
-                .max(chunk.report.max_equiv_edge_weld_gap);
-            report.faces.extend_from_slice(&chunk.report.faces);
-
-            if collect_diag {
-                wire_diag.extend_from_slice(&chunk.wire_diag);
-            }
-        }
-    }
-
-    for face_key in heal_skipped_faces {
-        report.faces.push(FaceMeshStats {
-            face_key,
-            tri_count: 0,
-            first_tri: 0,
-            uv_source: UvSource::SurfaceFill,
-            max_chord_error: 0.0,
-            grid_fallback: false,
-        });
-        log::debug!("[BRep mesh] face {:?} skipped by heal (no grid fallback)", face_key);
-    }
-
-    if scaled_config.refine.enable_post_refine && scaled_config.refine.max_iterations > 0 {
-        let mut tri_offset: isize = 0;
-        for range in &face_ranges {
-            let face = match reg.faces.get(range.face_key) {
-                Some(f) => f,
-                None => continue,
-            };
-            // Analytic surfaces produce exact meshes; post-refine Steiner splits
-            // would waste time and potentially break watertight edges.
-            if surface_chord_error_is_trivial(&face.surface) {
-                continue;
-            }
-            let adj_start_raw = (range.first_tri as isize + tri_offset) * 4;
-            if adj_start_raw < 0 { tri_offset -= adj_start_raw / 4; continue; }
-            let adj_start = adj_start_raw as usize;
-            let adj_end = adj_start + range.tri_count * 4;
-            let (local_mesh, local_to_global) = extract_face_mesh_with_map(
-                &global_vertices,
-                &global_normals,
-                &all_indices,
-                adj_start,
-                adj_end,
-            );
-            let local_boundary: std::collections::HashSet<usize> = local_to_global
-                .iter()
-                .filter(|(_, &g)| range.boundary_global.contains(&g))
-                .map(|(&l, _)| l)
-                .collect();
-            let refined = refine_mesh_interior(
-                &local_mesh,
-                face,
-                &local_boundary,
-                &scaled_config.refine,
-            );
-            let new_tri_count = merge_refined_face(
-                &mut global_vertices,
-                &mut global_normals,
-                &mut all_indices,
-                adj_start / 4,
-                adj_end / 4,
-                &refined,
-                &local_to_global,
-            );
-            tri_offset += new_tri_count as isize - range.tri_count as isize;
-        }
-    }
-
-    report.total_tris = all_indices.len() / 4;
-    if !scaled_config.fast_export {
-        for stats in &mut report.faces {
-            if stats.grid_fallback || stats.tri_count == 0 {
-                continue;
-            }
-            let Some(range) = face_ranges.iter().find(|r| r.face_key == stats.face_key) else {
-                continue;
-            };
-            let Some(face) = reg.faces.get(stats.face_key) else {
-                continue;
-            };
-            // Skip chord-error measurement for analytic surfaces — their meshes
-            // are exact (within floating-point precision). Only BSpline and Offset
-            // surfaces benefit from chord verification.
-            if surface_chord_error_is_trivial(&face.surface) {
-                continue;
-            }
-            stats.max_chord_error =
-                measure_face_chord_error(face, &global_vertices, &all_indices, range);
-        }
-    }
-    report.log_summary(shell_key);
-
-    log::debug!(
-        "[BRep mesh] shell {:?}: {} boundary verts, {} faces, {} tris total",
+    // Post-processing: heal skipped faces, refine, cull, compact, weld, optimize
+    finalize_shell_mesh(
         shell_key,
-        global_vertices.len(),
-        face_infos.len(),
-        report.total_tris
-    );
-    let mut mesh = MeshResult {
-        vertices: global_vertices,
-        indices: all_indices,
-        normals: global_normals,
-    };
-    let culled = { let _c = cull_degenerate_tris(&mut mesh.indices, &mesh.vertices); log::info!("[BRep mesh] culled {} degenerate tris, {} remain", _c, mesh.indices.len()/4); _c };
-    if culled > 0 {
-        log::debug!("[BRep mesh] culled {culled} degenerate triangle(s)");
-        report.total_tris = mesh.indices.len() / 4;
-    }
-    compact_mesh_vertices(&mut mesh);
-    report.total_tris = mesh.indices.len() / 4;
-    let weld_tol = scaled_config
-        .weld_tolerance
-        .max(shell_diag * 1e-5)
-        .max(1e-6);
-    mesh.weld_vertices(weld_tol);
-    recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
-    optimize_mesh(&mut mesh, &scaled_config.optimize);
-    if collect_diag {
-        log_mesh_coordinates_if_requested(
-            shell_key,
-            reg,
-            &mesh.vertices,
-            &mesh.indices,
-            &face_ranges,
-            &report,
-            &wire_diag,
-        );
-    }
-    ShellMeshOutput { mesh, report }
+        reg,
+        &face_ranges,
+        all_indices,
+        global_vertices,
+        global_normals,
+        report,
+        &heal_skipped_faces,
+        &scaled_config,
+        shell_diag,
+        face_infos_len,
+        &wire_diag,
+        collect_diag,
+    )
 }
 
 /// Analytic surfaces produce exact meshes — chord error is always negligible.
