@@ -327,6 +327,8 @@ pub enum CurveGeom {
     Line { origin: Vec3, direction: Vec3 },
     Circle { center: Vec3, axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3 },
     Ellipse { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
+    Hyperbola { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
+    Parabola { center: Vec3, axis: Vec3, focal_dist: f32, x_dir: Vec3, y_dir: Vec3 },
     BSpline { degree: usize, control_points: Vec<Vec3>, knots: Vec<f32>, weights: Option<Vec<f32>> },
     Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
     Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
@@ -343,6 +345,16 @@ impl CurveGeom {
     pub fn ellipse(center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir }
+    }
+    /// Construct a Hyperbola with pre-computed ortho axes.
+    pub fn hyperbola(center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir }
+    }
+    /// Construct a Parabola with pre-computed ortho axes.
+    pub fn parabola(center: Vec3, axis: Vec3, focal_dist: f32) -> Self {
+        let (x_dir, y_dir) = build_ortho_axes(axis);
+        CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir }
     }
 }
 
@@ -388,6 +400,16 @@ impl CurveGeom {
             CurveGeom::Ellipse { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
                 let theta = t * std::f32::consts::TAU;
                 *center + *x_dir * semi_major * theta.cos() + *y_dir * semi_minor * theta.sin()
+            }
+
+            CurveGeom::Hyperbola { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let s = -2.0 + 4.0 * t;
+                *center + *x_dir * (*semi_major * s.cosh()) + *y_dir * (*semi_minor * s.sinh())
+            }
+
+            CurveGeom::Parabola { center, x_dir, y_dir, focal_dist, .. } => {
+                let s = -2.0 + 4.0 * t;
+                *center + *x_dir * s + *y_dir * (s * s / (4.0 * *focal_dist))
             }
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
@@ -443,6 +465,16 @@ impl CurveGeom {
                 twopi * (-semi_major * theta.sin() * *x_dir + semi_minor * theta.cos() * *y_dir)
             }
 
+            CurveGeom::Hyperbola { x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let s = -2.0 + 4.0 * t;
+                4.0 * (semi_major * s.sinh() * *x_dir + semi_minor * s.cosh() * *y_dir)
+            }
+
+            CurveGeom::Parabola { x_dir, y_dir, focal_dist, .. } => {
+                let s = -2.0 + 4.0 * t;
+                4.0 * (*x_dir + *y_dir * (s / (2.0 * *focal_dist)))
+            }
+
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t).1
             }
@@ -495,6 +527,15 @@ impl CurveGeom {
                 let theta = t * std::f32::consts::TAU;
                 let twopi = std::f32::consts::TAU;
                 -(twopi * twopi) * (semi_major * theta.cos() * *x_dir + semi_minor * theta.sin() * *y_dir)
+            }
+
+            CurveGeom::Hyperbola { x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let s = -2.0 + 4.0 * t;
+                16.0 * (semi_major * s.cosh() * *x_dir + semi_minor * s.sinh() * *y_dir)
+            }
+
+            CurveGeom::Parabola { y_dir, focal_dist, .. } => {
+                16.0 * *y_dir / (2.0 * *focal_dist)
             }
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
@@ -558,6 +599,21 @@ impl CurveGeom {
                 let d0 = *x_dir * (*semi_major * c) + *y_dir * (*semi_minor * s);
                 let d1 = twopi * (-*semi_major * s * *x_dir + *semi_minor * c * *y_dir);
                 let d2 = -(twopi * twopi) * (*semi_major * c * *x_dir + *semi_minor * s * *y_dir);
+                (d0, d1, d2)
+            }
+            CurveGeom::Hyperbola { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let s = -2.0 + 4.0 * t;
+                let (ch, sh) = (s.cosh(), s.sinh());
+                let d0 = *center + *x_dir * (*semi_major * ch) + *y_dir * (*semi_minor * sh);
+                let d1 = 4.0 * (*semi_major * sh * *x_dir + *semi_minor * ch * *y_dir);
+                let d2 = 16.0 * (*semi_major * ch * *x_dir + *semi_minor * sh * *y_dir);
+                (d0, d1, d2)
+            }
+            CurveGeom::Parabola { center, x_dir, y_dir, focal_dist, .. } => {
+                let s = -2.0 + 4.0 * t;
+                let d0 = *center + *x_dir * s + *y_dir * (s * s / (4.0 * *focal_dist));
+                let d1 = 4.0 * (*x_dir + *y_dir * (s / (2.0 * *focal_dist)));
+                let d2 = 16.0 * *y_dir / (2.0 * *focal_dist);
                 (d0, d1, d2)
             }
             CurveGeom::Line { origin, direction } => {
@@ -998,5 +1054,82 @@ mod tests {
             "weights should pull curve up: unweighted y={}, weighted y={}",
             d0_mid_unweighted.y, d0_mid_weighted.y
         );
+    }
+
+    #[test]
+    fn test_hyperbola_d0_d1_d2() {
+        let h = CurveGeom::Hyperbola {
+            center: Vec3::ZERO, axis: Vec3::Z,
+            semi_major: 2.0, semi_minor: 1.0,
+            x_dir: Vec3::X, y_dir: Vec3::Y,
+        };
+        // At t=0.5, s=0: P = center + cosh(0)*2*X + sinh(0)*1*Y = (2, 0, 0)
+        let p = h.d0(0.5);
+        assert!((p.x - 2.0).abs() < 1e-5, "hyperbola at s=0 should be at (2,0,0), got {:?}", p);
+        assert!(p.y.abs() < 1e-5);
+        assert!(p.z.abs() < 1e-5);
+
+        // d1 at s=0: 4*(sinh(0)*2*X + cosh(0)*1*Y) = 4*(0, 1) = (0, 4, 0)
+        let d1 = h.d1(0.5);
+        assert!(d1.x.abs() < 1e-4, "d1.x at s=0 should be 0, got {}", d1.x);
+        assert!((d1.y - 4.0).abs() < 1e-4, "d1.y at s=0 should be 4, got {}", d1.y);
+
+        // d2 at s=0: 16*(cosh(0)*2*X + sinh(0)*1*Y) = (32, 0, 0)
+        let d2 = h.d2(0.5);
+        assert!((d2.x - 32.0).abs() < 1e-4, "d2.x at s=0 should be 32, got {}", d2.x);
+        assert!(d2.y.abs() < 1e-4);
+
+        // d012 consistency
+        let (p2, d1_2, d2_2) = h.d012(0.5);
+        assert!((p - p2).length() < 1e-10);
+        assert!((d1 - d1_2).length() < 1e-10);
+        assert!((d2 - d2_2).length() < 1e-10);
+    }
+
+    #[test]
+    fn test_parabola_d0_d1_d2() {
+        let p = CurveGeom::Parabola {
+            center: Vec3::ZERO, axis: Vec3::Z,
+            focal_dist: 1.0,
+            x_dir: Vec3::X, y_dir: Vec3::Y,
+        };
+        // At t=0.5, s=0: P = center + 0*X + 0*Y = (0, 0, 0)
+        let pt = p.d0(0.5);
+        assert!(pt.length() < 1e-5, "parabola at vertex should be origin, got {:?}", pt);
+
+        // d1 at s=0: 4*(X + Y*0/(2*1)) = (4, 0, 0)
+        let d1 = p.d1(0.5);
+        assert!((d1.x - 4.0).abs() < 1e-4, "d1.x at s=0 should be 4, got {}", d1.x);
+        assert!(d1.y.abs() < 1e-4);
+
+        // d2 at s=0: 16*Y/(2*1) = (0, 8, 0)
+        let d2 = p.d2(0.5);
+        assert!(d2.x.abs() < 1e-4);
+        assert!((d2.y - 8.0).abs() < 1e-4, "d2.y at s=0 should be 8, got {}", d2.y);
+
+        // d012 consistency
+        let (p2, d1_2, d2_2) = p.d012(0.5);
+        assert!((pt - p2).length() < 1e-10);
+        assert!((d1 - d1_2).length() < 1e-10);
+        assert!((d2 - d2_2).length() < 1e-10);
+    }
+
+    #[test]
+    fn test_hyperbola_constructor() {
+        let h = CurveGeom::hyperbola(Vec3::new(1.0, 2.0, 3.0), Vec3::Z, 3.0, 1.5);
+        // At t=0.5 (s=0), position should be center + semi_major * x_dir
+        let p = h.d0(0.5);
+        assert!((p.x - 4.0).abs() < 1e-5, "expected x=4.0, got {}", p.x);
+        assert!((p.y - 2.0).abs() < 1e-5);
+        assert!((p.z - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_parabola_constructor() {
+        let p = CurveGeom::parabola(Vec3::new(1.0, 0.0, 0.0), Vec3::Z, 2.0);
+        // At t=0.5 (s=0), position should be center
+        let pt = p.d0(0.5);
+        assert!((pt.x - 1.0).abs() < 1e-5);
+        assert!(pt.y.abs() < 1e-5);
     }
 }

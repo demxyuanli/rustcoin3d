@@ -30,13 +30,20 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::ellipse(center, axis, semi_major, semi_minor))
         }
-        "HYPERBOLA" | "PARABOLA" => {
-            let pts = geom::sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 1e-4);
-            if pts.len() >= 2 {
-                Some(CurveGeom::Polyline { points: pts })
-            } else {
-                None
-            }
+        "HYPERBOLA" => {
+            let placement_id = geom::nth_ref(&record.params, 1)?;
+            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
+            let (center, _, axis) = topology::resolve_placement(placement_id, entities)
+                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+            Some(CurveGeom::hyperbola(center, axis, semi_major, semi_minor))
+        }
+        "PARABOLA" => {
+            let placement_id = geom::nth_ref(&record.params, 1)?;
+            let focal_dist = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let (center, _, axis) = topology::resolve_placement(placement_id, entities)
+                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+            Some(CurveGeom::parabola(center, axis, focal_dist))
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
             build_bspline_3d(record, entities)

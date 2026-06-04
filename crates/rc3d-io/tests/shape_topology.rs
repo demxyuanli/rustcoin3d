@@ -112,6 +112,14 @@ fn inspect_shape_topology() {
             rc3d_io::step::brep::geom::CurveGeom::Line { .. } => 0,
             rc3d_io::step::brep::geom::CurveGeom::Circle { .. } => 1,
             rc3d_io::step::brep::geom::CurveGeom::Ellipse { .. } => 2,
+            rc3d_io::step::brep::geom::CurveGeom::Hyperbola { .. } => {
+                println!("  {:?}: Hyperbola", ek);
+                continue;
+            }
+            rc3d_io::step::brep::geom::CurveGeom::Parabola { .. } => {
+                println!("  {:?}: Parabola", ek);
+                continue;
+            }
             rc3d_io::step::brep::geom::CurveGeom::BSpline { degree, control_points, knots, .. } => {
                 println!("  {:?}: BSpline deg={} cp#{} knots#{}", ek, degree, control_points.len(), knots.len());
                 continue;
