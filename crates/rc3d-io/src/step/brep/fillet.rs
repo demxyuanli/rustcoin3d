@@ -8,16 +8,23 @@ use std::collections::HashMap;
 
 use crate::step::brep::registry::BRepStore;
 use crate::step::brep::topo::{
-    BRepEdge, BRepFace, BRepWire, EdgeKey, FaceKey, Orientation,
+    BRepEdge, BRepFace, BRepWire, EdgeKey, FaceKey, Orientation, VertexKey,
 };
 use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+
+/// Return (lo, hi) so that lo < hi.
+fn ordered_pair(a: VertexKey, b: VertexKey) -> (VertexKey, VertexKey) {
+    if a < b { (a, b) } else { (b, a) }
+}
 
 /// Result of a fillet or chamfer operation.
 #[derive(Debug)]
 pub struct FilletResult {
     /// New cylindrical/toroidal faces created by the fillet.
     pub new_faces: Vec<FaceKey>,
-    /// Adjacent faces that were trimmed to accommodate the fillet.
+    /// Adjacent faces that the fillet replaces along.
+    /// NOTE (Phase 3): These faces' wires are NOT yet modified — face trimming
+    /// is deferred to Phase 4. The caller must perform wire splitting if needed.
     pub modified_faces: Vec<FaceKey>,
     /// Original edge that was replaced.
     pub removed_edge: EdgeKey,
@@ -30,6 +37,8 @@ pub struct FilletParams {
     pub edge: EdgeKey,
     /// Fillet radius (constant).
     pub radius: f32,
+    /// `true` for convex (external) edges, `false` for concave (re-entrant) edges.
+    pub convex: bool,
 }
 
 /// Chamfer parameters for a single edge.
@@ -60,6 +69,7 @@ pub struct ChamferParams {
 pub fn constant_radius_fillet(
     edge: EdgeKey,
     radius: f32,
+    convex: bool,
     reg: &mut BRepStore,
 ) -> Result<FilletResult, String> {
     // Validate inputs
@@ -67,52 +77,42 @@ pub fn constant_radius_fillet(
         return Err(format!("Fillet radius must be positive, got {}", radius));
     }
 
-    if !reg.edges.contains_key(edge) {
-        return Err(format!("Edge {:?} not found in registry", edge));
-    }
-
     // Find the two faces sharing this edge
-    let face_keys: Vec<FaceKey> = reg
+    let faces = reg
         .edge_to_faces
         .get(&edge)
-        .cloned()
-        .unwrap_or_default();
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-    if face_keys.len() != 2 {
+    if faces.len() != 2 {
         return Err(format!(
             "Edge {:?} must be shared by exactly 2 faces, found {}",
             edge,
-            face_keys.len()
+            faces.len()
         ));
     }
 
-    let fk_a = face_keys[0];
-    let fk_b = face_keys[1];
+    let fk_a = faces[0];
+    let fk_b = faces[1];
     let face_a = reg.faces.get(fk_a).ok_or("Face A not found")?;
     let face_b = reg.faces.get(fk_b).ok_or("Face B not found")?;
 
     // Step 1: Get edge geometry
-    let brep_edge = reg.edges.get(edge).ok_or("Edge not found")?;
+    let brep_edge = reg.edges.get(edge)
+        .ok_or_else(|| format!("Edge {:?} not found in registry", edge))?;
     let edge_mid = brep_edge.curve.d0(0.5);
-    let edge_dir = brep_edge.curve.d1(0.5).normalize();
-    if edge_dir.length() < 1e-10 {
+    let raw_tangent = brep_edge.curve.d1(0.5);
+    if raw_tangent.length() < 1e-10 {
         return Err("Degenerate edge (zero tangent)".to_string());
     }
+    let edge_dir = raw_tangent.normalize();
 
-    // Step 2: Get face surfaces — must be planar for Phase 3
-    let (_o1, n1, _o2, n2) = match (&face_a.surface, &face_b.surface) {
+    // Step 2: Get face normals — must be planar for Phase 3
+    let (n1, n2) = match (&face_a.surface, &face_b.surface) {
         (
-            SurfaceGeom::Plane {
-                origin: o1,
-                normal: n1,
-                ..
-            },
-            SurfaceGeom::Plane {
-                origin: o2,
-                normal: n2,
-                ..
-            },
-        ) => (*o1, *n1, *o2, *n2),
+            SurfaceGeom::Plane { normal: n1, .. },
+            SurfaceGeom::Plane { normal: n2, .. },
+        ) => (*n1, *n2),
         _ => return Err("Fillet currently only supports planar faces".to_string()),
     };
 
@@ -130,6 +130,10 @@ pub fn constant_radius_fillet(
         // Opposite faces — pick arbitrary inside direction
         bisector = n1;
     }
+    // For concave edges the fillet rolls inward — reverse the offset
+    if !convex {
+        bisector = -bisector;
+    }
 
     // Step 5: Cylinder center line offset from edge midpoint
     let offset_dist = radius / half.sin();
@@ -139,15 +143,23 @@ pub fn constant_radius_fillet(
     let fillet_surface = SurfaceGeom::cylinder(center, edge_dir, radius);
 
     // Step 6: Compute contact line points
-    let ext = 100.0; // extension factor for contact lines
+    // Derive extension from actual edge length so contact lines work at any model scale
+    let edge_len = reg.vertices.get(brep_edge.v_low)
+        .zip(reg.vertices.get(brep_edge.v_high))
+        .map(|(a, b)| (b.position - a.position).length())
+        .unwrap_or(1.0);
+    let ext = edge_len * 2.0; // extend past both ends by 1× edge length
     let perp_a = edge_dir.cross(n1).normalize();
     let perp_b = edge_dir.cross(n2).normalize();
     let contact_dist = radius / half.tan();
+    let edge_ext = edge_dir * ext;
 
-    let cp_a1 = edge_mid + perp_a * contact_dist - edge_dir * ext;
-    let cp_a2 = edge_mid + perp_a * contact_dist + edge_dir * ext;
-    let cp_b1 = edge_mid - perp_b * contact_dist - edge_dir * ext;
-    let cp_b2 = edge_mid - perp_b * contact_dist + edge_dir * ext;
+    let base_a = edge_mid + perp_a * contact_dist;
+    let base_b = edge_mid - perp_b * contact_dist;
+    let cp_a1 = base_a - edge_ext;
+    let cp_a2 = base_a + edge_ext;
+    let cp_b1 = base_b - edge_ext;
+    let cp_b2 = base_b + edge_ext;
 
     // Step 7: Create vertices
     let tolerance = face_a.tolerance.max(face_b.tolerance);
@@ -157,25 +169,18 @@ pub fn constant_radius_fillet(
     let v_b2 = reg.find_or_add_vertex(cp_b2, tolerance);
 
     // Create contact curve edges
+    let line_dir = edge_ext * 2.0;
     let contact_curve_a = CurveGeom::Line {
         origin: cp_a1,
-        direction: cp_a2 - cp_a1,
+        direction: line_dir,
     };
     let contact_curve_b = CurveGeom::Line {
         origin: cp_b1,
-        direction: cp_b2 - cp_b1,
+        direction: line_dir,
     };
 
-    let (v_lo_a, v_hi_a) = if v_a1 < v_a2 {
-        (v_a1, v_a2)
-    } else {
-        (v_a2, v_a1)
-    };
-    let (v_lo_b, v_hi_b) = if v_b1 < v_b2 {
-        (v_b1, v_b2)
-    } else {
-        (v_b2, v_b1)
-    };
+    let (v_lo_a, v_hi_a) = ordered_pair(v_a1, v_a2);
+    let (v_lo_b, v_hi_b) = ordered_pair(v_b1, v_b2);
 
     let ek_a = reg.edges.insert(BRepEdge {
         curve: contact_curve_a,
@@ -208,6 +213,11 @@ pub fn constant_radius_fillet(
         color: None,
         degenerated_edges: vec![],
     });
+
+    // Update edge_to_faces for new topology
+    reg.edge_to_faces.insert(ek_a, vec![fillet_fk, fk_a]);
+    reg.edge_to_faces.insert(ek_b, vec![fillet_fk, fk_b]);
+    reg.edge_to_faces.remove(&edge);
 
     Ok(FilletResult {
         new_faces: vec![fillet_fk],
@@ -255,7 +265,7 @@ pub fn fillet_edges(
 ) -> Vec<Result<FilletResult, String>> {
     params
         .iter()
-        .map(|p| constant_radius_fillet(p.edge, p.radius, reg))
+        .map(|p| constant_radius_fillet(p.edge, p.radius, p.convex, reg))
         .collect()
 }
 
@@ -294,48 +304,32 @@ mod tests {
             direction: edge_end - edge_start,
         };
 
-        let fk_a = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane {
-                origin: edge_start,
-                normal: n1,
-                u_dir: Vec3::Y,
-            },
-            outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
-            inner_wires: vec![],
-            same_sense: true,
-            tolerance: 1e-6,
-            seam_edges: vec![],
-            color: None,
-            degenerated_edges: vec![],
-        });
+        let face_keys: Vec<FaceKey> = [(n1, Vec3::Y), (n2, Vec3::X)]
+            .iter()
+            .map(|(normal, u_dir)| {
+                reg.add_face(
+                    SurfaceGeom::Plane {
+                        origin: edge_start,
+                        normal: *normal,
+                        u_dir: *u_dir,
+                    },
+                    1e-6,
+                )
+            })
+            .collect();
 
-        let fk_b = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane {
-                origin: edge_start,
-                normal: n2,
-                u_dir: Vec3::X,
-            },
-            outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
-            inner_wires: vec![],
-            same_sense: true,
-            tolerance: 1e-6,
-            seam_edges: vec![],
-            color: None,
-            degenerated_edges: vec![],
-        });
-
-        let (v_lo, v_hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+        let (v_lo, v_hi) = ordered_pair(v0, v1);
         let ek = reg.edges.insert(BRepEdge {
             curve,
             tolerance: 1e-6,
             v_low: v_lo,
             v_high: v_hi,
-            pcurves: std::collections::HashMap::new(),
+            pcurves: HashMap::new(),
         });
 
-        reg.edge_to_faces.insert(ek, vec![fk_a, fk_b]);
+        reg.edge_to_faces.insert(ek, vec![face_keys[0], face_keys[1]]);
 
-        (fk_a, fk_b, ek)
+        (face_keys[0], face_keys[1], ek)
     }
 
     #[test]
@@ -354,7 +348,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
         );
 
-        let result = constant_radius_fillet(ek, 1.0, &mut reg);
+        let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
         assert!(result.is_ok(), "Fillet should succeed: {:?}", result.err());
 
         let fr = result.unwrap();
@@ -377,7 +371,7 @@ mod tests {
     fn test_fillet_rejects_negative_radius() {
         let mut reg = BRepStore::new();
         let dummy_key = EdgeKey::from(slotmap::KeyData::from_ffi(0x1234));
-        let result = constant_radius_fillet(dummy_key, -1.0, &mut reg);
+        let result = constant_radius_fillet(dummy_key, -1.0, true, &mut reg);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("positive"));
     }
@@ -399,7 +393,7 @@ mod tests {
             pcurves: std::collections::HashMap::new(),
         });
         // Don't add edge to edge_to_faces — it will be empty
-        let result = constant_radius_fillet(ek, 1.0, &mut reg);
+        let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
         assert!(result.is_err(), "Fillet should fail for edge with no faces");
         let err_msg = result.unwrap_err();
         assert!(
@@ -422,7 +416,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
         );
 
-        let result = constant_radius_fillet(ek, 2.0, &mut reg);
+        let result = constant_radius_fillet(ek, 2.0, true, &mut reg);
         assert!(result.is_ok());
 
         let fr = result.unwrap();
@@ -490,7 +484,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 10.0),
         );
 
-        let result = constant_radius_fillet(ek, 1.0, &mut reg);
+        let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("coplanar"));
     }
@@ -513,7 +507,7 @@ mod tests {
             face.surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0);
         }
 
-        let result = constant_radius_fillet(ek, 1.0, &mut reg);
+        let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("planar"));
     }
@@ -540,10 +534,11 @@ mod tests {
         );
 
         let params = vec![
-            FilletParams { edge: ek, radius: 0.5 },
+            FilletParams { edge: ek, radius: 0.5, convex: true },
             FilletParams {
                 edge: EdgeKey::from(slotmap::KeyData::from_ffi(2)),
                 radius: 0.5,
+                convex: true,
             },
         ];
         let results = fillet_edges(&params, &mut reg);
