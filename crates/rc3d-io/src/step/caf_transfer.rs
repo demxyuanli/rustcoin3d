@@ -121,6 +121,8 @@ impl StepCafTransfer {
         let assembly_tree = assembly_ctx.assembly_tree(entities);
         let shell_instances = assembly_ctx.shell_instances(entities);
         let shell_styles = extract_shell_styles(entities);
+        // Inherit styles from parent products to children where missing
+        let shell_styles = assembly_tree.resolve_inherited_styles(&shell_styles);
 
         build_xde_labels(
             &mut doc,

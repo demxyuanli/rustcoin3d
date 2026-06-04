@@ -59,6 +59,54 @@ impl AssemblyTree {
         });
         result
     }
+
+    /// Resolve inherited styles: for each node's shells, returns the effective
+    /// style (own style if present, otherwise inherited from nearest styled ancestor).
+    ///
+    /// `shell_styles` is the map from shell_step_id → StyleInfo extracted by
+    /// `assembly::extract_shell_styles`. Returns a map enriched with inherited values.
+    pub fn resolve_inherited_styles(
+        &self,
+        shell_styles: &HashMap<u64, super::assembly::StyleInfo>,
+    ) -> HashMap<u64, super::assembly::StyleInfo> {
+        let mut inherited = shell_styles.clone();
+        let mut stack: Vec<(usize, Option<super::assembly::StyleInfo>)> = Vec::new();
+        self.walk_inherit(self.root_index, None, &mut inherited, &mut stack);
+        inherited
+    }
+
+    fn walk_inherit(
+        &self,
+        idx: usize,
+        parent_style: Option<super::assembly::StyleInfo>,
+        inherited: &mut HashMap<u64, super::assembly::StyleInfo>,
+        _stack: &mut Vec<(usize, Option<super::assembly::StyleInfo>)>,
+    ) {
+        if idx >= self.nodes.len() {
+            return;
+        }
+        let node = &self.nodes[idx];
+
+        // Determine this node's effective style
+        let node_style = node.shells.iter().find_map(|sid| {
+            inherited.get(sid).cloned()
+        });
+
+        let effective = node_style.or(parent_style);
+
+        // If parent had a style and a shell doesn't have its own, inherit
+        if let Some(ref style) = effective {
+            for &sid in &node.shells {
+                if !inherited.contains_key(&sid) {
+                    inherited.insert(sid, style.clone());
+                }
+            }
+        }
+
+        for &child in &node.children {
+            self.walk_inherit(child, effective.clone(), inherited, _stack);
+        }
+    }
 }
 
 /// Product-level metadata extracted from STEP entities.
