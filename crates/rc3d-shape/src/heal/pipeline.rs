@@ -78,7 +78,7 @@ pub fn auto_heal_shell(
 ///
 /// | Level    | Iteration 0 fixes |
 /// |----------|-------------------|
-/// | Basic    | connected, small edges, reorder, gaps 3d, orientation |
+/// | Basic    | connected, small edges, reorder, gaps 3d, orientation, same parameter |
 /// | Standard | + UV gaps, shifted, periodic degen, edge curves, lacking, seams, natural bound, reversed 2d |
 /// | Advanced | + self-intersection, degenerated, intersecting wires (when check flags set) |
 pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckReport) -> HealConfig {
@@ -89,6 +89,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
         config.fix_small_edges = true;
         config.fix_reorder = true;
         config.fix_gaps_3d = level >= HealLevel::Basic;
+        config.fix_same_parameter = level >= HealLevel::Basic;
         config.fix_orientation = true;
 
         if level >= HealLevel::Standard {
@@ -107,6 +108,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
     } else {
         if check.has_uv_gaps || check.has_pcurve_issues {
             config.uv_gap_tolerance = 1e-5;
+            config.fix_same_parameter = true;
             config.fix_shifted = true;
             config.fix_lacking = true;
             config.fix_edge_curves = true;

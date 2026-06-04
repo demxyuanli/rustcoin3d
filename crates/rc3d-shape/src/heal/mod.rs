@@ -1,6 +1,7 @@
 pub(crate) mod wire_ops;
 pub(crate) mod wire_join;
 pub(crate) mod pcurve_fix;
+pub(crate) mod same_param_fix;
 pub(crate) mod face_fix;
 pub(crate) mod shell_fix;
 pub(crate) mod seam;
@@ -21,6 +22,7 @@ use crate::topo::{FaceKey, ShellKey, WireKey};
 use crate::store::BRepStore;
 use wire_ops::{reorder_wire_edges, remove_small_edges};
 use wire_join::{close_wire_gaps, close_wire_gaps_2d, fix_connected_wire};
+use same_param_fix::fix_same_parameter_wire;
 use pcurve_fix::{fix_shifted_pcurves, fix_edge_curves_wire};
 use face_fix::{fix_add_natural_bound, fix_reversed_2d};
 use shell_fix::{fix_shell_orientation, fix_split_face, fix_vertex_positions};
@@ -54,6 +56,7 @@ pub struct HealReport {
     pub merged_vertices: usize,
     pub removed_small_edges: usize,
     pub shifted_pcurves: usize,
+    pub same_param_fixed: usize,
     pub adjusted_edge_curves: usize,
     pub skip_face_keys: Vec<FaceKey>,
     pub face_skip_reasons: Vec<(FaceKey, FaceSkipReason)>,
@@ -82,6 +85,7 @@ impl Default for HealReport {
             merged_vertices: 0,
             removed_small_edges: 0,
             shifted_pcurves: 0,
+            same_param_fixed: 0,
             adjusted_edge_curves: 0,
             skip_face_keys: Vec::new(),
             face_skip_reasons: Vec::new(),
@@ -147,6 +151,7 @@ pub struct HealConfig {
     pub fix_vertex_tolerance: bool,
     pub fix_small_area: bool,
     pub fix_small_edges: bool,
+    pub fix_same_parameter: bool,
     pub fix_shifted: bool,
     pub fix_edge_curves: bool,
     pub fix_lacking: bool,
@@ -175,6 +180,7 @@ impl HealConfig {
             fix_vertex_tolerance: false,
             fix_small_area: false,
             fix_small_edges: false,
+            fix_same_parameter: false,
             fix_shifted: false,
             fix_edge_curves: false,
             fix_lacking: false,
@@ -214,6 +220,7 @@ impl Default for HealConfig {
             fix_vertex_tolerance: true,
             fix_small_area: true,
             fix_small_edges: true,
+            fix_same_parameter: true,
             fix_shifted: true,
             fix_edge_curves: true,
             fix_lacking: true,
@@ -321,6 +328,11 @@ fn heal_wire_passes(
         if uv_closed > 0 {
             report.closed_uv_gaps += uv_closed;
         }
+    }
+
+    if config.fix_same_parameter {
+        let fixed = fix_same_parameter_wire(wire_key, face_key, reg, config.gap_tolerance);
+        report.same_param_fixed += fixed;
     }
 
     if config.fix_shifted {
