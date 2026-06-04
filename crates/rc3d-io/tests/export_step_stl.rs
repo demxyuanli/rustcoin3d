@@ -186,28 +186,41 @@ fn assert_stl_paths(step_name: &str, paths: &[PathBuf]) {
 }
 
 fn export_one(step_name: &str) {
+    let step_path = test_data(step_name);
+    if !step_path.exists() {
+        eprintln!("SKIP: {} not found (set RC3D_STEP_DIR to enable)", step_name);
+        return;
+    }
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output");
     std::fs::create_dir_all(&output_dir).ok();
     let stl_paths = mesh_and_export_stl(step_name, &output_dir).expect("export failed");
     assert_stl_paths(step_name, &stl_paths);
 }
 
+/// Heavy integration tests: import + mesh + STL export from real STEP files.
+/// Run manually with: cargo test -p rc3d-io --test export_step_stl --release -- --ignored
+/// Requires RC3D_STEP_DIR env pointing to a directory with Shape.step etc.
+
 #[test]
+#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
 fn case_shape() {
     export_one("Shape.step");
 }
 
 #[test]
+#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
 fn case_shape1() {
     export_one("Shape-1.step");
 }
 
 #[test]
+#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
 fn case_shape2() {
     export_one("Shape-2.step");
 }
 
 #[test]
+#[ignore = "requires external STEP files; run with --ignored"]
 fn case_all() {
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output");
     std::fs::create_dir_all(&output_dir).ok();
