@@ -21,8 +21,32 @@ pub struct FaceIntersectionResult {
     pub face_a: FaceKey,
     pub face_b: FaceKey,
     pub curves_3d: Vec<CurveGeom>,
+    /// PCURVEs on face A's surface (one per curve_3d), projected from 3D.
     pub pcurves_on_a: Vec<CurveGeom>,
+    /// PCURVEs on face B's surface (one per curve_3d), projected from 3D.
     pub pcurves_on_b: Vec<CurveGeom>,
+}
+
+/// Project a 3D curve onto a face's surface to create a 2D PCURVE.
+/// Samples the 3D curve at regular intervals, projects each point onto the
+/// surface, and returns a Polyline in UV space.
+pub fn project_curve_to_face_pcurve(
+    curve_3d: &CurveGeom,
+    surface: &SurfaceGeom,
+    n_samples: usize,
+) -> Option<CurveGeom> {
+    let mut uv_points: Vec<rc3d_core::math::Vec3> = Vec::with_capacity(n_samples);
+    for i in 0..n_samples {
+        let t = i as f32 / (n_samples - 1).max(1) as f32;
+        let pt = curve_3d.d0(t);
+        if let Some((u, v)) = surface.project(pt) {
+            uv_points.push(rc3d_core::math::Vec3::new(u, v, 0.0));
+        }
+    }
+    if uv_points.len() < 2 {
+        return None;
+    }
+    Some(CurveGeom::Polyline { points: uv_points })
 }
 
 /// Compute intersections between two sets of B-Rep shells.
@@ -79,9 +103,15 @@ pub fn compute_intersections_brep(
             let face_a = match reg.faces.get(*fka) { Some(f) => f, None => continue };
             let face_b = match reg.faces.get(*fkb) { Some(f) => f, None => continue };
             if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
+                let pcurves_a: Vec<CurveGeom> = curves.iter()
+                    .filter_map(|c| project_curve_to_face_pcurve(c, &face_a.surface, 16))
+                    .collect();
+                let pcurves_b: Vec<CurveGeom> = curves.iter()
+                    .filter_map(|c| project_curve_to_face_pcurve(c, &face_b.surface, 16))
+                    .collect();
                 results.push(FaceIntersectionResult {
                     face_a: *fka, face_b: *fkb,
-                    curves_3d: curves, pcurves_on_a: vec![], pcurves_on_b: vec![],
+                    curves_3d: curves, pcurves_on_a: pcurves_a, pcurves_on_b: pcurves_b,
                 });
             }
         }
@@ -93,9 +123,15 @@ pub fn compute_intersections_brep(
         let face_a = match reg.faces.get(fka) { Some(f) => f, None => return };
         let face_b = match reg.faces.get(fkb) { Some(f) => f, None => return };
         if let Some(curves) = intersect_surfaces_brep(face_a, face_b, reg) {
+            let pcurves_a: Vec<CurveGeom> = curves.iter()
+                .filter_map(|c| project_curve_to_face_pcurve(c, &face_a.surface, 16))
+                .collect();
+            let pcurves_b: Vec<CurveGeom> = curves.iter()
+                .filter_map(|c| project_curve_to_face_pcurve(c, &face_b.surface, 16))
+                .collect();
             results.push(FaceIntersectionResult {
                 face_a: fka, face_b: fkb,
-                curves_3d: curves, pcurves_on_a: vec![], pcurves_on_b: vec![],
+                curves_3d: curves, pcurves_on_a: pcurves_a, pcurves_on_b: pcurves_b,
             });
         }
     };
