@@ -39,6 +39,7 @@ pub struct BRepBuildReport {
     pub skipped_faces: usize,
     pub skipped_edges: usize,
     pub void_shell_count: usize,
+    pub void_shells_subtracted: usize,
     pub oriented_forward_faces: usize,
     pub oriented_reversed_faces: usize,
 }
@@ -46,12 +47,14 @@ pub struct BRepBuildReport {
 #[derive(Debug, Clone)]
 pub struct BRepBuildOptions {
     pub allow_geometry_fallback: bool,
+    pub strict_voids: bool,
 }
 
 impl BRepBuildOptions {
     pub fn from_import(options: &crate::step::import_options::StepImportOptions) -> Self {
         Self {
             allow_geometry_fallback: options.allow_geometry_fallback(),
+            strict_voids: options.strict_voids,
         }
     }
 }
@@ -67,6 +70,7 @@ pub struct BRepBuildResult {
 pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> {
     build_brep_with_options(entities, &BRepBuildOptions {
         allow_geometry_fallback: true,
+        strict_voids: false,
     })
 }
 
@@ -238,6 +242,14 @@ pub fn build_brep_with_options(
     // Build edge-to-face inverted index for fast shared edge queries
     reg.build_edge_to_faces_index();
 
+    // Phase: Void shell subtraction (when strict_voids enabled)
+    let mut void_shells_subtracted = 0usize;
+    if options.strict_voids {
+        for &solid_key in &root_solids {
+            void_shells_subtracted += subtract_void_shells(solid_key, &mut reg);
+        }
+    }
+
     let void_shell_count = root_solids
         .iter()
         .filter_map(|&sk| reg.solids.get(sk))
@@ -251,8 +263,104 @@ pub fn build_brep_with_options(
             skipped_faces,
             skipped_edges,
             void_shell_count,
+            void_shells_subtracted,
             oriented_forward_faces,
             oriented_reversed_faces,
         },
     })
+}
+
+/// Hole-punching: project void shell faces onto outer shell as inner wires.
+///
+/// For each void face, finds the matching outer face via shared edge lookup
+/// in `edge_to_faces`, then copies void wire edges as an inner wire (hole).
+/// Works for cylindrical holes, counterbores, and pockets where void and outer
+/// faces share a boundary edge.
+fn subtract_void_shells(solid_key: SolidKey, reg: &mut BRepStore) -> usize {
+    use std::collections::HashMap;
+
+    let void_shells = {
+        let solid = match reg.solids.get(solid_key) {
+            Some(s) => s,
+            None => return 0,
+        };
+        let outer_faces: Vec<FaceKey> = reg
+            .shells
+            .get(solid.outer_shell)
+            .map(|s| s.faces.iter().map(|(f, _)| *f).collect())
+            .unwrap_or_default();
+        (solid.void_shells.clone(), outer_faces)
+    };
+    let (void_shell_keys, outer_face_keys) = void_shells;
+
+    let mut holes = 0usize;
+    for &void_sk in &void_shell_keys {
+        let void_faces: Vec<(FaceKey, Vec<EdgeKey>)> = {
+            let vs = match reg.shells.get(void_sk) {
+                Some(s) => s,
+                None => continue,
+            };
+            vs.faces
+                .iter()
+                .map(|(fk, _)| {
+                    let edges: Vec<EdgeKey> = reg
+                        .wires
+                        .get(
+                            reg.faces
+                                .get(*fk)
+                                .map(|f| f.outer_wire)
+                                .unwrap_or_default(),
+                        )
+                        .map(|w| w.edges.iter().map(|(ek, _)| *ek).collect())
+                        .unwrap_or_default();
+                    (*fk, edges)
+                })
+                .collect()
+        };
+
+        for (void_fk, void_edge_keys) in &void_faces {
+            // Vote: which outer face shares the most edges with this void face?
+            let mut scores: HashMap<FaceKey, usize> = HashMap::new();
+            for ek in void_edge_keys {
+                if let Some(face_list) = reg.edge_to_faces.get(ek) {
+                    for fk in face_list {
+                        if *fk != *void_fk && outer_face_keys.contains(fk) {
+                            *scores.entry(*fk).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            let best = scores.into_iter().max_by_key(|(_, c)| *c).map(|(fk, _)| fk);
+            if let Some(outer_fk) = best {
+                if punch_hole(outer_fk, *void_fk, reg) {
+                    holes += 1;
+                }
+            }
+        }
+    }
+    holes
+}
+
+/// Copy void face wire as an inner wire on the matching outer face.
+fn punch_hole(outer_fk: FaceKey, void_fk: FaceKey, reg: &mut BRepStore) -> bool {
+    let void_wire_key = match reg.faces.get(void_fk) {
+        Some(f) => f.outer_wire,
+        None => return false,
+    };
+    let void_wire_edges = match reg.wires.get(void_wire_key) {
+        Some(w) => w.edges.clone(),
+        None => return false,
+    };
+    if void_wire_edges.is_empty() {
+        return false;
+    }
+
+    let inner_wire_key = reg.wires.insert(BRepWire {
+        edges: void_wire_edges,
+    });
+    if let Some(face) = reg.faces.get_mut(outer_fk) {
+        face.inner_wires.push(inner_wire_key);
+        return true;
+    }
+    false
 }

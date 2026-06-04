@@ -39,6 +39,9 @@ pub struct StepImportOptions {
     /// Skip visualization-only work (edge overlay, wireframe, mesh properties).
     /// Set true for non-interactive use cases like STL export.
     pub skip_visualization: bool,
+    /// When true, attempt to boolean-subtract void shells from outer shells
+    /// by projecting void wires as inner wires (holes) on matching outer faces.
+    pub strict_voids: bool,
 }
 
 /// Full STEP import output (scene + shape document + assembly metadata).
@@ -59,6 +62,7 @@ impl StepImportOptions {
             adapter_mode: AdapterMode::CompatMerge,
             assembly_preview_explode: 0.0,
             skip_visualization: false,
+            strict_voids: false,
         }
     }
 
@@ -71,6 +75,7 @@ impl StepImportOptions {
             adapter_mode: AdapterMode::CompatMerge,
             assembly_preview_explode: 0.0,
             skip_visualization: false,
+            strict_voids: false,
         }
     }
 
@@ -132,4 +137,6 @@ pub struct StepImportReport {
     /// Face orientation counters from STEP ORIENTED_FACE/ADVANCED_FACE mapping.
     pub oriented_forward_faces: usize,
     pub oriented_reversed_faces: usize,
+    /// Number of void faces successfully punched as inner wires (strict_voids mode).
+    pub void_shells_subtracted: usize,
 }

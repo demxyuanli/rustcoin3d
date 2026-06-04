@@ -220,6 +220,7 @@ fn exchange_to_import_result(
     import_report.skipped_faces = transfer.build_report.skipped_faces;
     import_report.skipped_edges = transfer.build_report.skipped_edges;
     import_report.void_shell_count = transfer.build_report.void_shell_count;
+    import_report.void_shells_subtracted = transfer.build_report.void_shells_subtracted;
     import_report.oriented_forward_faces = transfer.build_report.oriented_forward_faces;
     import_report.oriented_reversed_faces = transfer.build_report.oriented_reversed_faces;
 

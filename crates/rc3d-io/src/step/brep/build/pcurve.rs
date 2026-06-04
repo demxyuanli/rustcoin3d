@@ -1026,6 +1026,7 @@ mod tests {
         );
         let strict = BRepBuildOptions {
             allow_geometry_fallback: false,
+            strict_voids: false,
         };
         let result = build_brep_with_options(&entities, &strict);
         assert!(result.is_err() || result.unwrap().build_report.skipped_faces >= 1);
@@ -1053,6 +1054,7 @@ mod tests {
         );
         let preview = BRepBuildOptions {
             allow_geometry_fallback: true,
+            strict_voids: false,
         };
         let result = build_brep_with_options(&entities, &preview).expect("preview fallback");
         assert_eq!(result.build_report.skipped_faces, 0);
