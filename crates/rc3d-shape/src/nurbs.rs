@@ -6,6 +6,7 @@
 
 use rc3d_core::math::Vec3;
 use crate::geom::bspline::{bspline_bases, find_span};
+use rc3d_nurbs::NurbsCurve;
 
 /// NURBS (Non-Uniform Rational B-Spline) surface.
 ///
@@ -387,6 +388,129 @@ impl NurbsSurface {
 
         self.knots_v = new_knots_v;
     }
+
+    /// Create a NURBS surface from a grid of points with clamped uniform knot vectors.
+    ///
+    /// `points[i][j]` is row i (u direction), column j (v direction).
+    /// Produces a non-rational surface (all weights = 1.0).
+    pub fn from_points_grid(points: &[Vec<Vec3>], u_degree: usize, v_degree: usize) -> Self {
+        let n_u = points.len();
+        let n_v = points.first().map(|r| r.len()).unwrap_or(0);
+
+        // Clamped uniform knot vectors
+        let knots_u = clamped_uniform_knots(u_degree, n_u);
+        let knots_v = clamped_uniform_knots(v_degree, n_v);
+
+        let weights = vec![vec![1.0f32; n_v]; n_u];
+
+        NurbsSurface {
+            degree_u: u_degree,
+            degree_v: v_degree,
+            control_points: points.to_vec(),
+            weights,
+            knots_u,
+            knots_v,
+        }
+    }
+
+    /// Elevate the degree in the U direction by 1 (Bezier decomposition method).
+    ///
+    /// Each V-column is treated as a NURBS curve, degree-elevated independently,
+    /// then reassembled back into the surface. Shape is invariant.
+    pub fn elevate_degree_u(&mut self) {
+        let n_v = self.v_count();
+
+        let mut new_control_points = Vec::new();
+        let mut new_weights = Vec::new();
+        let mut new_knots_u = None;
+
+        for j in 0..n_v {
+            // Column j: collect control points along u direction
+            let cp: Vec<[f32; 4]> = (0..self.u_count()).map(|i| {
+                let pt = self.control_points[i][j];
+                let w = self.weights[i][j];
+                [pt.x * w, pt.y * w, pt.z * w, w]
+            }).collect();
+            let curve = NurbsCurve {
+                control_points: cp,
+                knots: self.knots_u.clone(),
+                degree: self.degree_u,
+            };
+            let elevated = curve.elevate_degree();
+
+            // Convert back from homogeneous
+            let pts: Vec<Vec3> = elevated.control_points.iter().map(|c| {
+                let w = c[3];
+                if w.abs() > 1e-10 { Vec3::new(c[0]/w, c[1]/w, c[2]/w) }
+                else { Vec3::new(c[0], c[1], c[2]) }
+            }).collect();
+            let ws: Vec<f32> = elevated.control_points.iter().map(|c| c[3]).collect();
+
+            if new_knots_u.is_none() {
+                new_knots_u = Some(elevated.knots);
+            }
+
+            // First column initializes the rows; subsequent columns append to each row
+            if new_control_points.is_empty() {
+                new_control_points = pts.into_iter().map(|p| vec![p]).collect();
+                new_weights = ws.into_iter().map(|w| vec![w]).collect();
+            } else {
+                for (i, p) in pts.into_iter().enumerate() {
+                    new_control_points[i].push(p);
+                    new_weights[i].push(ws[i]);
+                }
+            }
+        }
+
+        self.control_points = new_control_points;
+        self.weights = new_weights;
+        self.knots_u = new_knots_u.unwrap();
+        self.degree_u += 1;
+    }
+
+    /// Elevate the degree in the V direction by 1 (Bezier decomposition method).
+    ///
+    /// Each U-row is treated as a NURBS curve, degree-elevated independently,
+    /// then reassembled back into the surface. Shape is invariant.
+    pub fn elevate_degree_v(&mut self) {
+        let n_u = self.u_count();
+
+        for i in 0..n_u {
+            let row_cp = &self.control_points[i];
+            let row_w = &self.weights[i];
+
+            // Row i: collect control points along v direction
+            let cp: Vec<[f32; 4]> = (0..row_cp.len()).map(|j| {
+                let pt = row_cp[j];
+                let w = row_w[j];
+                [pt.x * w, pt.y * w, pt.z * w, w]
+            }).collect();
+            let curve = NurbsCurve {
+                control_points: cp,
+                knots: self.knots_v.clone(),
+                degree: self.degree_v,
+            };
+            let elevated = curve.elevate_degree();
+
+            // Convert back from homogeneous
+            let pts: Vec<Vec3> = elevated.control_points.iter().map(|c| {
+                let w = c[3];
+                if w.abs() > 1e-10 { Vec3::new(c[0]/w, c[1]/w, c[2]/w) }
+                else { Vec3::new(c[0], c[1], c[2]) }
+            }).collect();
+            let ws: Vec<f32> = elevated.control_points.iter().map(|c| c[3]).collect();
+
+            self.control_points[i] = pts;
+            self.weights[i] = ws;
+
+            // All rows produce the same knot vector — update on first iteration
+            if i == 0 {
+                self.knots_v = elevated.knots;
+            }
+        }
+
+        self.degree_v += 1;
+    }
 }
 
 /// Linear scan lookup in a short basis derivative list (3-6 entries).
@@ -397,6 +521,25 @@ fn lookup_basis_value(basis: &[(usize, f32)], idx: usize) -> f32 {
         if i == idx { return v; }
     }
     0.0
+}
+
+/// Build a clamped uniform knot vector for `n` control points of given `degree`.
+/// E.g. degree=3, n=4 → [0,0,0,0, 1,1,1,1] (Bezier).
+/// degree=3, n=6 → [0,0,0,0, 0.333, 0.667, 1,1,1,1].
+fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<f32> {
+    let n_knots = n + degree + 1;
+    let n_interior = n_knots.saturating_sub(2 * (degree + 1));
+    let mut knots = Vec::with_capacity(n_knots);
+    for _ in 0..=degree {
+        knots.push(0.0);
+    }
+    for i in 1..=n_interior {
+        knots.push(i as f32 / (n_interior + 1) as f32);
+    }
+    for _ in 0..=degree {
+        knots.push(1.0);
+    }
+    knots
 }
 
 /// Compute first-order B-spline basis function derivatives using the analytical
@@ -897,5 +1040,70 @@ mod tests {
         surf.insert_knot_u(0.25);
         assert_eq!(surf.u_count(), before_count + 1,
             "inserting at existing knot with mult < degree+1 should increase multiplicity");
+    }
+
+    #[test]
+    fn test_elevate_degree_u_shape_invariance() {
+        let grid: Vec<Vec<Vec3>> = (0..4)
+            .map(|i| (0..4).map(|j| Vec3::new(i as f32, j as f32, (i*j) as f32 * 0.3)).collect())
+            .collect();
+        let mut surface = NurbsSurface::from_points_grid(&grid, 3, 3);
+        let mut before = Vec::new();
+        for iu in 0..=5 {
+            for iv in 0..=5 {
+                before.push(surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0));
+            }
+        }
+        surface.elevate_degree_u();
+        assert_eq!(surface.degree_u, 4);
+        assert_eq!(surface.degree_v, 3);
+        for iu in 0..=5 {
+            for iv in 0..=5 {
+                let p = surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0);
+                let diff = (before[iu * 6 + iv] - p).length();
+                assert!(diff < 1e-3, "shape changed at iu={iu}, iv={iv}: diff={diff}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_elevate_degree_v_shape_invariance() {
+        let grid: Vec<Vec<Vec3>> = (0..4)
+            .map(|i| (0..4).map(|j| Vec3::new(i as f32, j as f32, (i*j) as f32 * 0.3)).collect())
+            .collect();
+        let mut surface = NurbsSurface::from_points_grid(&grid, 3, 3);
+        let mut before = Vec::new();
+        for iu in 0..=5 {
+            let mut row = Vec::new();
+            for iv in 0..=5 {
+                row.push(surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0));
+            }
+            before.push(row);
+        }
+        surface.elevate_degree_v();
+        assert_eq!(surface.degree_v, 4);
+        assert_eq!(surface.degree_u, 3);
+        for iu in 0..=5 {
+            for iv in 0..=5 {
+                let p = surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0);
+                let diff = (before[iu][iv] - p).length();
+                assert!(diff < 1e-3, "shape changed at iu={iu}, iv={iv}: diff={diff}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_elevate_degree_both_directions() {
+        let grid: Vec<Vec<Vec3>> = (0..3)
+            .map(|i| (0..3).map(|j| Vec3::new(i as f32, j as f32, 0.0)).collect())
+            .collect();
+        let mut surface = NurbsSurface::from_points_grid(&grid, 2, 2);
+        let p_center = surface.evaluate(0.5, 0.5);
+        surface.elevate_degree_u();
+        surface.elevate_degree_v();
+        assert_eq!(surface.degree_u, 3);
+        assert_eq!(surface.degree_v, 3);
+        let p_after = surface.evaluate(0.5, 0.5);
+        assert!((p_center - p_after).length() < 1e-3);
     }
 }

@@ -14,3 +14,4 @@ slotmap = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+rc3d-nurbs = { workspace = true }
