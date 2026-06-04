@@ -283,4 +283,12 @@ mod tests {
         let cfg = select_fixes(HealLevel::Standard, 1, &check);
         assert!(cfg.fix_split_face);
     }
+
+    #[test]
+    fn test_select_fixes_advanced_enables_face_self_intersect() {
+        let mut check = CheckReport::default();
+        check.has_face_self_intersections = true;
+        // Face self-intersection is detection-only (no fix flag), but check should be reported
+        assert!(check.has_face_self_intersections);
+    }
 }

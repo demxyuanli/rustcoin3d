@@ -21,6 +21,7 @@ pub struct CheckReport {
     pub has_singularities: bool,
     pub has_inner_wires: bool,
     pub has_intersecting_wires: bool,
+    pub has_face_self_intersections: bool,
 }
 
 impl CheckReport {
@@ -38,6 +39,7 @@ impl CheckReport {
         self.has_singularities |= other.has_singularities;
         self.has_inner_wires |= other.has_inner_wires;
         self.has_intersecting_wires |= other.has_intersecting_wires;
+        self.has_face_self_intersections |= other.has_face_self_intersections;
     }
 }
 
@@ -72,6 +74,18 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepStore) -> CheckReport {
                     report.has_intersecting_wires = true;
                 }
             }
+        }
+
+        // Face-level self-intersection (surface folding in 3D)
+        let face_si_count = super::face_self_intersect::check_face_self_intersect(
+            face_key, reg, 10,
+        );
+        if face_si_count > 0 {
+            report.has_face_self_intersections = true;
+            report.warnings.push(format!(
+                "face {:?}: surface self-intersection suspected ({} normal inversions)",
+                face_key, face_si_count
+            ));
         }
     }
 
