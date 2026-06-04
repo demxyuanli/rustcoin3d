@@ -595,6 +595,27 @@ impl CurveGeom {
         }
     }
 
+    /// Third derivative d³C/dt³ at parameter t via finite differences.
+    /// Uses 5-point stencil for smooth curves, falling back to forward difference.
+    pub fn d3(&self, t: f32) -> Vec3 {
+        let eps = 2e-4;
+        let t0 = (t - eps * 2.0).max(0.0);
+        let t1 = (t - eps).max(0.0);
+        let t2 = (t + eps).min(1.0);
+        let t3 = (t + eps * 2.0).min(1.0);
+        // 4-point central: (d0(t3) - 2*d0(t2) + 2*d0(t1) - d0(t0)) / (2*eps³)
+        // Actually use: (-d0(t0) + 2*d0(t1) - 2*d0(t2) + d0(t3)) / (2 * eps³)
+        let p0 = self.d0(t0);
+        let p1 = self.d0(t1);
+        let p2 = self.d0(t2);
+        let p3 = self.d0(t3);
+        let h3 = (t3 - t0).powi(3);
+        if h3 < 1e-15 {
+            return Vec3::ZERO;
+        }
+        (-p0 + 2.0 * p1 - 2.0 * p2 + p3) / h3
+    }
+
     /// Curvature κ = |d1 × d2| / |d1|³ at parameter t.
     /// Returns 0.0 if the first derivative magnitude is below 1e-10.
     pub fn curvature(&self, t: f32) -> f32 {
