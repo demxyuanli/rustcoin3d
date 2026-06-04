@@ -608,6 +608,24 @@ impl CurveGeom {
         cross_mag / (d1_len * d1_len * d1_len)
     }
 
+    /// Torsion τ = (d1 × d2) · d3 / |d1 × d2|² at parameter t.
+    /// Uses finite-difference for d3. Returns 0.0 for degenerate cases.
+    pub fn torsion(&self, t: f32) -> f32 {
+        let eps = 1e-4;
+        let t_lo = (t - eps).max(0.0);
+        let t_hi = (t + eps).min(1.0);
+        let d1 = self.d1(t);
+        let d2 = self.d2(t);
+        let d2_hi = self.d2(t_hi);
+        let d3 = (d2_hi - d2) / (t_hi - t);
+        let cross = d1.cross(d2);
+        let cross_len_sq = cross.length_squared();
+        if cross_len_sq < 1e-20 {
+            return 0.0;
+        }
+        cross.dot(d3) / cross_len_sq
+    }
+
     /// Combined position, first, and second derivative in one call.
     /// For BSpline curves, this avoids 3× redundant Cox-de Boor evaluation
     /// vs calling `d0`, `d1`, `d2` separately.

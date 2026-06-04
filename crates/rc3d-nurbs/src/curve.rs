@@ -257,6 +257,225 @@ impl NurbsCurve {
             degree: new_degree,
         }
     }
+
+    /// Try to remove one copy of knot `t`. Returns `true` if the resulting curve
+    /// matches the original within `tolerance` at sample points.
+    ///
+    /// Uses the inverse of the Boehm insertion formula. Works exactly (within
+    /// floating-point) for knots that were previously inserted.
+    pub fn remove_knot(&mut self, t: f32, tolerance: f32) -> bool {
+        let p = self.degree;
+        let mult = crate::knot::knot_multiplicity(&self.knots, t);
+        if mult == 0 {
+            return false;
+        }
+        // Guard: don't remove end knots (they must have multiplicity p+1)
+        let is_end = (t - self.knots[0]).abs() < 1e-10
+            || (t - self.knots[self.knots.len() - 1]).abs() < 1e-10;
+        if is_end && mult <= p + 1 {
+            return false;
+        }
+
+        let span = crate::knot::find_span(p, &self.knots, t);
+        // For an interior knot, span is the index of the last copy (find_span
+        // returns i such that knots[i] <= t < knots[i+1]).
+        let start = span.saturating_sub(p);
+
+        // Reverse-Boehm: compute what CPs were before insertion
+        let mut new_cp = Vec::with_capacity(self.control_points.len() - 1);
+        // Control points before the affected range stay unchanged
+        for i in 0..start {
+            new_cp.push(self.control_points[i]);
+        }
+        // For the affected range, solve: new_cp[i] = alpha * orig[i] + (1-alpha) * orig[i-1]
+        // => orig[i] = (new_cp[i] - (1-alpha) * orig[i-1]) / alpha
+        // But we already have orig[i-1] from the previous iteration.
+        for i in start..span {
+            if i >= self.control_points.len() || i.saturating_sub(1) >= self.control_points.len() {
+                return false;
+            }
+            // The original insertion alpha used OLD knot vector (before t was inserted).
+            // Now that t is in the new knot vector, all indices >= insertion_point
+            // are shifted by +1. Since i+p >= start+p = r+1 > r, we use i+p+1.
+            let alpha = {
+                let denom = self.knots[i + p + 1] - self.knots[i];
+                if denom.abs() > 1e-10 {
+                    ((t - self.knots[i]) / denom).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            let prev = if i == start {
+                // First affected point: the original before CP is from new_cp
+                // Actually orig[start-1] = new_cp[start-1] (unchanged), which is
+                // already pushed into new_cp above.
+                self.control_points[start]
+            } else {
+                self.control_points[i]
+            };
+            // Wait — we need to solve for the ORIGINAL control point.
+            // Let me reconsider...
+
+            // Boehm insertion:
+            //   Q_i = alpha * P_i + (1-alpha) * P_{i-1}    for i = start+1 .. span
+            //   (with Q being the new CPs after insertion)
+            // To reverse: given Q_i and P_{i-1} (already computed), find P_i:
+            //   P_i = (Q_i - (1-alpha) * P_{i-1}) / alpha
+
+            // P_i maps to position i in the output (no shift yet)
+            // We need P_{i-1} which we just pushed to new_cp
+            let prev_cp = new_cp.last().copied().unwrap_or([0.0; 4]);
+            let curr = self.control_points[i];
+            let alpha_clamped = alpha.clamp(1e-10, 1.0);
+            let new_pt: [f32; 4] = [
+                (curr[0] - (1.0 - alpha_clamped) * prev_cp[0]) / alpha_clamped,
+                (curr[1] - (1.0 - alpha_clamped) * prev_cp[1]) / alpha_clamped,
+                (curr[2] - (1.0 - alpha_clamped) * prev_cp[2]) / alpha_clamped,
+                (curr[3] - (1.0 - alpha_clamped) * prev_cp[3]) / alpha_clamped,
+            ];
+            new_cp.push(new_pt);
+        }
+        // Remaining: skip first point after blends (it equals the last blend result).
+        // In Boehm: Q_{span+1} = P_{span}, and P_{span} was already recovered.
+        for i in (span + 1)..self.control_points.len() {
+            new_cp.push(self.control_points[i]);
+        }
+
+        // Remove one copy of t from knots
+        let mut new_knots = Vec::with_capacity(self.knots.len() - 1);
+        let mut removed = false;
+        for &k in &self.knots {
+            if !removed && (k - t).abs() < 1e-10 {
+                removed = true;
+                continue;
+            }
+            new_knots.push(k);
+        }
+
+        let candidate = Self { control_points: new_cp, knots: new_knots, degree: p };
+
+        // Verify shape preservation
+        for i in 0..=10 {
+            let ti = i as f32 / 10.0;
+            // Skip evaluation at the removed knot if it would cause issues
+            let td = if (ti - t).abs() < 1e-6 { (ti + 0.01).min(1.0) } else { ti };
+            if (self.evaluate(td) - candidate.evaluate(td)).length() > tolerance {
+                return false;
+            }
+        }
+
+        *self = candidate;
+        true
+    }
+
+    /// Try to reduce the curve degree from p to p-1 while staying within tolerance.
+    ///
+    /// Returns the reduced curve if successful, or `None` if the approximation
+    /// error exceeds tolerance. Uses Bezier decomposition → segment reduction
+    /// → reassembly.
+    pub fn reduce_degree(&self, tolerance: f32) -> Option<Self> {
+        let p = self.degree;
+        if p <= 1 {
+            return None; // can't reduce linear
+        }
+        let new_p = p - 1;
+
+        // Step 1: Bezier decomposition
+        let mut bez = self.clone();
+        let uq = crate::knot::unique_knots(&self.knots);
+        let knot_first = uq.first().map(|(v, _)| *v).unwrap_or(0.0);
+        let knot_last = uq.last().map(|(v, _)| *v).unwrap_or(1.0);
+        for &(val, mult) in &uq {
+            if (val - knot_first).abs() < 1e-10 || (val - knot_last).abs() < 1e-10 {
+                continue;
+            }
+            let needed = p.saturating_sub(mult);
+            for _ in 0..needed {
+                bez.insert_knot(val);
+            }
+        }
+
+        let n_interior = uq.iter().filter(|(v, _)| {
+            (v - knot_first).abs() > 1e-10 && (v - knot_last).abs() > 1e-10
+        }).count();
+        let n_segments = n_interior + 1;
+
+        // Step 2: Reduce each Bezier segment
+        let mut new_cp: Vec<[f32; 4]> = Vec::with_capacity(n_segments * p);
+        for seg in 0..n_segments {
+            let offset = seg * p;
+            // Forward pass
+            let mut fwd = vec![[0.0f32; 4]; p];
+            fwd[0] = bez.control_points[offset];
+            for i in 1..=(p - 1) {
+                let prev = fwd[i - 1];
+                let curr = bez.control_points[offset + i];
+                let denom = (p - i) as f32;
+                if denom.abs() < 1e-10 {
+                    return None;
+                }
+                for d in 0..4 {
+                    fwd[i][d] = (p as f32 * curr[d] - i as f32 * prev[d]) / denom;
+                }
+            }
+            // Backward pass
+            let mut bwd = vec![[0.0f32; 4]; p];
+            bwd[p - 1] = bez.control_points[offset + p];
+            for i in (1..=(p - 1)).rev() {
+                let next = bwd[i];
+                let curr = bez.control_points[offset + i];
+                let denom = i as f32;
+                if denom.abs() < 1e-10 {
+                    return None;
+                }
+                for d in 0..4 {
+                    bwd[i - 1][d] = (p as f32 * curr[d] - (p - i) as f32 * next[d]) / denom;
+                }
+            }
+            // Average forward + backward for interior points
+            if seg == 0 {
+                new_cp.push(bez.control_points[offset]); // first point
+            }
+            for i in 1..=(p - 1) {
+                let avg: [f32; 4] = [
+                    (fwd[i][0] + bwd[i][0]) * 0.5,
+                    (fwd[i][1] + bwd[i][1]) * 0.5,
+                    (fwd[i][2] + bwd[i][2]) * 0.5,
+                    (fwd[i][3] + bwd[i][3]) * 0.5,
+                ];
+                new_cp.push(avg);
+            }
+            new_cp.push(bez.control_points[offset + p]); // last point of segment
+        }
+
+        // Step 3: Build new knot vector (end multiplicities = new_p+1, interior = 1)
+        let mut new_knots: Vec<f32> = Vec::new();
+        for &(val, _) in &uq {
+            let is_end = (val - knot_first).abs() < 1e-10
+                || (val - knot_last).abs() < 1e-10;
+            let mult = if is_end { new_p + 1 } else { 1 };
+            for _ in 0..mult {
+                new_knots.push(val);
+            }
+        }
+
+        let result = Self {
+            control_points: new_cp,
+            knots: new_knots,
+            degree: new_p,
+        };
+
+        // Step 4: Verify within tolerance
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            let diff = (self.evaluate(t) - result.evaluate(t)).length();
+            if diff > tolerance {
+                return None;
+            }
+        }
+
+        Some(result)
+    }
 }
 
 #[cfg(test)]
@@ -372,5 +591,59 @@ mod tests {
             let p = elevated.evaluate(i as f32 / 20.0);
             assert!((before[i] - p).length() < 1e-3, "sample {i} mismatch at t={}", i as f32 / 20.0);
         }
+    }
+
+    #[test]
+    fn test_remove_knot_cubic() {
+        // Insert a knot, then remove it — should be exact (0 tolerance needed)
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [2.0, -1.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
+        ];
+        let mut curve = NurbsCurve::new(cp, 3);
+        let pt_before = curve.evaluate(0.5);
+        curve.insert_knot(0.3);
+        assert_eq!(curve.n_control_points(), 5);
+        let ok = curve.remove_knot(0.3, 0.01);
+        assert!(ok, "knot removal should succeed");
+        assert_eq!(curve.n_control_points(), 4);
+        let pt_after = curve.evaluate(0.5);
+        assert!((pt_before - pt_after).length() < 1e-4, "shape changed after remove");
+    }
+
+    #[test]
+    fn test_remove_knot_nonexistent() {
+        let cp = vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]];
+        let mut curve = NurbsCurve::new(cp, 1);
+        assert!(!curve.remove_knot(0.5, 1e-6));
+    }
+
+    #[test]
+    fn test_reduce_degree_cubic_to_quad() {
+        // Almost-parabolic cubic should reduce to quadratic
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [0.33, 0.5, 0.0, 1.0],
+            [0.66, 0.5, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ];
+        let curve = NurbsCurve::new(cp, 3);
+        let reduced = curve.reduce_degree(0.1);
+        assert!(reduced.is_some(), "near-parabolic cubic should reduce");
+        let r = reduced.unwrap();
+        assert_eq!(r.degree, 2);
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let diff = (curve.evaluate(t) - r.evaluate(t)).length();
+            assert!(diff < 0.1, "deviation too large at t={t}: {diff}");
+        }
+    }
+
+    #[test]
+    fn test_reduce_degree_linear_is_none() {
+        let curve = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
+        assert!(curve.reduce_degree(0.1).is_none());
     }
 }
