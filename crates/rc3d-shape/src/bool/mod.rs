@@ -9,6 +9,7 @@
 
 pub mod aabb;
 pub mod intersect;
+pub mod intersect_edge;
 pub mod classify;
 pub mod split;
 pub mod select;
