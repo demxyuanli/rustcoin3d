@@ -9,6 +9,7 @@ pub mod check;
 pub(crate) mod lacking;
 pub(crate) mod degenerated;
 pub(crate) mod self_intersect;
+pub(crate) mod face_self_intersect;
 pub(crate) mod intersecting_wires;
 pub mod continuity;
 pub mod pipeline;
