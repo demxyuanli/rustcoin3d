@@ -1,6 +1,6 @@
 //! Multi-patch NURBS surface stitching with G0/G1 continuity.
 
-use crate::surface::{BoundaryEdge, NurbsSurface, TessellatedSurface};
+use crate::surface::{BoundaryEdge, NurbsRenderSurface, TessellatedSurface};
 use glam::Vec3;
 
 /// Continuity mode for patch stitching.
@@ -28,8 +28,8 @@ pub enum StitchError {
 
 /// Stitch two patches along specified edges.
 pub fn stitch_two(
-    a: &NurbsSurface,
-    b: &NurbsSurface,
+    a: &NurbsRenderSurface,
+    b: &NurbsRenderSurface,
     edge_a: BoundaryEdge,
     edge_b: BoundaryEdge,
     mode: StitchMode,
@@ -149,7 +149,7 @@ fn merge_tessellated_pair(
 ///
 /// All patches must have the same `u_count()` and `v_count()`.
 pub fn stitch_grid(
-    patches: &[NurbsSurface],
+    patches: &[NurbsRenderSurface],
     rows: usize,
     cols: usize,
     mode: StitchMode,
@@ -201,7 +201,7 @@ mod tests {
     use super::*;
     use BoundaryEdge::*;
 
-    fn flat_patch(ox: f32, oy: f32) -> NurbsSurface {
+    fn flat_patch(ox: f32, oy: f32) -> NurbsRenderSurface {
         let grid: Vec<Vec<Vec3>> = (0..3)
             .map(|i| {
                 (0..3)
@@ -209,7 +209,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        NurbsSurface::from_points_grid(&grid, 2, 2)
+        NurbsRenderSurface::from_points_grid(&grid, 2, 2)
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn stitch_grid_2x2() {
-        let patches: Vec<NurbsSurface> = (0..2)
+        let patches: Vec<NurbsRenderSurface> = (0..2)
             .flat_map(|ri| {
                 (0..2).map(move |ci| flat_patch(ci as f32 * 2.0, ri as f32 * 2.0))
             })

@@ -1,10 +1,10 @@
 use glam::Vec3;
-use crate::surface::NurbsSurface;
+use crate::surface::NurbsRenderSurface;
 
 /// Adaptive quadtree-based surface tessellation.
 /// Subdivides a coarse grid where curvature exceeds tolerance.
 pub fn tessellate_surface_adaptive(
-    surface: &NurbsSurface,
+    surface: &NurbsRenderSurface,
     tolerance: f32,
 ) -> rc3d_mesh::TriangleMesh {
     let initial = 4;
@@ -50,7 +50,7 @@ pub fn tessellate_surface_adaptive(
 
 #[allow(clippy::too_many_arguments)]
 fn subdivide_cell(
-    surface: &NurbsSurface,
+    surface: &NurbsRenderSurface,
     positions: &mut Vec<Vec3>,
     indices: &mut Vec<u32>,
     u0: f32,

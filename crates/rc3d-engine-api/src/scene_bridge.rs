@@ -20,7 +20,7 @@ use rc3d_scene::SceneGraph;
 /// with screen-space criteria. This avoids the per-frame CPU + GPU churn of dynamic
 /// subdivision during continuous camera movement.
 pub struct DynamicSurface {
-    surface: rc3d_nurbs::NurbsSurface,
+    surface: rc3d_nurbs::NurbsRenderSurface,
     coord_node: rc3d_core::NodeId,
     normal_node: rc3d_core::NodeId,
     ifs_node: rc3d_core::NodeId,
@@ -45,7 +45,7 @@ impl DynamicSurface {
     pub fn new(
         graph: &mut SceneGraph,
         parent: rc3d_core::NodeId,
-        surface: rc3d_nurbs::NurbsSurface,
+        surface: rc3d_nurbs::NurbsRenderSurface,
         camera_pos: Vec3,
         light_dir: Vec3,
         mvp: &Mat4,

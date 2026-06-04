@@ -5,7 +5,7 @@ use crate::tessellate::tessellate_surface_adaptive;
 
 /// A NURBS surface defined by a grid of homogeneous control points.
 #[derive(Clone, Debug)]
-pub struct NurbsSurface {
+pub struct NurbsRenderSurface {
     pub control_points: Vec<Vec<[f32; 4]>>, // [u_count][v_count] = (wx, wy, wz, w)
     pub u_knots: Vec<f32>,
     pub v_knots: Vec<f32>,
@@ -13,7 +13,7 @@ pub struct NurbsSurface {
     pub v_degree: usize,
 }
 
-impl NurbsSurface {
+impl NurbsRenderSurface {
     /// Create a NURBS surface from a u×v grid of homogeneous control points.
     pub fn new(
         control_points: Vec<Vec<[f32; 4]>>,
@@ -327,7 +327,7 @@ impl NurbsSurface {
     }
 }
 
-/// Output of [`NurbsSurface::tessellate_uniform_with_normals`].
+/// Output of [`NurbsRenderSurface::tessellate_uniform_with_normals`].
 /// Which isoparametric edge of a NURBS surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoundaryEdge {
@@ -351,7 +351,7 @@ pub struct TessellatedSurface {
 /// - **Interior** (faces camera + lit): `max_px`
 #[allow(clippy::too_many_arguments)]
 fn subdivide_quad_screen(
-    surface: &NurbsSurface,
+    surface: &NurbsRenderSurface,
     positions: &mut Vec<glam::Vec3>,
     normals: &mut Vec<glam::Vec3>,
     indices: &mut Vec<u32>,
@@ -548,7 +548,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        let surface = NurbsSurface::from_points_grid(&grid, 2, 2);
+        let surface = NurbsRenderSurface::from_points_grid(&grid, 2, 2);
         let p = surface.evaluate(0.5, 0.5);
         assert!((p.x - 1.0).abs() < 0.01, "x={}", p.x);
         assert!((p.y - 1.0).abs() < 0.01, "y={}", p.y);
@@ -564,7 +564,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        let surface = NurbsSurface::from_points_grid(&grid, 3, 3);
+        let surface = NurbsRenderSurface::from_points_grid(&grid, 3, 3);
         let n = surface.normal(0.5, 0.5);
         assert!((n.length() - 1.0).abs() < 1e-4);
     }
@@ -574,7 +574,7 @@ mod tests {
         let grid: Vec<Vec<Vec3>> = (0..3)
             .map(|i| (0..3).map(|j| Vec3::new(i as f32, j as f32, 0.0)).collect())
             .collect();
-        let surface = NurbsSurface::from_points_grid(&grid, 2, 2);
+        let surface = NurbsRenderSurface::from_points_grid(&grid, 2, 2);
         let mesh = surface.tessellate_uniform(4, 4);
         // 4x4 quads = 16 quads × 2 triangles = 32 triangles, 25 vertices
         assert_eq!(mesh.positions.len(), 25);
