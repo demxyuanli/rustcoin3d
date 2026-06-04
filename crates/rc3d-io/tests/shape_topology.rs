@@ -136,6 +136,10 @@ fn inspect_shape_topology() {
                 println!("  {:?}: Polyline", ek);
                 continue;
             }
+            rc3d_io::step::brep::geom::CurveGeom::Offset { basis, offset_dir, distance } => {
+                println!("  {:?}: Offset dist={} dir={:?}", ek, distance, offset_dir);
+                continue;
+            }
         };
         if disc_val > 1 { // not Line, not Circle
             println!("  {:?}: disc={:?}", ek, disc);

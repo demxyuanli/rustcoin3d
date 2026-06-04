@@ -99,8 +99,16 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             build_curve(curve_3d_id, entities)
         }
         "OFFSET_CURVE_3D" => {
-            let inner_id = geom::nth_ref(&record.params, 1)?;
-            build_curve(inner_id, entities)
+            let basis_id = geom::nth_ref(&record.params, 1)?;
+            let basis = build_curve(basis_id, entities)?;
+            let dir_id = geom::nth_ref(&record.params, 2)?;
+            let offset_dir = topology::resolve_direction(dir_id, entities)?;
+            let distance = geom::nth_real(&record.params, 3).unwrap_or(0.0) as f32;
+            Some(CurveGeom::Offset {
+                basis: Box::new(basis),
+                offset_dir,
+                distance,
+            })
         }
         "BOUNDED_CURVE" => {
             // Unwrap to the underlying curve
