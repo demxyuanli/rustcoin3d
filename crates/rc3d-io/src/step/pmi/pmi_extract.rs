@@ -156,9 +156,29 @@ pub fn extract_pmi(entities: &EntityIndex) -> PmiData {
             | EntityType::ParallelismTolerance
             | EntityType::PerpendicularityTolerance
             | EntityType::RunoutTolerance
-            | EntityType::StraightnessTolerance => {
+            | EntityType::StraightnessTolerance
+            | EntityType::RoundnessTolerance
+            | EntityType::CylindricityTolerance
+            | EntityType::AngularityTolerance
+            | EntityType::ConcentricityTolerance
+            | EntityType::SymmetryTolerance
+            | EntityType::CircularRunoutTolerance
+            | EntityType::TotalRunoutTolerance
+            | EntityType::SurfaceProfileTolerance
+            | EntityType::LineProfileTolerance
+            | EntityType::PlusMinusTolerance
+            | EntityType::LimitsAndFits
+            | EntityType::ModifiedGeometricTolerance
+            | EntityType::UnequallyDisposedTolerance => {
                 if let Some(tol) = extract_tolerance(eid, record.entity_type, &record.name, &record.params, entities) {
                     pmi.tolerances.push(tol);
+                }
+            }
+            EntityType::DimensionalLocation
+            | EntityType::DimensionalSizeWithDatum
+            | EntityType::AngularSize => {
+                if let Some(dim) = extract_dimension(eid, &record.params, entities) {
+                    pmi.dimensions.push(dim);
                 }
             }
             EntityType::DatumReferenceElement => {
@@ -449,15 +469,25 @@ fn resolve_diameter_modifier(params: &super::super::value::StepValue, entities: 
 /// Returns None for unrecognized types — callers must handle fallback explicitly.
 fn gdt_symbol_for_entity(entity_type: EntityType, entity_name: &str) -> Option<GdtSymbol> {
     match (entity_type, entity_name) {
+        // Form tolerances
         (EntityType::FlatnessTolerance, _) => Some(GdtSymbol::Flatness),
-        (EntityType::PositionTolerance, _) => Some(GdtSymbol::Position),
-        (EntityType::ProfileTolerance, "LINE_PROFILE_TOLERANCE") => Some(GdtSymbol::ProfileOfLine),
-        (EntityType::ProfileTolerance, _) => Some(GdtSymbol::ProfileOfSurface),
+        (EntityType::StraightnessTolerance, _) => Some(GdtSymbol::Straightness),
+        (EntityType::RoundnessTolerance, _) => Some(GdtSymbol::Circularity),
+        (EntityType::CylindricityTolerance, _) => Some(GdtSymbol::Cylindricity),
+        // Profile tolerances
+        (EntityType::ProfileTolerance, "LINE_PROFILE_TOLERANCE") | (EntityType::LineProfileTolerance, _) => Some(GdtSymbol::ProfileOfLine),
+        (EntityType::ProfileTolerance, _) | (EntityType::SurfaceProfileTolerance, _) => Some(GdtSymbol::ProfileOfSurface),
+        // Orientation tolerances
         (EntityType::ParallelismTolerance, _) => Some(GdtSymbol::Parallelism),
         (EntityType::PerpendicularityTolerance, _) => Some(GdtSymbol::Perpendicularity),
-        (EntityType::RunoutTolerance, "TOTAL_RUNOUT_TOLERANCE") => Some(GdtSymbol::TotalRunout),
-        (EntityType::RunoutTolerance, _) => Some(GdtSymbol::CircularRunout),
-        (EntityType::StraightnessTolerance, _) => Some(GdtSymbol::Straightness),
+        (EntityType::AngularityTolerance, _) => Some(GdtSymbol::Angularity),
+        // Location tolerances
+        (EntityType::PositionTolerance, _) => Some(GdtSymbol::Position),
+        (EntityType::ConcentricityTolerance, _) => Some(GdtSymbol::Concentricity),
+        (EntityType::SymmetryTolerance, _) => Some(GdtSymbol::Symmetry),
+        // Runout tolerances
+        (EntityType::RunoutTolerance, "TOTAL_RUNOUT_TOLERANCE") | (EntityType::TotalRunoutTolerance, _) => Some(GdtSymbol::TotalRunout),
+        (EntityType::RunoutTolerance, _) | (EntityType::CircularRunoutTolerance, _) => Some(GdtSymbol::CircularRunout),
         _ => None,
     }
 }
