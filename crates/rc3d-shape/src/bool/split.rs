@@ -68,23 +68,12 @@ pub fn compute_brep_intersection_curves(
 }
 
 fn sample_intersection_curve(curve: &crate::geom::CurveGeom, n: usize) -> Vec<Vec3> {
-    use crate::geom::CurveGeom;
-    match curve {
-        CurveGeom::Line { origin, direction } => {
-            let ext = 100.0;
-            (0..n).map(|i| {
-                let t = -ext + 2.0 * ext * i as f32 / (n - 1) as f32;
-                *origin + *direction * t
-            }).collect()
-        }
-        CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
-            (0..n).map(|i| {
-                let theta = std::f32::consts::TAU * i as f32 / n as f32;
-                *center + *x_dir * (*radius * theta.cos()) + *y_dir * (*radius * theta.sin())
-            }).collect()
-        }
-        _ => Vec::new(),
-    }
+    // All CurveGeom variants are parameterized over t in [0, 1].
+    // Use the universal d0(t) evaluator to support every curve type.
+    (0..n).map(|i| {
+        let t = i as f32 / (n - 1).max(1) as f32;
+        curve.d0(t)
+    }).collect()
 }
 
 pub fn split_all_faces_brep(
@@ -293,5 +282,37 @@ mod tests {
             let face = reg.faces.get(sub).unwrap();
             assert!(matches!(&face.surface, SurfaceGeom::Plane { .. }));
         }
+    }
+
+    #[test]
+    fn test_sample_bspline_intersection_curve() {
+        use crate::geom::CurveGeom;
+        let curve = CurveGeom::BSpline {
+            degree: 3,
+            control_points: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 2.0, 0.0),
+                Vec3::new(2.0, 2.0, 0.0),
+                Vec3::new(3.0, 0.0, 0.0),
+            ],
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            weights: None,
+        };
+        let samples = sample_intersection_curve(&curve, 32);
+        assert_eq!(samples.len(), 32, "should produce exactly 32 samples");
+        assert!((samples[0] - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-4,
+            "first sample should be near start control point");
+        assert!((samples[31] - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-4,
+            "last sample should be near end control point");
+    }
+
+    #[test]
+    fn test_sample_polyline_intersection_curve() {
+        use crate::geom::CurveGeom;
+        let curve = CurveGeom::Polyline {
+            points: vec![Vec3::ZERO, Vec3::X, Vec3::new(1.0, 1.0, 0.0)],
+        };
+        let samples = sample_intersection_curve(&curve, 10);
+        assert_eq!(samples.len(), 10, "should produce 10 samples for polyline");
     }
 }
