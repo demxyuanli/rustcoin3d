@@ -333,6 +333,14 @@ pub enum CurveGeom {
     Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
     Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
     Polyline { points: Vec<Vec3> },
+    /// Offset curve at signed distance from basis curve.
+    /// Points are computed as basis(t) + distance * normal_dir(t)
+    /// where normal_dir is offset_dir projected onto the curve normal plane.
+    Offset {
+        basis: Box<CurveGeom>,
+        offset_dir: Vec3,
+        distance: f32,
+    },
 }
 
 impl CurveGeom {
@@ -445,6 +453,17 @@ impl CurveGeom {
                     points[idx] + (points[idx + 1] - points[idx]) * frac
                 }
             }
+
+            CurveGeom::Offset { basis, offset_dir, distance } => {
+                let p = basis.d0(t);
+                let d = basis.d1(t);
+                if d.length_squared() < 1e-12 {
+                    return p;
+                }
+                let tangent = d.normalize();
+                let offset_vec = (*offset_dir - tangent * offset_dir.dot(tangent)).normalize_or_zero();
+                p + offset_vec * *distance
+            }
         }
     }
 
@@ -509,6 +528,13 @@ impl CurveGeom {
                     (points[idx + 1] - points[idx]) * n_seg as f32
                 }
             }
+
+            CurveGeom::Offset { .. } => {
+                let eps = 1e-4;
+                let t0 = (t - eps).max(0.0);
+                let t1 = (t + eps).min(1.0);
+                (self.d0(t1) - self.d0(t0)) / (t1 - t0)
+            }
         }
     }
 
@@ -559,6 +585,13 @@ impl CurveGeom {
             }
 
             CurveGeom::Polyline { .. } => Vec3::ZERO,
+
+            CurveGeom::Offset { .. } => {
+                let eps = 1e-4;
+                let t0 = (t - eps).max(0.0);
+                let t1 = (t + eps).min(1.0);
+                (self.d1(t1) - self.d1(t0)) / (t1 - t0)
+            }
         }
     }
 
@@ -636,6 +669,8 @@ impl CurveGeom {
                 }
             }
             CurveGeom::Polyline { .. } => (self.d0(t), self.d1(t), self.d2(t)),
+
+            CurveGeom::Offset { .. } => (self.d0(t), self.d1(t), self.d2(t)),
         }
     }
 
@@ -1131,5 +1166,35 @@ mod tests {
         let pt = p.d0(0.5);
         assert!((pt.x - 1.0).abs() < 1e-5);
         assert!(pt.y.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_offset_curve_line() {
+        let line = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        let offset = CurveGeom::Offset {
+            basis: Box::new(line),
+            offset_dir: Vec3::Y,
+            distance: 1.0,
+        };
+        let p = offset.d0(0.5);
+        assert!((p.x - 0.5).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 1.0).abs() < 0.01, "y={}", p.y);
+        assert!(p.z.abs() < 1e-6, "z={}", p.z);
+    }
+
+    #[test]
+    fn test_offset_curve_circle() {
+        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
+        let offset = CurveGeom::Offset {
+            basis: Box::new(circle),
+            offset_dir: Vec3::X,
+            distance: 0.5,
+        };
+        let p = offset.d0(0.0);
+        let r = (p.x * p.x + p.y * p.y).sqrt();
+        assert!((r - 1.5).abs() < 0.02, "expected radius ~1.5, got {}", r);
     }
 }
