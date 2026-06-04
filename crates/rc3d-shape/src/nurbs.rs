@@ -261,6 +261,132 @@ impl NurbsSurface {
         }
         best
     }
+
+    /// Insert a knot at parameter `t` in the U direction (Boehm's algorithm).
+    ///
+    /// The surface shape is invariant — only the representation changes
+    /// (one additional control point per V column, refined knot vector).
+    pub fn insert_knot_u(&mut self, t: f32) {
+        let n_u = self.u_count();
+        let n_v = self.v_count();
+        let p = self.degree_u;
+
+        let span = find_span(p, &self.knots_u, t);
+
+        // Check if knot already has max multiplicity (degree + 1)
+        let mult = self.knots_u.iter().filter(|&&k| (k - t).abs() < 1e-10).count();
+        if mult > p {
+            return;
+        }
+
+        // Build new knot vector
+        let mut new_knots_u = self.knots_u.clone();
+        new_knots_u.insert(span + 1, t);
+
+        // Build new control points and weights by applying Boehm per v-column
+        let mut new_cp = Vec::with_capacity(n_u + 1);
+        let mut new_w = Vec::with_capacity(n_u + 1);
+
+        let start = span.saturating_sub(p);
+
+        for i in 0..=n_u {
+            if i <= start {
+                // Copy unchanged
+                new_cp.push(self.control_points[i].clone());
+                new_w.push(self.weights[i].clone());
+            } else if i > span {
+                // Copy unchanged (shifted by 1)
+                new_cp.push(self.control_points[i - 1].clone());
+                new_w.push(self.weights[i - 1].clone());
+            } else {
+                // Affected range: blend (i-1) and (i)
+                let alpha = {
+                    let denom = self.knots_u[i + p] - self.knots_u[i];
+                    if denom.abs() > 1e-10 {
+                        ((t - self.knots_u[i]) / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                };
+                let prev_cp = &self.control_points[i - 1];
+                let curr_cp = &self.control_points[i];
+                let prev_w = &self.weights[i - 1];
+                let curr_w = &self.weights[i];
+
+                let mut row_cp = Vec::with_capacity(n_v);
+                let mut row_w = Vec::with_capacity(n_v);
+                for j in 0..n_v {
+                    row_cp.push(alpha * curr_cp[j] + (1.0 - alpha) * prev_cp[j]);
+                    row_w.push(alpha * curr_w[j] + (1.0 - alpha) * prev_w[j]);
+                }
+                new_cp.push(row_cp);
+                new_w.push(row_w);
+            }
+        }
+
+        self.control_points = new_cp;
+        self.weights = new_w;
+        self.knots_u = new_knots_u;
+    }
+
+    /// Insert a knot at parameter `t` in the V direction (Boehm's algorithm).
+    ///
+    /// The surface shape is invariant — only the representation changes
+    /// (one additional control point per U row, refined knot vector).
+    pub fn insert_knot_v(&mut self, t: f32) {
+        let n_v = self.v_count();
+        let p = self.degree_v;
+
+        let span = find_span(p, &self.knots_v, t);
+
+        // Check if knot already has max multiplicity (degree + 1)
+        let mult = self.knots_v.iter().filter(|&&k| (k - t).abs() < 1e-10).count();
+        if mult > p {
+            return;
+        }
+
+        // Build new knot vector
+        let mut new_knots_v = self.knots_v.clone();
+        new_knots_v.insert(span + 1, t);
+
+        // Apply Boehm per U row
+        let start = span.saturating_sub(p);
+
+        for u in 0..self.control_points.len() {
+            let row_cp = &self.control_points[u];
+            let row_w = &self.weights[u];
+            let n = row_cp.len();
+
+            let mut new_row_cp = Vec::with_capacity(n + 1);
+            let mut new_row_w = Vec::with_capacity(n + 1);
+
+            for j in 0..=n {
+                if j <= start {
+                    new_row_cp.push(row_cp[j]);
+                    new_row_w.push(row_w[j]);
+                } else if j > span {
+                    new_row_cp.push(row_cp[j - 1]);
+                    new_row_w.push(row_w[j - 1]);
+                } else {
+                    let alpha = {
+                        let denom = self.knots_v[j + p] - self.knots_v[j];
+                        if denom.abs() > 1e-10 {
+                            ((t - self.knots_v[j]) / denom).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        }
+                    };
+                    new_row_cp.push(alpha * row_cp[j] + (1.0 - alpha) * row_cp[j - 1]);
+                    new_row_w.push(alpha * row_w[j] + (1.0 - alpha) * row_w[j - 1]);
+                }
+            }
+
+            self.control_points[u] = new_row_cp;
+            self.weights[u] = new_row_w;
+        }
+
+        self.knots_v = new_knots_v;
+    }
 }
 
 /// Linear scan lookup in a short basis derivative list (3-6 entries).
@@ -692,5 +818,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_insert_knot_u_shape_invariance() {
+        let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
+        let test_pts: Vec<(f32, f32)> = vec![
+            (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
+        ];
+        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        surf.insert_knot_u(0.5);
+        for (i, &(u, v)) in test_pts.iter().enumerate() {
+            let after = surf.evaluate(u, v);
+            assert!((after - before[i]).length() < 1e-5,
+                "shape changed at ({}, {}): {:?} vs {:?}", u, v, before[i], after);
+        }
+    }
+
+    #[test]
+    fn test_insert_knot_v_shape_invariance() {
+        let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
+        let test_pts: Vec<(f32, f32)> = vec![
+            (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
+        ];
+        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        surf.insert_knot_v(0.5);
+        for (i, &(u, v)) in test_pts.iter().enumerate() {
+            let after = surf.evaluate(u, v);
+            assert!((after - before[i]).length() < 1e-5,
+                "shape changed at ({}, {}): {:?} vs {:?}", u, v, before[i], after);
+        }
+    }
+
+    #[test]
+    fn test_insert_knot_u_increases_control_points() {
+        let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
+        let before = surf.u_count();
+        surf.insert_knot_u(0.5);
+        assert_eq!(surf.u_count(), before + 1);
+    }
+
+    #[test]
+    fn test_insert_knot_v_increases_control_points() {
+        let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
+        let before = surf.v_count();
+        surf.insert_knot_v(0.5);
+        assert_eq!(surf.v_count(), before + 1);
+    }
+
+    #[test]
+    fn test_insert_knot_multiple() {
+        // Use a non-rational plane for tighter numerical tolerance
+        let mut surf = NurbsSurface::plane(-1.0, 1.0, -1.0, 1.0);
+        let test_pts: Vec<(f32, f32)> = vec![
+            (0.0, 0.0), (0.3, 0.4), (0.6, 0.7), (1.0, 1.0),
+        ];
+        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        let orig_u = surf.u_count();
+
+        surf.insert_knot_u(0.3);
+        surf.insert_knot_u(0.6);
+        surf.insert_knot_u(0.8);
+
+        assert_eq!(surf.u_count(), orig_u + 3);
+        for (i, &(u, v)) in test_pts.iter().enumerate() {
+            let after = surf.evaluate(u, v);
+            assert!((after - before[i]).length() < 1e-6,
+                "shape changed at ({}, {}): {:?} vs {:?}", u, v, before[i], after);
+        }
+    }
+
+    #[test]
+    fn test_insert_knot_at_existing() {
+        // Cylinder knots_u: [0,0,0, 0.25,0.25, 0.5,0.5, 0.75,0.75, 1.0,1.0,1.0]
+        // t=0.25 has multiplicity 2, degree_u=2, so mult < degree+1 → can insert
+        let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
+        let before_count = surf.u_count();
+        surf.insert_knot_u(0.25);
+        assert_eq!(surf.u_count(), before_count + 1,
+            "inserting at existing knot with mult < degree+1 should increase multiplicity");
     }
 }
