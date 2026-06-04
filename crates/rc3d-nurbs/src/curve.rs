@@ -171,8 +171,8 @@ impl NurbsCurve {
             new_cp.push(new);
         }
 
-        // Remaining control points
-        for i in span + 1..self.control_points.len() {
+        // Remaining control points (shifted by 1: Q_{i+1} = P_i)
+        for i in span..self.control_points.len() {
             new_cp.push(self.control_points[i]);
         }
 
@@ -182,6 +182,80 @@ impl NurbsCurve {
 
         self.control_points = new_cp;
         self.knots = new_knots;
+    }
+
+    /// Elevate the curve degree by 1 using Bezier decomposition.
+    ///
+    /// Algorithm:
+    /// 1. Decompose into Bezier segments by inserting interior knots to full multiplicity.
+    /// 2. Degree-elevate each Bezier segment independently.
+    /// 3. Reassemble into a single NURBS curve with degree+1.
+    pub fn elevate_degree(&self) -> Self {
+        let p = self.degree;
+        let new_degree = p + 1;
+        let mut curve = self.clone();
+
+        // Step 1: Bezier decomposition — insert interior knots to reach full multiplicity (p).
+        let unique = crate::knot::unique_knots(&curve.knots);
+        for (idx, &(val, mult)) in unique.iter().enumerate() {
+            if idx == 0 || idx == unique.len() - 1 {
+                continue; // skip end knots
+            }
+            let needed = p.saturating_sub(mult);
+            for _ in 0..needed {
+                curve.insert_knot(val);
+            }
+        }
+
+        // Step 2: Count Bezier segments.
+        // After decomposition: unique interior knots + 1 segments.
+        // Each segment has p+1 control points; adjacent segments share boundary CPs.
+        let unique_after = crate::knot::unique_knots(&curve.knots);
+        let n_segments = unique_after.len() - 1; // gaps between unique knots
+        let cps = &curve.control_points;
+
+        // Step 3: Degree-elevate each Bezier segment.
+        let mut new_cp = Vec::new();
+        for seg in 0..n_segments {
+            let base = seg * p; // first CP index of this segment
+            // Q[0] = P[0] — skip for seg>0 (shared with prev segment's last CP)
+            if seg == 0 {
+                new_cp.push(cps[base]);
+            }
+            // Q[i] = α * P[i-1] + (1-α) * P[i], α = i/(p+1), for i=1..p
+            for i in 1..=p {
+                let alpha = i as f32 / new_degree as f32;
+                let prev = cps[base + i - 1];
+                let curr = cps[base + i];
+                new_cp.push([
+                    alpha * prev[0] + (1.0 - alpha) * curr[0],
+                    alpha * prev[1] + (1.0 - alpha) * curr[1],
+                    alpha * prev[2] + (1.0 - alpha) * curr[2],
+                    alpha * prev[3] + (1.0 - alpha) * curr[3],
+                ]);
+            }
+            // Q[p+1] = P[p] — last CP of segment
+            new_cp.push(cps[base + p]);
+        }
+
+        // Step 4: Build new knot vector.
+        let mut new_knots = Vec::new();
+        for (idx, &(val, mult)) in unique_after.iter().enumerate() {
+            let new_mult = if idx == 0 || idx == unique_after.len() - 1 {
+                new_degree + 1 // end knots: full multiplicity for new degree
+            } else {
+                mult + 1 // interior knots: original multiplicity + 1
+            };
+            for _ in 0..new_mult {
+                new_knots.push(val);
+            }
+        }
+
+        NurbsCurve {
+            control_points: new_cp,
+            knots: new_knots,
+            degree: new_degree,
+        }
     }
 }
 
@@ -247,5 +321,56 @@ mod tests {
         let pts = curve.tessellate(0.1);
         assert!(pts.len() >= 2);
         assert!(pts.len() <= 20); // straight line shouldn't explode
+    }
+
+    #[test]
+    fn test_elevate_degree_line_invariance() {
+        let curve = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
+        let pt_before = curve.evaluate(0.5);
+        let elevated = curve.elevate_degree();
+        let pt_after = elevated.evaluate(0.5);
+        assert_eq!(elevated.degree, 2);
+        assert!((pt_before - pt_after).length() < 1e-4,
+            "shape changed: {:?} vs {:?}", pt_before, pt_after);
+    }
+
+    #[test]
+    fn test_elevate_degree_cubic_bezier() {
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 2.0, 0.0, 1.0],
+            [2.0, 2.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
+        ];
+        let curve = NurbsCurve::new(cp, 3);
+        let before: Vec<Vec3> = (0..=10).map(|i| curve.evaluate(i as f32 / 10.0)).collect();
+        let elevated = curve.elevate_degree();
+        assert_eq!(elevated.degree, 4);
+        for i in 0..=10 {
+            let p = elevated.evaluate(i as f32 / 10.0);
+            assert!((before[i] - p).length() < 1e-3, "sample {i} mismatch");
+        }
+    }
+
+    #[test]
+    fn test_elevate_degree_multi_segment() {
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [2.0, -1.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
+            [4.0, 1.0, 0.0, 1.0],
+        ];
+        let mut knots = vec![0.0f32; 4];
+        knots.push(0.5);
+        knots.extend_from_slice(&[1.0f32; 4]);
+        let curve = NurbsCurve { control_points: cp, knots, degree: 3 };
+        let before: Vec<Vec3> = (0..=20).map(|i| curve.evaluate(i as f32 / 20.0)).collect();
+        let elevated = curve.elevate_degree();
+        assert_eq!(elevated.degree, 4);
+        for i in 0..=20 {
+            let p = elevated.evaluate(i as f32 / 20.0);
+            assert!((before[i] - p).length() < 1e-3, "sample {i} mismatch at t={}", i as f32 / 20.0);
+        }
     }
 }
