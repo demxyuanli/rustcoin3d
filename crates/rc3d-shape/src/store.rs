@@ -142,6 +142,25 @@ impl BRepStore {
         })
     }
 
+    /// Insert a face with the given surface and an empty outer wire.
+    /// Convenience builder to avoid repeating the BRepFace boilerplate.
+    pub fn add_face(
+        &mut self,
+        surface: crate::geom::SurfaceGeom,
+        tolerance: f32,
+    ) -> FaceKey {
+        self.faces.insert(BRepFace {
+            surface,
+            outer_wire: self.wires.insert(BRepWire { edges: vec![] }),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        })
+    }
+
     /// Find edges shared by two faces. A shared edge has PCURVEs for both faces.
     /// O(edges) iteration using pcurve presence as the authoritative check.
     pub fn find_shared_edges(&self, face_a: FaceKey, face_b: FaceKey) -> Vec<EdgeKey> {
@@ -238,14 +257,10 @@ mod tests {
     use crate::geom::SurfaceGeom;
 
     fn make_plane_face(reg: &mut BRepStore) -> FaceKey {
-        reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
-            outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
-            inner_wires: vec![], same_sense: true, tolerance: 1e-4,
-            seam_edges: vec![],
-            color: None,
-            degenerated_edges: vec![],
-        })
+        reg.add_face(
+            SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            1e-4,
+        )
     }
 
     #[test]

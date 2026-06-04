@@ -125,16 +125,7 @@ mod tests {
     use rc3d_core::math::Vec3;
 
     fn make_plane_face(reg: &mut BRepStore, surface: SurfaceGeom) -> FaceKey {
-        reg.faces.insert(BRepFace {
-            surface,
-            outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
-            inner_wires: vec![],
-            same_sense: true,
-            tolerance: 1e-4,
-            seam_edges: vec![],
-            color: None,
-            degenerated_edges: vec![],
-        })
+        reg.add_face(surface, 1e-4)
     }
 
     #[test]
