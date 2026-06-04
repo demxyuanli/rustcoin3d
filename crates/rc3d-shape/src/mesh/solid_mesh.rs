@@ -82,8 +82,11 @@ pub fn mesh_solid_with_voids(
         let mut void_mesh = void_out.mesh;
         void_mesh.reverse_winding();
         mesh.append_from(&void_mesh);
-        mesh.weld_vertices(config.weld_tolerance);
         merge_shell_report(&mut report, &void_out.report);
+    }
+    // Weld once after all void shells are merged (avoids O(V²) per void)
+    if !solid.void_shells.is_empty() {
+        mesh.weld_vertices(config.weld_tolerance);
     }
 
     Some(SolidMeshOutput {

@@ -86,7 +86,8 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
     let t0 = Instant::now();
     println!("=== {} ===", step_name);
 
-    let import_options = StepImportOptions::default();
+    let mut import_options = StepImportOptions::default();
+    import_options.skip_visualization = true;
     let mut result = import_step_file_with_options(&step_path, &import_options).expect("import step");
 
     let mut plan_options = emit_plan_options_from_step(&import_options);

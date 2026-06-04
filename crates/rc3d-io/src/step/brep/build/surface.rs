@@ -82,12 +82,28 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             Some(SurfaceGeom::Offset { basis: Box::new(basis), distance })
         }
         "BOUNDED_SURFACE" | "CURVE_BOUNDED_SURFACE" => {
-            // Unwrap: BOUNDED_SURFACE('', #basis_surface, ...)
             let basis_id = geom::nth_ref(&record.params, 1)?;
+            // CURVE_BOUNDED_SURFACE has boundary curves in params[2]
+            if record.name == "CURVE_BOUNDED_SURFACE" {
+                if let Some(boundary_ids) = geom::nth_list_refs(&record.params, 2) {
+                    log::debug!(
+                        "[BRep] {:?}: surface #{} has {} boundary curve(s)",
+                        surface_id, basis_id, boundary_ids.len()
+                    );
+                }
+            }
             build_surface(basis_id, entities)
         }
         "RECTANGULAR_TRIMMED_SURFACE" => {
             let basis_id = geom::nth_ref(&record.params, 1)?;
+            let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
+            let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
+            let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as f32;
+            let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as f32;
+            log::debug!(
+                "[BRep] {:?}: RECTANGULAR_TRIMMED_SURFACE trim range: u=[{}, {}], v=[{}, {}]",
+                surface_id, u1, u2, v1, v2
+            );
             build_surface(basis_id, entities)
         }
         // AP242 supertypes — unwrap to underlying surface when referenced directly

@@ -340,44 +340,38 @@ fn exchange_to_import_result(
         &document.pmi_pool,
     )?;
 
-    let mut props_vertices: Vec<Vec3> = Vec::new();
-    let mut props_indices: Vec<i32> = Vec::new();
-    for cached in plan.mesh_table.values() {
-        import_pipeline::append_props_mesh_public(&cached.mesh, &mut props_vertices, &mut props_indices);
-    }
+    if !options.skip_visualization {
+        let mut props_vertices: Vec<Vec3> = Vec::new();
+        let mut props_indices: Vec<i32> = Vec::new();
+        for cached in plan.mesh_table.values() {
+            import_pipeline::append_props_mesh_public(&cached.mesh, &mut props_vertices, &mut props_indices);
+        }
 
-    if !props_vertices.is_empty() && !props_indices.is_empty() {
-        let props = brep::compute_mesh_properties(&props_vertices, &props_indices);
-        log::info!(
-            "[STEP] mesh properties: volume={:.6} area={:.6} com=[{:.4}, {:.4}, {:.4}]",
-            props.volume,
-            props.surface_area,
-            props.center_of_mass[0],
-            props.center_of_mass[1],
-            props.center_of_mass[2],
+        if !props_vertices.is_empty() && !props_indices.is_empty() {
+            let props = brep::compute_mesh_properties(&props_vertices, &props_indices);
+            log::info!(
+                "[STEP] mesh properties: volume={:.6} area={:.6} com=[{:.4}, {:.4}, {:.4}]",
+                props.volume,
+                props.surface_area,
+                props.center_of_mass[0],
+                props.center_of_mass[1],
+                props.center_of_mass[2],
+            );
+        }
+
+        let mut mesh_config = brep::mesh::BRepMeshConfig::default();
+        mesh_config.relative_deflection = options.mesh_relative_deflection;
+
+        brep::overlay::build_edge_curves(
+            &mut graph,
+            root,
+            &document.store,
+            &root_solids,
+            &shell_instances,
+            &mesh_config,
         );
-    }
 
-    log::info!(
-        "[STEP] mesh complete: {} solid(s), {} skipped face(s) during heal",
-        root_solids.len(),
-        total_heal.skip_face_keys.len(),
-    );
-
-    let mut mesh_config = brep::mesh::BRepMeshConfig::default();
-    mesh_config.relative_deflection = options.mesh_relative_deflection;
-
-    brep::overlay::build_edge_curves(
-        &mut graph,
-        root,
-        &document.store,
-        &root_solids,
-        &shell_instances,
-        &mesh_config,
-    );
-
-    // Mesh wireframe overlay for debugging degenerate faces
-    if !props_vertices.is_empty() && !props_indices.is_empty() {
+        // Mesh wireframe overlay for debugging degenerate faces
         brep::overlay::build_mesh_wireframe(
             &mut graph,
             root,

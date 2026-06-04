@@ -76,9 +76,12 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepStore) -> CheckReport {
             }
         }
 
-        // Face-level self-intersection (surface folding in 3D)
+        // Face-level self-intersection (surface folding in 3D).
+        // Run with coarse grid (4x4=16 samples) to avoid excessive CPU;
+        // this is a quick check, not a precise analysis. If positive,
+        // callers may re-run with higher resolution on suspect faces.
         let face_si_count = super::face_self_intersect::check_face_self_intersect(
-            face_key, reg, 10,
+            face_key, reg, 4,
         );
         if face_si_count > 0 {
             report.has_face_self_intersections = true;

@@ -36,6 +36,9 @@ pub struct StepImportOptions {
     /// Radial preview separation for multi-solid assemblies (0 = off).
     /// In Preview mode, overlapping solid bboxes still auto-apply 0.35 when this is zero.
     pub assembly_preview_explode: f32,
+    /// Skip visualization-only work (edge overlay, wireframe, mesh properties).
+    /// Set true for non-interactive use cases like STL export.
+    pub skip_visualization: bool,
 }
 
 /// Full STEP import output (scene + shape document + assembly metadata).
@@ -55,6 +58,7 @@ impl StepImportOptions {
             strict_schema: false,
             adapter_mode: AdapterMode::CompatMerge,
             assembly_preview_explode: 0.0,
+            skip_visualization: false,
         }
     }
 
@@ -66,6 +70,7 @@ impl StepImportOptions {
             strict_schema: false,
             adapter_mode: AdapterMode::CompatMerge,
             assembly_preview_explode: 0.0,
+            skip_visualization: false,
         }
     }
 
