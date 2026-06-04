@@ -25,6 +25,28 @@ pub fn open_uniform_knots(degree: usize, n_control_points: usize) -> Vec<f32> {
 
 pub use rc3d_core::utils::bspline::find_span;
 
+const KNOT_EPS: f32 = 1e-10;
+
+/// Count how many times value `t` appears in the knot vector (epsilon comparison).
+pub fn knot_multiplicity(knots: &[f32], t: f32) -> usize {
+    knots.iter().filter(|&&k| (k - t).abs() < KNOT_EPS).count()
+}
+
+/// Extract unique knot values with their multiplicities, preserving order.
+pub fn unique_knots(knots: &[f32]) -> Vec<(f32, usize)> {
+    let mut result: Vec<(f32, usize)> = Vec::new();
+    for &k in knots {
+        if let Some(last) = result.last_mut() {
+            if (last.0 - k).abs() < KNOT_EPS {
+                last.1 += 1;
+                continue;
+            }
+        }
+        result.push((k, 1));
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +63,25 @@ mod tests {
         let knots = open_uniform_knots(3, 7);
         let span = find_span(3, &knots, 0.5);
         assert!(span >= 3 && span <= 6);
+    }
+
+    #[test]
+    fn test_unique_knots_cubic() {
+        let knots = open_uniform_knots(3, 7);
+        // Produces [0,0,0,0, 0.25, 0.5, 0.75, 1,1,1,1]
+        let uniq = unique_knots(&knots);
+        assert_eq!(uniq.len(), 5);
+        assert_eq!(uniq[0], (0.0, 4));
+        assert_eq!(uniq[3], (0.75, 1));
+        assert_eq!(uniq[4], (1.0, 4));
+    }
+
+    #[test]
+    fn test_knot_multiplicity_basic() {
+        let knots = vec![0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0];
+        assert_eq!(knot_multiplicity(&knots, 0.0), 2);
+        assert_eq!(knot_multiplicity(&knots, 0.5), 3);
+        assert_eq!(knot_multiplicity(&knots, 1.0), 2);
+        assert_eq!(knot_multiplicity(&knots, 0.7), 0);
     }
 }
