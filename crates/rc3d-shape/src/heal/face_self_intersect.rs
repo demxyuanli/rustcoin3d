@@ -11,6 +11,7 @@ use crate::topo::{FaceKey, ShellKey};
 use rc3d_core::math::Vec3;
 
 /// Report from face self-intersection detection.
+#[allow(dead_code)]
 pub struct FaceSelfIntersectReport {
     pub suspect_faces: Vec<FaceKey>,
     pub total_inversion_cells: usize,
@@ -33,6 +34,7 @@ pub fn check_face_self_intersect(face_key: FaceKey, reg: &BRepStore, grid_res: u
 }
 
 /// Check all faces of a shell for surface-level self-intersection.
+#[allow(dead_code)]
 pub fn check_shell_face_self_intersect(
     shell_key: ShellKey,
     reg: &BRepStore,

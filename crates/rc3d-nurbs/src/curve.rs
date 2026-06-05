@@ -305,25 +305,8 @@ impl NurbsCurve {
                     0.0
                 }
             };
-            let prev = if i == start {
-                // First affected point: the original before CP is from new_cp
-                // Actually orig[start-1] = new_cp[start-1] (unchanged), which is
-                // already pushed into new_cp above.
-                self.control_points[start]
-            } else {
-                self.control_points[i]
-            };
-            // Wait — we need to solve for the ORIGINAL control point.
-            // Let me reconsider...
-
-            // Boehm insertion:
-            //   Q_i = alpha * P_i + (1-alpha) * P_{i-1}    for i = start+1 .. span
-            //   (with Q being the new CPs after insertion)
-            // To reverse: given Q_i and P_{i-1} (already computed), find P_i:
-            //   P_i = (Q_i - (1-alpha) * P_{i-1}) / alpha
-
-            // P_i maps to position i in the output (no shift yet)
-            // We need P_{i-1} which we just pushed to new_cp
+            // Reverse Boehm: P_i = (Q_i - (1-alpha) * P_{i-1}) / alpha
+            // P_{i-1} was just pushed to new_cp in the previous iteration
             let prev_cp = new_cp.last().copied().unwrap_or([0.0; 4]);
             let curr = self.control_points[i];
             let alpha_clamped = alpha.clamp(1e-10, 1.0);

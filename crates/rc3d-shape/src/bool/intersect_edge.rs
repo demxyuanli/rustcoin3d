@@ -120,7 +120,7 @@ fn bisect_edge_face(
     let (mut t0, _) = s0;
     let (mut t1, _) = s1;
     let mut d0 = surface_distance(surface, curve.d0(t0));
-    let mut d1 = surface_distance(surface, curve.d0(t1));
+    let mut _d1 = surface_distance(surface, curve.d0(t1));
 
     // Must have sign change.
     if d0 * d1 > 0.0 {
@@ -141,7 +141,7 @@ fn bisect_edge_face(
 
         if d0 * dm < 0.0 {
             t1 = tm;
-            d1 = dm;
+            _d1 = dm;
         } else {
             t0 = tm;
             d0 = dm;

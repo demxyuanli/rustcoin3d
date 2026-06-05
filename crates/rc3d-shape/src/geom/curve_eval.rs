@@ -633,7 +633,6 @@ impl CurveGeom {
     /// Uses finite-difference for d3. Returns 0.0 for degenerate cases.
     pub fn torsion(&self, t: f32) -> f32 {
         let eps = 1e-4;
-        let t_lo = (t - eps).max(0.0);
         let t_hi = (t + eps).min(1.0);
         let d1 = self.d1(t);
         let d2 = self.d2(t);

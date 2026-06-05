@@ -335,7 +335,6 @@ impl NurbsSurface {
     /// The surface shape is invariant — only the representation changes
     /// (one additional control point per U row, refined knot vector).
     pub fn insert_knot_v(&mut self, t: f32) {
-        let n_v = self.v_count();
         let p = self.degree_v;
 
         let span = find_span(p, &self.knots_v, t);
