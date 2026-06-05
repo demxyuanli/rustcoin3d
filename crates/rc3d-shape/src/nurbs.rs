@@ -181,39 +181,101 @@ impl NurbsSurface {
 
     /// Combined position + first + second derivatives in one pass.
     ///
-    /// Shares `find_span` + `bspline_bases` between position and first derivatives.
-    /// Second derivatives use finite differences of the first derivatives (4 extra
-    /// `evaluate_with_derivative` calls at u±eps, v±eps), but the position evaluation
-    /// is done only once (vs 5+ times when calling `evaluate` + `derivative` + `d2`
-    /// separately through `SurfaceGeom::*` methods).
+    /// Uses analytical B-spline second derivatives (Piegl & Tiller recurrence
+    /// applied twice), avoiding the 4 extra `evaluate_with_derivative` calls
+    /// that finite differences would require. The analytical path is both
+    /// faster and more accurate (no numerical cancellation from eps steps).
     pub fn evaluate_with_hessian(
         &self, u: f32, v: f32,
     ) -> (Vec3, Vec3, Vec3, Vec3, Vec3, Vec3) {
-        let (pos, du, dv) = self.evaluate_with_derivative(u, v);
+        // Shared span computation
+        let span_u = find_span(self.degree_u, &self.knots_u, u);
+        let span_v = find_span(self.degree_v, &self.knots_v, v);
 
-        // Finite-difference second derivatives from first derivatives
-        let eps = 1e-4f32;
-        let u_min = self.knots_u[self.degree_u];
-        let u_max = self.knots_u[self.knots_u.len() - self.degree_u - 1];
-        let v_min = self.knots_v[self.degree_v];
-        let v_max = self.knots_v[self.knots_v.len() - self.degree_v - 1];
+        // Basis functions + first derivatives + second derivatives
+        let basis_u = bspline_bases(span_u, self.degree_u, u, &self.knots_u);
+        let basis_v = bspline_bases(span_v, self.degree_v, v, &self.knots_v);
+        let d1_u = analytical_basis_derivatives(span_u, self.degree_u, u, &self.knots_u);
+        let d1_v = analytical_basis_derivatives(span_v, self.degree_v, v, &self.knots_v);
+        let d2_u = analytical_basis_second_derivatives(span_u, self.degree_u, u, &self.knots_u);
+        let d2_v = analytical_basis_second_derivatives(span_v, self.degree_v, v, &self.knots_v);
 
-        let up = (u + eps).clamp(u_min, u_max);
-        let um = (u - eps).clamp(u_min, u_max);
-        let vp = (v + eps).clamp(v_min, v_max);
-        let vm = (v - eps).clamp(v_min, v_max);
+        // Single-pass accumulation of weighted sums
+        let mut w_sum = 0.0f32;
+        let mut w_u = 0.0f32;    let mut w_v = 0.0f32;
+        let mut w_uu = 0.0f32;   let mut w_uv = 0.0f32;   let mut w_vv = 0.0f32;
 
-        let (_pu, du_p, _dv_p) = self.evaluate_with_derivative(up, v);
-        let (_mu, du_m, _dv_m) = self.evaluate_with_derivative(um, v);
-        let (_pv, du_vp, dv_vp) = self.evaluate_with_derivative(u, vp);
-        let (_mv, du_vm, dv_vm) = self.evaluate_with_derivative(u, vm);
+        let mut p = Vec3::ZERO;
+        let mut p_u = Vec3::ZERO;    let mut p_v = Vec3::ZERO;
+        let mut p_uu = Vec3::ZERO;   let mut p_uv = Vec3::ZERO;   let mut p_vv = Vec3::ZERO;
 
-        let inv_2eps = 1.0 / (2.0 * eps);
-        let duu = (du_p - du_m) * inv_2eps;
-        let duv = (du_vp - du_vm) * inv_2eps;
-        let dvv = (dv_vp - dv_vm) * inv_2eps;
+        for &(i, nu) in &basis_u {
+            let dn_du = lookup_basis_value(&d1_u, i);
+            let d2n_du = lookup_basis_value(&d2_u, i);
+            for &(j, nv) in &basis_v {
+                let wgt = self.weights[i][j];
+                let cp = self.control_points[i][j];
+                let dn_dv = lookup_basis_value(&d1_v, j);
+                let d2n_dv = lookup_basis_value(&d2_v, j);
 
-        (pos, du, dv, duu, duv, dvv)
+                // Position: nu * nv * wgt
+                let c0 = nu * nv * wgt;
+                w_sum += c0;
+                p = p + cp * c0;
+
+                // ∂/∂u: dn_du * nv * wgt
+                let c_u = dn_du * nv * wgt;
+                w_u += c_u;
+                p_u = p_u + cp * c_u;
+
+                // ∂/∂v: nu * dn_dv * wgt
+                let c_v = nu * dn_dv * wgt;
+                w_v += c_v;
+                p_v = p_v + cp * c_v;
+
+                // ∂²/∂u²: d2n_du * nv * wgt
+                let c_uu = d2n_du * nv * wgt;
+                w_uu += c_uu;
+                p_uu = p_uu + cp * c_uu;
+
+                // ∂²/∂u∂v: dn_du * dn_dv * wgt
+                let c_uv = dn_du * dn_dv * wgt;
+                w_uv += c_uv;
+                p_uv = p_uv + cp * c_uv;
+
+                // ∂²/∂v²: nu * d2n_dv * wgt
+                let c_vv = nu * d2n_dv * wgt;
+                w_vv += c_vv;
+                p_vv = p_vv + cp * c_vv;
+            }
+        }
+
+        if w_sum.abs() < 1e-10 {
+            return (Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        }
+
+        let inv_w = 1.0 / w_sum;
+        let inv_w2 = inv_w * inv_w;
+        let inv_w3 = inv_w2 * inv_w;
+
+        // Position (rational quotient rule)
+        let pos = p * inv_w;
+
+        // First derivatives (quotient rule)
+        let du = (p_u * w_sum - p * w_u) * inv_w2;
+        let dv = (p_v * w_sum - p * w_v) * inv_w2;
+
+        // Second derivatives (full quotient rule for rational surfaces)
+        let duu = (p_uu * w_sum - 2.0 * p_u * w_u - p * w_uu
+                   + 2.0 * p * w_u * w_u * inv_w) * inv_w2;
+        let duv = (p_uv * w_sum - p_u * w_v - p_v * w_u - p * w_uv
+                   + 2.0 * p * w_u * w_v * inv_w) * inv_w2;
+        let dvv = (p_vv * w_sum - 2.0 * p_v * w_v - p * w_vv
+                   + 2.0 * p * w_v * w_v * inv_w) * inv_w2;
+
+        // NaN safety
+        let safe = |v: Vec3| if v.is_nan() { Vec3::ZERO } else { v };
+        (safe(pos), safe(du), safe(dv), safe(duu), safe(duv), safe(dvv))
     }
 
     /// Compute first-order partial derivatives ∂S/∂u and ∂S/∂v at (u, v).
@@ -588,6 +650,63 @@ fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32
         let deriv = p * (term1 - term2);
         if deriv.abs() > 1e-12 {
             result.push((i, deriv));
+        }
+    }
+
+    result
+}
+
+/// Compute second-order B-spline basis function derivatives using the
+/// analytical recurrence applied twice (Piegl & Tiller, The NURBS Book):
+///
+///   N''_{i,p}(t) = p/(k_{i+p}-k_i) * N'_{i,p-1}(t)
+///                - p/(k_{i+p+1}-k_{i+1}) * N'_{i+1,p-1}(t)
+///
+/// where N'_{j,p-1}(t) is the first derivative of the degree p-1 basis,
+/// computed via `analytical_basis_derivatives`.
+///
+/// Returns (index, second_derivative) pairs. For degree ≤ 1, all are zero.
+fn analytical_basis_second_derivatives(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
+    if degree <= 1 {
+        // Degree 0: constant basis, derivatives = 0
+        // Degree 1: linear basis, second derivative = 0
+        let i_start = span.saturating_sub(degree);
+        return (i_start..=span).map(|i| (i, 0.0f32)).collect();
+    }
+
+    // First derivatives of degree (p-1) basis functions
+    let d1_lower = analytical_basis_derivatives(span, degree - 1, t, knots);
+
+    let p = degree as f32;
+    let mut result = Vec::with_capacity(degree + 1);
+
+    let i_start = span.saturating_sub(degree);
+    let i_end = span;
+
+    for i in i_start..=i_end {
+        // N'_{i, p-1}(t): nonzero only if i in [span-(p-1), span]
+        let d1_i = if i >= span.saturating_sub(degree - 1) {
+            lookup_basis_value(&d1_lower, i)
+        } else {
+            0.0
+        };
+
+        // N'_{i+1, p-1}(t): nonzero only if i+1 in [span-(p-1), span]
+        let d1_ip1 = if i + 1 <= span {
+            lookup_basis_value(&d1_lower, i + 1)
+        } else {
+            0.0
+        };
+
+        let denom1 = knots[i + degree] - knots[i];
+        let denom2 = knots[i + degree + 1] - knots[i + 1];
+
+        let term1 = if denom1.abs() > 1e-12 { d1_i / denom1 } else { 0.0 };
+        let term2 = if denom2.abs() > 1e-12 { d1_ip1 / denom2 } else { 0.0 };
+
+        let d2 = p * (term1 - term2);
+        if d2.abs() > 1e-12 {
+            result.push((i, d2));
         }
     }
 

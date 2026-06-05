@@ -963,8 +963,43 @@ impl SurfaceGeom {
                 (duu * u_w * u_w, duv * u_w * v_w, dvv * v_w * v_w)
             }
 
-            // Extrusion/Revolution/Offset: numerical fallback.
-            _ => {
+            // Extrusion: analytical second derivatives
+            SurfaceGeom::Extrusion { generatrix, .. } => {
+                // S(u,v) = generatrix(u) + direction * v
+                // ∂²S/∂u² = generatrix.d2(u)
+                // ∂²S/∂u∂v = 0 (direction is constant w.r.t u)
+                // ∂²S/∂v² = 0 (linear in v)
+                (generatrix.d2(u), Vec3::ZERO, Vec3::ZERO)
+            }
+
+            // Revolution: analytical second derivatives
+            SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+                let axis = axis_dir.normalize();
+                let angle = v * std::f32::consts::TAU;
+                let gen_p = generatrix.d0(u);
+                let gen_d1 = generatrix.d1(u);
+                let gen_d2 = generatrix.d2(u);
+                let rotated_p = rotate_around_axis(gen_p, *axis_origin, axis, angle);
+
+                // ∂²S/∂u² = rotate(generatrix.d2(u))
+                let duu = rotate_around_axis(gen_d2, *axis_origin, axis, angle);
+
+                // ∂²S/∂u∂v = TAU * axis × (∂S/∂u)
+                // ∂S/∂u = rotate(gen_d1)
+                let du = rotate_around_axis(gen_d1, *axis_origin, axis, angle);
+                let duv = axis.cross(du) * std::f32::consts::TAU;
+
+                // ∂²S/∂v² = -TAU² * radial component
+                // radial = (rotated_p - origin) - axis * (axis · (rotated_p - origin))
+                let rel = rotated_p - *axis_origin;
+                let radial = rel - axis * axis.dot(rel);
+                let dvv = radial * (-std::f32::consts::TAU * std::f32::consts::TAU);
+
+                (duu, duv, dvv)
+            }
+
+            // Offset: numerical fallback (d2 requires Weingarten + basis d2)
+            SurfaceGeom::Offset { .. } => {
                 let eps = 1e-4f32;
                 let (du_p, _dv_p) = self.d1(u + eps, v);
                 let (du_m, _dv_m) = self.d1(u - eps, v);
