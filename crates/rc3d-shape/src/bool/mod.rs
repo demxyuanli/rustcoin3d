@@ -18,6 +18,7 @@ pub mod marching;
 pub mod ssi_newton;
 pub mod bopds;
 pub mod face_intersector;
+pub mod pave_filler;
 pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 
@@ -69,17 +70,27 @@ pub fn boolean_brep(
         return BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance };
     }
 
-    // Phase 1: Face-face intersections
-    let raw_intersections = intersect::compute_intersections_brep(shells_a, shells_b, reg);
+    // Phase 1: Face-face intersections via PaveFiller (OCC BOPAlgo_PaveFiller)
+    // Uses marching+Newton for general surfaces, analytic for simple pairs.
+    let (bopds, pave_report) = pave_filler::fill_paves(shells_a, shells_b, reg, tolerance);
 
-    if raw_intersections.is_empty() {
-        // No intersection — handle trivial cases
+    if bopds.face_face_interfs.is_empty() {
         return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
     }
 
-    // Convert to B-Rep intersection curves with UV parameters
+    // Convert BOPDS face-face interfs to legacy intersection curves
+    let raw_intersections: Vec<FaceIntersectionResult> = bopds.face_face_interfs.iter().map(|interf| {
+        FaceIntersectionResult {
+            face_a: interf.face_a,
+            face_b: interf.face_b,
+            curves_3d: interf.curves_3d.clone(),
+            pcurves_on_a: interf.pcurves_a.clone(),
+            pcurves_on_b: interf.pcurves_b.clone(),
+        }
+    }).collect();
+
     let curves = split::compute_brep_intersection_curves(&raw_intersections, reg);
-    let intersection_count = curves.len();
+    let intersection_count = curves.len() + pave_report.total_curves;
 
     if curves.is_empty() {
         return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
