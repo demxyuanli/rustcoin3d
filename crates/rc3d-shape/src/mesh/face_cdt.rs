@@ -13,7 +13,8 @@ use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
 
-const MAX_CDT_VERTICES: usize = 4096;
+/// Fallback max CDT vertices when config doesn't specify.
+const DEFAULT_MAX_CDT_VERTICES: usize = 4096;
 
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
@@ -254,7 +255,7 @@ pub fn triangulate_uv_cdt_with_steiner(
         let mut inserted = 0usize;
         for u in &u_divs {
             for v in &v_divs {
-                if cdt.vertex_count() >= MAX_CDT_VERTICES {
+                if cdt.vertex_count() >= config.max_cdt_vertices.max(1) {
                     break;
                 }
                 let qkey = ((u / u_eps).round() as u64, (v / v_eps).round() as u64);
@@ -300,7 +301,7 @@ pub fn triangulate_uv_cdt_with_steiner(
         if !config.skip_interior_edge_split {
             let max_iter = config.max_adapt_iterations.max(1).min(8);
             for _iter in 0..max_iter {
-                if cdt.vertex_count() >= MAX_CDT_VERTICES {
+                if cdt.vertex_count() >= config.max_cdt_vertices.max(1) {
                     break;
                 }
                 let mut splits: Vec<(f64, f64)> = Vec::new();

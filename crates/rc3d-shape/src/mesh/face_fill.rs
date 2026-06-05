@@ -45,6 +45,9 @@ pub struct FaceFillConfig {
     pub parameter_division_max_depth: usize,
     /// Skip expensive surface.project edge splits after structured grid insert.
     pub skip_interior_edge_split: bool,
+    /// Maximum CDT vertices per face (OCC IMeshTools_Parameters::MaxNodes).
+    /// Prevents runaway memory on large faces with tight deflection.
+    pub max_cdt_vertices: usize,
 }
 
 impl Default for FaceFillConfig {
@@ -59,6 +62,7 @@ impl Default for FaceFillConfig {
             angular_deflection: 0.2,
             parameter_division_max_depth: 1,
             skip_interior_edge_split: true,
+            max_cdt_vertices: 4096,
         }
     }
 }
