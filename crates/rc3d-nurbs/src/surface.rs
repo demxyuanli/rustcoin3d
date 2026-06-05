@@ -92,23 +92,92 @@ impl NurbsRenderSurface {
         }
     }
 
-    /// Evaluate the surface normal at (u, v) via cross product of partial derivatives.
+    /// Evaluate the surface normal at (u, v) via analytical cross product.
     pub fn normal(&self, u: f32, v: f32) -> Vec3 {
-        let eps = 1e-4;
-        let p0 = self.evaluate((u - eps).max(0.0), v);
-        let p1 = self.evaluate((u + eps).min(1.0), v);
-        let du = p1 - p0;
-
-        let q0 = self.evaluate(u, (v - eps).max(0.0));
-        let q1 = self.evaluate(u, (v + eps).min(1.0));
-        let dv = q1 - q0;
-
+        let (du, dv) = self.derivative(u, v);
         let n = du.cross(dv);
         if n.length() > 1e-10 {
             n.normalize()
         } else {
-            Vec3::Y
+            // Degenerate — probe a small neighborhood
+            let eps = 1e-3;
+            let probes = [(u + eps, v), (u - eps, v), (u, v + eps), (u, v - eps)];
+            let mut best = Vec3::Y;
+            let mut best_len = 0.0;
+            for (up, vp) in probes {
+                if up < 0.0 || up > 1.0 || vp < 0.0 || vp > 1.0 { continue; }
+                let (du2, dv2) = self.derivative(up, vp);
+                let n2 = du2.cross(dv2);
+                let l2 = n2.length();
+                if l2 > best_len { best_len = l2; best = n2 / l2.max(1e-12); }
+            }
+            best
         }
+    }
+
+    /// Analytical first-order partial derivatives ∂S/∂u and ∂S/∂v.
+    ///
+    /// Uses the analytical B-spline derivative recurrence (same formula as
+    /// rc3d-shape::NurbsSurface::evaluate_with_derivative) applied to the
+    /// homogeneous control points then dehomogenized via quotient rule.
+    pub fn derivative(&self, u: f32, v: f32) -> (Vec3, Vec3) {
+        use crate::basis::bspline_bases;
+        use crate::knot::find_span;
+
+        let u_span = find_span(self.u_degree, &self.u_knots, u);
+        let v_span = find_span(self.v_degree, &self.v_knots, v);
+
+        let basis_u = bspline_bases(u_span, self.u_degree, u, &self.u_knots);
+        let basis_v = bspline_bases(v_span, self.v_degree, v, &self.v_knots);
+
+        // Analytical first derivatives of basis functions
+        let du_basis = analytical_basis_derivs(u_span, self.u_degree, u, &self.u_knots);
+        let dv_basis = analytical_basis_derivs(v_span, self.v_degree, v, &self.v_knots);
+
+        // Accumulate weighted sums for position and derivatives
+        let mut sw = Vec3::ZERO;   let mut w_sum = 0.0;
+        let mut sw_u = Vec3::ZERO; let mut w_u = 0.0;
+        let mut sw_v = Vec3::ZERO; let mut w_v = 0.0;
+
+        for &(i, nu) in &basis_u {
+            let dn_du = lookup(&du_basis, i);
+            for &(j, nv) in &basis_v {
+                let cp = &self.control_points[i][j];
+                let wgt = cp[3];
+                let pw = Vec3::new(cp[0], cp[1], cp[2]);
+                let dn_dv = lookup(&dv_basis, j);
+
+                // Position weight
+                let c = nu * nv * wgt;
+                sw += pw * c;
+                w_sum += c;
+
+                // ∂/∂u
+                let c_u = dn_du * nv * wgt;
+                sw_u += pw * c_u;
+                w_u += c_u;
+
+                // ∂/∂v
+                let c_v = nu * dn_dv * wgt;
+                sw_v += pw * c_v;
+                w_v += c_v;
+            }
+        }
+
+        if w_sum.abs() < 1e-10 {
+            return (Vec3::X, Vec3::Y);
+        }
+
+        let inv_w = 1.0 / w_sum;
+        let inv_w2 = inv_w * inv_w;
+        let du = (sw_u * w_sum - sw * w_u) * inv_w2;
+        let dv = (sw_v * w_sum - sw * w_v) * inv_w2;
+
+        // NaN guard
+        if du.is_nan() || dv.is_nan() {
+            return (Vec3::X, Vec3::Y);
+        }
+        (du, dv)
     }
 
     /// Extract an isoparametric edge as a NURBS curve for boundary matching.
@@ -533,6 +602,56 @@ fn emit_quad(indices: &mut Vec<u32>, a: usize, b: usize, c: usize, d: usize) {
     let c = c as u32; let d = d as u32;
     indices.extend_from_slice(&[a, b, d]);
     indices.extend_from_slice(&[a, d, c]);
+}
+
+// ── Analytical basis derivative helpers ──────────────────────────
+
+/// Linear scan lookup in a short basis derivative list.
+#[inline]
+fn lookup(basis: &[(usize, f32)], idx: usize) -> f32 {
+    for &(i, v) in basis {
+        if i == idx { return v; }
+    }
+    0.0
+}
+
+/// Compute first-order B-spline basis derivatives.
+///
+/// N'_{i,p}(t) = p/(k_{i+p}-k_i) * N_{i,p-1}(t) - p/(k_{i+p+1}-k_{i+1}) * N_{i+1,p-1}(t)
+///
+/// (Piegl & Tiller, The NURBS Book, Eq. 2.10)
+fn analytical_basis_derivs(
+    span: usize, degree: usize, t: f32, knots: &[f32],
+) -> Vec<(usize, f32)> {
+    use crate::basis::bspline_bases;
+
+    if degree == 0 {
+        return vec![(span, 0.0)];
+    }
+
+    let lower_bases = bspline_bases(span, degree - 1, t, knots);
+    let p = degree as f32;
+    let mut result = Vec::with_capacity(degree + 1);
+
+    for i in span.saturating_sub(degree)..=span {
+        let n_i = if i >= span.saturating_sub(degree - 1) {
+            lookup(&lower_bases, i)
+        } else { 0.0 };
+        let n_ip1 = if i + 1 <= span {
+            lookup(&lower_bases, i + 1)
+        } else { 0.0 };
+
+        let d1 = knots[i + degree] - knots[i];
+        let d2 = knots[i + degree + 1] - knots[i + 1];
+        let t1 = if d1.abs() > 1e-12 { n_i / d1 } else { 0.0 };
+        let t2 = if d2.abs() > 1e-12 { n_ip1 / d2 } else { 0.0 };
+
+        let deriv = p * (t1 - t2);
+        if deriv.abs() > 1e-12 {
+            result.push((i, deriv));
+        }
+    }
+    result
 }
 
 #[cfg(test)]
