@@ -193,6 +193,13 @@ pub fn intersect_surfaces_brep(
          SurfaceGeom::Cylinder { origin: o2, axis: a2, radius: r2, .. }) => {
             cylinder_cylinder(*o1, *a1, *r1, *o2, *a2, *r2)
         }
+        (SurfaceGeom::Cylinder { origin: o, axis: a, radius: cr, .. },
+         SurfaceGeom::Sphere { center: sc, radius: sr }) => {
+            cylinder_sphere(*o, *a, *cr, *sc, *sr)
+        }
+        (SurfaceGeom::Sphere { .. }, SurfaceGeom::Cylinder { .. }) => {
+            intersect_surfaces_brep(face_b, face_a, _reg)
+        }
         (SurfaceGeom::Sphere { center: c1, radius: r1 },
          SurfaceGeom::Sphere { center: c2, radius: r2 }) => {
             sphere_sphere(*c1, *r1, *c2, *r2)
@@ -469,6 +476,70 @@ fn cylinder_cylinder(
     Some(vec![polyline_to_bspline(&pts, 3)])
 }
 
+// ── Cylinder × Sphere ─────────────────────────────────────────────────
+
+/// Analytic cylinder-sphere intersection.
+///
+/// Parameterizes the cylinder surface and solves the sphere equation
+/// for the axial parameter t at each angular sample θ.
+///
+/// The intersection is a closed 3D curve wrapping around the cylinder.
+/// At each angle θ, solving |cyl(θ, t) - center|² = r² gives a quadratic
+/// in t; valid roots produce intersection points.
+fn cylinder_sphere(
+    cyl_origin: Vec3, cyl_axis: Vec3, cyl_radius: f32,
+    sph_center: Vec3, sph_radius: f32,
+) -> Option<Vec<CurveGeom>> {
+    let ax = cyl_axis.normalize();
+    let (u, v) = build_ortho_axes(ax);
+
+    // Vector from cylinder origin to sphere center, decomposed
+    let d = sph_center - cyl_origin;
+    let d_axial = d.dot(ax);    // component along cylinder axis
+    let d_radial = d - ax * d_axial; // component perpendicular to axis
+
+    let n_samples = 64;
+    let mut pts: Vec<Vec3> = Vec::with_capacity(n_samples * 2);
+
+    for i in 0..n_samples {
+        let theta = std::f32::consts::TAU * i as f32 / n_samples as f32;
+        let radial_dir = u * theta.cos() + v * theta.sin();
+
+        // Point on cylinder surface (before solving for t):
+        // P(t) = cyl_origin + radial_dir * cyl_radius + ax * t
+        // Sphere equation: |P(t) - sph_center|² = sph_radius²
+        //
+        // Let p0 = cyl_origin + radial_dir * cyl_radius
+        //     w = p0 - sph_center
+        // Then: |w + ax*t|² = sph_radius²
+        //      |ax|²*t² + 2*(w·ax)*t + |w|² - sph_radius² = 0
+        // Since |ax|² = 1:
+        //      t² + 2*(w·ax)*t + |w|² - sph_radius² = 0
+
+        let p0 = cyl_origin + radial_dir * cyl_radius;
+        let w = p0 - sph_center;
+        let b = w.dot(ax);          // half the linear coefficient
+        let c = w.length_squared() - sph_radius * sph_radius;
+
+        let disc = b * b - c;
+        if disc >= 0.0 {
+            let sqrt_d = disc.sqrt();
+            for &t in &[-b + sqrt_d, -b - sqrt_d] {
+                if t.is_finite() {
+                    pts.push(p0 + ax * t);
+                }
+            }
+        }
+    }
+
+    if pts.len() < 6 {
+        return None;
+    }
+
+    // The intersection is a closed curve; fit a periodic B-spline
+    Some(vec![polyline_to_bspline(&pts, 3)])
+}
+
 // ── Sphere × Sphere ───────────────────────────────────────────────────
 
 fn sphere_sphere(c1: Vec3, r1: f32, c2: Vec3, r2: f32) -> Option<Vec<CurveGeom>> {
@@ -562,7 +633,8 @@ pub fn is_tangent_intersection(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topo::{BRepWire, BRepEdge, BRepShell, Orientation};
+    use crate::store::BRepStore;
+    use crate::topo::{BRepFace, BRepWire, BRepEdge, BRepShell, Orientation};
     use std::collections::HashMap;
 
     fn make_test_face(surface: SurfaceGeom) -> BRepFace {
@@ -758,5 +830,32 @@ mod tests {
 
         let seeds = crate::bool::marching::find_seeds(&surf_a, &surf_b, 16, 0.5);
         assert!(!seeds.is_empty(), "Two intersecting spheres should produce marching seeds");
+    }
+
+    #[test]
+    fn test_cylinder_sphere_intersection() {
+        let mut reg = BRepStore::new();
+        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let sphere = SurfaceGeom::Sphere { center: Vec3::new(0.5, 0.0, 0.0), radius: 1.5 };
+
+        // Build faces
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        let fa = reg.faces.insert(BRepFace {
+            surface: cyl, outer_wire: wire, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4,
+            seam_edges: vec![], color: None, degenerated_edges: vec![],
+        });
+        let wire2 = reg.wires.insert(BRepWire { edges: vec![] });
+        let fb = reg.faces.insert(BRepFace {
+            surface: sphere, outer_wire: wire2, inner_wires: vec![],
+            same_sense: true, tolerance: 1e-4,
+            seam_edges: vec![], color: None, degenerated_edges: vec![],
+        });
+
+        let curves = intersect_surfaces_brep(
+            &reg.faces[fa], &reg.faces[fb], &reg,
+        );
+        assert!(curves.is_some(), "cylinder-sphere should intersect");
+        assert!(!curves.unwrap().is_empty(), "should produce at least one curve");
     }
 }
