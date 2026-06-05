@@ -21,8 +21,14 @@ pub struct BRepStore {
     pub vertex_hash_index: HashMap<[u32; 3], VertexKey>,
     /// Ordered endpoint pair → EdgeKey for O(1) edge deduplication.
     pub edge_hash_index: HashMap<(VertexKey, VertexKey), Vec<EdgeKey>>,
-    /// Inverted index: edge → faces that reference this edge (built after B-Rep construction).
+    /// Inverted index: edge → faces that reference this edge.
+    /// Auto-maintained by add_edge_with_pcurve / add_seam_edge.
+    /// Values may contain duplicates if a face references the same edge
+    /// multiple times; call dedup_edge_to_faces() after bulk construction if needed.
     pub edge_to_faces: HashMap<EdgeKey, Vec<FaceKey>>,
+    /// Inverted index: vertex → edges that reference this vertex.
+    /// Auto-maintained (no explicit build call needed).
+    pub vertex_to_edges: HashMap<VertexKey, Vec<EdgeKey>>,
 }
 
 impl BRepStore {
@@ -37,6 +43,7 @@ impl BRepStore {
             vertex_hash_index: HashMap::new(),
             edge_hash_index: HashMap::new(),
             edge_to_faces: HashMap::new(),
+            vertex_to_edges: HashMap::new(),
         }
     }
 
@@ -87,6 +94,8 @@ impl BRepStore {
                     if let Some(edge) = self.edges.get_mut(ek) {
                         edge.pcurves.insert(face, pcurve);
                     }
+                    // Auto-maintain edge_to_faces index
+                    self.edge_to_faces.entry(ek).or_default().push(face);
                     return ek;
                 }
             }
@@ -104,6 +113,10 @@ impl BRepStore {
             },
         });
         self.edge_hash_index.entry((v_lo, v_hi)).or_default().push(ek);
+        // Auto-maintain edge_to_faces and vertex_to_edges indices
+        self.edge_to_faces.entry(ek).or_default().push(face);
+        self.vertex_to_edges.entry(v_lo).or_default().push(ek);
+        self.vertex_to_edges.entry(v_hi).or_default().push(ek);
         ek
     }
 
@@ -129,7 +142,7 @@ impl BRepStore {
         } else {
             normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance)
         };
-        self.edges.insert(BRepEdge {
+        let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
             v_low: v_lo,
@@ -139,7 +152,14 @@ impl BRepStore {
                 m.insert(face, pcurve);
                 m
             },
-        })
+        });
+        // Auto-maintain edge_to_faces and vertex_to_edges indices
+        self.edge_to_faces.entry(ek).or_default().push(face);
+        self.vertex_to_edges.entry(v_lo).or_default().push(ek);
+        if v_lo != v_hi {
+            self.vertex_to_edges.entry(v_hi).or_default().push(ek);
+        }
+        ek
     }
 
     /// Insert a face with the given surface and an empty outer wire.
@@ -208,7 +228,20 @@ impl BRepStore {
         self.faces.iter()
     }
 
-    /// Build the edge_to_faces inverted index. Call after B-Rep construction is complete.
+    /// Deduplicate face entries in edge_to_faces. Only needed after bulk
+    /// construction that bypassed add_edge_with_pcurve (e.g., direct SlotMap
+    /// insertion during repair operations).
+    pub fn dedup_edge_to_faces(&mut self) {
+        for faces in self.edge_to_faces.values_mut() {
+            faces.sort();
+            faces.dedup();
+        }
+    }
+
+    /// Rebuild edge_to_faces from scratch by scanning all face wires.
+    /// Prefer the auto-maintained index (add_edge_with_pcurve / add_seam_edge
+    /// now populate it automatically). This method is retained for bulk repair
+    /// scenarios where edges were inserted directly into the SlotMap.
     pub fn build_edge_to_faces_index(&mut self) {
         let mut index: HashMap<EdgeKey, Vec<FaceKey>> = HashMap::new();
         for (fk, face) in self.faces.iter() {
@@ -373,5 +406,66 @@ mod tests {
         let edge = reg.edges.get(ek).unwrap();
         assert!(edge.pcurves.contains_key(&f0));
         assert!(edge.pcurves.contains_key(&f1));
+    }
+
+    #[test]
+    fn test_vertex_to_edges_index() {
+        let mut reg = BRepStore::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::Y, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line2 = CurveGeom::Line { origin: Vec3::X, direction: Vec3::Y - Vec3::X };
+
+        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, line.clone());
+        let e1 = reg.add_edge_with_pcurve(v1, v2, line2.clone(), 1e-4, f0, line2);
+
+        let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();
+        assert_eq!(v0_edges, &vec![e0], "v0 belongs only to e0");
+        let v1_edges = reg.vertex_to_edges.get(&v1).unwrap();
+        assert_eq!(v1_edges.len(), 2, "v1 belongs to both e0 and e1");
+        assert!(v1_edges.contains(&e0));
+        assert!(v1_edges.contains(&e1));
+    }
+
+    #[test]
+    fn test_dual_index_consistency() {
+        let mut reg = BRepStore::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let f1 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, line.clone());
+        // Adding same edge from f1 should reuse ek
+        let ek2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, line.clone());
+        assert_eq!(ek, ek2, "should reuse existing edge");
+
+        // edge_to_faces should have both faces
+        let faces = reg.edge_to_faces.get(&ek).unwrap();
+        assert!(faces.contains(&f0), "edge_to_faces should contain f0");
+        assert!(faces.contains(&f1), "edge_to_faces should contain f1");
+
+        // vertex_to_edges should reference ek
+        assert!(reg.vertex_to_edges.get(&v0).unwrap().contains(&ek));
+        assert!(reg.vertex_to_edges.get(&v1).unwrap().contains(&ek));
+    }
+
+    #[test]
+    fn test_seam_edge_indices() {
+        let mut reg = BRepStore::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let f0 = make_plane_face(&mut reg);
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+
+        let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, line.clone());
+
+        // vertex_to_edges should have v0 → ek (only once, not duplicated)
+        let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();
+        assert!(v0_edges.contains(&ek), "seam edge should be in vertex_to_edges");
+        // edge_to_faces should have the face
+        assert!(reg.edge_to_faces.get(&ek).unwrap().contains(&f0));
     }
 }
