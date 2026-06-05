@@ -36,7 +36,7 @@ pub fn auto_heal_shell(
     let mut prev_errors = check.errors.len();
     let mut prev_warnings = check.warnings.len();
 
-    log::info!(
+    eprintln!(
         "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn)",
         level, t_check0, prev_errors, prev_warnings
     );
@@ -53,7 +53,7 @@ pub fn auto_heal_shell(
         let curr_errors = check.errors.len();
         let curr_warnings = check.warnings.len();
 
-        log::info!(
+        eprintln!(
             "[BRep pipeline] iter {}: {:.1}s ({}→{} err, {}→{} warn)",
             iter + 1, _ti.elapsed().as_secs_f32(),
             prev_errors, curr_errors, prev_warnings, curr_warnings,
