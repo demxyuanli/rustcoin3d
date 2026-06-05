@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::geom::signed_area_2d;
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey, WireKey};
 use crate::topo_iter;
 use super::geom2d::collect_wire_uv_polygon;
 use std::collections::HashSet;
@@ -555,6 +555,119 @@ fn check_wire_orientation(
     warnings
 }
 
+// ── Shell / Wire closure checks (OCC BRepCheck_Shell / BRepCheck_Wire) ──
+
+/// Result of shell closure analysis.
+#[derive(Debug, Clone, Default)]
+pub struct ShellClosedReport {
+    /// Edges shared by exactly 2 faces (correct for closed shell).
+    pub closed_edges: usize,
+    /// Total unique edges referenced by the shell's faces.
+    pub total_edges: usize,
+    /// Edges referenced by 0 or 1 face (open / dangling boundary).
+    pub open_edges: Vec<EdgeKey>,
+    /// Edges referenced by >2 faces (non-manifold topology).
+    pub non_manifold_edges: Vec<(EdgeKey, usize)>,
+    /// True when every edge is shared by exactly 2 faces and total_edges > 0.
+    pub is_closed: bool,
+}
+
+/// Check shell closure: every edge must be shared by exactly 2 faces.
+///
+/// A closed (watertight) shell has each edge referenced exactly twice —
+/// once per adjacent face. Open edges (count=1) indicate a boundary;
+/// non-manifold edges (count>2) indicate topology errors.
+///
+/// OCC alignment: BRepCheck_Shell — counts face references per edge.
+pub fn check_shell_closed(shell_key: ShellKey, reg: &BRepStore) -> ShellClosedReport {
+    let mut report = ShellClosedReport::default();
+    let shell = match reg.shells.get(shell_key) {
+        Some(s) => s,
+        None => return report,
+    };
+
+    let mut edge_refs: HashMap<EdgeKey, u32> = HashMap::new();
+
+    for &(face_key, _) in &shell.faces {
+        let face = match reg.faces.get(face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+        // Iterate outer wire + inner wires
+        let wire_keys: Vec<WireKey> = std::iter::once(face.outer_wire)
+            .chain(face.inner_wires.iter().copied())
+            .collect();
+        for wk in wire_keys {
+            let wire = match reg.wires.get(wk) {
+                Some(w) => w,
+                None => continue,
+            };
+            for &(ek, _) in &wire.edges {
+                *edge_refs.entry(ek).or_default() += 1;
+            }
+        }
+    }
+
+    report.total_edges = edge_refs.len();
+    for (ek, count) in &edge_refs {
+        match count {
+            2 => report.closed_edges += 1,
+            0 | 1 => report.open_edges.push(*ek),
+            n => report.non_manifold_edges.push((*ek, *n as usize)),
+        }
+    }
+    report.is_closed = report.open_edges.is_empty()
+        && report.non_manifold_edges.is_empty()
+        && report.total_edges > 0;
+    report
+}
+
+/// Check wire closure: measure the gap between the last edge's endpoint
+/// and the first edge's start point.
+///
+/// Returns `Some(gap)` in 3D world units, or `None` if the wire is empty.
+///
+/// OCC alignment: BRepCheck_Wire::Closed()
+pub fn check_wire_closed(wire_key: WireKey, reg: &BRepStore) -> Option<f32> {
+    let wire = reg.wires.get(wire_key)?;
+    if wire.edges.is_empty() {
+        return None;
+    }
+    let n = wire.edges.len();
+    let (first_ek, _first_orient) = wire.edges[0];
+    let (last_ek, _last_orient) = wire.edges[n - 1];
+
+    let first_edge = reg.edges.get(first_ek)?;
+    let last_edge = reg.edges.get(last_ek)?;
+
+    let first_start = reg.vertices.get(first_edge.v_low)?.position;
+    let last_end = reg.vertices.get(last_edge.v_high)?.position;
+
+    let gap = (last_end - first_start).length();
+    Some(gap)
+}
+
+/// Check all wires of a face for closure and log gaps above tolerance.
+pub fn check_face_wire_gaps(
+    face_key: FaceKey,
+    reg: &BRepStore,
+    tolerance: f32,
+) -> Vec<(WireKey, f32)> {
+    let mut gaps = Vec::new();
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return gaps,
+    };
+    for wk in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
+        if let Some(gap) = check_wire_closed(*wk, reg) {
+            if gap > tolerance {
+                gaps.push((*wk, gap));
+            }
+        }
+    }
+    gaps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,5 +1061,65 @@ mod tests {
         ];
         let _warnings = check_wire_orientation(fk, &reg);
         // The test verifies the function runs without panic for a non-trivial wire.
+    }
+
+    #[test]
+    fn test_check_shell_closed_plane_not_closed() {
+        let mut reg = BRepStore::new();
+        let surface = crate::geom::SurfaceGeom::Plane {
+            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+        };
+        let wire = reg.wires.insert(crate::topo::BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(crate::topo::BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let sk = reg.shells.insert(crate::topo::BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        let report = check_shell_closed(sk, &reg);
+        assert!(!report.is_closed, "single-face shell should not be closed");
+        assert_eq!(report.total_edges, 0, "no edges in face wire");
+    }
+
+    #[test]
+    fn test_check_wire_closed_detects_open_wire() {
+        let mut reg = BRepStore::new();
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let line = crate::geom::CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        let fk = reg.faces.insert(crate::topo::BRepFace {
+            surface: crate::geom::SurfaceGeom::Plane {
+                origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            },
+            outer_wire: Default::default(),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
+        let wk = reg.wires.insert(crate::topo::BRepWire {
+            edges: vec![(e1, Orientation::Forward), (e2, Orientation::Forward)],
+        });
+        // Wire: v0→v1→v2 — not closed (v2 ≠ v0)
+        let gap = check_wire_closed(wk, &reg);
+        assert!(gap.is_some());
+        assert!(gap.unwrap() > 0.1, "open wire should have measurable gap");
     }
 }
