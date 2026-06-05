@@ -275,11 +275,12 @@ fn exchange_to_import_result(
         );
     }
 
+    let heal_iters = if options.skip_visualization { 2 } else { 5 };
     let total_heal = import_pipeline::run_heal_pipeline(
         &mut document.store,
         &root_solids,
         options.heal_level,
-        5,
+        heal_iters,
     );
     import_report.heal_check_errors = total_heal.check_errors;
     import_report.skipped_faces += total_heal.skip_face_keys.len();
