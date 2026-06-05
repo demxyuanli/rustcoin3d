@@ -22,6 +22,10 @@ pub struct CheckReport {
     pub has_inner_wires: bool,
     pub has_intersecting_wires: bool,
     pub has_face_self_intersections: bool,
+    /// Shell closure: true when at least one edge is open (not shared by 2 faces).
+    pub has_open_edges: bool,
+    /// Number of open (dangling) edges in the shell.
+    pub open_edge_count: usize,
 }
 
 impl CheckReport {
@@ -100,6 +104,20 @@ pub fn check_shell(shell_key: ShellKey, reg: &BRepStore) -> CheckReport {
                 shell_key, chi
             ));
         }
+    }
+
+    // Shell closure check (OCC BRepCheck_Shell)
+    let closed = check_shell_closed(shell_key, reg);
+    report.open_edge_count = closed.open_edges.len();
+    report.has_open_edges = !closed.open_edges.is_empty();
+    if !closed.is_closed {
+        report.warnings.push(format!(
+            "shell {:?}: not closed — {}/{} open edges, {} non-manifold",
+            shell_key,
+            closed.open_edges.len(),
+            closed.total_edges,
+            closed.non_manifold_edges.len(),
+        ));
     }
 
     report

@@ -40,11 +40,7 @@ pub fn newton_refine_ssi(
         let (du_b, dv_b) = surf_b.d1_native(uv_b.0, uv_b.1);
 
         // Jacobian J = [du_a, dv_a, -du_b, -dv_b]  (3×4 matrix)
-        // Build 3×3 matrix M = J * J^T
-        let m00 = du_a.dot(du_a) + dv_a.dot(dv_a) + du_b.dot(du_b) + dv_b.dot(dv_b);
-        // Actually JJ^T = [du_a dv_a -du_b -dv_b] * [du_a^T; dv_a^T; -du_b^T; -dv_b^T]
-        // = du_a*du_a^T + dv_a*dv_a^T + du_b*du_b^T + dv_b*dv_b^T
-        // But we need the 3×3 symmetric matrix:
+        // JJ^T = du_a*du_a^T + dv_a*dv_a^T + du_b*du_b^T + dv_b*dv_b^T  (3×3 symmetric)
         let j00 = du_a.x.powi(2) + dv_a.x.powi(2) + du_b.x.powi(2) + dv_b.x.powi(2);
         let j01 = du_a.x * du_a.y + dv_a.x * dv_a.y + du_b.x * du_b.y + dv_b.x * dv_b.y;
         let j02 = du_a.x * du_a.z + dv_a.x * dv_a.z + du_b.x * du_b.z + dv_b.x * dv_b.z;

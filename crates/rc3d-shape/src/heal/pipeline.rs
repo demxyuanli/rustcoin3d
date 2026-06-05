@@ -4,6 +4,7 @@
 use crate::topo::ShellKey;
 use crate::store::BRepStore;
 use super::{CheckReport, HealConfig, HealReport, check_shell, heal_shell};
+use super::edge_tolerance::auto_fix_shell_edge_tolerances;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HealLevel {
@@ -37,9 +38,29 @@ pub fn auto_heal_shell(
     let mut prev_warnings = check.warnings.len();
 
     eprintln!(
-        "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn)",
-        level, t_check0, prev_errors, prev_warnings
+        "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn{})",
+        level, t_check0, prev_errors, prev_warnings,
+        if check.has_open_edges { format!(", {} open edges", check.open_edge_count) } else { String::new() }
     );
+
+    // Pre-step: auto-fix edge tolerances from PCurve-to-3D deviation.
+    // This must run before the main heal loop so subsequent passes
+    // (same_parameter, gap closing, etc.) use corrected tolerances.
+    // OCC: ShapeFix_Edge::FixSameParameter before ShapeFix_Wire / ShapeFix_Face.
+    if level >= HealLevel::Standard {
+        let _te = std::time::Instant::now();
+        let et_report = auto_fix_shell_edge_tolerances(shell_key, reg, 1e-7, 1.0);
+        let t = _te.elapsed().as_secs_f32();
+        if et_report.tolerances_increased > 0 || et_report.tolerances_decreased > 0 {
+            eprintln!(
+                "[BRep pipeline] edge tolerance fix: {:.1}s ({} inc, {} dec, max_adj={:.6})",
+                t,
+                et_report.tolerances_increased,
+                et_report.tolerances_decreased,
+                et_report.max_adjustment,
+            );
+        }
+    }
 
     for iter in 0..max_iterations {
         let _ti = std::time::Instant::now();
