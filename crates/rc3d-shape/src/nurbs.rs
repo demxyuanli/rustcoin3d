@@ -26,6 +26,63 @@ pub struct NurbsSurface {
     pub knots_v: Vec<f32>,
 }
 
+// ── NURBS type conversions ──────────────────────────────────────
+
+impl From<NurbsSurface> for rc3d_nurbs::NurbsRenderSurface {
+    /// Convert from separated control points + weights to homogeneous [x,y,z,w] format.
+    fn from(s: NurbsSurface) -> Self {
+        let control_points: Vec<Vec<[f32; 4]>> = s
+            .control_points
+            .iter()
+            .zip(s.weights.iter())
+            .map(|(cp_row, w_row)| {
+                cp_row
+                    .iter()
+                    .zip(w_row.iter())
+                    .map(|(&cp, &w)| [cp.x * w, cp.y * w, cp.z * w, w])
+                    .collect()
+            })
+            .collect();
+        rc3d_nurbs::NurbsRenderSurface {
+            control_points,
+            u_knots: s.knots_u,
+            v_knots: s.knots_v,
+            u_degree: s.degree_u,
+            v_degree: s.degree_v,
+        }
+    }
+}
+
+impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
+    /// Convert from homogeneous [x,y,z,w] to separated control points + weights.
+    fn from(s: rc3d_nurbs::NurbsRenderSurface) -> Self {
+        let n_u = s.u_count();
+        let n_v = s.v_count();
+        let mut control_points = Vec::with_capacity(n_u);
+        let mut weights = Vec::with_capacity(n_u);
+        for i in 0..n_u {
+            let mut cp_row = Vec::with_capacity(n_v);
+            let mut w_row = Vec::with_capacity(n_v);
+            for j in 0..n_v {
+                let [wx, wy, wz, w] = s.control_points[i][j];
+                let inv_w = if w.abs() > 1e-10 { 1.0 / w } else { 1.0 };
+                cp_row.push(Vec3::new(wx * inv_w, wy * inv_w, wz * inv_w));
+                w_row.push(w);
+            }
+            control_points.push(cp_row);
+            weights.push(w_row);
+        }
+        NurbsSurface {
+            degree_u: s.u_degree,
+            degree_v: s.v_degree,
+            control_points,
+            weights,
+            knots_u: s.u_knots,
+            knots_v: s.v_knots,
+        }
+    }
+}
+
 impl NurbsSurface {
     /// Number of control points in u direction.
     pub fn u_count(&self) -> usize {
@@ -1223,5 +1280,30 @@ mod tests {
         assert_eq!(surface.degree_v, 3);
         let p_after = surface.evaluate(0.5, 0.5);
         assert!((p_center - p_after).length() < 1e-3);
+    }
+
+    #[test]
+    fn test_nurbs_type_roundtrip() {
+        let surf = NurbsSurface::cylinder(2.0, 0.0, 3.0);
+        let test_pts: Vec<(f32, f32)> = vec![
+            (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
+        ];
+        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+
+        // Convert to render surface and back
+        let render: rc3d_nurbs::NurbsRenderSurface = surf.into();
+        let roundtripped: NurbsSurface = render.into();
+
+        assert_eq!(roundtripped.degree_u, 2);
+        assert_eq!(roundtripped.degree_v, 1);
+        assert_eq!(roundtripped.u_count(), 9);
+        assert_eq!(roundtripped.v_count(), 2);
+
+        // Shape must be preserved
+        for (i, &(u, v)) in test_pts.iter().enumerate() {
+            let after = roundtripped.evaluate(u, v);
+            let dist = (after - before[i]).length();
+            assert!(dist < 1e-5, "shape changed at ({u},{v}): {dist}");
+        }
     }
 }
