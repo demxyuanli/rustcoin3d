@@ -448,10 +448,39 @@ fn cylinder_cylinder(
     let ax1 = a1.normalize();
     let ax2 = a2.normalize();
     if ax1.cross(ax2).length() < 1e-6 {
-        let dist = (o1 - o2).cross(ax1).length();
-        if dist > r1 + r2 || dist < (r1 - r2).abs() { return None; }
-        return None; // parallel cylinders → complex, defer to P3
-    }
+        // Parallel cylinders: intersection is 2 lines (same radius) or 0/2 lines
+        let d_vec = (o1 - o2) - ax1 * (o1 - o2).dot(ax1);
+        let d = d_vec.length();
+        if d < 1e-10 && (r1 - r2).abs() < 1e-10 {
+            return None; // coincident
+        }
+        if d > r1 + r2 + 1e-6 || d < (r1 - r2).abs() - 1e-6 {
+            return None; // no intersection
+        }
+        // Circle-circle intersection in the perpendicular plane
+        let dir = if d > 1e-10 { d_vec / d } else { build_ortho_axes(ax1).0 };
+        let x = (d * d + r1 * r1 - r2 * r2) / (2.0 * d).max(1e-10);
+        let y_sq = r1 * r1 - x * x;
+        if y_sq < -1e-6 {
+            return None;
+        }
+        let y = y_sq.max(0.0).sqrt();
+        let perp = ax1.cross(dir).normalize();
+
+        let p1 = o1 + dir * x + perp * y;
+        let p2 = o1 + dir * x - perp * y;
+
+        if y < 1e-6 {
+            // Tangent: single line (degenerate)
+            Some(vec![CurveGeom::Line { origin: p1, direction: ax1 }])
+        } else {
+            // Two intersection lines
+            Some(vec![
+                CurveGeom::Line { origin: p1, direction: ax1 },
+                CurveGeom::Line { origin: p2, direction: ax1 },
+            ])
+        }
+    } else {
     let (u, v) = build_ortho_axes(ax1);
     let n = 64;
     let mut pts = Vec::with_capacity(n * 2);
@@ -474,6 +503,7 @@ fn cylinder_cylinder(
     }
     if pts.len() < 4 { return None; }
     Some(vec![polyline_to_bspline(&pts, 3)])
+    } // end else (skew axes)
 }
 
 // ── Cylinder × Sphere ─────────────────────────────────────────────────
@@ -857,5 +887,32 @@ mod tests {
         );
         assert!(curves.is_some(), "cylinder-sphere should intersect");
         assert!(!curves.unwrap().is_empty(), "should produce at least one curve");
+    }
+
+    #[test]
+    fn test_parallel_cylinder_intersection() {
+        // Two parallel cylinders with same radius, axes separated by < 2*radius
+        let cyl1 = SurfaceGeom::cylinder(Vec3::new(-0.5, 0.0, 0.0), Vec3::Z, 1.0);
+        let cyl2 = SurfaceGeom::cylinder(Vec3::new(0.5, 0.0, 0.0), Vec3::Z, 1.0);
+        let curves = cylinder_cylinder(
+            Vec3::new(-0.5, 0.0, 0.0), Vec3::Z, 1.0,
+            Vec3::new(0.5, 0.0, 0.0), Vec3::Z, 1.0,
+        );
+        assert!(curves.is_some(), "parallel intersecting cylinders should produce lines");
+        let c = curves.unwrap();
+        assert_eq!(c.len(), 2, "should produce 2 intersection lines");
+        for curve in &c {
+            assert!(matches!(curve, CurveGeom::Line { .. }), "expected Line, got {:?}", std::mem::discriminant(curve));
+        }
+    }
+
+    #[test]
+    fn test_parallel_cylinder_no_intersection() {
+        // Two parallel cylinders too far apart
+        let curves = cylinder_cylinder(
+            Vec3::ZERO, Vec3::Z, 1.0,
+            Vec3::new(10.0, 0.0, 0.0), Vec3::Z, 1.0,
+        );
+        assert!(curves.is_none(), "widely separated parallel cylinders should not intersect");
     }
 }
