@@ -47,6 +47,22 @@ pub fn unique_knots(knots: &[f32]) -> Vec<(f32, usize)> {
     result
 }
 
+/// Return all unique internal knot values (excluding first and last unique knots).
+pub fn internal_knots(knots: &[f32]) -> Vec<f32> {
+    let unique = unique_knots(knots);
+    if unique.len() <= 2 {
+        return vec![]; // no internal knots
+    }
+    let mut result = Vec::new();
+    for (i, &(val, _mult)) in unique.iter().enumerate() {
+        if i == 0 || i == unique.len() - 1 {
+            continue; // skip first and last (endpoint knots)
+        }
+        result.push(val);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +99,29 @@ mod tests {
         assert_eq!(knot_multiplicity(&knots, 0.5), 3);
         assert_eq!(knot_multiplicity(&knots, 1.0), 2);
         assert_eq!(knot_multiplicity(&knots, 0.7), 0);
+    }
+
+    #[test]
+    fn test_internal_knots_empty_for_bezier() {
+        // Degree 3, 4 CPs => 8 knots (clamped), no internal knots
+        let knots = open_uniform_knots(3, 4);
+        let ik = internal_knots(&knots);
+        assert!(ik.is_empty(), "bezier has no internal knots");
+    }
+
+    #[test]
+    fn test_internal_knots_single() {
+        // Degree 3, 5 CPs => 9 knots, one internal
+        let knots = open_uniform_knots(3, 5);
+        let ik = internal_knots(&knots);
+        assert_eq!(ik.len(), 1, "one internal knot expected");
+    }
+
+    #[test]
+    fn test_internal_knots_multiple() {
+        // Degree 2, 6 CPs => 9 knots, 3 internal
+        let knots = open_uniform_knots(2, 6);
+        let ik = internal_knots(&knots);
+        assert_eq!(ik.len(), 3, "three internal knots expected");
     }
 }

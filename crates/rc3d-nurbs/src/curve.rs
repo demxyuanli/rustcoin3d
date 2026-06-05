@@ -461,6 +461,90 @@ impl NurbsCurve {
     }
 }
 
+/// Compare two NURBS curves for geometric equality within tolerance.
+///
+/// Uses a two-tier approach:
+/// 1. Fast path: identical degree, control points, and knot vectors → direct compare
+/// 2. Sampling path: evaluate both curves at N uniform samples;
+///    if max(deviation at any sample) ≤ tolerance, the curves are geometrically equal.
+///
+/// N scales with curve arc length to handle curves of different sizes:
+/// N = min(128, max(32, arc_length / tolerance)).
+pub fn curves_equal(a: &NurbsCurve, b: &NurbsCurve, tolerance: f32) -> bool {
+    // Fast path: same degree, same CP count, same knot count
+    if a.degree == b.degree
+        && a.control_points.len() == b.control_points.len()
+        && a.knots.len() == b.knots.len()
+    {
+        let cps_match = a.control_points.iter().zip(b.control_points.iter())
+            .all(|(ca, cb)| {
+                let dx = ca[0] - cb[0];
+                let dy = ca[1] - cb[1];
+                let dz = ca[2] - cb[2];
+                let dw = ca[3] - cb[3];
+                (dx * dx + dy * dy + dz * dz + dw * dw).sqrt() <= tolerance
+            });
+        if cps_match {
+            let knots_match = a.knots.iter().zip(b.knots.iter())
+                .all(|(ka, kb)| (ka - kb).abs() <= tolerance);
+            if knots_match {
+                return true;
+            }
+        }
+    }
+
+    // Sampling path: evaluate both curves at uniform parameter intervals
+    let arc_len = a.arc_length(64).max(b.arc_length(64));
+    let n_samples = if arc_len < tolerance {
+        32
+    } else {
+        ((arc_len / tolerance) as usize).clamp(32, 128)
+    };
+
+    for i in 0..=n_samples {
+        let t = i as f32 / n_samples as f32;
+        let pa = a.evaluate(t);
+        let pb = b.evaluate(t);
+        if (pa - pb).length() > tolerance {
+            return false;
+        }
+    }
+    true
+}
+
+/// Find the parameter t on `curve` closest to `point`.
+/// Uses coarse sampling (32 samples) followed by binary refinement.
+pub fn project_point_on_curve(curve: &NurbsCurve, point: glam::Vec3) -> Option<f32> {
+    let n = 32;
+    let mut best_t = 0.5;
+    let mut best_d2 = f32::MAX;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let d2 = (curve.evaluate(t) - point).length_squared();
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best_t = t;
+        }
+    }
+    // Refine with binary search
+    for step in 0..6 {
+        let eps = 0.5f32.powi(step + 1);
+        for &dt in &[-eps, eps] {
+            let t = (best_t + dt).clamp(0.0, 1.0);
+            let d2 = (curve.evaluate(t) - point).length_squared();
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_t = t;
+            }
+        }
+    }
+    if best_d2.sqrt() <= 1e-3 {
+        Some(best_t)
+    } else {
+        None // point too far from curve
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +712,64 @@ mod tests {
     fn test_reduce_degree_linear_is_none() {
         let curve = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
         assert!(curve.reduce_degree(0.1).is_none());
+    }
+
+    #[test]
+    fn test_curves_equal_identical() {
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
+        ];
+        let a = NurbsCurve::new(cp.clone(), 3);
+        let b = NurbsCurve::new(cp, 3);
+        assert!(curves_equal(&a, &b, 1e-4));
+    }
+
+    #[test]
+    fn test_curves_equal_after_knot_insertion() {
+        let cp = vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+            [3.0, 0.0, 0.0, 1.0],
+        ];
+        let a = NurbsCurve::new(cp.clone(), 3);
+        let mut b = NurbsCurve::new(cp, 3);
+        b.insert_knot(0.3);
+        assert!(curves_equal(&a, &b, 1e-3));
+    }
+
+    #[test]
+    fn test_curves_equal_different_degree() {
+        // Same line at degree 1 and degree 3
+        let line_deg1 = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
+        let line_deg3 = NurbsCurve::from_points(
+            &[Vec3::ZERO, Vec3::X * 0.33, Vec3::X * 0.66, Vec3::X],
+            3,
+        );
+        assert!(curves_equal(&line_deg1, &line_deg3, 0.01));
+    }
+
+    #[test]
+    fn test_curves_not_equal() {
+        let a = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
+        let b = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::Y], 1);
+        assert!(!curves_equal(&a, &b, 1e-4));
+    }
+
+    #[test]
+    fn test_project_point_on_curve_line() {
+        let curve = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X], 1);
+        let t = project_point_on_curve(&curve, Vec3::new(0.5, 0.0, 0.0)).unwrap();
+        assert!((t - 0.5).abs() < 0.02, "expected t≈0.5, got {t}");
+    }
+
+    #[test]
+    fn test_project_point_on_curve_far() {
+        let curve = NurbsCurve::from_points(&[Vec3::ZERO, Vec3::X * 0.1], 1);
+        // Point 100 units away should fail to project
+        assert!(project_point_on_curve(&curve, Vec3::new(0.0, 100.0, 0.0)).is_none());
     }
 }
