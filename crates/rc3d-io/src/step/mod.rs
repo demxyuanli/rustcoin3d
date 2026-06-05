@@ -245,17 +245,19 @@ fn exchange_to_import_result(
                 keys
             })
             .unwrap_or_default();
-        let mut total_same_param = 0usize;
-        for shell_key in shell_keys {
-            total_same_param +=
-                brep::same_parameter::same_parameter_shell(&mut document.store, shell_key, g0_tol);
-        }
-        if total_same_param > 0 {
-            log::debug!(
-                "[STEP] SameParameter: {} edge(s) on solid {:?}",
-                total_same_param,
-                sk
-            );
+        if !options.skip_visualization {
+            let mut total_same_param = 0usize;
+            for shell_key in shell_keys {
+                total_same_param +=
+                    brep::same_parameter::same_parameter_shell(&mut document.store, shell_key, g0_tol);
+            }
+            if total_same_param > 0 {
+                log::debug!(
+                    "[STEP] SameParameter: {} edge(s) on solid {:?}",
+                    total_same_param,
+                    sk
+                );
+            }
         }
     }
 
@@ -284,12 +286,14 @@ fn exchange_to_import_result(
     );
     import_report.heal_check_errors = total_heal.check_errors;
     import_report.skipped_faces += total_heal.skip_face_keys.len();
-    import_pipeline::run_continuity_checks(
-        &document.store,
-        &root_solids,
-        g0_tol,
-        &mut import_report,
-    );
+    if !options.skip_visualization {
+        import_pipeline::run_continuity_checks(
+            &document.store,
+            &root_solids,
+            g0_tol,
+            &mut import_report,
+        );
+    }
 
     if options.fail_on_heal_check_errors() && total_heal.check_errors > 0 {
         return Err(StepError::ImportQuality(format!(
