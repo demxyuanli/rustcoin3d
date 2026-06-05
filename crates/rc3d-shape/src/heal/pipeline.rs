@@ -76,8 +76,9 @@ pub fn auto_heal_shell(
 ///
 /// | Level    | Iteration 0 fixes |
 /// |----------|-------------------|
-/// | Basic    | connected, small edges, reorder, gaps 3d, orientation, same parameter |
-/// | Standard | + UV gaps, shifted, periodic degen, edge curves, lacking, seams, natural bound, reversed 2d |
+/// | Basic    | connected, small edges, reorder, gaps 3d, orientation |
+/// | Standard | + same parameter, UV gaps, shifted, periodic degen, edge curves, lacking, seams, natural bound, reversed 2d |
+/// | Advanced | Standard + self-intersection, degenerated, intersecting wires |
 /// | Advanced | + self-intersection, degenerated, intersecting wires (when check flags set) |
 pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckReport) -> HealConfig {
     let mut config = HealConfig::all_disabled();
@@ -87,7 +88,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
         config.fix_small_edges = true;
         config.fix_reorder = true;
         config.fix_gaps_3d = level >= HealLevel::Basic;
-        config.fix_same_parameter = level >= HealLevel::Basic;
+        config.fix_same_parameter = level >= HealLevel::Standard;
         config.fix_orientation = true;
 
         if level >= HealLevel::Standard {
