@@ -8,7 +8,7 @@ use crate::geom::SurfaceGeom;
 use crate::mesh_result::MeshResult;
 use super::boundary::register_boundary_point;
 use super::config::{count_valid_tris_in_range, min_adequate_trim_tris, BRepMeshConfig};
-use super::edge_disc::{discretize_all_edges, EdgePolygon};
+use super::edge_disc::{discretize_edge, EdgePolygon};
 use super::face_fill::{
     face_boundary_is_mixed, FaceMeshRange, fill_trimmed, mesh_plane_fan_3d, prefers_native_uv_ruled,
     surface_fill_3d, measure_face_chord_error, surface_is_revolution_like,
@@ -105,9 +105,13 @@ fn init_shell_mesh(
         ..Default::default()
     };
 
-    // Phase 1: edge discretization
-    let mut edge_polygons: HashMap<EdgeKey, EdgePolygon> =
-        discretize_all_edges(reg, &scaled_config.edge);
+    // Phase 1: edge discretization — only for edges belonging to this shell
+    let shell_edges = crate::topo_iter::iter_edges_of_shell(shell_key, reg);
+    let mut edge_polygons: HashMap<EdgeKey, EdgePolygon> = HashMap::with_capacity(shell_edges.len());
+    let edge_cfg = &scaled_config.edge;
+    for ek in &shell_edges {
+        edge_polygons.insert(*ek, discretize_edge(*ek, reg, edge_cfg));
+    }
 
     // SameParameter snap (Phase 1b)
     if scaled_config.same_parameter_tol > 0.0 {
