@@ -19,6 +19,7 @@ pub mod ssi_newton;
 pub mod bopds;
 pub mod face_intersector;
 pub mod pave_filler;
+pub mod builder_face;
 pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 
@@ -97,19 +98,41 @@ pub fn boolean_brep(
     }
 
     // Phase 2: Split faces along intersection curves
-    let split_a = split::split_all_faces_brep(shells_a, &curves, reg);
-    let split_b = split::split_all_faces_brep(shells_b, &curves, reg);
+    let split_a_uv = split::split_all_faces_brep(shells_a, &curves, reg);
+    let split_b_uv = split::split_all_faces_brep(shells_b, &curves, reg);
 
-    // Phase 3: Classify each region against the other solid
-    let regions_a = classify::classify_brep_regions(&split_a, shells_b[0], reg);
-    let regions_b = classify::classify_brep_regions(&split_b, shells_a[0], reg);
+    // Phase 2b: Build BRep faces from UV split regions (OCC BOPAlgo_BuilderFace)
+    // Must run BEFORE classification since it needs &mut reg
+    let mut new_faces_a: Vec<crate::topo::FaceKey> = Vec::new();
+    for sfr in &split_a_uv {
+        let result = builder_face::build_faces_from_split(
+            sfr.original_face, &sfr.sub_faces, &curves, reg,
+        );
+        new_faces_a.extend(result.new_faces);
+    }
+    let mut new_faces_b: Vec<crate::topo::FaceKey> = Vec::new();
+    for sfr in &split_b_uv {
+        let result = builder_face::build_faces_from_split(
+            sfr.original_face, &sfr.sub_faces, &curves, reg,
+        );
+        new_faces_b.extend(result.new_faces);
+    }
+
+    // Phase 3: Classify each region against the other solid (needs &reg, immutable)
+    let regions_a = classify::classify_brep_regions(&split_a_uv, shells_b[0], reg);
+    let regions_b = classify::classify_brep_regions(&split_b_uv, shells_a[0], reg);
 
     // Phase 4: Select faces based on operation type
     let selected = select::select_brep_faces(
-        &regions_a, &regions_b, &split_a, &split_b, op, reg,
+        &regions_a, &regions_b, &split_a_uv, &split_b_uv, op, reg,
     );
 
-    if selected.is_empty() {
+    // Append newly built BRep faces to the selected set
+    let mut all_selected = selected.clone();
+    all_selected.extend(new_faces_a);
+    all_selected.extend(new_faces_b);
+
+    if all_selected.is_empty() {
         return BRepBoolResult {
             result_shells: vec![],
             is_empty: true,
@@ -119,7 +142,7 @@ pub fn boolean_brep(
     }
 
     // Phase 5: Stitch into new shell
-    let shell_key = stitch::stitch_faces_into_shell(&selected, reg);
+    let shell_key = stitch::stitch_faces_into_shell(&all_selected, reg);
     let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
     let is_empty = result_shells.is_empty();
 
