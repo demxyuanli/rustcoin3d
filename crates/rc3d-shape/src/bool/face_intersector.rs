@@ -10,7 +10,7 @@ use crate::geom::{CurveGeom, SurfaceGeom};
 use crate::topo::FaceKey;
 use super::bopds::{FaceFaceInterf, InterfPoint};
 use super::marching::{find_seeds, trace_curve_bidirectional};
-use super::ssi_newton::{newton_refine_ssi, ssi_tangent};
+use super::ssi_newton::newton_refine_ssi;
 use rc3d_core::math::Vec3;
 
 /// Compute face-face intersection with full UV data for both faces.

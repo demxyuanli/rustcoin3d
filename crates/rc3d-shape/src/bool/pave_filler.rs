@@ -13,14 +13,12 @@
 //! 4. Create pave blocks between consecutive split vertices
 //! 5. Group overlapping pave blocks into common blocks
 
-use std::collections::{HashMap, HashSet};
-use crate::geom::{CurveGeom, SurfaceGeom};
+use std::collections::HashMap;
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use crate::topo_iter;
-use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, InterfPoint, PaveBlock};
+use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, PaveBlock};
 use super::face_intersector;
-use super::intersect::FaceIntersectionResult;
 use rc3d_core::math::Vec3;
 
 /// Result of the pave filling phase.
@@ -112,7 +110,7 @@ fn compute_face_pair_interf(
     fka: FaceKey, fkb: FaceKey,
     face_a: &crate::topo::BRepFace,
     face_b: &crate::topo::BRepFace,
-    reg: &BRepStore,
+    _reg: &BRepStore,
     tolerance: f32,
 ) -> Option<FaceFaceInterf> {
     // Try the general face intersector (marching + Newton for all surface types)

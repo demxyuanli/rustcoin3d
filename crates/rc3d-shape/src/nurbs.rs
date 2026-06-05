@@ -313,7 +313,6 @@ impl NurbsSurface {
 
         let inv_w = 1.0 / w_sum;
         let inv_w2 = inv_w * inv_w;
-        let inv_w3 = inv_w2 * inv_w;
 
         // Position (rational quotient rule)
         let pos = p * inv_w;

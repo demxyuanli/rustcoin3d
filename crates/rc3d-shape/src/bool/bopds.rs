@@ -135,9 +135,9 @@ impl BopDS {
     ///
     /// Sorts intersection points along each edge by parameter t and creates
     /// pave blocks for each consecutive pair.
-    pub fn build_pave_blocks(&mut self, reg: &mut BRepStore) {
+    pub fn build_pave_blocks(&mut self, _reg: &mut BRepStore) {
         // Collect all intersection points per edge
-        let mut edge_points: HashMap<EdgeKey, Vec<(f32, Vec3, FaceKey)>> = HashMap::new();
+        let edge_points: HashMap<EdgeKey, Vec<(f32, Vec3, FaceKey)>> = HashMap::new();
 
         for interf in &self.face_face_interfs {
             for pt in &interf.points {
