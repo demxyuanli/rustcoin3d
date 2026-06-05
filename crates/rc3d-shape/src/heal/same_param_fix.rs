@@ -209,7 +209,10 @@ fn sample_deviation(
     surface: &SurfaceGeom,
     tolerance: f32,
 ) -> (f32, Vec<(f32, Vec3, f32)>) {
-    let samples = curve_3d.sample_adaptive(0.0, 1.0, tolerance * 0.1);
+    // Sample at the given tolerance (not tolerance*0.1) — avoids excessive
+    // sampling of complex BSpline curves. A tolerance of 1e-4 produces ~10x
+    // fewer samples than 1e-5 while still catching real PCurve misalignment.
+    let samples = curve_3d.sample_adaptive(0.0, 1.0, tolerance);
     let mut max_dev = 0.0f32;
     let mut results = Vec::with_capacity(samples.len());
     for (t, p3d) in &samples {
