@@ -592,6 +592,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         let face = mesh_face_owned.as_ref();
 
         if info_wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
+            let _tf = std::time::Instant::now();
             let tris_before = all_indices.len() / 4;
             mesh_closed_surface(
                 face,
@@ -602,6 +603,8 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
                 &mut all_indices,
             );
             let tri_count = all_indices.len() / 4 - tris_before;
+            let t = _tf.elapsed().as_secs_f32();
+            if t > 0.5 { eprintln!("[mesh timer] closed_surface {:?}: {:.1}s ({} tris)", info_face_key, t, tri_count); }
             report.faces.push(FaceMeshStats {
                 face_key: info_face_key,
                 tri_count,
