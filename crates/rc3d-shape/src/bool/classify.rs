@@ -204,22 +204,94 @@ fn ray_general_intersect(
     let ray_len = dir.length();
     if ray_len < 1e-10 { return RayHit::Miss; }
     let d = dir / ray_len;
-    let face_surface = &face.surface;
-    // Sample along ray, project to surface
-    // Use adaptive stepping: coarse first, then refine
-    let steps = 100;
-    let max_dist = 100.0; // reasonable search range
-    for i in 0..steps {
-        let t = max_dist * (i as f32 + 0.5) / steps as f32;
+    let surface = &face.surface;
+
+    // Phase 1: Coarse proximity search — find t-intervals where the
+    // ray is close to the surface (< search_tol).
+    let search_tol = tolerance.max(1e-3) * 100.0;
+    let coarse_steps = 32;
+    let max_t = 200.0;
+    let mut candidates: Vec<f32> = Vec::new();
+    let mut prev_dist = f32::MAX;
+
+    for i in 0..=coarse_steps {
+        let t = max_t * i as f32 / coarse_steps as f32;
         let pt = origin + d * t;
-        if let Some((u, v)) = face_surface.project(pt) {
-            let surf_pt = face_surface.d0_native(u, v);
-            if (surf_pt - pt).length() < tolerance * 10.0 {
-                if point_in_face_uv(surf_pt, face, face_key, reg) { return RayHit::Hit; }
+        if let Some((u, v)) = surface.project(pt) {
+            let surf_pt = surface.d0_native(u, v);
+            let dist = (surf_pt - pt).length();
+            // Detect sign change in (dist - search_tol): crossing from far to near
+            if dist < search_tol && prev_dist >= search_tol {
+                candidates.push(t);
+            }
+            prev_dist = dist;
+        }
+    }
+
+    // Phase 2: Refine each candidate with binary search
+    for &t_seed in &candidates {
+        let refined = refine_ray_hit(origin, d, t_seed, surface, tolerance, 8);
+        if let Some(t) = refined {
+            if t.abs() < tolerance { return RayHit::Boundary; }
+            if t > 0.0 {
+                let hit = origin + d * t;
+                if point_in_face_uv(hit, face, face_key, reg) {
+                    return RayHit::Hit;
+                }
             }
         }
     }
+
     RayHit::Miss
+}
+
+/// Refine a ray-surface intersection using binary search on the distance.
+///
+/// Given an initial t where distance < search_tol, narrows down to the
+/// exact t where distance ≈ 0 using bisection.
+fn refine_ray_hit(
+    origin: Vec3, dir: Vec3, t_seed: f32,
+    surface: &SurfaceGeom, tolerance: f32, max_iter: usize,
+) -> Option<f32> {
+    let search_radius = tolerance * 50.0;
+    let mut lo = (t_seed - search_radius).max(0.0);
+    let mut hi = t_seed + search_radius;
+
+    // Ensure lo has distance > 0 (ray is above surface) and hi has
+    // a valid projection close to the surface.
+    let mut best_t = t_seed;
+    let mut best_dist = f32::MAX;
+
+    for _ in 0..max_iter {
+        let mid = (lo + hi) * 0.5;
+        let pt = origin + dir * mid;
+        if let Some((u, v)) = surface.project(pt) {
+            let surf_pt = surface.d0_native(u, v);
+            let dist = (surf_pt - pt).length();
+            if dist < best_dist {
+                best_dist = dist;
+                best_t = mid;
+            }
+            if dist < tolerance {
+                return Some(mid);
+            }
+            // Shrink interval toward the minimum
+            if dist < tolerance * 10.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        } else {
+            // Can't project — ray is far from surface, move toward seed
+            lo = mid;
+        }
+    }
+
+    if best_dist < tolerance * 10.0 {
+        Some(best_t)
+    } else {
+        None
+    }
 }
 
 fn ray_cylinder_intersect(

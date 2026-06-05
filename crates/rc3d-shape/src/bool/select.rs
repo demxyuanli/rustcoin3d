@@ -1,14 +1,21 @@
-//! Face selection per boolean operation type (B-Rep native).
+//! Face selection per boolean operation type.
+//!
+//! OCC alignment: BOPAlgo_BOP — classifies each split face region and
+//! selects faces based on the boolean operation type.
+//!
+//! Uses the new BuilderFace path to create BRep faces from UV regions.
 
 use crate::store::BRepStore;
 use crate::topo::FaceKey;
 use super::classify::PointClassification;
 use super::split::SplitFaceRegion;
+use super::builder_face;
 use super::BoolOp;
 
 /// Select B-Rep faces for the boolean result based on operation type.
-/// Each sub-face is individually classified; new B-Rep faces are created
-/// for sub-faces that have a non-empty UV boundary.
+///
+/// Each sub-face is individually classified; kept faces are converted
+/// to BRep via BuilderFace (OCC BOPAlgo_BuilderFace path).
 pub fn select_brep_faces(
     regions_a: &[(usize, Vec<PointClassification>)],
     regions_b: &[(usize, Vec<PointClassification>)],
@@ -19,10 +26,12 @@ pub fn select_brep_faces(
 ) -> Vec<FaceKey> {
     let mut selected = Vec::new();
 
+    // Process A faces
     for (i, classes) in regions_a {
         let i = *i;
         if i >= split_a.len() { continue; }
-        for (j, sub) in split_a[i].sub_faces.iter().enumerate() {
+        let sfr = &split_a[i];
+        for (j, sub) in sfr.sub_faces.iter().enumerate() {
             let class = classes.get(j).copied().unwrap_or(PointClassification::Outside);
             let keep = match op {
                 BoolOp::Union => class == PointClassification::Outside,
@@ -30,15 +39,17 @@ pub fn select_brep_faces(
                 BoolOp::Difference => class == PointClassification::Outside,
             };
             if keep {
-                push_sub_face(sub, reg, &mut selected);
+                push_kept_face(sub, reg, &mut selected, &[]);
             }
         }
     }
 
+    // Process B faces
     for (i, classes) in regions_b {
         let i = *i;
         if i >= split_b.len() { continue; }
-        for (j, sub) in split_b[i].sub_faces.iter().enumerate() {
+        let sfr = &split_b[i];
+        for (j, sub) in sfr.sub_faces.iter().enumerate() {
             let class = classes.get(j).copied().unwrap_or(PointClassification::Outside);
             let keep = match op {
                 BoolOp::Union => class == PointClassification::Outside,
@@ -46,7 +57,7 @@ pub fn select_brep_faces(
                 BoolOp::Difference => class == PointClassification::Inside,
             };
             if keep {
-                push_sub_face(sub, reg, &mut selected);
+                push_kept_face(sub, reg, &mut selected, &[]);
             }
         }
     }
@@ -54,18 +65,28 @@ pub fn select_brep_faces(
     selected
 }
 
-fn push_sub_face(
+/// Convert a kept sub-face region to actual BRep faces.
+///
+/// Uses BuilderFace to create proper BRep topology from the UV region,
+/// falling back to the original face if no UV boundary is available.
+fn push_kept_face(
     sub: &super::split::SubFaceRegion,
     reg: &mut BRepStore,
     selected: &mut Vec<FaceKey>,
+    curves: &[super::split::BRepIntersectionCurve],
 ) {
     if !sub.uv_boundary.is_empty() {
-        if let Some(new_fk) = super::split::create_sub_face(
+        // Use BuilderFace to create proper BRep face from UV boundary
+        let bf_result = builder_face::build_faces_from_split(
             sub.original_face,
-            &sub.uv_boundary[0],
+            std::slice::from_ref(sub),
+            curves,
             reg,
-        ) {
-            selected.push(new_fk);
+        );
+        let has_new = !bf_result.new_faces.is_empty();
+        selected.extend(bf_result.new_faces);
+        if !has_new {
+            selected.push(sub.original_face);
         }
     } else {
         // No boundary = whole face region, keep original
