@@ -88,13 +88,12 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
 
     let mut import_options = StepImportOptions::default();
     import_options.skip_visualization = true;
-    // STL export only needs mesh quality, not full topology repair.
-    // Basic level skips expensive checks (self-intersection, intersecting wires, etc.)
     import_options.heal_level = rc3d_io::step::brep::heal::HealLevel::Basic;
     let mut result = import_step_file_with_options(&step_path, &import_options).expect("import step");
 
     let mut plan_options = emit_plan_options_from_step(&import_options);
-    plan_options.heal_skip_faces = Vec::new();
+    // Use fast-export mesh config: skips post-refine, optimization, chord retries
+    plan_options.mesh_config = rc3d_shape::mesh::BRepMeshConfig::preview();
     let plan = result
         .document
         .build_emit_plan(&plan_options)
