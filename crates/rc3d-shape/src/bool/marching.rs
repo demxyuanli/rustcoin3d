@@ -1,7 +1,11 @@
-//! NURBS-NURBS intersection via adaptive marching (OCC IntPatch_ImpPrmIntersection).
+//! NURBS-NURBS intersection via adaptive marching with Newton refinement.
+//!
+//! OCC alignment: IntPatch_TheIWalking — tangent marching with Gauss-Newton
+//! correction at each step to keep the traced point on both surfaces.
 
 use rc3d_core::math::Vec3;
 use crate::geom::SurfaceGeom;
+use super::ssi_newton::{newton_refine_ssi, ssi_tangent};
 
 /// A seed point for curve tracing: 3D point + UV params on both surfaces.
 #[derive(Debug, Clone)]
@@ -119,7 +123,14 @@ pub fn trace_curve_bidirectional(
     }
 }
 
-/// Trace in one direction (forward=true) or opposite (forward=false)
+/// Trace in one direction (forward=true) or opposite (forward=false).
+///
+/// At each step:
+/// 1. Compute tangent = normal_a × normal_b (OCC: normal cross product)
+/// 2. Step along tangent in 3D
+/// 3. Newton-refine to project back onto BOTH surfaces simultaneously
+///    (OCC IntPatch_TheIWalking Newton correction)
+/// 4. Stop when the refined point exits the parameter domain
 fn trace_curve_in_dir(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
@@ -130,38 +141,58 @@ fn trace_curve_in_dir(
     forward: bool,
 ) -> Option<Vec<Vec3>> {
     let range_a = surf_a.param_range();
-    let mut points = vec![seed.point];
+    let range_b = surf_b.param_range();
+    let mut points: Vec<Vec3> = vec![seed.point];
     let mut current_uv_a = seed.uv_a;
+    let mut current_uv_b = seed.uv_b;
     let sign = if forward { 1.0 } else { -1.0 };
 
     for _ in 0..max_steps {
-        let (un_a, vn_a) = surf_a.native_uv_to_d0(current_uv_a.0, current_uv_a.1);
-        let (du_a, dv_a) = surf_a.d1(un_a, vn_a);
-        let normal_a = du_a.cross(dv_a).normalize();
-
-        let tangent = if let Some(uv_b) = surf_b.project(*points.last().unwrap()) {
-            let (un_b, vn_b) = surf_b.native_uv_to_d0(uv_b.0, uv_b.1);
-            let (du_b, dv_b) = surf_b.d1(un_b, vn_b);
-            let normal_b = du_b.cross(dv_b).normalize();
-            let t = normal_a.cross(normal_b) * sign;
-            if t.length() < tolerance { break; }
-            t.normalize()
-        } else {
-            break;
+        // Compute tangent from surface normals at current position
+        let tangent = match ssi_tangent(surf_a, surf_b, current_uv_a, current_uv_b) {
+            Some(t) => t * sign,
+            None => break,
         };
 
-        let next_pt = points.last().unwrap() + tangent * step_size;
-        let Some(uv_a_next) = surf_a.project(next_pt) else { break };
+        // Step along tangent in 3D
+        let last_pt = *points.last().unwrap();
+        let next_pt = last_pt + tangent * step_size;
 
-        let (un_a_n, vn_a_n) = surf_a.native_uv_to_d0(uv_a_next.0, uv_a_next.1);
-        let corrected = surf_a.d0(un_a_n, vn_a_n);
-        points.push(corrected);
-        current_uv_a = uv_a_next;
+        // Project the stepped point to both surfaces as initial guess
+        let guess_uv_a = surf_a.project(next_pt);
+        let guess_uv_b = surf_b.project(next_pt);
 
-        if uv_a_next.0 < range_a.u_min || uv_a_next.0 > range_a.u_max
-            || uv_a_next.1 < range_a.v_min || uv_a_next.1 > range_a.v_max
-        {
-            break;
+        let (uv_a, uv_b) = match (guess_uv_a, guess_uv_b) {
+            (Some(ua), Some(ub)) => (ua, ub),
+            _ => break,
+        };
+
+        // Newton-refine: project onto BOTH surfaces simultaneously
+        match newton_refine_ssi(surf_a, surf_b, uv_a, uv_b, tolerance * 10.0, 8) {
+            Some((refined_uv_a, refined_uv_b)) => {
+                // Check domain bounds
+                if refined_uv_a.0 < range_a.u_min - range_a.u_span() * 0.1
+                    || refined_uv_a.0 > range_a.u_max + range_a.u_span() * 0.1
+                    || refined_uv_a.1 < range_a.v_min - range_a.v_span() * 0.1
+                    || refined_uv_a.1 > range_a.v_max + range_a.v_span() * 0.1
+                {
+                    break;
+                }
+                if refined_uv_b.0 < range_b.u_min - range_b.u_span() * 0.1
+                    || refined_uv_b.0 > range_b.u_max + range_b.u_span() * 0.1
+                    || refined_uv_b.1 < range_b.v_min - range_b.v_span() * 0.1
+                    || refined_uv_b.1 > range_b.v_max + range_b.v_span() * 0.1
+                {
+                    break;
+                }
+
+                // Evaluate exact 3D point from refined UV
+                let exact_pt = surf_a.d0_native(refined_uv_a.0, refined_uv_a.1);
+                points.push(exact_pt);
+                current_uv_a = refined_uv_a;
+                current_uv_b = refined_uv_b;
+            }
+            None => break,
         }
     }
 

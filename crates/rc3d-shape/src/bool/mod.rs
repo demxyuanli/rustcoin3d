@@ -15,6 +15,7 @@ pub mod split;
 pub mod select;
 pub(crate) mod stitch;
 pub mod marching;
+pub mod ssi_newton;
 pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 
