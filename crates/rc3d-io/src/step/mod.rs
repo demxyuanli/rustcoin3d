@@ -165,6 +165,7 @@ fn exchange_to_import_result(
     exchange: parser::Exchange,
     options: &StepImportOptions,
 ) -> Result<StepImportResult, StepError> {
+    let _total = std::time::Instant::now();
     let mut import_report = StepImportReport::default();
     import_report.skipped_parse_entities = exchange.diagnostics.skipped_entities.len();
     import_report.unknown_entity_count = exchange.diagnostics.unknown_entity_count;
@@ -215,8 +216,10 @@ fn exchange_to_import_result(
     }
 
     let build_options = brep::BRepBuildOptions::from_import(options);
+    let t_caf = std::time::Instant::now();
     let transfer = StepCafTransfer::transfer(&exchange.entities, &build_options)?;
     let mut document = transfer.document;
+    log::info!("[STEP timing] B-Rep build: {:.1}s", t_caf.elapsed().as_secs_f32());
     import_report.skipped_faces = transfer.build_report.skipped_faces;
     import_report.skipped_edges = transfer.build_report.skipped_edges;
     import_report.void_shell_count = transfer.build_report.void_shell_count;
@@ -277,6 +280,7 @@ fn exchange_to_import_result(
         );
     }
 
+    let t_heal = std::time::Instant::now();
     let heal_iters = if options.skip_visualization { 2 } else { 5 };
     let total_heal = import_pipeline::run_heal_pipeline(
         &mut document.store,
@@ -319,9 +323,17 @@ fn exchange_to_import_result(
         &root_solids,
         explode_factor,
     );
+    let t_mesh_start = std::time::Instant::now();
     let plan = document
         .build_emit_plan(&plan_options)
         .map_err(|e| StepError::ImportQuality(e.to_string()))?;
+    let t_mesh_elapsed = t_mesh_start.elapsed().as_secs_f32();
+    let t_total = _total.elapsed().as_secs_f32();
+    log::info!("[STEP timing] B-Rep build: {:.1}s  heal: {:.1}s  mesh+plan: {:.1}s  total: {:.1}s",
+        t_heal.elapsed().as_secs_f32(),     // B-Rep took from t_caf to t_heal start
+        (t_mesh_start - t_heal).as_secs_f32(), // heal took from t_heal to t_mesh_start
+        t_mesh_elapsed,                      // mesh+plan
+        t_total);
 
     let mut graph = SceneGraph::new();
     let root = graph.add_root(NodeData::Separator(SeparatorNode));

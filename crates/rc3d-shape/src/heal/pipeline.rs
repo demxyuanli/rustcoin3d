@@ -29,19 +29,20 @@ pub fn auto_heal_shell(
     level: HealLevel,
     max_iterations: usize,
 ) -> HealReport {
+    let _t0 = std::time::Instant::now();
     let mut total_report = HealReport::default();
     let mut check = check_shell(shell_key, reg);
+    let t_check0 = _t0.elapsed().as_secs_f32();
     let mut prev_errors = check.errors.len();
     let mut prev_warnings = check.warnings.len();
 
-    log::debug!(
-        "[BRep pipeline] level={:?}, baseline: {} errors, {} warnings",
-        level,
-        prev_errors,
-        prev_warnings
+    log::info!(
+        "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn)",
+        level, t_check0, prev_errors, prev_warnings
     );
 
     for iter in 0..max_iterations {
+        let _ti = std::time::Instant::now();
         let config = select_fixes(level, iter, &check);
         let hr = heal_shell(shell_key, reg, &config);
         total_report.merge(hr.clone());
@@ -52,13 +53,10 @@ pub fn auto_heal_shell(
         let curr_errors = check.errors.len();
         let curr_warnings = check.warnings.len();
 
-        log::debug!(
-            "[BRep pipeline] iter {}: errors {}→{}, warnings {}→{}",
-            iter + 1,
-            prev_errors,
-            curr_errors,
-            prev_warnings,
-            curr_warnings,
+        log::info!(
+            "[BRep pipeline] iter {}: {:.1}s ({}→{} err, {}→{} warn)",
+            iter + 1, _ti.elapsed().as_secs_f32(),
+            prev_errors, curr_errors, prev_warnings, curr_warnings,
         );
 
         if curr_errors == prev_errors && curr_warnings == prev_warnings {
