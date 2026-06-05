@@ -2,6 +2,7 @@
 
 pub mod bspline;
 pub mod project;
+pub mod curve2d;
 
 pub mod curve_eval;
 pub mod surface_eval;
