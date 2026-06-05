@@ -227,7 +227,8 @@ pub fn triangulate_uv_cdt_with_steiner(
             (u_min, u_max, v_min, v_max)
         };
         let (u_min, u_max, v_min, v_max) = range;
-        let (u_divs, v_divs) = face.surface.parameter_division(
+        let (u_divs, v_divs) = super::curvature_driven_divisions(
+            &face.surface,
             range,
             config.deflection_interior,
             config.parameter_division_max_depth,
@@ -297,7 +298,8 @@ pub fn triangulate_uv_cdt_with_steiner(
 
         let min_sz = effective_min_size(config);
         if !config.skip_interior_edge_split {
-            for _iter in 0..1 {
+            let max_iter = config.max_adapt_iterations.max(1).min(8);
+            for _iter in 0..max_iter {
                 if cdt.vertex_count() >= MAX_CDT_VERTICES {
                     break;
                 }
@@ -501,6 +503,8 @@ mod tests {
             shell_min_size: 0.0,
             max_adapt_iterations: 4,
             angular_deflection: std::f32::consts::PI,
+            parameter_division_max_depth: 0, // disable grid; test Steiner splitting only
+            skip_interior_edge_split: false, // enable Steiner edge splits
             ..Default::default()
         };
 
@@ -512,6 +516,8 @@ mod tests {
         let config_tight = FaceFillConfig {
             deflection_interior: 0.01,
             max_adapt_iterations: 4,
+            parameter_division_max_depth: 0, // disable grid; test Steiner splitting only
+            skip_interior_edge_split: false, // enable Steiner edge splits
             ..config_loose.clone()
         };
         let (tris_tight, _) = triangulate_uv_cdt_with_steiner(
@@ -730,6 +736,7 @@ mod tests {
             deflection_interior: 0.05,
             min_size: 0.01,
             max_adapt_iterations: 4,
+            skip_interior_edge_split: false, // enable Steiner edge splits
             ..Default::default()
         };
         let before = verts.len();

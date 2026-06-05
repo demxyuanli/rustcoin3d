@@ -25,6 +25,7 @@ mod config;
 mod fallback_policy;
 mod grid;
 mod edge_pool;
+mod param_div;
 mod post_process;
 mod ruled;
 mod shell_impl;
@@ -34,6 +35,7 @@ pub use edge_pool::{measure_equivalent_edge_weld_gap, measure_face_boundary_surf
 pub use solid_mesh::mesh_solid_with_voids;
 pub use face_dispatch::{algo_from_plan, FaceMeshPlan, SurfaceFillReason, plan_face_mesh};
 pub use shell_mesh::{mesh_brep_shell, mesh_brep_shell_with_report, ShellMeshOutput};
+pub(crate) use param_div::curvature_driven_divisions;
 
 #[cfg(test)]
 mod mesh_integration {
