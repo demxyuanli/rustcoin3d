@@ -333,7 +333,11 @@ fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: rc3d_shape::MeshRe
 }
 
 pub fn emit_plan_options_from_step(options: &crate::step::StepImportOptions) -> EmitPlanOptions {
-    let mut mesh_config = rc3d_shape::mesh::BRepMeshConfig::default();
+    let mut mesh_config = if options.fast_export {
+        rc3d_shape::mesh::BRepMeshConfig::preview()
+    } else {
+        rc3d_shape::mesh::BRepMeshConfig::default()
+    };
     mesh_config.relative_deflection = options.mesh_relative_deflection;
     EmitPlanOptions {
         mesh_config,

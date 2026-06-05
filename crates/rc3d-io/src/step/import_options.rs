@@ -42,6 +42,8 @@ pub struct StepImportOptions {
     /// When true, attempt to boolean-subtract void shells from outer shells
     /// by projecting void wires as inner wires (holes) on matching outer faces.
     pub strict_voids: bool,
+    /// Enable fast-export mesh mode: skips post-refine, optimization, chord checks.
+    pub fast_export: bool,
 }
 
 /// Full STEP import output (scene + shape document + assembly metadata).
@@ -63,6 +65,7 @@ impl StepImportOptions {
             assembly_preview_explode: 0.0,
             skip_visualization: false,
             strict_voids: false,
+            fast_export: false,
         }
     }
 
@@ -76,6 +79,7 @@ impl StepImportOptions {
             assembly_preview_explode: 0.0,
             skip_visualization: false,
             strict_voids: false,
+            fast_export: false,
         }
     }
 
