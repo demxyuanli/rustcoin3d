@@ -144,10 +144,15 @@ impl ShapeDocument {
             orientation,
         };
         if self.tessellation.get(&key).is_some() {
+            eprintln!("[emit_plan] tessellate_solid cache HIT for {:?}", solid_key);
             return Ok(key);
         }
+        let _t_msh = std::time::Instant::now();
         let mut entry = mesh_solid_local(&self.store, solid_key, config, skip_faces)
             .ok_or_else(|| ShapeError::TessellationFailed(format!("solid {:?}", solid_key)))?;
+        eprintln!("[emit_plan] tessellate_solid {:?}: {:.1}s ({} verts, {} faces)",
+            solid_key, _t_msh.elapsed().as_secs_f32(),
+            entry.mesh.vertices.len(), entry.mesh.indices.len() / 4);
         if orientation == Orientation::Reversed {
             entry.mesh.reverse_winding();
         }
@@ -159,6 +164,7 @@ impl ShapeDocument {
         &mut self,
         options: &EmitPlanOptions,
     ) -> Result<SceneEmitPlan, ShapeError> {
+        let _t_plan = std::time::Instant::now();
         let mut plan = SceneEmitPlan::default();
         let mut tess_keys_seen: HashMap<TessKey, MeshSlotId> = HashMap::new();
         let mut slot_counter = 0usize;
@@ -207,6 +213,8 @@ impl ShapeDocument {
                 });
             }
             populate_pmi_refs(self, &mut plan);
+            eprintln!("[emit_plan] roots path: {:.1}s  {} instances, {} slots",
+                _t_plan.elapsed().as_secs_f32(), plan.instances.len(), plan.mesh_table.len());
             return Ok(plan);
         }
 
@@ -224,6 +232,8 @@ impl ShapeDocument {
         }
 
         populate_pmi_refs(self, &mut plan);
+        eprintln!("[emit_plan] labels path: {:.1}s  {} instances, {} slots",
+            _t_plan.elapsed().as_secs_f32(), plan.instances.len(), plan.mesh_table.len());
         Ok(plan)
     }
 }
