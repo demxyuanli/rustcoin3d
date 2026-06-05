@@ -1,13 +1,34 @@
 use rc3d_core::math::Vec3;
 use crate::mesh_result::MeshResult;
 
-/// Area-weighted vertex normals from final triangle winding (fixes ruled/off-surface fills).
+/// Area-weighted vertex normals from triangle winding.
+///
+/// If `preserve` is non-empty, vertices with existing analytical normals
+/// (from surface evaluation) are skipped — only welded/merged vertices
+/// get recomputed normals. This preserves the higher-quality analytical
+/// normals on boundary and interior vertices that weren't affected by welding.
 pub fn recompute_normals_from_tris(vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>) {
+    recompute_normals_from_tris_preserving(vertices, indices, normals, &[])
+}
+
+/// Recompute normals from triangle faces, preserving specified vertex normals.
+///
+/// Vertices in `preserve` keep their existing normals. All others are
+/// recomputed from adjacent triangle face normals (area-weighted average).
+pub fn recompute_normals_from_tris_preserving(
+    vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>, preserve: &[usize],
+) {
+    use std::collections::HashSet;
+    let preserved: HashSet<usize> = preserve.iter().copied().collect();
+
     if normals.len() != vertices.len() {
         normals.resize(vertices.len(), Vec3::ZERO);
     }
-    for n in normals.iter_mut() {
-        *n = Vec3::ZERO;
+    // Only zero out normals for non-preserved vertices
+    for (i, n) in normals.iter_mut().enumerate() {
+        if !preserved.contains(&i) {
+            *n = Vec3::ZERO;
+        }
     }
     for chunk in indices.chunks(4) {
         if chunk.len() < 4 || chunk[3] != -1 {
@@ -21,16 +42,25 @@ pub fn recompute_normals_from_tris(vertices: &[Vec3], indices: &[i32], normals: 
         if n.length_squared() < 1e-20 {
             continue;
         }
-        normals[i0] += n;
-        normals[i1] += n;
-        normals[i2] += n;
+        // Only accumulate for non-preserved vertices
+        if !preserved.contains(&i0) { normals[i0] += n; }
+        if !preserved.contains(&i1) { normals[i1] += n; }
+        if !preserved.contains(&i2) { normals[i2] += n; }
     }
-    for n in normals.iter_mut() {
-        let len = n.length();
-        if len > 1e-10 {
-            *n = *n * (1.0 / len);
+    for (i, n) in normals.iter_mut().enumerate() {
+        if preserved.contains(&i) {
+            // Ensure preserved normals are unit length
+            let len = n.length();
+            if len > 1e-10 {
+                *n = *n * (1.0 / len);
+            }
         } else {
-            *n = Vec3::Y;
+            let len = n.length();
+            if len > 1e-10 {
+                *n = *n * (1.0 / len);
+            } else {
+                *n = Vec3::Z; // zero → downstream should handle
+            }
         }
     }
 }

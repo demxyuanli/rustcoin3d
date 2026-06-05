@@ -23,7 +23,7 @@ use super::fallback_policy::{
     uses_closed_parametric_mesh,
 };
 use super::grid::{mesh_closed_surface, mesh_parametric_grid, mesh_trimmed_uv_grid, mesh_uv_bbox_grid};
-use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris};
+use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris, recompute_normals_from_tris_preserving};
 use super::edge_pool::build_face_boundary_pool;
 use super::ruled::{try_ruled_two_wire_mesh, RuledMeshBuffers};
 use super::refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map};
@@ -511,10 +511,30 @@ fn finalize_shell_mesh(
         protected.insert(i);
     }
 
+    // Save pre-weld positions of protected vertices for normal preservation
+    let protected_positions: HashSet<[u32; 3]> = protected.iter()
+        .filter_map(|&i| mesh.vertices.get(i))
+        .map(|v| rc3d_core::utils::hash::f32x3_quantized_bits([v.x, v.y, v.z]))
+        .collect();
+
     let welded = mesh.weld_vertices_protected(weld_tol, &protected);
     log::debug!("[BRep mesh] welded {} interior vertices ({} boundary protected)",
         welded, protected.len());
-    recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
+
+    // Preserve analytical surface normals on boundary vertices that weren't welded.
+    // Interior vertices that were merged get recomputed from triangle faces.
+    if welded > 0 {
+        let preserve: Vec<usize> = mesh.vertices.iter().enumerate()
+            .filter(|(_, v)| {
+                let key = rc3d_core::utils::hash::f32x3_quantized_bits([v.x, v.y, v.z]);
+                protected_positions.contains(&key)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        recompute_normals_from_tris_preserving(&mesh.vertices, &mesh.indices, &mut mesh.normals, &preserve);
+    } else {
+        // No welding occurred — all analytical normals are still valid
+    }
     optimize_mesh(&mut mesh, &scaled_config.optimize);
     if collect_diag {
         log_mesh_coordinates_if_requested(
