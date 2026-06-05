@@ -116,6 +116,13 @@ pub enum EntityType {
     FillAreaStyle,
     ColourRgb,
     Colour,
+    // Tessellated geometry (AP242 — fallback when precise B-Rep unavailable)
+    TessellatedShell,
+    TessellatedFace,
+    TessellatedEdge,
+    TriangulatedFace,
+    ComplexTriangulatedFace,
+    CoordinatesList,
     // Meta (supertype wrappers, rarely used directly)
     RepresentationItem,
     GeometricRepresentationItem,
@@ -230,6 +237,13 @@ impl EntityType {
             "FILL_AREA_STYLE" => Self::FillAreaStyle,
             "COLOUR_RGB" => Self::ColourRgb,
             "COLOUR" => Self::Colour,
+            // Tessellated geometry (AP242)
+            "TESSELLATED_SHELL" => Self::TessellatedShell,
+            "TESSELLATED_FACE" => Self::TessellatedFace,
+            "TESSELLATED_EDGE" => Self::TessellatedEdge,
+            "TRIANGULATED_FACE" => Self::TriangulatedFace,
+            "COMPLEX_TRIANGULATED_FACE" => Self::ComplexTriangulatedFace,
+            "COORDINATES_LIST" => Self::CoordinatesList,
             _ => Self::Unknown,
         }
     }

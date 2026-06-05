@@ -16,6 +16,7 @@ mod shell;
 mod surface;
 mod pcurve;
 mod curve;
+pub mod tessellated;
 
 pub use surface::build_surface;
 pub use curve::build_curve;
