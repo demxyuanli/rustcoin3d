@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
 use crate::topo::{BRepFace, ShellKey, EdgeKey, FaceKey, Orientation, VertexKey};
@@ -378,6 +378,7 @@ fn finalize_shell_mesh(
     scaled_config: &BRepMeshConfig,
     shell_diag: f32,
     face_infos_len: usize,
+    boundary_vertex_count: usize,
     wire_diag: &[String],
     collect_diag: bool,
 ) -> ShellMeshOutput {
@@ -487,7 +488,32 @@ fn finalize_shell_mesh(
         .weld_tolerance
         .max(shell_diag * 1e-5)
         .max(1e-6);
-    mesh.weld_vertices(weld_tol);
+
+    // Build protected set: boundary vertices (indices < boundary_vertex_count)
+    // that are referenced by emitted triangles. These are discretized edge
+    // points shared between adjacent faces — they must not move during welding
+    // to preserve cross-face watertightness.
+    // OCC: BRepMesh_FastDiscret boundary vertex locking.
+    let mut protected: HashSet<usize> = HashSet::new();
+    for chunk in mesh.indices.chunks(4) {
+        if chunk.len() < 3 { continue; }
+        for &idx in &chunk[0..3] {
+            if idx >= 0 {
+                let i = idx as usize;
+                if i < boundary_vertex_count {
+                    protected.insert(i);
+                }
+            }
+        }
+    }
+    // Also protect all B-Rep canonical vertex positions (topology anchors)
+    for i in 0..boundary_vertex_count.min(mesh.vertices.len()) {
+        protected.insert(i);
+    }
+
+    let welded = mesh.weld_vertices_protected(weld_tol, &protected);
+    log::debug!("[BRep mesh] welded {} interior vertices ({} boundary protected)",
+        welded, protected.len());
     recompute_normals_from_tris(&mesh.vertices, &mesh.indices, &mut mesh.normals);
     optimize_mesh(&mut mesh, &scaled_config.optimize);
     if collect_diag {
@@ -1607,6 +1633,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         &scaled_config,
         shell_diag,
         face_infos_len,
+        boundary_vertex_count,
         &wire_diag,
         collect_diag,
     )
