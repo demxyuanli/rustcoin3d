@@ -280,8 +280,11 @@ fn heal_wire_passes(
     report: &mut HealReport,
 ) -> bool {
     if config.fix_connected {
+        let _t = std::time::Instant::now();
         let cr = fix_connected_wire(wire_key, reg, config.gap_tolerance);
         report.merged_vertices += cr.merged_vertices;
+        let t = _t.elapsed().as_secs_f32();
+        if t > 0.1 { eprintln!("[heal timer]    fix_connected: {:.1}s", t); }
     }
 
     if config.fix_small_edges {
@@ -311,28 +314,26 @@ fn heal_wire_passes(
     }
 
     if config.fix_gaps_3d {
+        let _t = std::time::Instant::now();
         let closed = wire_is_closed(wire_key, reg);
         let gaps = close_wire_gaps(wire_key, reg, config.gap_tolerance, closed);
-        if gaps > 0 {
-            report.closed_gaps += gaps;
-        }
+        let t = _t.elapsed().as_secs_f32();
+        if t > 0.1 { eprintln!("[heal timer]    fix_gaps_3d: {:.1}s", t); }
+        if gaps > 0 { report.closed_gaps += gaps; }
     }
 
     if config.uv_gap_tolerance > 0.0 {
         let uv_closed = close_wire_gaps_2d(
-            wire_key,
-            face_key,
-            reg,
-            config.gap_tolerance,
-            config.uv_gap_tolerance,
+            wire_key, face_key, reg, config.gap_tolerance, config.uv_gap_tolerance,
         );
-        if uv_closed > 0 {
-            report.closed_uv_gaps += uv_closed;
-        }
+        if uv_closed > 0 { report.closed_uv_gaps += uv_closed; }
     }
 
     if config.fix_same_parameter {
+        let _t = std::time::Instant::now();
         let fixed = fix_same_parameter_wire(wire_key, face_key, reg, config.gap_tolerance);
+        let t = _t.elapsed().as_secs_f32();
+        if t > 0.1 { eprintln!("[heal timer]    fix_same_param: {:.1}s ({} edges fixed)", t, fixed); }
         report.same_param_fixed += fixed;
     }
 
@@ -342,7 +343,10 @@ fn heal_wire_passes(
     }
 
     if config.fix_edge_curves {
+        let _t = std::time::Instant::now();
         let adjusted = fix_edge_curves_wire(wire_key, face_key, reg, config.gap_tolerance);
+        let t = _t.elapsed().as_secs_f32();
+        if t > 0.1 { eprintln!("[heal timer]    fix_edge_curves: {:.1}s", t); }
         report.adjusted_edge_curves += adjusted;
     }
 
@@ -489,6 +493,7 @@ pub fn heal_shell(
     reg: &mut BRepStore,
     config: &HealConfig,
 ) -> HealReport {
+    let _t_total = std::time::Instant::now();
     let mut report = HealReport::default();
 
     let Some(shell) = reg.shells.get(shell_key) else {
@@ -574,6 +579,8 @@ pub fn heal_shell(
     for w in &check_report.warnings {
         log::debug!("[BRep check] {}", w);
     }
+    eprintln!("[heal timer] check_shell: {:.1}s  total heal_shell: {:.1}s",
+        _t_total.elapsed().as_secs_f32(), _t_total.elapsed().as_secs_f32());
 
     report
 }
