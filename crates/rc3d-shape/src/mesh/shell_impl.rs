@@ -108,13 +108,13 @@ fn init_shell_mesh(
     // Phase 1: edge discretization — only for edges belonging to this shell
     let _te = std::time::Instant::now();
     let shell_edges = crate::topo_iter::iter_edges_of_shell(shell_key, reg);
-    eprintln!("[mesh timer] shell has {} edges for shell {:?}", shell_edges.len(), shell_key);
+    log::debug!("[mesh] shell {:?}: {} edges to discretize", shell_key, shell_edges.len());
     let mut edge_polygons: HashMap<EdgeKey, EdgePolygon> = HashMap::with_capacity(shell_edges.len());
     let edge_cfg = &scaled_config.edge;
     for ek in &shell_edges {
         edge_polygons.insert(*ek, discretize_edge(*ek, reg, edge_cfg));
     }
-    eprintln!("[mesh timer] edge discretization: {:.1}s for {} edges", _te.elapsed().as_secs_f32(), shell_edges.len());
+    log::debug!("[mesh] edge discretization: {:.1}s for {} edges", _te.elapsed().as_secs_f32(), shell_edges.len());
 
     // SameParameter snap (Phase 1b)
     if scaled_config.same_parameter_tol > 0.0 {
@@ -635,7 +635,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             );
             let tri_count = all_indices.len() / 4 - tris_before;
             let t = _tf.elapsed().as_secs_f32();
-            if t > 0.1 { eprintln!("[mesh timer] closed_surface {:?}: {:.2}s ({} tris)", info_face_key, t, tri_count); }
+            if t > 0.1 { log::debug!("[mesh] closed_surface {:?}: {:.2}s ({} tris)", info_face_key, t, tri_count); }
             report.faces.push(FaceMeshStats {
                 face_key: info_face_key,
                 tri_count,
@@ -1611,7 +1611,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             .collect()
     };
 
-    eprintln!("[mesh timer] face meshing ({} faces): {:.1}s", face_loop_data.len(), _tp2.elapsed().as_secs_f32());
+    log::info!("[mesh] face meshing ({} faces): {:.1}s", face_loop_data.len(), _tp2.elapsed().as_secs_f32());
 
     // Phase 2c: Merge chunk outputs into global state.
     // Chunk 0 is the base; interior vertices from subsequent chunks are remapped.

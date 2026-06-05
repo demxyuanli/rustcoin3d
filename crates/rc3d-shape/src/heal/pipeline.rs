@@ -37,11 +37,17 @@ pub fn auto_heal_shell(
     let mut prev_errors = check.errors.len();
     let mut prev_warnings = check.warnings.len();
 
-    eprintln!(
-        "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn{})",
-        level, t_check0, prev_errors, prev_warnings,
-        if check.has_open_edges { format!(", {} open edges", check.open_edge_count) } else { String::new() }
-    );
+    if check.has_open_edges {
+        log::info!(
+            "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn, {} open edges)",
+            level, t_check0, prev_errors, prev_warnings, check.open_edge_count
+        );
+    } else {
+        log::info!(
+            "[BRep pipeline] level={:?}, baseline check: {:.1}s ({} err, {} warn)",
+            level, t_check0, prev_errors, prev_warnings
+        );
+    }
 
     // Pre-step: auto-fix edge tolerances from PCurve-to-3D deviation.
     // This must run before the main heal loop so subsequent passes
@@ -52,7 +58,7 @@ pub fn auto_heal_shell(
         let et_report = auto_fix_shell_edge_tolerances(shell_key, reg, 1e-7, 1.0);
         let t = _te.elapsed().as_secs_f32();
         if et_report.tolerances_increased > 0 || et_report.tolerances_decreased > 0 {
-            eprintln!(
+            log::info!(
                 "[BRep pipeline] edge tolerance fix: {:.1}s ({} inc, {} dec, max_adj={:.6})",
                 t,
                 et_report.tolerances_increased,
@@ -74,7 +80,7 @@ pub fn auto_heal_shell(
         let curr_errors = check.errors.len();
         let curr_warnings = check.warnings.len();
 
-        eprintln!(
+        log::info!(
             "[BRep pipeline] iter {}: {:.1}s ({}→{} err, {}→{} warn)",
             iter + 1, _ti.elapsed().as_secs_f32(),
             prev_errors, curr_errors, prev_warnings, curr_warnings,
