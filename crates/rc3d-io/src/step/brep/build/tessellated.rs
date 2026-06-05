@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use rc3d_core::math::Vec3;
 use crate::step::parser::EntityIndex;
-use crate::step::value::StepValue;
 
 /// Raw triangle mesh extracted from tessellated STEP geometry.
 #[derive(Debug, Clone)]
