@@ -120,7 +120,7 @@ fn detect_edge_split_points(
         }
 
         // Check curve endpoints: they should lie on face boundary edges
-        for &(idx, label) in &[(0, "start"), (params.len() - 1, "end")] {
+        for &idx in &[0, params.len() - 1] {
             let pt = pts_3d[idx.min(pts_3d.len() - 1)];
             let uv = params[idx];
 
