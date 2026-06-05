@@ -435,7 +435,7 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, fk, edge_3d.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d.clone(), 1e-4, fk, edge_3d);
         reg.wires.get_mut(wire).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         // Create an intersection curve with endpoint at (1, 0, 0) — on the edge
