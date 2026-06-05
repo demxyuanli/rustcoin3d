@@ -144,13 +144,14 @@ impl ShapeDocument {
             orientation,
         };
         if self.tessellation.get(&key).is_some() {
-            eprintln!("[emit_plan] tessellate_solid cache HIT for {:?}", solid_key);
+            eprintln!("[emit_plan] tessellate_solid {:?} cache HIT", solid_key);
             return Ok(key);
         }
+        eprintln!("[emit_plan] tessellate_solid {:?} cache MISS, generating...", solid_key);
         let _t_msh = std::time::Instant::now();
         let mut entry = mesh_solid_local(&self.store, solid_key, config, skip_faces)
             .ok_or_else(|| ShapeError::TessellationFailed(format!("solid {:?}", solid_key)))?;
-        eprintln!("[emit_plan] tessellate_solid {:?}: {:.1}s ({} verts, {} faces)",
+        eprintln!("[emit_plan] tessellate_solid {:?}: {:.1}s ({} verts, {} tris)",
             solid_key, _t_msh.elapsed().as_secs_f32(),
             entry.mesh.vertices.len(), entry.mesh.indices.len() / 4);
         if orientation == Orientation::Reversed {
