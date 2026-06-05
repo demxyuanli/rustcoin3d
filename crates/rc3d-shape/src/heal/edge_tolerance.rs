@@ -1,0 +1,220 @@
+//! Auto-fix edge tolerances based on PCurve-to-3D geometric deviation.
+//!
+//! Samples the PCurve at N uniform points, evaluates the surface at those UV
+//! coordinates to get 3D positions, and compares with the edge's 3D curve at
+//! the same parameter t. Sets `edge.tolerance` to encompass the max deviation.
+//!
+//! OCC alignment: ShapeFix_Edge::FixSameParameter + ShapeFix_Edge::FixVertexTolerance
+
+use crate::store::BRepStore;
+use crate::topo::{EdgeKey, FaceKey, ShellKey};
+use crate::topo_iter;
+
+/// Report from edge tolerance auto-fix pass.
+#[derive(Debug, Default)]
+pub struct EdgeToleranceReport {
+    pub edges_checked: usize,
+    pub tolerances_increased: usize,
+    pub tolerances_decreased: usize,
+    pub max_adjustment: f32,
+}
+
+/// Auto-fix a single edge's tolerance based on PCurve-to-3D deviation.
+///
+/// For each face referencing this edge, samples the PCurve at `n_samples`
+/// uniform t values, evaluates the face surface to get 3D positions, and
+/// compares with the edge's 3D curve. Sets edge tolerance to the max
+/// deviation (clamped to [min_tolerance, max_tolerance]).
+///
+/// Returns `Some(new_tolerance)` if the tolerance changed, `None` otherwise.
+pub fn auto_fix_edge_tolerance(
+    ek: EdgeKey,
+    reg: &mut BRepStore,
+    min_tolerance: f32,
+    max_tolerance: f32,
+    n_samples: usize,
+) -> Option<f32> {
+    let edge = reg.edges.get(ek)?;
+    let face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
+
+    if face_keys.is_empty() {
+        return None;
+    }
+
+    let mut max_dev = 0.0f32;
+
+    for fk in &face_keys {
+        let face = match reg.faces.get(*fk) {
+            Some(f) => f,
+            None => continue,
+        };
+        let pcurve = match edge.pcurves.get(fk) {
+            Some(pc) => pc,
+            None => continue,
+        };
+
+        for i in 0..=n_samples {
+            let t = i as f32 / n_samples as f32;
+            let uv = pcurve.d0(t);
+
+            // Evaluate surface at PCURVE UV to get 3D position
+            let pcurve_3d = face.surface.d0_native(uv.x, uv.y);
+
+            // Compare with edge's 3D curve at same t
+            let curve_3d = edge.curve.d0(t);
+
+            let dev = (pcurve_3d - curve_3d).length();
+            max_dev = max_dev.max(dev);
+        }
+    }
+
+    let new_tolerance = max_dev.max(min_tolerance).min(max_tolerance);
+
+    if let Some(edge_mut) = reg.edges.get_mut(ek) {
+        let old = edge_mut.tolerance;
+        if (new_tolerance - old).abs() > 1e-10 {
+            edge_mut.tolerance = new_tolerance;
+            return Some(new_tolerance);
+        }
+    }
+
+    None
+}
+
+/// Run auto-fix on all edges in a shell.
+///
+/// OCC: ShapeFix_Shell applies ShapeFix_Edge to each edge.
+pub fn auto_fix_shell_edge_tolerances(
+    shell_key: ShellKey,
+    reg: &mut BRepStore,
+    min_tolerance: f32,
+    max_tolerance: f32,
+) -> EdgeToleranceReport {
+    let mut report = EdgeToleranceReport::default();
+    let edges = topo_iter::iter_edges_of_shell(shell_key, reg);
+    report.edges_checked = edges.len();
+
+    for ek in &edges {
+        if let Some(new_tol) =
+            auto_fix_edge_tolerance(*ek, reg, min_tolerance, max_tolerance, 16)
+        {
+            // Re-read to get the old tolerance for reporting
+            if let Some(edge) = reg.edges.get(*ek) {
+                let adj = (new_tol - edge.tolerance).abs()
+                    .max((edge.tolerance - new_tol).abs());
+                report.max_adjustment = report.max_adjustment.max(adj);
+                if new_tol > edge.tolerance {
+                    report.tolerances_increased += 1;
+                } else {
+                    report.tolerances_decreased += 1;
+                }
+            }
+        }
+    }
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::store::BRepStore;
+    use crate::topo::*;
+    use rc3d_core::math::Vec3;
+
+    #[test]
+    fn test_auto_fix_increases_tolerance_for_mismatched_pcurve() {
+        let mut reg = BRepStore::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-6);
+        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-6);
+
+        let curve_3d = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // PCurve with intentional error: y=0.1 instead of y=0.0
+        let pcurve = CurveGeom::Line {
+            origin: Vec3::new(0.0, 0.1, 0.0),
+            direction: Vec3::new(1.0, -0.1, 0.0),
+        };
+
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+
+        let ek = reg.edges.insert(BRepEdge {
+            curve: curve_3d,
+            tolerance: 1e-6,
+            v_low: v0,
+            v_high: v1,
+            pcurves: [(fk, pcurve)].into(),
+        });
+
+        let new_tol = auto_fix_edge_tolerance(ek, &mut reg, 1e-6, 0.1, 32);
+        assert!(new_tol.is_some(), "should adjust tolerance for mismatched PCurve");
+        assert!(
+            new_tol.unwrap() > 1e-6,
+            "mismatched PCurve should increase tolerance"
+        );
+    }
+
+    #[test]
+    fn test_auto_fix_exact_pcurve_preserves_tight_tolerance() {
+        let mut reg = BRepStore::new();
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-6);
+        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-6);
+
+        let curve_3d = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+        // Exact PCurve matches 3D curve
+        let pcurve = CurveGeom::Line {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+        };
+
+        let wire = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+
+        let ek = reg.edges.insert(BRepEdge {
+            curve: curve_3d,
+            tolerance: 1e-6,
+            v_low: v0,
+            v_high: v1,
+            pcurves: [(fk, pcurve)].into(),
+        });
+
+        let new_tol = auto_fix_edge_tolerance(ek, &mut reg, 1e-6, 0.1, 16);
+        // Exact PCurve means deviation ~0, tolerance should stay at min_tolerance (1e-6)
+        // Since current tolerance == min_tolerance, no change needed → None
+        assert!(new_tol.is_none(), "exact PCurve should not change tolerance");
+    }
+}

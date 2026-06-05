@@ -1,3 +1,4 @@
+pub(crate) mod edge_tolerance;
 pub(crate) mod wire_ops;
 pub(crate) mod wire_join;
 pub(crate) mod pcurve_fix;
