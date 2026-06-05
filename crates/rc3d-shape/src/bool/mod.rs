@@ -359,9 +359,90 @@ mod tests {
             "Should report 1 intersection curve");
 
         // Difference A-B: keep Outside from A, Inside from B
-        // With all classified as Outside: A sub-faces kept, B sub-faces discarded
         let result_diff = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
         assert!(!result_diff.is_empty,
             "Difference should produce non-empty result");
+    }
+
+    /// Build a square face with 4 boundary edges in the XY plane.
+    fn make_square_face(
+        reg: &mut BRepStore,
+        origin: Vec3,
+        size: f32,
+    ) -> (ShellKey, FaceKey) {
+        use crate::geom::CurveGeom;
+        let half = size * 0.5;
+        let o = origin;
+        let v0 = reg.find_or_add_vertex(Vec3::new(o.x - half, o.y - half, o.z), 1e-4);
+        let v1 = reg.find_or_add_vertex(Vec3::new(o.x + half, o.y - half, o.z), 1e-4);
+        let v2 = reg.find_or_add_vertex(Vec3::new(o.x + half, o.y + half, o.z), 1e-4);
+        let v3 = reg.find_or_add_vertex(Vec3::new(o.x - half, o.y + half, o.z), 1e-4);
+
+        let surface = SurfaceGeom::Plane {
+            origin: Vec3::new(o.x, o.y, o.z),
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let wk = reg.wires.insert(BRepWire { edges: vec![] });
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wk,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+
+        // Build 4 edges
+        let edges_data = [
+            (v0, v1, Vec3::new(o.x - half, o.y - half, o.z), Vec3::new(o.x + half, o.y - half, o.z)),
+            (v1, v2, Vec3::new(o.x + half, o.y - half, o.z), Vec3::new(o.x + half, o.y + half, o.z)),
+            (v2, v3, Vec3::new(o.x + half, o.y + half, o.z), Vec3::new(o.x - half, o.y + half, o.z)),
+            (v3, v0, Vec3::new(o.x - half, o.y + half, o.z), Vec3::new(o.x - half, o.y - half, o.z)),
+        ];
+        let mut wire_edges = Vec::new();
+        for (va, vb, pa, pb) in edges_data {
+            let curve = CurveGeom::Line { origin: pa, direction: pb - pa };
+            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, curve);
+            wire_edges.push((ek, Orientation::Forward));
+        }
+        reg.wires.get_mut(wk).unwrap().edges = wire_edges;
+
+        let sk = reg.shells.insert(BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        (sk, fk)
+    }
+
+    #[test]
+    fn test_boolean_with_proper_edges() {
+        let mut reg = BRepStore::new();
+
+        // Two overlapping squares in the XY plane
+        let (sa, _fa) = make_square_face(&mut reg, Vec3::new(0.0, 0.0, 0.0), 2.0);
+        let (sb, _fb) = make_square_face(&mut reg, Vec3::new(1.0, 0.0, 0.0), 2.0);
+
+        // Verify the faces have proper edges
+        let shell_a = reg.shells.get(sa).unwrap();
+        let face_a = reg.faces.get(shell_a.faces[0].0).unwrap();
+        let wire_a = reg.wires.get(face_a.outer_wire).unwrap();
+        assert_eq!(wire_a.edges.len(), 4, "square face should have 4 edges");
+
+        let shell_b = reg.shells.get(sb).unwrap();
+        let face_b = reg.faces.get(shell_b.faces[0].0).unwrap();
+        let wire_b = reg.wires.get(face_b.outer_wire).unwrap();
+        assert_eq!(wire_b.edges.len(), 4, "square face should have 4 edges");
+
+        // Run boolean intersection
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+        // Two overlapping squares should have non-empty intersection
+        // (Even if classification is imperfect due to non-closed shells,
+        // the PaveFiller should find intersection curves)
+        assert!(result.intersection_count > 0 || !result.result_shells.is_empty(),
+            "overlapping squares should produce some result");
     }
 }
