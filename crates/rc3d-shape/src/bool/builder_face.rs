@@ -415,7 +415,7 @@ fn point_on_edge_param(pt: Vec3, ek: EdgeKey, reg: &BRepStore, tol: f32) -> Opti
             best_t = t;
         }
     }
-    let best_d = best_d2.sqrt();
+    let mut best_d = best_d2.sqrt();
     if best_d <= tol {
         // Refine with binary search
         let mut t = best_t;
@@ -425,7 +425,7 @@ fn point_on_edge_param(pt: Vec3, ek: EdgeKey, reg: &BRepStore, tol: f32) -> Opti
                 let tn = (t + dt).clamp(0.0, 1.0);
                 let d = (edge.curve.d0(tn) - pt).length();
                 if d < best_d {
-                    best_d2 = d * d;
+                    best_d = d;
                     t = tn;
                 }
             }

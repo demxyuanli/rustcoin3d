@@ -1,16 +1,6 @@
 use rc3d_core::math::Vec3;
 use crate::mesh_result::MeshResult;
 
-/// Area-weighted vertex normals from triangle winding.
-///
-/// If `preserve` is non-empty, vertices with existing analytical normals
-/// (from surface evaluation) are skipped — only welded/merged vertices
-/// get recomputed normals. This preserves the higher-quality analytical
-/// normals on boundary and interior vertices that weren't affected by welding.
-pub fn recompute_normals_from_tris(vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>) {
-    recompute_normals_from_tris_preserving(vertices, indices, normals, &[])
-}
-
 /// Recompute normals from triangle faces, preserving specified vertex normals.
 ///
 /// Vertices in `preserve` keep their existing normals. All others are

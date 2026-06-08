@@ -8,6 +8,7 @@ use crate::topo::BRepFace;
 
 /// Available UV source strategies (ordered by quality).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum UvSourceKind {
     Pcurve,
     NativeUv,
@@ -16,6 +17,7 @@ pub enum UvSourceKind {
 }
 
 /// Determine the best UV source for a face based on surface type.
+#[allow(dead_code)]
 pub fn select_uv_source(face: &BRepFace) -> UvSourceKind {
     match &face.surface {
         SurfaceGeom::Cylinder { .. }

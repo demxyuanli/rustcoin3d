@@ -834,24 +834,6 @@ pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vert
     }
 }
 
-// ── Revolution PCurve UV Handling ────────────────────────────
-
-/// Reserved for revolution-surface UV diagnostics.
-fn revolution_uv_for_oriented_wire(
-    surface: &SurfaceGeom, orient: Orientation, raw_uv: Option<(f32, f32)>, pt: Option<Vec3>,
-) -> Option<(f32, f32)> {
-    let SurfaceGeom::Revolution { .. } = surface else { return raw_uv; };
-    if orient != Orientation::Reversed { return raw_uv; }
-    let pt = pt?;
-    let (u_nat, v_nat) = surface.revolution_native_uv_at(pt)?;
-    let Some((u, v)) = raw_uv else { return Some((u_nat, v_nat)); };
-    let u_can = surface.revolution_canonicalize_pcurve_uv(u, v).0;
-    const TAU: f32 = std::f32::consts::TAU;
-    if u_can < TAU * 0.15 && u_nat > TAU * 0.5 { return Some((u_nat, v_nat)); }
-    if u_can > TAU * 0.85 && u_nat < TAU * 0.15 { return Some((u_nat, v_nat)); }
-    raw_uv
-}
-
 // ── UV Loops from Wire Edges ─────────────────────────────────
 
 pub fn loops_from_wire_edges(

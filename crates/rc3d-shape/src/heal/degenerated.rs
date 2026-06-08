@@ -8,6 +8,7 @@ use rc3d_core::math::Vec3;
 
 /// Descriptive info about a degenerated edge (OCC equivalent).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DegeneratedEdgeInfo {
     pub edge_key: crate::topo::EdgeKey,
     pub singularity_3d: Vec3,

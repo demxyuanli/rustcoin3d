@@ -176,11 +176,6 @@ impl MeshResult {
             if parent[x] != x { parent[x] = find(parent, parent[x]); }
             parent[x]
         }
-        fn union(parent: &mut [usize], a: usize, b: usize) {
-            let ra = find(parent, a);
-            let rb = find(parent, b);
-            if ra != rb { parent[ra] = rb; }
-        }
 
         // Cluster non-protected vertices with their neighbors
         for (&(cx, cy, cz), indices) in &grid {

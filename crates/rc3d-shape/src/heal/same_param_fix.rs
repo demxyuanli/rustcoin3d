@@ -15,6 +15,7 @@ use crate::topo::{EdgeKey, FaceKey, WireKey};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub(crate) struct SameParamReport {
     pub pcurves_fixed: usize,
     pub max_deviation_before: f32,

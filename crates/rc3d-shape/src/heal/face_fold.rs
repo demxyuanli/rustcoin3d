@@ -12,6 +12,7 @@ use crate::geom::SurfaceGeom;
 
 /// Result of face fold repair.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct FaceFoldReport {
     pub faces_checked: usize,
     pub folds_detected: usize,

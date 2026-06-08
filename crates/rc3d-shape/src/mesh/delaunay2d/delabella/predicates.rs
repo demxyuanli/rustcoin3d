@@ -70,15 +70,6 @@ fn grow_expansion(e: &[f64], b: f64) -> Vec<f64> {
     h
 }
 
-/// Expansion sum: h = e + f.
-fn expansion_sum(e: &[f64], f: &[f64]) -> Vec<f64> {
-    let mut h = e.to_vec();
-    for &fi in f {
-        h = grow_expansion(&h, fi);
-    }
-    h
-}
-
 /// Expansion difference: h = e - f.
 fn expansion_diff(e: &[f64], f: &[f64]) -> Vec<f64> {
     let mut h = e.to_vec();

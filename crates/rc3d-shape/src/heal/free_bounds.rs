@@ -16,7 +16,6 @@ use rc3d_core::math::Vec3;
 pub struct FreeBoundsReport {
     pub open_edges_found: usize,
     pub edges_closed: usize,
-    pub gaps_filled: usize,
 }
 
 /// Find all open edges in a shell — edges referenced by fewer than 2 faces.

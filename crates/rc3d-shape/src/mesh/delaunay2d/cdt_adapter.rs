@@ -237,7 +237,7 @@ impl NativeCdt {
 
     /// Rebuild the internal triangulation from accumulated points and re-apply all
     /// pending constraints. Used by `retriangulate()` and `finalize()`.
-    fn rebuild_delaBella(
+    fn rebuild_dela_bella(
         verts: &[(f64, f64)],
         orig: &[u32],
         constraints: &[(u32, u32)],
@@ -304,7 +304,7 @@ impl NativeCdt {
             self.dela_pending_constraints.clone()
         };
 
-        let (fresh, orig_to_fresh) = Self::rebuild_delaBella(&points, &orig, &constraints);
+        let (fresh, orig_to_fresh) = Self::rebuild_dela_bella(&points, &orig, &constraints);
 
         for ha in 0..self.handles.len() {
             let gi = self.handle_gi[ha] as u32;

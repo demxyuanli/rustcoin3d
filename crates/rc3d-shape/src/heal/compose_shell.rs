@@ -6,13 +6,13 @@
 //! OCC alignment: ShapeFix_ComposeShell — stitches faces into shells,
 //! detects void regions.
 
-use rc3d_core::math::Vec3;
 use crate::store::BRepStore;
 use crate::topo::*;
 use std::collections::{HashMap, HashSet};
 
 /// Result of shell composition.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct ComposeShellReport {
     pub shells_composed: usize,
     pub void_shells_detected: usize,
@@ -94,6 +94,7 @@ pub fn compose_shells(
 /// Build shells from a flat face list, creating ShellKey entries in BRepStore.
 ///
 /// Returns the list of newly created ShellKeys.
+#[allow(dead_code)]
 pub fn compose_shells_into_store(
     face_keys: &[FaceKey],
     reg: &mut BRepStore,
@@ -117,97 +118,6 @@ pub fn compose_shells_into_store(
     }
 
     report
-}
-
-/// Detect void shells inside a solid (shells with all face centers inside
-/// the outer shell).
-///
-/// Uses a simple centroid containment test: if the centroid of a shell's
-/// face centers is inside the outer shell (via ray casting), it's a void.
-///
-/// OCC alignment: BRepClass3d_SolidClassifier — classifies point inside solid.
-pub fn detect_void_shells(
-    outer_shell: ShellKey,
-    candidate_shells: &[ShellKey],
-    reg: &BRepStore,
-) -> Vec<ShellKey> {
-    let Some(outer) = reg.shells.get(outer_shell) else {
-        return Vec::new();
-    };
-
-    // Collect outer shell faces for point-in-shell test
-    let outer_faces: Vec<FaceKey> = outer.faces.iter().map(|&(fk, _)| fk).collect();
-
-    let mut voids = Vec::new();
-    for &candidate_sk in candidate_shells {
-        if candidate_sk == outer_shell {
-            continue;
-        }
-        let Some(candidate) = reg.shells.get(candidate_sk) else {
-            continue;
-        };
-
-        // Compute centroid of candidate shell's face centers
-        let mut centroid = Vec3::ZERO;
-        let mut count = 0u32;
-        for &(fk, _) in &candidate.faces {
-            let Some(face) = reg.faces.get(fk) else { continue };
-            let range = face.surface.param_range();
-            let u = (range.u_min + range.u_max) * 0.5;
-            let v = (range.v_min + range.v_max) * 0.5;
-            let (un, vn) = face.surface.native_uv_to_d0(u, v);
-            centroid += face.surface.d0_native(un, vn);
-            count += 1;
-        }
-
-        if count == 0 {
-            continue;
-        }
-        centroid /= count as f32;
-
-        // Simple containment check: count ray crossings with outer shell triangles
-        if is_point_inside_shell(centroid, &outer_faces, reg) {
-            voids.push(candidate_sk);
-        }
-    }
-
-    voids
-}
-
-/// Simple ray-cast point-in-shell test.
-/// Casts a ray in +X direction and counts triangle crossings.
-fn is_point_inside_shell(point: Vec3, face_keys: &[FaceKey], reg: &BRepStore) -> bool {
-    let mut crossings = 0u32;
-    for &fk in face_keys {
-        let Some(face) = reg.faces.get(fk) else { continue };
-        // Get face plane for quick rejection
-        let range = face.surface.param_range();
-        let normal = face.surface.normal_native(
-            (range.u_min + range.u_max) * 0.5,
-            (range.v_min + range.v_max) * 0.5,
-        );
-        // Only consider faces whose normal has a significant Z component
-        // pointing toward the ray direction (simplified test)
-        let d = (point - face.surface.d0_native(
-            face.surface.native_uv_to_d0(
-                (range.u_min + range.u_max) * 0.5,
-                (range.v_min + range.v_max) * 0.5,
-            ).0,
-            face.surface.native_uv_to_d0(
-                (range.u_min + range.u_max) * 0.5,
-                (range.v_min + range.v_max) * 0.5,
-            ).1,
-        )).dot(normal);
-
-        // Simplified: if the point is on the negative side of the face plane,
-        // it's potentially inside
-        if d < 0.0 {
-            crossings += 1;
-        }
-    }
-
-    // Odd number of crossings → inside
-    crossings % 2 == 1
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
 
 /// Represents an intersection point between two PCurve segments.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct IntersectionPoint {
     pub ta: f32,       // parameter along segment_a (0..1)
     pub tb: f32,       // parameter along segment_b (0..1)

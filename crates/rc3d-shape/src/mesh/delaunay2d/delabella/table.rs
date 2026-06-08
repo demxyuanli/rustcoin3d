@@ -4,7 +4,7 @@
 //! uses the `f[3]` convention: `f[i]` is the face across the edge opposite `v[i]`,
 //! i.e. sharing edge `v[(i+1)%3] — v[(i+2)%3]`.
 
-use super::predicates::{adaptive_incircle, adaptive_orient2d};
+use super::predicates::adaptive_orient2d;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -32,8 +32,6 @@ pub struct Vert {
     pub y: f64,
     /// Original input index (user data).
     pub orig_idx: u32,
-    /// Multi-purpose intrusive link: free list, hull chain, boundary walk.
-    pub next: u32,
 }
 
 impl Vert {
@@ -42,7 +40,6 @@ impl Vert {
             x,
             y,
             orig_idx,
-            next: INVALID,
         }
     }
 }
@@ -103,12 +100,6 @@ impl Face {
         None
     }
 
-    /// The vertex opposite edge slot `i`.
-    #[inline]
-    pub fn opp_vert(&self, edge_slot: usize) -> u32 {
-        self.v[edge_slot]
-    }
-
     /// The two vertices forming edge slot `i`.
     #[inline]
     pub fn edge_verts(&self, edge_slot: usize) -> (u32, u32) {
@@ -137,13 +128,6 @@ impl Face {
         }
     }
 
-    /// Toggle the "fixed" bit for edge at position `at`.
-    #[inline]
-    pub fn toggle_edge_fixed(&mut self, at: usize) {
-        let shift = at as u8 * EDGE_BITS_PER;
-        self.flags ^= EDGE_FIXED << shift;
-    }
-
     /// Mark an edge as fixed (constrained).
     #[inline]
     pub fn mark_edge_fixed(&mut self, at: usize) {
@@ -158,6 +142,7 @@ impl Face {
     }
 
     /// Rotate edge bits CCW (shift by one position). Used after vertex rotation.
+    #[allow(dead_code)]
     pub fn rotate_edge_flags_ccw(&mut self) {
         let b0 = self.get_edge_fixed(0);
         let b1 = self.get_edge_fixed(1);
@@ -168,6 +153,7 @@ impl Face {
     }
 
     /// Rotate edge bits CW. Used after vertex rotation in the other direction.
+    #[allow(dead_code)]
     pub fn rotate_edge_flags_cw(&mut self) {
         let b0 = self.get_edge_fixed(0);
         let b1 = self.get_edge_fixed(1);
@@ -186,11 +172,6 @@ impl Face {
     pub fn is_delaunay(&self) -> bool {
         (self.flags & FLAG_DELAUNAY) != 0
     }
-
-    #[inline]
-    pub fn is_hull(&self) -> bool {
-        (self.flags & FLAG_HULL) != 0
-    }
 }
 
 // ── DelaBella triangulation struct ────────────────────────────────────
@@ -207,8 +188,6 @@ pub struct DelaBella {
     pub dela_first: u32,
     /// Head of hull face list.
     pub hull_first: u32,
-    /// Head of boundary vertex circular list.
-    pub boundary_first: u32,
     /// Number of distinct input points (after dedup).
     pub n_points: usize,
     /// Original input points (before sort/dedup).
@@ -223,7 +202,6 @@ impl DelaBella {
             face_free: INVALID,
             dela_first: INVALID,
             hull_first: INVALID,
-            boundary_first: INVALID,
             n_points: 0,
             input_points: Vec::new(),
         }
@@ -301,46 +279,7 @@ impl DelaBella {
         fi
     }
 
-    /// Kill a face: mark dead, detach from neighbor adjacency, free it.
-    /// Snapshots all data first to avoid borrow conflicts.
-    pub fn kill_face(&mut self, fi: u32) {
-        // Snapshot neighbor info before mutation
-        let neighbors;
-        let edge_info: [(u32, u32); 3];
-        {
-            let face = &self.faces[fi as usize];
-            neighbors = face.f;
-            edge_info = [
-                face.edge_verts(0),
-                face.edge_verts(1),
-                face.edge_verts(2),
-            ];
-        }
-
-        // Detach from neighbors
-        for slot in 0..3 {
-            let ni = neighbors[slot];
-            if ni != INVALID && (self.faces[ni as usize].flags & FLAG_DEAD) == 0 {
-                let (va, vb) = edge_info[slot];
-                if let Some(ns) = self.faces[ni as usize].find_edge_slot(va, vb) {
-                    self.faces[ni as usize].f[ns] = INVALID;
-                }
-            }
-        }
-
-        self.free_face(fi);
-    }
-
     // ── Queries ───────────────────────────────────────────────────────
-
-    /// Test if a face's circumcircle contains point (px, py).
-    pub fn face_incircle(&self, fi: u32, px: f64, py: f64) -> f64 {
-        let face = &self.faces[fi as usize];
-        let v0 = &self.verts[face.v[0] as usize];
-        let v1 = &self.verts[face.v[1] as usize];
-        let v2 = &self.verts[face.v[2] as usize];
-        adaptive_incircle(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y, px, py)
-    }
 
     /// Orientation test for face: positive = CCW.
     pub fn face_orient(&self, fi: u32) -> f64 {
@@ -349,17 +288,6 @@ impl DelaBella {
         let v1 = &self.verts[face.v[1] as usize];
         let v2 = &self.verts[face.v[2] as usize];
         adaptive_orient2d(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y)
-    }
-
-    /// Is point (px, py) on the positive (left) side of the directed edge
-    /// at `edge_slot` of face `fi`?
-    pub fn is_left_of_edge(&self, fi: u32, edge_slot: usize, px: f64, py: f64) -> bool {
-        let face = &self.faces[fi as usize];
-        let j = (edge_slot + 1) % 3;
-        let k = (edge_slot + 2) % 3;
-        let va = &self.verts[face.v[j] as usize];
-        let vb = &self.verts[face.v[k] as usize];
-        adaptive_orient2d(va.x, va.y, vb.x, vb.y, px, py) > 0.0
     }
 
     /// Iterate all non-dead Delaunay faces, returning (face_idx, [v0, v1, v2]).
@@ -385,11 +313,6 @@ impl DelaBella {
             }
         }
         result
-    }
-
-    /// Count non-dead faces.
-    pub fn alive_face_count(&self) -> usize {
-        self.faces.iter().filter(|f| !f.is_dead()).count()
     }
 
     /// Get vertex position.

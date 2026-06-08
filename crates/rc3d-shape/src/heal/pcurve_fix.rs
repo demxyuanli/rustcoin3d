@@ -193,6 +193,7 @@ pub(crate) fn fix_edge_curves_wire(
 }
 
 /// Shell-level entry (all outer wires).
+#[allow(dead_code)]
 pub(crate) fn fix_edge_curves(
     shell_key: crate::topo::ShellKey,
     reg: &mut BRepStore,

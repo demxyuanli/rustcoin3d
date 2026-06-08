@@ -165,8 +165,6 @@ struct SilEdge {
     vb: u32,
     /// The invisible neighbor across this silhouette edge.
     neighbor: u32,
-    /// Which edge slot in the visible face this edge corresponds to.
-    edge_slot: usize,
 }
 
 /// Collect silhouette edges: boundary between visible and invisible faces.
@@ -189,7 +187,6 @@ fn collect_silhouette(della: &DelaBella, visible: &[u32], visible_set: &[bool]) 
                     va,
                     vb,
                     neighbor: ni,
-                    edge_slot: slot,
                 });
             }
         }

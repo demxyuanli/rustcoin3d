@@ -21,10 +21,12 @@ pub use insert::triangulate;
 pub(crate) use predicates::{adaptive_orient2d, adaptive_incircle};
 
 /// Incremental-mode wrapper: insert points one at a time, then optionally constrain edges.
+#[allow(dead_code)]
 pub struct DelaBellaBuilder {
     inner: DelaBella,
 }
 
+#[allow(dead_code)]
 impl DelaBellaBuilder {
     /// Create a new builder with expected point count for pre-allocation.
     pub fn new(expected_points: usize) -> Self {

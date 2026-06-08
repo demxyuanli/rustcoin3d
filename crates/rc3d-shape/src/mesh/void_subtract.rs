@@ -8,6 +8,7 @@ use crate::mesh_result::MeshResult;
 
 /// Result of void subtraction.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct VoidSubtractResult {
     /// Mesh with void triangles removed.
     pub mesh: MeshResult,
@@ -18,6 +19,7 @@ pub struct VoidSubtractResult {
 /// Subtract void shell meshes from the outer shell mesh.
 ///
 /// Keeps triangles whose centroid is NOT inside any void.
+#[allow(dead_code)]
 pub fn subtract_void_meshes(
     outer_mesh: &MeshResult,
     void_meshes: &[MeshResult],
@@ -144,6 +146,7 @@ pub fn subtract_void_meshes(
 ///
 /// Casts a ray along +X and counts triangle intersections using
 /// DDA grid traversal. Odd count → inside, even count → outside.
+#[allow(dead_code)]
 fn point_inside_void_mesh(
     point: &Vec3,
     void_tris: &[[Vec3; 3]],
@@ -184,6 +187,7 @@ fn point_inside_void_mesh(
 }
 
 /// Möller–Trumbore ray-triangle intersection.
+#[allow(dead_code)]
 fn ray_triangle_intersect(origin: &Vec3, dir: &Vec3, tri: &[Vec3; 3]) -> bool {
     let e1 = tri[1] - tri[0];
     let e2 = tri[2] - tri[0];

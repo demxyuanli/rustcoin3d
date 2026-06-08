@@ -37,6 +37,7 @@ impl Default for RefineConfig {
 /// Refine mesh by subdividing triangles where deflection exceeds threshold.
 /// Returns refined (vertices, indices, normals). Normals are recomputed from
 /// the surface (not averaged) for best accuracy.
+#[allow(dead_code)]
 pub fn refine_mesh(
     mesh: &MeshResult,
     surface: &SurfaceGeom,

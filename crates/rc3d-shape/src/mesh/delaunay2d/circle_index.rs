@@ -135,38 +135,6 @@ impl CircleIndex {
         result
     }
 
-    /// Find the triangle that directly contains point p (point-in-triangle test).
-    /// This is a more precise check than circumcircle containment.
-    pub fn find_containing_triangle(
-        &self,
-        p: Point2d,
-        mesh: &super::half_edge::HalfEdgeMesh,
-    ) -> Option<TriIdx> {
-        let candidates = self.query_containing(p);
-        for &tri in &candidates {
-            if !mesh.tri(tri).alive {
-                continue;
-            }
-            let verts = mesh.tri_verts(tri);
-            let a = mesh.vertex(verts[0]);
-            let b = mesh.vertex(verts[1]);
-            let c = mesh.vertex(verts[2]);
-
-            // Check if p is inside triangle using orientation tests
-            let o1 = super::geom::robust_orient2d(a, b, p);
-            let o2 = super::geom::robust_orient2d(b, c, p);
-            let o3 = super::geom::robust_orient2d(c, a, p);
-
-            if o1 >= 0.0 && o2 >= 0.0 && o3 >= 0.0 {
-                return Some(tri);
-            }
-            if o1 <= 0.0 && o2 <= 0.0 && o3 <= 0.0 {
-                return Some(tri);
-            }
-        }
-        None
-    }
-
     #[inline]
     fn cell_x(&self, x: f64) -> usize {
         let cx = ((x - self.origin_x) / self.cell_size) as isize;

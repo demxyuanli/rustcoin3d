@@ -92,7 +92,7 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
     import_options.fast_export = true;
     let mut result = import_step_file_with_options(&step_path, &import_options).expect("import step");
 
-    let mut plan_options = emit_plan_options_from_step(&import_options);
+    let plan_options = emit_plan_options_from_step(&import_options);
     let plan = result
         .document
         .build_emit_plan(&plan_options)

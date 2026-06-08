@@ -11,6 +11,7 @@ use crate::topo::{BRepFace, Orientation};
 /// Shell normal = face normal * orientation.
 /// effective_sense = same_sense XOR (orientation == Reversed).
 #[inline]
+#[allow(dead_code)]
 pub fn effective_sense(face: &BRepFace, shell_orient: Orientation) -> bool {
     face.same_sense ^ (shell_orient == Orientation::Reversed)
 }
@@ -25,30 +26,12 @@ pub fn effective_sense_raw(same_sense: bool, shell_orient: Orientation) -> bool 
 /// Apply effective_sense to a normal vector.
 /// When same_sense is false, the normal is negated.
 #[inline]
+#[allow(dead_code)]
 pub fn orient_normal(mut normal: rc3d_core::math::Vec3, sense: bool) -> rc3d_core::math::Vec3 {
     if !sense {
         normal = -normal;
     }
     normal
-}
-
-/// Fix triangle winding to match surface normal at centroid.
-/// Swaps indices[1] and indices[2] if the cross-product normal
-/// disagrees with the surface normal.
-pub fn fix_tri_winding_sense(
-    tri: &mut [i32; 3],
-    vertices: &[rc3d_core::math::Vec3],
-    surface_normal: rc3d_core::math::Vec3,
-    sense: bool,
-) {
-    let expected = orient_normal(surface_normal, sense);
-    let v0 = vertices[tri[0] as usize];
-    let v1 = vertices[tri[1] as usize];
-    let v2 = vertices[tri[2] as usize];
-    let tri_normal = (v1 - v0).cross(v2 - v0);
-    if tri_normal.dot(expected) < 0.0 {
-        tri.swap(1, 2);
-    }
 }
 
 #[cfg(test)]

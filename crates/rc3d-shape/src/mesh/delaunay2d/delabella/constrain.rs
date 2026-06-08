@@ -10,19 +10,6 @@
 use super::predicates::adaptive_orient2d;
 use super::table::{DelaBella, INVALID};
 
-// ── Find face containing an edge endpoint ─────────────────────────────
-
-/// Find a face that has vertex `vi` and is adjacent to a face containing
-/// the start of a walk toward `vj`.
-fn find_face_with_vert(della: &DelaBella, vi: u32) -> Option<u32> {
-    for (fi, verts) in della.all_faces() {
-        if verts.contains(&vi) {
-            return Some(fi);
-        }
-    }
-    None
-}
-
 /// Check if an edge (va, vb) already exists in the mesh as a face edge.
 fn edge_exists(della: &DelaBella, va: u32, vb: u32) -> Option<(u32, usize)> {
     for (fi, _) in della.all_faces() {

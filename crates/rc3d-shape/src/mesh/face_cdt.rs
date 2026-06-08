@@ -13,9 +13,6 @@ use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
 
-/// Fallback max CDT vertices when config doesn't specify.
-const DEFAULT_MAX_CDT_VERTICES: usize = 4096;
-
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
 }
