@@ -38,11 +38,20 @@ pub fn compute_brep_intersection_curves(
     reg: &BRepStore,
 ) -> Vec<BRepIntersectionCurve> {
     let mut out = Vec::new();
+    // Reusable buffers to avoid per-curve heap allocation in the hot loop.
+    let mut pts_3d = Vec::new();
+    let mut params_a = Vec::new();
+    let mut params_b = Vec::new();
+
     for fi in intersections {
         let face_a = match reg.faces.get(fi.face_a) { Some(f) => f, None => continue };
         let face_b = match reg.faces.get(fi.face_b) { Some(f) => f, None => continue };
 
         for (i, curve) in fi.curves_3d.iter().enumerate() {
+            pts_3d.clear();
+            params_a.clear();
+            params_b.clear();
+
             // Try pre-computed PCurves first (from face_intersector pathway)
             let pcurve_a = fi.pcurves_on_a.get(i);
             let pcurve_b = fi.pcurves_on_b.get(i);
@@ -51,9 +60,9 @@ pub fn compute_brep_intersection_curves(
                 // Extract UV point pairs from the pre-computed PCurves
                 // PCurves are polylines in UV space: d0(t) returns Vec3(u, v, 0)
                 let n_samples = 64;
-                let mut pts_3d = Vec::with_capacity(n_samples);
-                let mut params_a = Vec::with_capacity(n_samples);
-                let mut params_b = Vec::with_capacity(n_samples);
+                pts_3d.reserve(n_samples);
+                params_a.reserve(n_samples);
+                params_b.reserve(n_samples);
                 for j in 0..n_samples {
                     let t = j as f32 / (n_samples - 1).max(1) as f32;
                     let uva = pc_a.d0(t);
@@ -64,7 +73,9 @@ pub fn compute_brep_intersection_curves(
                 }
                 if pts_3d.len() >= 2 {
                     out.push(BRepIntersectionCurve {
-                        points_3d: pts_3d, params_a, params_b,
+                        points_3d: std::mem::take(&mut pts_3d),
+                        params_a: std::mem::take(&mut params_a),
+                        params_b: std::mem::take(&mut params_b),
                         face_a: fi.face_a, face_b: fi.face_b,
                     });
                     continue;
@@ -75,9 +86,9 @@ pub fn compute_brep_intersection_curves(
             let samples = sample_intersection_curve(curve, 32);
             if samples.is_empty() { continue; }
 
-            let mut pts_3d = Vec::with_capacity(samples.len());
-            let mut params_a = Vec::with_capacity(samples.len());
-            let mut params_b = Vec::with_capacity(samples.len());
+            pts_3d.reserve(samples.len());
+            params_a.reserve(samples.len());
+            params_b.reserve(samples.len());
 
             for &pt in &samples {
                 if let Some(uv_a) = face_a.surface.project(pt) {
@@ -91,7 +102,9 @@ pub fn compute_brep_intersection_curves(
 
             if pts_3d.len() >= 2 {
                 out.push(BRepIntersectionCurve {
-                    points_3d: pts_3d, params_a, params_b,
+                    points_3d: std::mem::take(&mut pts_3d),
+                    params_a: std::mem::take(&mut params_a),
+                    params_b: std::mem::take(&mut params_b),
                     face_a: fi.face_a, face_b: fi.face_b,
                 });
             }

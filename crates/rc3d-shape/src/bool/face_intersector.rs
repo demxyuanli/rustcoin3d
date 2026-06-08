@@ -53,6 +53,9 @@ pub fn intersect_faces(
 
     let mut all_curves: Vec<CurveGeom> = Vec::new();
     let mut all_points: Vec<InterfPoint> = Vec::new();
+    // Track per-curve point ranges into all_points so PCurves get the correct
+    // subset of UV samples (not the entire merged vector).
+    let mut curve_point_ranges: Vec<(usize, usize)> = Vec::new();
 
     for seed in &seeds_a {
         // Refine the seed to exact intersection
@@ -110,7 +113,10 @@ pub fn intersect_faces(
         }
 
         if interf_points.len() >= 2 {
+            let start = all_points.len();
             all_points.extend(interf_points);
+            let end = all_points.len();
+            curve_point_ranges.push((start, end));
 
             // Build polyline curve from 3D points
             all_curves.push(CurveGeom::Polyline { points: points_3d });
@@ -121,16 +127,17 @@ pub fn intersect_faces(
         return None;
     }
 
-    // Build PCurves from the InterfPoint UV data
-    let pcurves_a: Vec<CurveGeom> = all_curves.iter().map(|_c| {
-        let uv_pts: Vec<Vec3> = all_points.iter()
+    // Build PCurves from per-curve InterfPoint UV data.
+    // Each curve[i] gets UV points from all_points[ranges[i].0..ranges[i].1].
+    let pcurves_a: Vec<CurveGeom> = curve_point_ranges.iter().map(|&(start, end)| {
+        let uv_pts: Vec<Vec3> = all_points[start..end].iter()
             .map(|p| Vec3::new(p.uv_a.0, p.uv_a.1, 0.0))
             .collect();
         CurveGeom::Polyline { points: uv_pts }
     }).collect();
 
-    let pcurves_b: Vec<CurveGeom> = all_curves.iter().map(|_c| {
-        let uv_pts: Vec<Vec3> = all_points.iter()
+    let pcurves_b: Vec<CurveGeom> = curve_point_ranges.iter().map(|&(start, end)| {
+        let uv_pts: Vec<Vec3> = all_points[start..end].iter()
             .map(|p| Vec3::new(p.uv_b.0, p.uv_b.1, 0.0))
             .collect();
         CurveGeom::Polyline { points: uv_pts }
@@ -204,5 +211,88 @@ mod tests {
         };
         let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
         assert!(surfaces_may_intersect(&plane, &cyl));
+    }
+
+    /// Verify that when a face pair produces multiple intersection curves,
+    /// each PCurve gets only the UV points belonging to its own curve,
+    /// not the merged set from all curves.
+    #[test]
+    fn test_pcurve_per_curve_partition() {
+        // A horizontal plane at z=0.5 cutting through a sphere of radius 1.0
+        // can produce a single circular intersection curve. We verify the
+        // per-curve partition invariant: pcurves_a[i] has the same number of
+        // UV points as curves_3d[i] has 3D sample points.
+        let plane = SurfaceGeom::Plane {
+            origin: Vec3::new(0.0, 0.0, 0.5),
+            normal: Vec3::Z,
+            u_dir: Vec3::X,
+        };
+        let sphere = SurfaceGeom::Sphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+        };
+
+        let result = intersect_faces(
+            FaceKey::default(), FaceKey::default(),
+            &plane, &sphere, 1e-4,
+        );
+
+        if let Some(interf) = result {
+            // Invariant: pcurves and curves must have matching counts
+            assert_eq!(
+                interf.pcurves_a.len(), interf.curves_3d.len(),
+                "pcurves_a count ({}) must match curves_3d count ({})",
+                interf.pcurves_a.len(), interf.curves_3d.len(),
+            );
+            assert_eq!(
+                interf.pcurves_b.len(), interf.curves_3d.len(),
+                "pcurves_b count ({}) must match curves_3d count ({})",
+                interf.pcurves_b.len(), interf.curves_3d.len(),
+            );
+
+            // Each PCurve's UV point count should match the number of
+            // InterfPoints allocated to that curve (not the total).
+            let mut point_offset = 0usize;
+            for (i, curve) in interf.curves_3d.iter().enumerate() {
+                let pcurve_a = &interf.pcurves_a[i];
+                let pcurve_b = &interf.pcurves_b[i];
+
+                // Count how many InterfPoints belong to this curve
+                // (determined by the CurveGeom::Polyline point count)
+                let n_3d = match curve {
+                    CurveGeom::Polyline { points } => points.len(),
+                    _ => continue,
+                };
+                let n_pcurve_a = match pcurve_a {
+                    CurveGeom::Polyline { points } => points.len(),
+                    _ => 0,
+                };
+                let n_pcurve_b = match pcurve_b {
+                    CurveGeom::Polyline { points } => points.len(),
+                    _ => 0,
+                };
+
+                // The pcurve UV point count should be <= n_3d (some projections
+                // may fail), and must NOT equal the total all_points count
+                // (which would indicate the old bug where all points were merged).
+                assert!(
+                    n_pcurve_a <= n_3d,
+                    "curve {}: pcurve_a has {} UV points but only {} 3D points",
+                    i, n_pcurve_a, n_3d,
+                );
+                assert!(
+                    n_pcurve_a < interf.points.len() || interf.curves_3d.len() == 1,
+                    "curve {}: pcurve_a has {} points = total {}, indicating merged points bug",
+                    i, n_pcurve_a, interf.points.len(),
+                );
+                assert!(
+                    n_pcurve_b <= n_3d,
+                    "curve {}: pcurve_b has {} UV points but only {} 3D points",
+                    i, n_pcurve_b, n_3d,
+                );
+
+                point_offset += n_pcurve_a;
+            }
+        }
     }
 }

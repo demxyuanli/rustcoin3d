@@ -58,7 +58,7 @@ pub fn auto_fix_edge_tolerance(
             let uv = pcurve.d0(t);
 
             // Evaluate surface at PCURVE UV to get 3D position
-            let pcurve_3d = face.surface.d0_native(uv.x, uv.y);
+            let pcurve_3d = face.surface.d0_native(uv.0, uv.1);
 
             // Compare with edge's 3D curve at same t
             let curve_3d = edge.curve.d0(t);
@@ -117,6 +117,7 @@ pub fn auto_fix_shell_edge_tolerances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
     use crate::topo::*;
@@ -138,9 +139,9 @@ mod tests {
             direction: Vec3::X,
         };
         // PCurve with intentional error: y=0.1 instead of y=0.0
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.1, 0.0),
-            direction: Vec3::new(1.0, -0.1, 0.0),
+        let pcurve = Curve2d::Line {
+            origin: (0.0, 0.1),
+            direction: (1.0, -0.1),
         };
 
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
@@ -187,9 +188,9 @@ mod tests {
             direction: Vec3::X,
         };
         // Exact PCurve matches 3D curve
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+        let pcurve = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
         };
 
         let wire = reg.wires.insert(BRepWire { edges: vec![] });

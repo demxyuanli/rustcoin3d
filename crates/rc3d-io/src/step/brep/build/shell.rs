@@ -69,7 +69,8 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
                     ctx.tol,
                 );
 
-                let ek = ctx.reg.add_edge_with_pcurve(v0, v1, curve, ctx.tol, face_key, pcurve);
+                let ek = ctx.reg.add_edge_with_pcurve(v0, v1, curve, ctx.tol, face_key,
+                    rc3d_shape::geom::curve2d::Curve2d::from_pcurve_3d(&pcurve));
                 let (v_lo_key, _v_hi_key) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
                 let wire_orient = if v0 == v_lo_key {
                     Orientation::Forward

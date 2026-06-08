@@ -131,7 +131,7 @@ pub fn discretize_edge(
                 .iter()
                 .map(|&(t, _)| {
                     let uv = pcurve.d0(t);
-                    (t, (uv.x, uv.y))
+                    (t, (uv.0, uv.1))
                 })
                 .collect();
             params_2d.insert(face_key, pts_2d);
@@ -204,7 +204,7 @@ fn sample_polyline_on_surface_exact(
     let face_key = *face_keys.first()?;
     let pcurve = edge.pcurves.get(&face_key)?;
     let face = reg.faces.get(face_key)?;
-    let CurveGeom::Polyline { points: uv_pts } = pcurve else {
+    let crate::geom::Curve2d::Polyline { points: uv_pts } = pcurve else {
         return None;
     };
     if uv_pts.len() < 2 {
@@ -232,7 +232,7 @@ fn sample_polyline_on_surface_exact(
             .enumerate()
             .map(|(i, uv)| {
                 let t = i as f32 / denom;
-                (t, face.surface.d0_native(uv.x, uv.y))
+                (t, face.surface.d0_native(uv.0, uv.1))
             })
             .collect(),
     )
@@ -242,7 +242,7 @@ fn sample_polyline_on_surface_exact(
 fn primary_pcurve_on_surface<'a>(
     edge: &'a BRepEdge,
     reg: &'a BRepStore,
-) -> Option<(&'a CurveGeom, &'a SurfaceGeom)> {
+) -> Option<(&'a crate::geom::Curve2d, &'a SurfaceGeom)> {
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = keys.first()?;
@@ -251,30 +251,32 @@ fn primary_pcurve_on_surface<'a>(
     Some((pcurve, &face.surface))
 }
 
-fn is_usable_pcurve(pcurve: &CurveGeom) -> bool {
+fn is_usable_pcurve(pcurve: &crate::geom::Curve2d) -> bool {
     let p0 = pcurve.d0(0.0);
     let p1 = pcurve.d0(1.0);
-    if (p1 - p0).length_squared() >= 1e-12 {
+    let d02 = (p1.0 - p0.0).powi(2) + (p1.1 - p0.1).powi(2);
+    if d02 >= 1e-12 {
         return true;
     }
     // Closed curve (p0 ≈ p1): check midpoint extent to distinguish
     // valid periodic curves (BSpline, Circle) from truly degenerate ones.
     let pmid = pcurve.d0(0.5);
-    (pmid - p0).length_squared() >= 1e-12
+    let dm2 = (pmid.0 - p0.0).powi(2) + (pmid.1 - p0.1).powi(2);
+    dm2 >= 1e-12
 }
 
 pub use crate::geom::eval_pcurve_on_surface;
 
-fn eval_pcurve_on_surface_d1(pcurve: &CurveGeom, surface: &SurfaceGeom, t: f32) -> Vec3 {
+fn eval_pcurve_on_surface_d1(pcurve: &crate::geom::Curve2d, surface: &SurfaceGeom, t: f32) -> Vec3 {
     let uv = pcurve.d0(t);
-    let duv = pcurve.d1(t);
-    let (su, sv) = surface.d1_native(uv.x, uv.y);
-    su * duv.x + sv * duv.y
+    let duv = pcurve.d1(t).1;
+    let (su, sv) = surface.d1_native(uv.0, uv.1);
+    su * duv.0 + sv * duv.1
 }
 
 /// Adaptive sampling via PCurve composed with surface evaluator.
 fn sample_pcurve_on_surface(
-    pcurve: &CurveGeom,
+    pcurve: &crate::geom::Curve2d,
     surface: &SurfaceGeom,
     config: &EdgeDiscConfig,
 ) -> Vec<(f32, Vec3)> {
@@ -313,7 +315,8 @@ fn sample_pcurve_on_surface(
                 0.0
             };
 
-            let kappa = pcurve.curvature(t_mid);
+            let kappa = 0.0; // Curve2d has no curvature() — curvature in UV space is
+            // handled through chordal/angular deviation on the 3D surface.
             let curvature_dev = kappa * seg_len;
 
             if chordal_dev > config.deflection
@@ -416,6 +419,7 @@ fn sample_curve_adaptive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::BRepFace;
     use crate::store::BRepStore;
@@ -459,10 +463,7 @@ mod tests {
         });
 
         let curve_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(10.0, 0.0, 0.0),
-        };
+        let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
 
         let config = EdgeDiscConfig::default();

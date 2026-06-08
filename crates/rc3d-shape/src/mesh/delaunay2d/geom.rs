@@ -72,53 +72,19 @@ impl std::ops::Mul<f64> for Point2d {
     }
 }
 
-/// 2D cross product (z-component): (b - a) x (c - a).
-#[inline]
-pub fn cross2d(a: Point2d, b: Point2d, c: Point2d) -> f64 {
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-}
-
-/// Robust 2D orientation test.
+/// Robust 2D orientation test using Shewchuk adaptive-exact arithmetic.
 /// Returns >0 if a->b->c is CCW, <0 if CW, 0 if collinear.
-/// Uses a single round of error bound check for typical CAD tolerances.
 #[inline]
 pub fn robust_orient2d(a: Point2d, b: Point2d, c: Point2d) -> f64 {
-    let det = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    // Error bound for floating-point orientation:
-    // |det_error| <= 3 * ulp * (|b.x - a.x| * |c.y - a.y| + |b.y - a.y| * |c.x - a.x|)
-    let max_coord = (b.x - a.x).abs()
-        .max((c.y - a.y).abs())
-        .max((b.y - a.y).abs())
-        .max((c.x - a.x).abs());
-    let err_bound = 4.0 * f64::EPSILON * max_coord * max_coord;
-    if det.abs() > err_bound {
-        det
-    } else {
-        det
-    }
+    super::delabella::adaptive_orient2d(a.x, a.y, b.x, b.y, c.x, c.y)
 }
 
-/// Robust in-circle test.
+/// Robust in-circle test using Shewchuk adaptive-exact arithmetic.
 /// Returns >0 if d is inside the circumcircle of (a, b, c), <0 if outside, 0 on.
 /// The triangle (a, b, c) must be oriented CCW for correct sign.
 #[inline]
 pub fn robust_in_circle(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> f64 {
-    let adx = a.x - d.x;
-    let ady = a.y - d.y;
-    let bdx = b.x - d.x;
-    let bdy = b.y - d.y;
-    let cdx = c.x - d.x;
-    let cdy = c.y - d.y;
-
-    let abdet = adx * bdy - bdx * ady;
-    let bcdet = bdx * cdy - cdx * bdy;
-    let cadet = cdx * ady - adx * cdy;
-
-    let alift = adx * adx + ady * ady;
-    let blift = bdx * bdx + bdy * bdy;
-    let clift = cdx * cdx + cdy * cdy;
-
-    alift * bcdet + blift * cadet + clift * abdet
+    super::delabella::adaptive_incircle(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y)
 }
 
 /// Compute circumcenter and squared radius of triangle (a, b, c).
@@ -181,5 +147,16 @@ mod tests {
         assert!((center.x - 0.5).abs() < 1e-10);
         assert!((center.y - 0.5).abs() < 1e-10);
         assert!((r_sq - expected_r_sq).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_orient2d_near_collinear_adaptive() {
+        // Nearly collinear points where naive f64 returns ~0.
+        // Adaptive-exact should correctly detect CCW.
+        let a = Point2d::new(0.0, 0.0);
+        let b = Point2d::new(1.0, 0.0);
+        let c = Point2d::new(0.5, 1e-15);
+        let result = robust_orient2d(a, b, c);
+        assert!(result > 0.0, "adaptive orient2d should detect CCW, got {}", result);
     }
 }

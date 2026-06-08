@@ -20,18 +20,52 @@ pub mod bopds;
 pub mod face_intersector;
 pub mod pave_filler;
 pub mod builder_face;
+pub mod coplanar;
+pub mod section;
 pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 
 use crate::store::BRepStore;
-use crate::topo::ShellKey;
+use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 
 /// Boolean operation type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BoolOp {
     Union,        // A ∪ B
+    #[default]
     Intersection, // A ∩ B
     Difference,   // A - B
+}
+
+/// History of a boolean operation: maps result shapes back to source shapes.
+///
+/// OCC alignment: BOPAlgo_Builder history tracking (BOPAlgo_Glue).
+/// Records which result faces came from which source faces, which edges were
+/// split, and which new vertices were created.
+#[derive(Debug, Clone, Default)]
+pub struct BRepBoolHistory {
+    /// Map: result face → source face(s) that contributed to it
+    pub result_to_source: std::collections::HashMap<FaceKey, Vec<FaceKey>>,
+    /// Edges that were split during the operation (original → [split edges])
+    pub split_edges: std::collections::HashMap<EdgeKey, Vec<EdgeKey>>,
+    /// New vertices created at split points
+    pub new_vertices: Vec<VertexKey>,
+    /// Number of face-face intersections found
+    pub intersection_count: usize,
+    /// The operation type
+    pub operation: BoolOp,
+}
+
+impl BRepBoolHistory {
+    pub fn new(op: BoolOp) -> Self {
+        Self {
+            result_to_source: std::collections::HashMap::new(),
+            split_edges: std::collections::HashMap::new(),
+            new_vertices: Vec::new(),
+            intersection_count: 0,
+            operation: op,
+        }
+    }
 }
 
 /// Result of a boolean operation (legacy — kept for backward compatibility).
@@ -49,6 +83,9 @@ pub struct BRepBoolResult {
     pub intersection_count: usize,
     /// Tolerance propagated from input face tolerances.
     pub tolerance: f32,
+    /// History tracking: maps result shapes to source shapes.
+    /// OCC alignment: BOPAlgo_Builder history.
+    pub history: Option<BRepBoolHistory>,
 }
 
 /// Perform a boolean operation on B-Rep shells.
@@ -68,12 +105,12 @@ pub fn boolean_brep(
     let tolerance = compute_face_tolerance(shells_a.iter().chain(shells_b.iter()), reg) + 1e-6;
 
     if shells_a.is_empty() || shells_b.is_empty() {
-        return BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance };
+        return BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance };
     }
 
     // Phase 1: Face-face intersections via PaveFiller (OCC BOPAlgo_PaveFiller)
     // Uses marching+Newton for general surfaces, analytic for simple pairs.
-    let (bopds, pave_report) = pave_filler::fill_paves(shells_a, shells_b, reg, tolerance);
+    let (bopds, _pave_report) = pave_filler::fill_paves(shells_a, shells_b, reg, tolerance);
 
     if bopds.face_face_interfs.is_empty() {
         return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
@@ -91,9 +128,9 @@ pub fn boolean_brep(
     }).collect();
 
     let curves = split::compute_brep_intersection_curves(&raw_intersections, reg);
-    // curves already contains the BRep-level intersection curves derived from
-    // the FaceFaceInterf data; pave_report.total_curves is the raw count from
-    // the same source (not additive).
+    // pave_report.total_curves sums curves_3d.len() across FaceFaceInterf entries;
+    // compute_brep_intersection_curves processes those same entries into BRepIntersectionCurves.
+    // Adding both would double-count.
     let intersection_count = curves.len();
 
     if curves.is_empty() {
@@ -109,21 +146,21 @@ pub fn boolean_brep(
     let mut new_faces_a: Vec<crate::topo::FaceKey> = Vec::new();
     for sfr in &split_a_uv {
         let result = builder_face::build_faces_from_split(
-            sfr.original_face, &sfr.sub_faces, &curves, reg,
+            sfr.original_face, &sfr.sub_faces, &curves, reg, Some(&bopds),
         );
         new_faces_a.extend(result.new_faces);
     }
     let mut new_faces_b: Vec<crate::topo::FaceKey> = Vec::new();
     for sfr in &split_b_uv {
         let result = builder_face::build_faces_from_split(
-            sfr.original_face, &sfr.sub_faces, &curves, reg,
+            sfr.original_face, &sfr.sub_faces, &curves, reg, Some(&bopds),
         );
         new_faces_b.extend(result.new_faces);
     }
 
-    // Phase 3: Classify each region against the other solid (needs &reg, immutable)
-    let regions_a = classify::classify_brep_regions(&split_a_uv, shells_b[0], reg);
-    let regions_b = classify::classify_brep_regions(&split_b_uv, shells_a[0], reg);
+    // Phase 3: Classify each region against the other solid(s)
+    let regions_a = classify::classify_brep_regions(&split_a_uv, shells_b, reg);
+    let regions_b = classify::classify_brep_regions(&split_b_uv, shells_a, reg);
 
     // Phase 4: Select faces based on operation type
     let selected = select::select_brep_faces(
@@ -137,6 +174,7 @@ pub fn boolean_brep(
 
     if all_selected.is_empty() {
         return BRepBoolResult {
+            history: None,
             result_shells: vec![],
             is_empty: true,
             intersection_count,
@@ -150,6 +188,7 @@ pub fn boolean_brep(
     let is_empty = result_shells.is_empty();
 
     BRepBoolResult {
+        history: None,
         result_shells,
         is_empty,
         intersection_count,
@@ -176,6 +215,13 @@ fn handle_no_intersection(
     op: BoolOp,
     tolerance: f32,
 ) -> BRepBoolResult {
+    // Try coplanar face boolean (2D polygon clipping in UV space)
+    if let Some(result) = coplanar::handle_coplanar_boolean(
+        shells_a, shells_b, reg, op, tolerance,
+    ) {
+        return result;
+    }
+
     // Check containment: is A inside B or B inside A?
     // Use a sample point from each shell
     let a_inside_b = shells_a.first().map_or(false, |&sk| {
@@ -189,10 +235,10 @@ fn handle_no_intersection(
         BoolOp::Union => {
             if a_inside_b {
                 // A inside B → result is B
-                BRepBoolResult { result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
             } else if b_inside_a {
                 // B inside A → result is A
-                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint: both shells in result
                 let mut all_faces = Vec::new();
@@ -204,29 +250,29 @@ fn handle_no_intersection(
                 let shell_key = stitch::stitch_faces_into_shell(&all_faces, reg);
                 let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
                 let is_empty = result_shells.is_empty();
-                BRepBoolResult { result_shells, is_empty, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells, is_empty, intersection_count: 0, tolerance }
             }
         }
         BoolOp::Intersection => {
             if a_inside_b {
-                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else if b_inside_a {
-                BRepBoolResult { result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint → empty intersection
-                BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
             }
         }
         BoolOp::Difference => {
             if a_inside_b {
                 // A entirely inside B → empty result
-                BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
             } else if b_inside_a {
                 // B entirely inside A → A with B void (simplified: return A)
-                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             } else {
                 // Disjoint → A unchanged
-                BRepBoolResult { result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
             }
         }
     }
@@ -266,6 +312,7 @@ mod tests {
     use super::*;
     use crate::topo::*;
     use crate::geom::SurfaceGeom;
+    use crate::geom::curve2d::Curve2d;
     use rc3d_core::math::Vec3;
 
     fn make_plane_shell(reg: &mut BRepStore, origin: Vec3, normal: Vec3) -> ShellKey {
@@ -292,7 +339,7 @@ mod tests {
     fn test_bool_module_loads() {
         let op = BoolOp::Union;
         assert_eq!(op, BoolOp::Union);
-        let result = BRepBoolResult { result_shells: vec![], is_empty: true, intersection_count: 0, tolerance: 1e-4 };
+        let result = BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance: 1e-4 };
         assert!(result.is_empty);
     }
 
@@ -372,8 +419,8 @@ mod tests {
         assert_eq!(split_b[0].sub_faces.len(), 2, "Face B split into 2 sub-faces");
 
         // Phase 3: classify — Bug 3 verification: ALL sub-faces are classified
-        let regions_a = classify::classify_brep_regions(&split_a, sb, &reg);
-        let regions_b = classify::classify_brep_regions(&split_b, sa, &reg);
+        let regions_a = classify::classify_brep_regions(&split_a, &[sb], &reg);
+        let regions_b = classify::classify_brep_regions(&split_b, &[sa], &reg);
         assert_eq!(regions_a[0].1.len(), 2, "All 2 sub-faces of A classified");
         assert_eq!(regions_b[0].1.len(), 2, "All 2 sub-faces of B classified");
 
@@ -432,7 +479,8 @@ mod tests {
         let mut wire_edges = Vec::new();
         for (va, vb, pa, pb) in edges_data {
             let curve = CurveGeom::Line { origin: pa, direction: pb - pa };
-            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, curve);
+            let pc = Curve2d::Line { origin: (pa.x, pa.y), direction: (pb.x - pa.x, pb.y - pa.y) };
+            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, pc);
             wire_edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = wire_edges;
@@ -474,18 +522,17 @@ mod tests {
             "Union of overlapping squares should produce a result shell");
     }
 
-    /// Coplanar faces do not produce 1D intersection curves.
-    /// Intersection of coplanar geometry requires 2D polygon boolean
-    /// which is not yet implemented. This test documents the limitation.
+    /// Coplanar face intersection via 2D polygon clipping (UV space).
     #[test]
-    fn test_coplanar_intersection_returns_empty() {
+    fn test_coplanar_intersection_overlap() {
         let mut reg = BRepStore::new();
         let (sa, _fa) = make_square_face(&mut reg, Vec3::new(0.0, 0.0, 0.0), 2.0);
         let (sb, _fb) = make_square_face(&mut reg, Vec3::new(1.0, 0.0, 0.0), 2.0);
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
-        // Known limitation: 2D coplanar polygon intersection not implemented
-        assert!(result.is_empty || result.intersection_count == 0,
-            "Coplanar intersection not yet supported (requires 2D polygon boolean)");
+        // Coplanar overlapping squares should produce a non-empty intersection
+        // via 2D polygon clipping in UV space.
+        assert!(!result.is_empty || !result.result_shells.is_empty(),
+            "Coplanar intersection of overlapping squares should produce result");
     }
 }

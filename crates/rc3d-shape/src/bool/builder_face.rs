@@ -10,9 +10,9 @@
 //! 3. Build closed wire loops from edge segments + intersection curve segments
 //! 4. Create new BRepFace entities from wire loops + original surface
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use rc3d_core::math::Vec3;
-use crate::geom::{CurveGeom, SurfaceGeom};
+use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::*;
 use crate::topo_iter;
@@ -56,6 +56,7 @@ pub fn build_faces_from_split(
     sub_regions: &[super::split::SubFaceRegion],
     curves: &[super::split::BRepIntersectionCurve],
     reg: &mut BRepStore,
+    bopds: Option<&super::bopds::BopDS>,
 ) -> BuilderFaceResult {
     let mut result = BuilderFaceResult {
         new_faces: Vec::new(),
@@ -65,7 +66,7 @@ pub fn build_faces_from_split(
     };
 
     // Clone surface and tolerance before mutable operations
-    let (surface, face_tol, has_edges) = {
+    let (surface, _face_tol, has_edges) = {
         let face = match reg.faces.get(face_key) {
             Some(f) => f,
             None => return result,
@@ -78,8 +79,8 @@ pub fn build_faces_from_split(
         return result;
     }
 
-    // Phase 1: Detect edge split points
-    let split_points = detect_edge_split_points(face_key, curves, reg);
+    // Phase 1: Detect edge split points (from curves AND BOPDS pave blocks)
+    let split_points = detect_edge_split_points(face_key, curves, reg, bopds);
     result.new_vertices = split_points.len();
 
     // Phase 2: Create split vertices on edges
@@ -102,13 +103,40 @@ pub fn build_faces_from_split(
 }
 
 /// Detect where intersection curves meet face boundary edges.
+/// Also consults BOPDS pave blocks for additional split points (OCC BOPAlgo_BuilderFace).
 fn detect_edge_split_points(
     face_key: FaceKey,
     curves: &[super::split::BRepIntersectionCurve],
     reg: &BRepStore,
+    bopds: Option<&super::bopds::BopDS>,
 ) -> Vec<EdgeSplitPoint> {
     let mut points = Vec::new();
     let edges = topo_iter::iter_edges_of_face(face_key, reg);
+
+    // Merge BOPDS pave block split data (OCC BOPAlgo_PaveFiller → BOPAlgo_BuilderFace)
+    if let Some(bopds) = bopds {
+        for &ek in &edges {
+            if let Some(pave_blocks) = bopds.pave_blocks.get(&ek) {
+                for pb in pave_blocks {
+                    if pb.face_refs.contains(&face_key) {
+                        let uv_at = |t: f32| -> (f32, f32) {
+                            reg.edges.get(ek)
+                                .and_then(|e| e.pcurves.get(&face_key))
+                                .map(|pc| pc.d0(t))
+                                .unwrap_or((0.0, 0.0))
+                        };
+                        points.push(EdgeSplitPoint {
+                            edge: ek,
+                            t: pb.t_range.0,
+                            position: pb.points_3d.0,
+                            uv: uv_at(pb.t_range.0),
+                            vertex: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     for curve in curves {
         // The curve endpoints are where it meets the face boundary
@@ -246,9 +274,9 @@ fn create_edge_segment(
     t_start: f32,
     t_end: f32,
     curve_3d: &CurveGeom,
-    pcurve: &CurveGeom,
+    pcurve: &Curve2d,
     face_key: FaceKey,
-    surface: &SurfaceGeom,
+    _surface: &SurfaceGeom,
     reg: &mut BRepStore,
 ) -> EdgeKey {
     // Build trimmed 3D curve for this segment
@@ -265,7 +293,7 @@ fn create_edge_segment(
 
     // Build trimmed PCurve for this segment
     let trimmed_pc = if span < 0.99 {
-        CurveGeom::Trimmed {
+        Curve2d::Trimmed {
             basis: Box::new(pcurve.clone()),
             t_min: t_start,
             t_max: t_end,
@@ -286,10 +314,10 @@ fn create_edge_segment(
 
 /// Build a new BRep face from a sub-region.
 fn build_face_from_region(
-    original_face: FaceKey,
+    _original_face: FaceKey,
     region: &super::split::SubFaceRegion,
     surface: &SurfaceGeom,
-    edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, f32, f32)>>,
+    _edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, f32, f32)>>,
     reg: &mut BRepStore,
 ) -> Option<FaceKey> {
     // Create a new face with the same surface
@@ -324,9 +352,9 @@ fn build_face_from_region(
             origin: p0,
             direction: p1 - p0,
         };
-        let edge_pc = CurveGeom::Line {
-            origin: Vec3::new(uv0.0, uv0.1, 0.0),
-            direction: Vec3::new(uv1.0 - uv0.0, uv1.1 - uv0.1, 0.0),
+        let edge_pc = Curve2d::Line {
+            origin: (uv0.0, uv0.1),
+            direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
         };
 
         let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, new_face, edge_pc);
@@ -357,9 +385,9 @@ fn build_face_from_region(
                 v0, v1,
                 CurveGeom::Line { origin: p0, direction: p1 - p0 },
                 1e-4, new_face,
-                CurveGeom::Line {
-                    origin: Vec3::new(uv0.0, uv0.1, 0.0),
-                    direction: Vec3::new(uv1.0 - uv0.0, uv1.1 - uv0.1, 0.0),
+                Curve2d::Line {
+                    origin: (uv0.0, uv0.1),
+                    direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
                 },
             );
             inner_edges.push((ek, Orientation::Forward));
@@ -435,7 +463,7 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d.clone(), 1e-4, fk, edge_3d);
+        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d.clone(), 1e-4, fk, Curve2d::from_pcurve_3d(&edge_3d));
         reg.wires.get_mut(wire).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         // Create an intersection curve with endpoint at (1, 0, 0) — on the edge
@@ -447,7 +475,7 @@ mod tests {
             face_b: FaceKey::default(),
         };
 
-        let split_points = detect_edge_split_points(fk, &[curve], &reg);
+        let split_points = detect_edge_split_points(fk, &[curve], &reg, None);
         assert!(!split_points.is_empty(), "should detect endpoint on edge");
         let sp = &split_points[0];
         assert_eq!(sp.edge, ek);

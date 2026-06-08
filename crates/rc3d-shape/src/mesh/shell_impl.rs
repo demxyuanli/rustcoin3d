@@ -23,7 +23,7 @@ use super::fallback_policy::{
     uses_closed_parametric_mesh,
 };
 use super::grid::{mesh_closed_surface, mesh_parametric_grid, mesh_trimmed_uv_grid, mesh_uv_bbox_grid};
-use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris, recompute_normals_from_tris_preserving};
+use super::post_process::{compact_mesh_vertices, cull_degenerate_tris, recompute_normals_from_tris_preserving};
 use super::edge_pool::build_face_boundary_pool;
 use super::ruled::{try_ruled_two_wire_mesh, RuledMeshBuffers};
 use super::refiner::{merge_refined_face, refine_mesh_interior, extract_face_mesh_with_map};
@@ -641,6 +641,16 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             .unwrap_or(face_raw.same_sense);
         let mesh_face_owned = mesh_face_view(face_raw, eff_sense);
         let face = mesh_face_owned.as_ref();
+
+        // Degenerate face guard: a face with 1-2 wire edges cannot form a closed
+        // boundary polygon. Skip these faces — they will produce zero triangles.
+        // Closed parametric meshes (sphere, torus) may have 0 edges and are valid.
+        if !info_wire_edges.is_empty() && info_wire_edges.len() < 3
+            && !uses_closed_parametric_mesh(reg, face)
+        {
+            eprintln!("[mesh face] {:?} SKIP (degenerate: {} edges)", info_face_key, info_wire_edges.len());
+            continue;
+        }
 
         if info_wire_edges.is_empty() || uses_closed_parametric_mesh(reg, face) {
             let _tf = std::time::Instant::now();
@@ -1615,7 +1625,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
             face_ranges.push(range);
             report.meshed_faces += 1;
         }
-                } // end per-face loop (within par_chunks closure)
+        } // end per-face loop (within par_chunks closure)
 
                 report.total_tris = all_indices.len() / 4;
 

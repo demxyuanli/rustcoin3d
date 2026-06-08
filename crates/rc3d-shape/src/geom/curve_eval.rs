@@ -2,6 +2,7 @@
 
 use rc3d_core::math::Vec3;
 use super::bspline::find_span;
+use super::Curve2d;
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -905,9 +906,9 @@ pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
 }
 
 /// Evaluate PCurve on surface at t (OCCT BRepAdaptor_Curve with face context).
-pub fn eval_pcurve_on_surface(pcurve: &CurveGeom, surface: &super::SurfaceGeom, t: f32) -> Vec3 {
+pub fn eval_pcurve_on_surface(pcurve: &Curve2d, surface: &super::SurfaceGeom, t: f32) -> Vec3 {
     let uv = pcurve.d0(t);
-    surface.d0_native(uv.x, uv.y)
+    surface.d0_native(uv.0, uv.1)
 }
 
 // ── Tests ────────────────────────────────────────────────────────

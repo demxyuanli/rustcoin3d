@@ -360,7 +360,7 @@ fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepS
         };
         if let Some(pcurve) = edge.pcurves.get(&face_key) {
             let start_uv = pcurve.d0(0.0);
-            polygon_uv.push((start_uv.x, start_uv.y));
+            polygon_uv.push((start_uv.0, start_uv.1));
         } else {
             let v_pos = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
             if let Some(uv) = face.surface.project(v_pos) {
@@ -392,12 +392,22 @@ fn point_in_polygon_2d(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
 
 pub fn classify_brep_regions(
     regions: &[SplitFaceRegion],
-    other_shell: ShellKey,
+    other_shells: &[ShellKey],
     reg: &BRepStore,
 ) -> Vec<(usize, Vec<PointClassification>)> {
     regions.iter().enumerate().map(|(i, region)| {
         let classes: Vec<PointClassification> = region.sub_faces.iter()
-            .map(|sub| classify_point_solid(sub.interior_point_3d, other_shell, reg, 1e-4))
+            .map(|sub| {
+                // A point is inside if ANY of the other shells contains it
+                for &sk in other_shells {
+                    if classify_point_solid(sub.interior_point_3d, sk, reg, 1e-4)
+                        == PointClassification::Inside
+                    {
+                        return PointClassification::Inside;
+                    }
+                }
+                PointClassification::Outside
+            })
             .collect();
         (i, classes)
     }).collect()

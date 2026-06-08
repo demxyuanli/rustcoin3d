@@ -13,7 +13,6 @@
 //! 4. Create pave blocks between consecutive split vertices
 //! 5. Group overlapping pave blocks into common blocks
 
-use std::collections::HashMap;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use crate::topo_iter;
@@ -253,6 +252,7 @@ mod tests {
     use crate::store::BRepStore;
     use crate::topo::*;
     use rc3d_core::math::Vec3;
+    use std::collections::HashMap;
 
     fn make_plane_shell(reg: &mut BRepStore, origin: Vec3, normal: Vec3) -> ShellKey {
         let surface = SurfaceGeom::Plane { origin, normal, u_dir: Vec3::X };

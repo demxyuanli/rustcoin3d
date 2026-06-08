@@ -11,7 +11,7 @@ pub fn collect_wire_uv_polygon(
         if let Some(edge) = reg.edges.get(ek) {
             if let Some(pc) = edge.pcurves.get(&face_key) {
                 let uv = pc.d0(0.0);
-                points.push((uv.x, uv.y));
+                points.push((uv.0, uv.1));
             }
         }
     }
@@ -19,7 +19,7 @@ pub fn collect_wire_uv_polygon(
         if let Some(last_edge) = wire.edges.last().and_then(|&(ek, _)| {
             reg.edges.get(ek).and_then(|e| e.pcurves.get(&face_key)).map(|pc| {
                 let uv = pc.d0(1.0);
-                (uv.x, uv.y)
+                (uv.0, uv.1)
             })
         }) {
             points.push(last_edge);

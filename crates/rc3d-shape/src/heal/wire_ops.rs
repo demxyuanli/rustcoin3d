@@ -157,6 +157,7 @@ fn edge_length_3d(edge: &crate::topo::BRepEdge, reg: &BRepStore) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, FaceKey};
     use rc3d_core::math::Vec3;
@@ -178,13 +179,14 @@ mod tests {
         });
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let mut edge_keys = Vec::new();
         let mut x = 0.0f32;
         for &len in edge_lengths {
             let v0 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
             x += len;
             let v1 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
-            let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, line.clone());
+            let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, pc.clone());
             edge_keys.push(ek);
         }
         let wire_edges: Vec<(EdgeKey, Orientation)> = edge_keys

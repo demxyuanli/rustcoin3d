@@ -120,6 +120,7 @@ fn check_edge_continuity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepWire, BRepShell, Orientation};
     use rc3d_core::math::Vec3;
@@ -144,11 +145,15 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
         let f1 = make_plane_face(&mut reg, surface.clone());
         let f2 = make_plane_face(&mut reg, surface);
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, f1, line.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, line.clone());
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, f1, pc.clone());
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
 
         reg.wires
             .get_mut(
@@ -191,6 +196,7 @@ mod tests {
         let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
         let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let wk1 = reg.wires.insert(BRepWire { edges: vec![] });
         let f1 = reg.faces.insert(crate::topo::BRepFace {
             surface: surface1, outer_wire: wk1, inner_wires: vec![],
@@ -203,8 +209,8 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, line.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, line.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
         reg.wires.get_mut(wk1).unwrap().edges = vec![(ek, Orientation::Forward)];
         reg.wires.get_mut(wk2).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {
@@ -242,6 +248,10 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
         let wk1 = reg.wires.insert(BRepWire { edges: vec![] });
         let f1 = reg.faces.insert(crate::topo::BRepFace {
             surface: surface1,
@@ -264,8 +274,8 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, line.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, line);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
         reg.wires.get_mut(wk1).unwrap().edges = vec![(ek, Orientation::Forward)];
         reg.wires.get_mut(wk2).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {

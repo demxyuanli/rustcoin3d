@@ -1,6 +1,6 @@
 //! Wire junction repair: gap closing + vertex merging.
 
-use crate::geom::CurveGeom;
+use crate::geom::Curve2d;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 use rc3d_core::math::Vec3;
@@ -167,22 +167,24 @@ fn pcurve_endpoint(
     let pc = edge.pcurves.get(&face_key)?;
     let t = if (orient == Orientation::Forward) == is_start { 0.0 } else { 1.0 };
     let uv = pc.d0(t);
-    Some((uv.x, uv.y))
+    Some((uv.0, uv.1))
 }
 
-fn translate_pcurve_endpoint(pc: &CurveGeom, du: f32, dv: f32) -> CurveGeom {
-    let shift = Vec3::new(du, dv, 0.0);
+fn translate_pcurve_endpoint(pc: &Curve2d, du: f32, dv: f32) -> Curve2d {
     match pc {
-        CurveGeom::Line { origin, direction } => CurveGeom::Line {
-            origin: *origin + shift,
+        Curve2d::Line { origin, direction } => Curve2d::Line {
+            origin: (origin.0 + du, origin.1 + dv),
             direction: *direction,
         },
-        CurveGeom::Circle { center, axis, radius, .. } => CurveGeom::circle(
-            *center + shift, *axis, *radius,
-        ),
-        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => CurveGeom::ellipse(
-            *center + shift, *axis, *semi_major, *semi_minor,
-        ),
+        Curve2d::Circle { center, radius } => Curve2d::Circle {
+            center: (center.0 + du, center.1 + dv),
+            radius: *radius,
+        },
+        Curve2d::Ellipse { center, semi_major, semi_minor } => Curve2d::Ellipse {
+            center: (center.0 + du, center.1 + dv),
+            semi_major: *semi_major,
+            semi_minor: *semi_minor,
+        },
         other => other.clone(),
     }
 }
@@ -306,10 +308,10 @@ fn nudge_pcurve_endpoints(edges: &[(EdgeKey, Orientation)], reg: &mut BRepStore)
                 (pc_i.d0(t_i), pc_j.d0(t_j), t_i > 1.0 - 1e-6)
             };
 
-            let dist = ((uv_i.x - uv_j.x).powi(2) + (uv_i.y - uv_j.y).powi(2)).sqrt();
+            let dist = ((uv_i.0 - uv_j.0).powi(2) + (uv_i.1 - uv_j.1).powi(2)).sqrt();
             if dist > 1e-10 && dist < 1e-3 {
                 if let Some(pc) = reg.pcurve_mut(ek_i, face_key) {
-                    *pc = nudge_line_pcurve(pc, uv_j.x - uv_i.x, uv_j.y - uv_i.y, at_end);
+                    *pc = nudge_line_pcurve(pc, uv_j.0 - uv_i.0, uv_j.1 - uv_i.1, at_end);
                 }
             }
         }
@@ -325,11 +327,11 @@ fn get_vertex_at(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepSto
     }
 }
 
-fn nudge_line_pcurve(pc: &CurveGeom, du: f32, dv: f32, at_end: bool) -> CurveGeom {
+fn nudge_line_pcurve(pc: &Curve2d, du: f32, dv: f32, at_end: bool) -> Curve2d {
     match pc {
-        CurveGeom::Line { origin, direction } => CurveGeom::Line {
-            origin: if at_end { *origin + Vec3::new(du, dv, 0.0) } else { *origin },
-            direction: *direction + Vec3::new(if at_end { 0.0 } else { du }, if at_end { 0.0 } else { dv }, 0.0),
+        Curve2d::Line { origin, direction } => Curve2d::Line {
+            origin: if at_end { (origin.0 + du, origin.1 + dv) } else { *origin },
+            direction: (direction.0 + if at_end { 0.0 } else { du }, direction.1 + if at_end { 0.0 } else { dv }),
         },
         other => other.clone(),
     }
@@ -380,6 +382,7 @@ fn apply_vertex_merges(reg: &mut BRepStore, merges: &[(VertexKey, VertexKey)]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepVertex, BRepWire};
     use rc3d_core::math::Vec3;
@@ -415,8 +418,12 @@ mod tests {
             origin: a,
             direction: b - a,
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::X, Vec3::Y));
+        let pc = |a: rc3d_core::math::Vec3, b: rc3d_core::math::Vec3| Curve2d::Line {
+            origin: (a.x, a.y),
+            direction: (b.x - a.x, b.y - a.y),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::X, Vec3::Y));
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, Orientation::Forward),
@@ -455,11 +462,15 @@ mod tests {
             origin: a,
             direction: b - a,
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
+        let pc = |a: rc3d_core::math::Vec3, b: rc3d_core::math::Vec3| Curve2d::Line {
+            origin: (a.x, a.y),
+            direction: (b.x - a.x, b.y - a.y),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
         let e2_orient = if gap_v < v2 { Orientation::Forward } else { Orientation::Reversed };
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
-        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, e2_orient),
@@ -492,7 +503,7 @@ mod tests {
         });
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let pcurve = line.clone();
+        let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, pcurve.clone());
         let e2 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, face_key, pcurve.clone());
 
@@ -557,9 +568,10 @@ mod tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0_dup, line.clone(), 1e-4, fk, line.clone());
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v0_dup, line.clone(), 1e-4, fk, pc);
         let wk = reg.wires.insert(BRepWire {
             edges: vec![
                 (e1, Orientation::Forward),
@@ -592,8 +604,9 @@ mod tests {
             seam_edges: vec![], color: None, degenerated_edges: vec![],
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v3, v2, line.clone(), 1e-4, fk, line.clone());
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v3, v2, line.clone(), 1e-4, fk, pc.clone());
         let wk = reg.wires.insert(BRepWire {
             edges: vec![(e1, Orientation::Forward), (e2, Orientation::Reversed)],
         });

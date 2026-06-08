@@ -965,6 +965,7 @@ pub fn loops_from_boundary_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::mesh::edge_pool::FaceEdgeBoundaryIdx;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
@@ -1025,10 +1026,7 @@ mod tests {
                 origin: a,
                 direction: b - a,
             };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(u0.0, u0.1, 0.0),
-                direction: Vec3::new(u1.0 - u0.0, u1.1 - u0.1, 0.0),
-            };
+            let pcurve = Curve2d::Line { origin: (u0.0, u0.1), direction: (u1.0 - u0.0, u1.1 - u0.1) };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             edge_keys.push(ek);
         }

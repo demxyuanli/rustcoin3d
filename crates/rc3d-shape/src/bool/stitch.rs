@@ -272,7 +272,7 @@ pub fn try_close_shell(shell_key: ShellKey, reg: &mut BRepStore) -> bool {
 ///
 /// Returns the number of matched edge pairs.
 fn match_open_edges_by_geometry(shell_key: ShellKey, reg: &mut BRepStore) -> usize {
-    use rc3d_core::utils::hash::f32x3_quantized_bits;
+    
 
     let face_keys: Vec<(FaceKey, Orientation)> = {
         let shell = match reg.shells.get(shell_key) {

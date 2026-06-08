@@ -6,7 +6,7 @@
 use rc3d_core::math::Vec3;
 
 use crate::geom::project::project_point_on_surface;
-use crate::geom::{CurveGeom, SurfaceGeom, eval_pcurve_on_surface};
+use crate::geom::{Curve2d, CurveGeom, SurfaceGeom, eval_pcurve_on_surface};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, WireKey};
 
@@ -68,6 +68,7 @@ pub(crate) fn fix_same_parameter_edge(
     let before_max_dev = best_max_dev;
     let mut best_pcurve = pcurve;
     let mut fixed_count = 0usize;
+    let mut no_improve_streak = 0usize;
 
     for _iter in 0..max_iterations {
         // Adaptive samples from 3D curve
@@ -96,7 +97,8 @@ pub(crate) fn fix_same_parameter_edge(
         let mut uv_pairs: Vec<(f32, Vec3)> = Vec::with_capacity(t_points.len());
         for (t_i, p3d) in &t_points {
             let current_uv = best_pcurve.d0(*t_i);
-            let corrected_uv = match project_to_uv(&surface, *p3d, current_uv, tolerance) {
+            let current_uv_v3 = Vec3::new(current_uv.0, current_uv.1, 0.0);
+            let corrected_uv = match project_to_uv(&surface, *p3d, current_uv_v3, tolerance) {
                 Some(uv) => uv,
                 None => {
                     log::debug!(
@@ -105,11 +107,11 @@ pub(crate) fn fix_same_parameter_edge(
                         face_key,
                         t_i
                     );
-                    uv_pairs.push((*t_i, current_uv));
+                    uv_pairs.push((*t_i, current_uv_v3));
                     continue;
                 }
             };
-            let wrapped = normalize_periodic_uv(corrected_uv, current_uv, &surface);
+            let wrapped = normalize_periodic_uv(corrected_uv, current_uv_v3, &surface);
             uv_pairs.push((*t_i, wrapped));
         }
 
@@ -127,6 +129,14 @@ pub(crate) fn fix_same_parameter_edge(
             best_max_dev = new_max_dev;
             best_pcurve = new_pcurve;
             fixed_count += 1;
+            no_improve_streak = 0;
+        } else {
+            no_improve_streak += 1;
+            // Stop early if two consecutive iterations show no improvement —
+            // the projection + fit cycle has converged or cannot improve further.
+            if no_improve_streak >= 2 {
+                break;
+            }
         }
 
         if new_max_dev < tolerance {
@@ -205,7 +215,7 @@ pub(crate) fn normalize_periodic_uv(uv: Vec3, reference: Vec3, surface: &Surface
 /// Returns (max_deviation, [(t, p3d, deviation)]).
 fn sample_deviation(
     curve_3d: &CurveGeom,
-    pcurve: &CurveGeom,
+    pcurve: &Curve2d,
     surface: &SurfaceGeom,
     tolerance: f32,
 ) -> (f32, Vec<(f32, Vec3, f32)>) {
@@ -231,7 +241,7 @@ fn sample_deviation(
 // ---------------------------------------------------------------------------
 
 /// Decide between line and BSpline fit based on collinearity.
-fn fit_new_pcurve(samples: &[(f32, Vec3)], tolerance: f32) -> CurveGeom {
+fn fit_new_pcurve(samples: &[(f32, Vec3)], tolerance: f32) -> Curve2d {
     if samples.len() <= 2 {
         let start = samples.first().map(|&(_, uv)| uv).unwrap_or(Vec3::ZERO);
         let end = samples.last().map(|&(_, uv)| uv).unwrap_or(Vec3::ZERO);
@@ -274,10 +284,10 @@ fn all_collinear_uv(samples: &[(f32, Vec3)], tolerance: f32) -> bool {
 // Line fit
 // ---------------------------------------------------------------------------
 
-fn fit_pcurve_line(uv_start: Vec3, uv_end: Vec3) -> CurveGeom {
-    CurveGeom::Line {
-        origin: Vec3::new(uv_start.x, uv_start.y, 0.0),
-        direction: Vec3::new(uv_end.x - uv_start.x, uv_end.y - uv_start.y, 0.0),
+fn fit_pcurve_line(uv_start: Vec3, uv_end: Vec3) -> Curve2d {
+    Curve2d::Line {
+        origin: (uv_start.x, uv_start.y),
+        direction: (uv_end.x - uv_start.x, uv_end.y - uv_start.y),
     }
 }
 
@@ -285,11 +295,11 @@ fn fit_pcurve_line(uv_start: Vec3, uv_end: Vec3) -> CurveGeom {
 // BSpline fit (interpolation through sample points)
 // ---------------------------------------------------------------------------
 
-fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> CurveGeom {
+fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
     let n = samples.len();
     if n <= 2 || n < degree + 1 {
-        return CurveGeom::Polyline {
-            points: samples.iter().map(|&(_, uv)| Vec3::new(uv.x, uv.y, 0.0)).collect(),
+        return Curve2d::Polyline {
+            points: samples.iter().map(|&(_, uv)| (uv.x, uv.y)).collect(),
         };
     }
 
@@ -328,27 +338,27 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> CurveGeom {
     let cp_u = match solve_linear_system(&mat_u, &rhs_u, n) {
         Some(sol) => sol,
         None => {
-            return CurveGeom::Polyline {
-                points: samples.iter().map(|&(_, uv)| Vec3::new(uv.x, uv.y, 0.0)).collect(),
+            return Curve2d::Polyline {
+                points: samples.iter().map(|&(_, uv)| (uv.x, uv.y)).collect(),
             };
         }
     };
     let cp_v = match solve_linear_system(&mat_u, &rhs_v, n) {
         Some(sol) => sol,
         None => {
-            return CurveGeom::Polyline {
-                points: samples.iter().map(|&(_, uv)| Vec3::new(uv.x, uv.y, 0.0)).collect(),
+            return Curve2d::Polyline {
+                points: samples.iter().map(|&(_, uv)| (uv.x, uv.y)).collect(),
             };
         }
     };
 
-    let control_points: Vec<Vec3> = cp_u
+    let control_points: Vec<(f32, f32)> = cp_u
         .into_iter()
         .zip(cp_v.into_iter())
-        .map(|(u, v)| Vec3::new(u, v, 0.0))
+        .map(|(u, v)| (u, v))
         .collect();
 
-    CurveGeom::BSpline {
+    Curve2d::BSpline {
         degree: deg,
         control_points,
         knots,
@@ -532,7 +542,7 @@ mod tests {
 
     /// Helper: build a simple test setup with one edge on a planar face.
     fn build_plane_edge(
-        pcurve: CurveGeom,
+        pcurve: Curve2d,
         degenerate: bool,
     ) -> (BRepStore, EdgeKey, FaceKey, WireKey) {
         let mut reg = BRepStore::new();
@@ -576,9 +586,9 @@ mod tests {
     #[test]
     fn test_no_fix_when_already_same_parameter() {
         // Aligned line pcurve on a plane → no fix needed
-        let good_pcurve = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+        let good_pcurve = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
         };
         let (mut reg, ek, fk, _wk) = build_plane_edge(good_pcurve, false);
         let report = fix_same_parameter_edge(ek, fk, &mut reg, 1e-3, 3);
@@ -590,9 +600,9 @@ mod tests {
     #[test]
     fn test_fix_misaligned_line_pcurve() {
         // PCurve offset in V by 0.1 → should be corrected
-        let bad_pcurve = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.1, 0.0),
-            direction: Vec3::X,
+        let bad_pcurve = Curve2d::Line {
+            origin: (0.0, 0.1),
+            direction: (1.0, 0.0),
         };
         let (mut reg, ek, fk, _wk) = build_plane_edge(bad_pcurve, false);
         let report = fix_same_parameter_edge(ek, fk, &mut reg, 1e-3, 3);
@@ -608,9 +618,9 @@ mod tests {
 
     #[test]
     fn test_degenerate_edge_skipped() {
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+        let pcurve = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
         };
         let (mut reg, ek, fk, _wk) = build_plane_edge(pcurve, true);
         let report = fix_same_parameter_edge(ek, fk, &mut reg, 1e-3, 3);
@@ -627,7 +637,7 @@ mod tests {
         ];
         let curve = fit_new_pcurve(&samples, 1e-3);
         assert!(
-            matches!(curve, CurveGeom::Line { .. }),
+            matches!(curve, Curve2d::Line { .. }),
             "expected Line for collinear points, got {:?}",
             curve
         );
@@ -645,15 +655,15 @@ mod tests {
         ];
         let curve = fit_new_pcurve(&samples, 1e-3);
         assert!(
-            matches!(curve, CurveGeom::BSpline { .. }),
+            matches!(curve, Curve2d::BSpline { .. }),
             "expected BSpline for non-collinear points, got {:?}",
             curve
         );
         // The BSpline should interpolate endpoints
         let p0 = curve.d0(0.0);
         let p1 = curve.d0(1.0);
-        assert!((p0.x - 0.0).abs() < 0.05, "start u ~ 0, got {}", p0.x);
-        assert!((p1.x - 1.0).abs() < 0.05, "end u ~ 1, got {}", p1.x);
+        assert!((p0.0 - 0.0).abs() < 0.05, "start u ~ 0, got {}", p0.0);
+        assert!((p1.0 - 1.0).abs() < 0.05, "end u ~ 1, got {}", p1.0);
     }
 
     #[test]
@@ -704,9 +714,9 @@ mod tests {
             direction: Vec3::new(0.0, 0.0, 1.0),
         };
         // Bad pcurve: shifted U by TAU/4 (90 degrees)
-        let bad_pcurve = CurveGeom::Line {
-            origin: Vec3::new(std::f32::consts::TAU * 0.25, 0.0, 0.0),
-            direction: Vec3::new(0.0, 0.0, 1.0),
+        let bad_pcurve = Curve2d::Line {
+            origin: (std::f32::consts::TAU * 0.25, 0.0),
+            direction: (0.0, 1.0),
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -739,9 +749,9 @@ mod tests {
 
     #[test]
     fn test_wire_driver() {
-        let bad_pcurve = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.1, 0.0),
-            direction: Vec3::X,
+        let bad_pcurve = Curve2d::Line {
+            origin: (0.0, 0.1),
+            direction: (1.0, 0.0),
         };
         let (mut reg, _ek, fk, wk) = build_plane_edge(bad_pcurve, false);
         let fixed = fix_same_parameter_wire(wk, fk, &mut reg, 1e-3);

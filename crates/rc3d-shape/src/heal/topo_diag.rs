@@ -5,7 +5,7 @@ use std::io::Write;
 
 use rc3d_core::math::Vec3;
 
-use crate::geom::{CurveGeom, SurfaceGeom, eval_pcurve_on_surface, signed_area_2d};
+use crate::geom::{Curve2d, SurfaceGeom, eval_pcurve_on_surface, signed_area_2d};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, WireKey};
 use super::geom2d::collect_wire_uv_polygon;
@@ -192,33 +192,33 @@ fn measure_pcurve_drift(
 }
 
 /// Gap between PCURVE-induced point and face surface (periodic UV branches included).
-fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &CurveGeom, t: f32, match_tol: f32) -> f32 {
+fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &Curve2d, t: f32, match_tol: f32) -> f32 {
     let pt = eval_pcurve_on_surface(pcurve, surface, t);
     let uv = pcurve.d0(t);
     if pcurve_uv_matches_surface(surface, pt, uv, match_tol) {
         return 0.0;
     }
-    let mut best = (pt - surface.d0_native(uv.x, uv.y)).length();
+    let mut best = (pt - surface.d0_native(uv.0, uv.1)).length();
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
         const TAU: f32 = std::f32::consts::TAU;
-        if uv.x <= 1.0 + 1e-4 {
-            best = best.min((pt - surface.d0_native(uv.x * TAU, uv.y)).length());
+        if uv.0 <= 1.0 + 1e-4 {
+            best = best.min((pt - surface.d0_native(uv.0 * TAU, uv.1)).length());
         }
-        if uv.x >= TAU * 0.25 {
-            let un = uv.x / TAU;
-            if (un - uv.x).abs() > 1e-6 {
-                best = best.min((pt - surface.d0_native(un, uv.y)).length());
+        if uv.0 >= TAU * 0.25 {
+            let un = uv.0 / TAU;
+            if (un - uv.0).abs() > 1e-6 {
+                best = best.min((pt - surface.d0_native(un, uv.1)).length());
             }
         }
     }
     if let Some(pu) = surface.native_u_period() {
         for shift in [-1.0f32, 1.0] {
-            best = best.min((pt - surface.d0_native(uv.x + shift * pu, uv.y)).length());
+            best = best.min((pt - surface.d0_native(uv.0 + shift * pu, uv.1)).length());
         }
     }
     if let Some(pv) = surface.native_v_period() {
         for shift in [-1.0f32, 1.0] {
-            best = best.min((pt - surface.d0_native(uv.x, uv.y + shift * pv)).length());
+            best = best.min((pt - surface.d0_native(uv.0, uv.1 + shift * pv)).length());
         }
     }
     best
@@ -232,19 +232,19 @@ fn pcurve_match_tol(curve: &crate::geom::CurveGeom, tol: f32) -> f32 {
 fn pcurve_uv_matches_surface(
     surface: &SurfaceGeom,
     p3: Vec3,
-    uv: Vec3,
+    uv: (f32, f32),
     match_tol: f32,
 ) -> bool {
-    let mut candidates = vec![(uv.x, uv.y)];
+    let mut candidates = vec![(uv.0, uv.1)];
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
         const TAU: f32 = std::f32::consts::TAU;
-        if uv.x <= 1.0 + 1e-4 {
-            candidates.push((uv.x * TAU, uv.y));
+        if uv.0 <= 1.0 + 1e-4 {
+            candidates.push((uv.0 * TAU, uv.1));
         }
-        if uv.x >= TAU * 0.25 {
-            let un = uv.x / TAU;
-            if (un - uv.x).abs() > 1e-6 {
-                candidates.push((un, uv.y));
+        if uv.0 >= TAU * 0.25 {
+            let un = uv.0 / TAU;
+            if (un - uv.0).abs() > 1e-6 {
+                candidates.push((un, uv.1));
             }
         }
     }

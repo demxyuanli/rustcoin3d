@@ -526,7 +526,7 @@ fn cylinder_sphere(
     // Vector from cylinder origin to sphere center, decomposed
     let d = sph_center - cyl_origin;
     let d_axial = d.dot(ax);    // component along cylinder axis
-    let d_radial = d - ax * d_axial; // component perpendicular to axis
+    let _d_radial = d - ax * d_axial; // component perpendicular to axis
 
     let n_samples = 64;
     let mut pts: Vec<Vec3> = Vec::with_capacity(n_samples * 2);
@@ -663,6 +663,7 @@ pub fn is_tangent_intersection(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::store::BRepStore;
     use crate::topo::{BRepFace, BRepWire, BRepEdge, BRepShell, Orientation};
     use std::collections::HashMap;

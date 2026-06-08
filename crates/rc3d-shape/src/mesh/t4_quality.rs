@@ -131,7 +131,7 @@ fn wire_uv_polygon(
                     t
                 };
                 let uv = pcurve.d0(t);
-                push_uv(&mut poly, (uv.x, uv.y));
+                push_uv(&mut poly, (uv.0, uv.1));
             }
         } else {
             let verts = if orient == Orientation::Reversed {

@@ -131,9 +131,121 @@ pub fn iter_faces_of_solid(solid: SolidKey, reg: &BRepStore) -> Vec<FaceKey> {
     faces
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  Deep recursive traversal (OCC TopExp_Explorer equivalent)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Target shape type for deep exploration filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopExpTarget {
+    Vertex,
+    Edge,
+    Wire,
+    Face,
+    Shell,
+}
+
+/// Recursively collect all edges of a shell.
+///
+/// OCC equivalent: `TopExp_Explorer(shell, TopAbs_EDGE)`
+pub fn deep_edges_of_shell(shell_key: ShellKey, reg: &BRepStore) -> Vec<EdgeKey> {
+    let mut edges = Vec::new();
+    let mut seen = HashSet::new();
+    let faces = iter_face_orientations_of_shell(shell_key, reg);
+    for (fk, _) in faces {
+        for wk in iter_wires_of_face(fk, reg) {
+            let wire_edges = reg.wires.get(wk).map(|w| w.edges.clone()).unwrap_or_default();
+            for (ek, _) in wire_edges {
+                if seen.insert(ek) {
+                    edges.push(ek);
+                }
+            }
+        }
+    }
+    edges
+}
+
+/// Recursively collect all vertices of a face.
+///
+/// OCC equivalent: `TopExp_Explorer(face, TopAbs_VERTEX)`
+pub fn deep_vertices_of_face(face_key: FaceKey, reg: &BRepStore) -> Vec<VertexKey> {
+    let mut vertices = Vec::new();
+    let mut seen = HashSet::new();
+    for wk in iter_wires_of_face(face_key, reg) {
+        let wire_edges = reg.wires.get(wk).map(|w| w.edges.clone()).unwrap_or_default();
+        for (ek, _) in wire_edges {
+            if let Some((v_lo, v_hi)) = iter_vertices_of_edge(ek, reg) {
+                if seen.insert(v_lo) { vertices.push(v_lo); }
+                if seen.insert(v_hi) { vertices.push(v_hi); }
+            }
+        }
+    }
+    vertices
+}
+
+/// Recursively collect all edges of a solid.
+///
+/// OCC equivalent: `TopExp_Explorer(solid, TopAbs_EDGE)`
+pub fn deep_edges_of_solid(solid_key: SolidKey, reg: &BRepStore) -> Vec<EdgeKey> {
+    let mut edges = Vec::new();
+    let mut seen = HashSet::new();
+    let solid = match reg.solids.get(solid_key) {
+        Some(s) => s,
+        None => return edges,
+    };
+    for shell_key in std::iter::once(&solid.outer_shell).chain(solid.void_shells.iter()) {
+        for ek in deep_edges_of_shell(*shell_key, reg) {
+            if seen.insert(ek) {
+                edges.push(ek);
+            }
+        }
+    }
+    edges
+}
+
+/// Recursively collect all faces of a solid.
+///
+/// OCC equivalent: `TopExp_Explorer(solid, TopAbs_FACE)`
+pub fn deep_faces_of_solid(solid_key: SolidKey, reg: &BRepStore) -> Vec<FaceKey> {
+    let mut faces = Vec::new();
+    let mut seen = HashSet::new();
+    let solid = match reg.solids.get(solid_key) {
+        Some(s) => s,
+        None => return faces,
+    };
+    let shell_keys: Vec<ShellKey> = std::iter::once(solid.outer_shell)
+        .chain(solid.void_shells.iter().copied())
+        .collect();
+    for sk in shell_keys {
+        for fk in iter_faces_of_shell(sk, reg) {
+            if seen.insert(fk) {
+                faces.push(fk);
+            }
+        }
+    }
+    faces
+}
+
+/// Recursively collect all vertices of a shell.
+///
+/// OCC equivalent: `TopExp_Explorer(shell, TopAbs_VERTEX)`
+pub fn deep_vertices_of_shell(shell_key: ShellKey, reg: &BRepStore) -> Vec<VertexKey> {
+    let mut vertices = Vec::new();
+    let mut seen = HashSet::new();
+    for fk in iter_faces_of_shell(shell_key, reg) {
+        for vk in deep_vertices_of_face(fk, reg) {
+            if seen.insert(vk) {
+                vertices.push(vk);
+            }
+        }
+    }
+    vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use rc3d_core::math::Vec3;
     use std::collections::HashMap;
@@ -197,29 +309,29 @@ mod tests {
             tolerance: 1e-4,
             v_low: v0,
             v_high: v1,
-            pcurves: HashMap::from([(face_a, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X }),
-                                     (face_b, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X })]),
+            pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }),
+                                     (face_b, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
         let e12 = reg.edges.insert(BRepEdge {
             curve: line12,
             tolerance: 1e-4,
             v_low: v1,
             v_high: v2,
-            pcurves: HashMap::from([(face_a, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::Y })]),
+            pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, 1.0) })]),
         });
         let e23 = reg.edges.insert(BRepEdge {
             curve: line23,
             tolerance: 1e-4,
             v_low: v2,
             v_high: v3,
-            pcurves: HashMap::from([(face_a, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::NEG_X })]),
+            pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (-1.0, 0.0) })]),
         });
         let e30 = reg.edges.insert(BRepEdge {
             curve: line30,
             tolerance: 1e-4,
             v_low: v3,
             v_high: v0,
-            pcurves: HashMap::from([(face_a, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::NEG_Y })]),
+            pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, -1.0) })]),
         });
 
         // Wire A: 4 edges

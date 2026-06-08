@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use slotmap::new_key_type;
 use rc3d_core::math::Vec3;
 use crate::geom::CurveGeom;
+use crate::geom::curve2d::Curve2d;
 
 new_key_type! { pub struct VertexKey; }
 new_key_type! { pub struct EdgeKey; }
@@ -26,7 +27,9 @@ pub struct BRepEdge {
     pub v_low: VertexKey,
     /// Canonical high vertex (max SlotMap key) — mesh t=1
     pub v_high: VertexKey,
-    pub pcurves: HashMap<FaceKey, CurveGeom>,
+    /// PCurves: 2D curves in UV space of each referencing face.
+    /// OCC alignment: BRep_CurveOnSurface (Geom2d_Curve per face).
+    pub pcurves: HashMap<FaceKey, Curve2d>,
 }
 
 #[derive(Debug, Clone)]

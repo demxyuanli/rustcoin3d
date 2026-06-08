@@ -169,8 +169,8 @@ fn trim_inner_wire_at_outer(
         };
         let uv0 = pc.d0(0.0);
         let uv1 = pc.d0(1.0);
-        let a0 = (uv0.x, uv0.y);
-        let a1 = (uv1.x, uv1.y);
+        let a0 = (uv0.0, uv0.1);
+        let a1 = (uv1.0, uv1.1);
         let mut splits = Vec::new();
         let n = outer_poly.len();
         for j in 0..n {
@@ -203,7 +203,7 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<
         let edge = reg.edges.get(ek)?;
         let pc = edge.pcurves.get(&fk)?;
         let uv = pc.d0(0.0);
-        pts.push((uv.x, uv.y));
+        pts.push((uv.0, uv.1));
     }
     if pts.len() >= 3 {
         // Close the polygon
@@ -211,7 +211,7 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<
             if let Some(edge) = reg.edges.get(last_ek.0) {
                 if let Some(pc) = edge.pcurves.get(&fk) {
                     let uv = pc.d0(1.0);
-                    pts.push((uv.x, uv.y));
+                    pts.push((uv.0, uv.1));
                 }
             }
         }
@@ -292,6 +292,7 @@ fn polygon_bbox(poly: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
     use rc3d_core::math::Vec3;
@@ -313,10 +314,10 @@ mod tests {
         let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         // Outer wire: UV square from (0,0) to (1,1) — use proper per-edge PCurves
-        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
-        let pc2 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
-        let pc3 = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-1.0, 0.0, 0.0) };
-        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 1.0, 0.0), direction: Vec3::new(0.0, -1.0, 0.0) };
+        let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (0.0, 1.0) };
+        let pc3 = Curve2d::Line { origin: (1.0, 1.0), direction: (-1.0, 0.0) };
+        let pc4 = Curve2d::Line { origin: (0.0, 1.0), direction: (0.0, -1.0) };
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk_outer, inner_wires: vec![],
@@ -334,9 +335,9 @@ mod tests {
         let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
-        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(10.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
-        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(11.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
-        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(11.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
+        let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
+        let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
         let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
         let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
         let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
@@ -359,10 +360,10 @@ mod tests {
         let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
         let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
-        let pc2 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
-        let pc3 = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-1.0, 0.0, 0.0) };
-        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 1.0, 0.0), direction: Vec3::new(0.0, -1.0, 0.0) };
+        let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (0.0, 1.0) };
+        let pc3 = Curve2d::Line { origin: (1.0, 1.0), direction: (-1.0, 0.0) };
+        let pc4 = Curve2d::Line { origin: (0.0, 1.0), direction: (0.0, -1.0) };
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk_outer, inner_wires: vec![],
@@ -379,9 +380,9 @@ mod tests {
         let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
-        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(10.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
-        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(11.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
-        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(11.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
+        let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
+        let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
         let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
         let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
         let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
@@ -404,10 +405,10 @@ mod tests {
         let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 3.0, 0.0), 1e-4);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         // Outer wire: UV square from (0,0) to (3,3) — proper per-edge PCurves
-        let pc1 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(3.0, 0.0, 0.0) };
-        let pc2 = CurveGeom::Line { origin: Vec3::new(3.0, 0.0, 0.0), direction: Vec3::new(0.0, 3.0, 0.0) };
-        let pc3 = CurveGeom::Line { origin: Vec3::new(3.0, 3.0, 0.0), direction: Vec3::new(-3.0, 0.0, 0.0) };
-        let pc4 = CurveGeom::Line { origin: Vec3::new(0.0, 3.0, 0.0), direction: Vec3::new(0.0, -3.0, 0.0) };
+        let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (3.0, 0.0) };
+        let pc2 = Curve2d::Line { origin: (3.0, 0.0), direction: (0.0, 3.0) };
+        let pc3 = Curve2d::Line { origin: (3.0, 3.0), direction: (-3.0, 0.0) };
+        let pc4 = Curve2d::Line { origin: (0.0, 3.0), direction: (0.0, -3.0) };
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk_outer, inner_wires: vec![],
@@ -425,9 +426,9 @@ mod tests {
         let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
-        let pc_inner1 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
-        let pc_inner2 = CurveGeom::Line { origin: Vec3::new(2.0, 0.0, 0.0), direction: Vec3::new(0.0, 1.0, 0.0) };
-        let pc_inner3 = CurveGeom::Line { origin: Vec3::new(2.0, 1.0, 0.0), direction: Vec3::new(-1.0, -1.0, 0.0) };
+        let pc_inner1 = Curve2d::Line { origin: (1.0, 0.0), direction: (1.0, 0.0) };
+        let pc_inner2 = Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) };
+        let pc_inner3 = Curve2d::Line { origin: (2.0, 1.0), direction: (-1.0, -1.0) };
         let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1);
         let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2);
         let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3);
@@ -469,9 +470,9 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let pc = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(2.0, 0.0, 0.0),
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (2.0, 0.0),
         };
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
         let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
@@ -487,9 +488,9 @@ mod tests {
         let v4 = reg.find_or_add_vertex(Vec3::new(0.5, 0.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(3.0, 0.5, 0.0), 1e-4);
-        let pc_inner = CurveGeom::Line {
-            origin: Vec3::new(0.5, 0.0, 0.0),
-            direction: Vec3::new(2.5, 0.0, 0.0),
+        let pc_inner = Curve2d::Line {
+            origin: (0.5, 0.0),
+            direction: (2.5, 0.0),
         };
         let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner.clone());
         let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner.clone());
@@ -540,9 +541,9 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let pc = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(5.0, 0.0, 0.0),
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (5.0, 0.0),
         };
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
         let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
@@ -557,9 +558,9 @@ mod tests {
         // Two inner wires that are close to each other (overlapping bounding boxes)
         let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
         let v5 = reg.find_or_add_vertex(Vec3::new(1.5, 1.0, 0.0), 1e-4);
-        let pc_i1 = CurveGeom::Line {
-            origin: Vec3::new(1.0, 1.0, 0.0),
-            direction: Vec3::new(0.5, 0.0, 0.0),
+        let pc_i1 = Curve2d::Line {
+            origin: (1.0, 1.0),
+            direction: (0.5, 0.0),
         };
         let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_i1);
         let wk_i1 = reg.wires.insert(BRepWire {
@@ -567,9 +568,9 @@ mod tests {
         });
         let v6 = reg.find_or_add_vertex(Vec3::new(1.4, 1.4, 0.0), 1e-4);
         let v7 = reg.find_or_add_vertex(Vec3::new(2.0, 1.4, 0.0), 1e-4);
-        let pc_i2 = CurveGeom::Line {
-            origin: Vec3::new(1.4, 1.4, 0.0),
-            direction: Vec3::new(0.6, 0.0, 0.0),
+        let pc_i2 = Curve2d::Line {
+            origin: (1.4, 1.4),
+            direction: (0.6, 0.0),
         };
         let ei2 = reg.add_edge_with_pcurve(v6, v7, line.clone(), 1e-4, fk, pc_i2);
         let wk_i2 = reg.wires.insert(BRepWire {

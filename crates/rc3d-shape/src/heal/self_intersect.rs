@@ -61,7 +61,7 @@ pub fn fix_self_intersecting_wire(
         };
         let uv0 = pc.d0(t0);
         let uv1 = pc.d0(t1);
-        segments.push((i, (uv0.x, uv0.y), (uv1.x, uv1.y)));
+        segments.push((i, (uv0.0, uv0.1), (uv1.0, uv1.1)));
     }
 
     // Find non-adjacent intersections
@@ -183,7 +183,7 @@ fn segment_intersection_2d(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
@@ -218,22 +218,10 @@ mod tests {
             direction: Vec3::X,
         };
         // PCurves in UV space (2D), encoded as 3D lines with z=0
-        let pc1 = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(2.0, 2.0, 0.0),
-        };
-        let pc2 = CurveGeom::Line {
-            origin: Vec3::new(2.0, 2.0, 0.0),
-            direction: Vec3::new(-2.0, 0.0, 0.0),
-        };
-        let pc3 = CurveGeom::Line {
-            origin: Vec3::new(0.0, 2.0, 0.0),
-            direction: Vec3::new(2.0, -2.0, 0.0),
-        };
-        let pc4 = CurveGeom::Line {
-            origin: Vec3::new(2.0, 0.0, 0.0),
-            direction: Vec3::new(-2.0, 0.0, 0.0),
-        };
+        let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (2.0, 2.0) };
+        let pc2 = Curve2d::Line { origin: (2.0, 2.0), direction: (-2.0, 0.0) };
+        let pc3 = Curve2d::Line { origin: (0.0, 2.0), direction: (2.0, -2.0) };
+        let pc4 = Curve2d::Line { origin: (2.0, 0.0), direction: (-2.0, 0.0) };
 
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1);
         let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2);
@@ -292,9 +280,13 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, line.clone());
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, pc);
 
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
@@ -330,10 +322,7 @@ mod tests {
             let sin_a = angle.sin();
             let a = reg.find_or_add_vertex(Vec3::new(cos_a, sin_a, 0.0), 1e-4);
             let b = reg.find_or_add_vertex(Vec3::new(-cos_a, -sin_a, 0.0), 1e-4);
-            let pc = CurveGeom::Line {
-                origin: Vec3::new(cos_a, sin_a, 0.0),
-                direction: Vec3::new(-2.0 * cos_a, -2.0 * sin_a, 0.0),
-            };
+            let pc = Curve2d::Line { origin: (cos_a, sin_a), direction: (-2.0 * cos_a, -2.0 * sin_a) };
             let ek = reg.add_edge_with_pcurve(a, b, line.clone(), 1e-4, fk, pc);
             edges.push((ek, Orientation::Forward));
         }

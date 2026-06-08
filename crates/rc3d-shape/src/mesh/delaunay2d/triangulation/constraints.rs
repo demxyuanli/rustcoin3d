@@ -1,6 +1,6 @@
 //! Constrained Delaunay: edge flips, cavity recovery, frontier adjustment.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::super::geom::{robust_orient2d, Point2d};
 use super::super::half_edge::VertIdx;
@@ -88,34 +88,49 @@ impl Delaunay2d {
     }
 
     /// OCC meshLeftPolygonOf: retriangulate material side of directed edge (a -> b).
+    ///
+    /// Iterative BFS worklist: each directed edge is processed at most once
+    /// (guaranteed by the `skipped` set).
     pub(super) fn mesh_left_polygon_of(
         &mut self,
         a: VertIdx,
         b: VertIdx,
         skipped: &mut HashSet<(VertIdx, VertIdx)>,
     ) -> bool {
-        let key = edge_key(a, b);
-        if skipped.contains(&key) {
-            return false;
-        }
-        skipped.insert(key);
-        let adj = boundary_adjacency(&self.edge_adjacency(), &self.tri_alive);
-        let poly = mesh_left_polygon_loop(&self.points, a, b, &adj, skipped);
-        if poly.len() < 3 {
-            return false;
-        }
-        for tri in earcut_polygon(&self.points, &poly) {
-            self.add_triangle(tri);
-        }
-        let n = poly.len();
-        for i in 0..n {
-            let va = poly[i];
-            let vb = poly[(i + 1) % n];
-            if !self.has_triangle_on_left(va, vb) {
-                let _ = self.mesh_left_polygon_of(va, vb, skipped);
+        let mut worklist = VecDeque::new();
+        worklist.push_back((a, b));
+
+        let mut any_progress = false;
+
+        while let Some((va, vb)) = worklist.pop_front() {
+            let key = edge_key(va, vb);
+            if skipped.contains(&key) {
+                continue;
+            }
+            skipped.insert(key);
+
+            let adj = boundary_adjacency(&self.edge_adjacency(), &self.tri_alive);
+            let poly = mesh_left_polygon_loop(&self.points, va, vb, &adj, skipped);
+            if poly.len() < 3 {
+                continue;
+            }
+
+            for tri in earcut_polygon(&self.points, &poly) {
+                self.add_triangle(tri);
+            }
+            any_progress = true;
+
+            let pn = poly.len();
+            for i in 0..pn {
+                let ea = poly[i];
+                let eb = poly[(i + 1) % pn];
+                if !self.has_triangle_on_left(ea, eb) {
+                    worklist.push_back((ea, eb));
+                }
             }
         }
-        true
+
+        any_progress
     }
 
     fn remove_exterior_on_frontier(&mut self, a: VertIdx, b: VertIdx) {

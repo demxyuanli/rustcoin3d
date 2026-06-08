@@ -40,6 +40,7 @@ pub(crate) use param_div::curvature_driven_divisions;
 #[cfg(test)]
 mod mesh_integration {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use rc3d_core::math::Vec3;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
@@ -75,10 +76,7 @@ mod mesh_integration {
             let v0 = reg.find_or_add_vertex(a, 1e-4);
             let v1 = reg.find_or_add_vertex(b, 1e-4);
             let curve_3d = CurveGeom::Line { origin: a, direction: b - a };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(u0.0, u0.1, 0.0),
-                direction: Vec3::new(u1.0 - u0.0, u1.1 - u0.1, 0.0),
-            };
+            let pcurve = Curve2d::Line { origin: (u0.0, u0.1), direction: (u1.0 - u0.0, u1.1 - u0.1) };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             wire_edges.push((ek, Orientation::Forward));
         }

@@ -340,7 +340,7 @@ pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepStore) -> Vec<Str
         };
         let p0 = pcurve.d0(0.0);
         let p1 = pcurve.d0(1.0);
-        segments.push(((p0.x, p0.y), (p1.x, p1.y)));
+        segments.push(((p0.0, p0.1), (p1.0, p1.1)));
     }
     let n = segments.len();
     for i in 0..n {
@@ -436,10 +436,10 @@ fn check_surface_singularities(
                 if let Some(pc) = edge.pcurves.get(&face_key) {
                     for t in [0.0, 1.0] {
                         let uv = pc.d0(t);
-                        if (uv.y.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.01 {
+                        if (uv.1.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.01 {
                             warnings.push(format!(
                                 "face {:?}: potential degeneracy near sphere pole at u={:.3}, v={:.3}",
-                                face_key, uv.x, uv.y
+                                face_key, uv.0, uv.1
                             ));
                         }
                     }
@@ -510,16 +510,16 @@ fn check_parameter_range(
             for t in [0.0, 1.0] {
                 let uv = pc.d0(t);
                 let margin = 0.1;
-                if uv.x < u_range.0 - margin || uv.x > u_range.1 + margin {
+                if uv.0 < u_range.0 - margin || uv.0 > u_range.1 + margin {
                     warnings.push(format!(
                         "face {:?} edge {:?}: PCurve U={:.6} outside surface U range [{:.3}, {:.3}]",
-                        face_key, ek, uv.x, u_range.0, u_range.1
+                        face_key, ek, uv.0, u_range.0, u_range.1
                     ));
                 }
-                if uv.y < v_range.0 - margin || uv.y > v_range.1 + margin {
+                if uv.1 < v_range.0 - margin || uv.1 > v_range.1 + margin {
                     warnings.push(format!(
                         "face {:?} edge {:?}: PCurve V={:.6} outside surface V range [{:.3}, {:.3}]",
-                        face_key, ek, uv.y, v_range.0, v_range.1
+                        face_key, ek, uv.1, v_range.0, v_range.1
                     ));
                 }
             }
@@ -689,6 +689,7 @@ pub fn check_face_wire_gaps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
     use rc3d_core::math::Vec3;
@@ -720,9 +721,9 @@ mod tests {
             let v0 = reg.find_or_add_vertex(a, 1e-4);
             let v1 = reg.find_or_add_vertex(b, 1e-4);
             let curve_3d = CurveGeom::Line { origin: a, direction: b - a };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(u0.0, u0.1, 0.0),
-                direction: Vec3::new(u1.0 - u0.0, u1.1 - u0.1, 0.0),
+            let pcurve = Curve2d::Line {
+                origin: (u0.0, u0.1),
+                direction: (u1.0 - u0.0, u1.1 - u0.1),
             };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             let edge = reg.edges.get(ek).unwrap();
@@ -782,9 +783,9 @@ mod tests {
             CurveGeom::Line { origin: a, direction: b - a },
             1e-4,
             face_key,
-            CurveGeom::Line {
-                origin: Vec3::ZERO,
-                direction: Vec3::new(10.0, 0.0, 0.0),
+            Curve2d::Line {
+                origin: (0.0, 0.0),
+                direction: (10.0, 0.0),
             },
         );
         let e1 = reg.add_edge_with_pcurve(
@@ -793,9 +794,9 @@ mod tests {
             CurveGeom::Line { origin: b, direction: c - b },
             1e-4,
             face_key,
-            CurveGeom::Line {
-                origin: Vec3::new(10.0, 0.0, 0.0),
-                direction: Vec3::new(0.0, 10.0, 0.0),
+            Curve2d::Line {
+                origin: (10.0, 0.0),
+                direction: (0.0, 10.0),
             },
         );
         let outer = reg.wires.insert(BRepWire {
@@ -868,7 +869,11 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::new(0.01, 0.0, 0.0),
         };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (0.01, 0.0),
+        };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
         // Artificially set tolerance way too high
         if let Some(edge) = reg.edges.get_mut(ek) {
             edge.tolerance = 1.0;
@@ -907,9 +912,9 @@ mod tests {
             direction: Vec3::X,
         };
         // PCurve from pole-adjacent UV to equator
-        let pc = CurveGeom::Line {
-            origin: Vec3::new(0.0, std::f32::consts::FRAC_PI_2 - 0.001, 0.0),
-            direction: Vec3::new(1.0, -std::f32::consts::FRAC_PI_2 + 0.001, 0.0),
+        let pc = Curve2d::Line {
+            origin: (0.0, std::f32::consts::FRAC_PI_2 - 0.001),
+            direction: (1.0, -std::f32::consts::FRAC_PI_2 + 0.001),
         };
         let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -998,8 +1003,12 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
         // For a Plane surface, parameter_range applies only to BSpline — this tests the no-op path
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let warnings = check_parameter_range(fk, &reg);
         // Plane is not BSpline, so should return empty
@@ -1057,17 +1066,17 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
-        let pc1 = CurveGeom::Line {
-            origin: Vec3::new(1.0, 0.0, 0.0),
-            direction: Vec3::new(-1.0, 0.0, 0.0),
+        let pc1 = Curve2d::Line {
+            origin: (1.0, 0.0),
+            direction: (-1.0, 0.0),
         };
-        let pc2 = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(0.0, 1.0, 0.0),
+        let pc2 = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (0.0, 1.0),
         };
-        let pc3 = CurveGeom::Line {
-            origin: Vec3::new(0.0, 1.0, 0.0),
-            direction: Vec3::new(1.0, -1.0, 0.0),
+        let pc3 = Curve2d::Line {
+            origin: (0.0, 1.0),
+            direction: (1.0, -1.0),
         };
         let e1 = reg.add_edge_with_pcurve(v1, v0, line.clone(), 1e-4, fk, pc1); // reversed
         let e2 = reg.add_edge_with_pcurve(v0, v2, line.clone(), 1e-4, fk, pc2);
@@ -1130,8 +1139,12 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc);
         let wk = reg.wires.insert(crate::topo::BRepWire {
             edges: vec![(e1, Orientation::Forward), (e2, Orientation::Forward)],
         });

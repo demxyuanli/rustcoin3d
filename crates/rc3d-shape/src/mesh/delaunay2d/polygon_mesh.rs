@@ -218,6 +218,12 @@ pub fn order_boundary_loop(
 }
 
 /// Ear-clipping triangulation of a simple polygon.
+///
+/// Implements the classic O(n²) ear-clipping algorithm using an in-place
+/// `removed[]` mark array to avoid O(n) vertex shifts per ear clip.
+/// For degenerate / self-intersecting polygons, no ear may be found — we
+/// detect this via a consecutive-failure counter and return the partial
+/// triangulation, logging a warning so callers can fall back.
 pub fn earcut_polygon(points: &[Point2d], verts: &[VertIdx]) -> Vec<[VertIdx; 3]> {
     let n = verts.len();
     if n < 3 {
@@ -227,44 +233,108 @@ pub fn earcut_polygon(points: &[Point2d], verts: &[VertIdx]) -> Vec<[VertIdx; 3]
         return vec![[verts[0], verts[1], verts[2]]];
     }
 
-    let mut idx: Vec<usize> = (0..n).collect();
+    let mut removed = vec![false; n];
+    let mut remaining = n;
     let ccw = signed_area_2d(points, verts) > 0.0;
     let mut tris = Vec::new();
     let mut guard = 0usize;
+    let mut consecutive_failures = 0usize;
 
-    while idx.len() > 3 && guard < n * n {
+    while remaining > 3 && guard < n * 3 {
         guard += 1;
         let mut clipped = false;
-        let len = idx.len();
-        for i in 0..len {
-            let i0 = idx[(i + len - 1) % len];
-            let i1 = idx[i];
-            let i2 = idx[(i + 1) % len];
-            let v0 = verts[i0];
-            let v1 = verts[i1];
-            let v2 = verts[i2];
+
+        // Scan for an ear among non-removed vertices.
+        let mut icur = 0usize;
+        // Find first non-removed vertex.
+        while icur < n && removed[icur] { icur += 1; }
+        let mut iprev = step_backward(&removed, icur);
+
+        let mut scan_count = 0;
+        while scan_count < remaining {
+            scan_count += 1;
+            let inext = step_forward(&removed, icur);
+
+            let v0 = verts[iprev];
+            let v1 = verts[icur];
+            let v2 = verts[inext];
             let p0 = points[v0 as usize];
             let p1 = points[v1 as usize];
             let p2 = points[v2 as usize];
-            if !is_convex(p0, p1, p2, ccw) {
-                continue;
+
+            if is_convex(p0, p1, p2, ccw)
+                && !ear_contains_vertex_marked(points, verts, &removed, iprev, icur, inext)
+            {
+                tris.push([v0, v1, v2]);
+                removed[icur] = true;
+                remaining -= 1;
+                clipped = true;
+                consecutive_failures = 0;
+                break;
             }
-            if ear_contains_vertex(points, verts, &idx, i0, i1, i2) {
-                continue;
-            }
-            tris.push([v0, v1, v2]);
-            idx.remove(i);
-            clipped = true;
-            break;
+
+            iprev = icur;
+            icur = inext;
         }
+
         if !clipped {
-            break;
+            consecutive_failures += 1;
+            if consecutive_failures >= 2 {
+                log::warn!(
+                    "earcut: degenerate polygon detected ({} verts remaining of {}), triangulation incomplete",
+                    remaining, n
+                );
+                break;
+            }
         }
     }
-    if idx.len() == 3 {
-        tris.push([verts[idx[0]], verts[idx[1]], verts[idx[2]]]);
+
+    if remaining == 3 {
+        let final_tri = collect_remaining(&removed, verts);
+        tris.push(final_tri);
+    } else if remaining > 3 {
+        log::warn!(
+            "earcut: {}/{} vertices un-triangulated — face may have holes",
+            remaining - 3, n
+        );
     }
     tris
+}
+
+/// Step to the next non-removed index, wrapping.
+fn step_forward(removed: &[bool], from: usize) -> usize {
+    let n = removed.len();
+    let mut i = (from + 1) % n;
+    for _ in 0..n {
+        if !removed[i] { return i; }
+        i = (i + 1) % n;
+    }
+    from
+}
+
+/// Step to the previous non-removed index, wrapping.
+fn step_backward(removed: &[bool], from: usize) -> usize {
+    let n = removed.len();
+    let mut i = (from + n - 1) % n;
+    for _ in 0..n {
+        if !removed[i] { return i; }
+        i = (i + n - 1) % n;
+    }
+    from
+}
+
+/// Collect the three remaining (non-removed) vertex indices into a triangle.
+fn collect_remaining(removed: &[bool], verts: &[VertIdx]) -> [VertIdx; 3] {
+    let mut result = [0u32; 3];
+    let mut j = 0;
+    for (i, &r) in removed.iter().enumerate() {
+        if !r {
+            result[j] = verts[i];
+            j += 1;
+        }
+    }
+    debug_assert_eq!(j, 3);
+    result
 }
 
 fn is_convex(a: Point2d, b: Point2d, c: Point2d, ccw: bool) -> bool {
@@ -276,10 +346,10 @@ fn is_convex(a: Point2d, b: Point2d, c: Point2d, ccw: bool) -> bool {
     }
 }
 
-fn ear_contains_vertex(
+fn ear_contains_vertex_marked(
     points: &[Point2d],
     verts: &[VertIdx],
-    ring: &[usize],
+    removed: &[bool],
     i0: usize,
     i1: usize,
     i2: usize,
@@ -287,8 +357,8 @@ fn ear_contains_vertex(
     let a = points[verts[i0] as usize];
     let b = points[verts[i1] as usize];
     let c = points[verts[i2] as usize];
-    for &k in ring {
-        if k == i0 || k == i1 || k == i2 {
+    for (k, &r) in removed.iter().enumerate() {
+        if r || k == i0 || k == i1 || k == i2 {
             continue;
         }
         let p = points[verts[k] as usize];

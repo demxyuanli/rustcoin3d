@@ -36,7 +36,7 @@ pub fn apply_same_parameter(
             };
             for (i, &(t, p)) in poly.params_3d.iter().enumerate() {
                 let uv = pcurve.d0(t);
-                let on_surf = face.surface.d0_native(uv.x, uv.y);
+                let on_surf = face.surface.d0_native(uv.0, uv.1);
                 if (on_surf - p).length() > best_tol {
                     snapped[i] = (t, on_surf);
                 }
@@ -51,7 +51,7 @@ pub fn apply_same_parameter(
                     .iter()
                     .map(|&(t, _)| {
                         let uv = pcurve.d0(t);
-                        (t, (uv.x, uv.y))
+                        (t, (uv.0, uv.1))
                     })
                     .collect();
                 poly.params_2d.insert(face_key, pts_2d);
@@ -64,7 +64,7 @@ pub fn apply_same_parameter(
 mod tests {
     use super::*;
     use rc3d_core::math::Vec3;
-    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::geom::{CurveGeom, Curve2d, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace};
 
     #[test]
@@ -98,9 +98,9 @@ mod tests {
             pcurves: HashMap::new(),
         });
 
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(5.0, 0.0, 0.0),
+        let pcurve = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (5.0, 0.0),
         };
         if let Some(edge) = reg.edges.get_mut(ek) {
             edge.pcurves.insert(face_key, pcurve);

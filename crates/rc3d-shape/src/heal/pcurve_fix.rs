@@ -1,6 +1,6 @@
 //! PCurve repair: period-shift detection + edge curve adjustment.
 
-use crate::geom::CurveGeom;
+use crate::geom::{Curve2d, CurveGeom};
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
@@ -44,8 +44,8 @@ pub(crate) fn fix_shifted_pcurves(
             if let Some(pc) = edge.pcurves.get(&face_key) {
                 let uv_start = pc.d0(0.0);
                 let uv_end = pc.d0(1.0);
-                uv_sum.0 += (uv_start.x + uv_end.x) as f64 * 0.5;
-                uv_sum.1 += (uv_start.y + uv_end.y) as f64 * 0.5;
+                uv_sum.0 += (uv_start.0 + uv_end.0) as f64 * 0.5;
+                uv_sum.1 += (uv_start.1 + uv_end.1) as f64 * 0.5;
                 count += 1;
             }
         }
@@ -67,7 +67,7 @@ pub(crate) fn fix_shifted_pcurves(
         };
 
         let mid_uv = pc.d0(0.5);
-        let (mu, mv) = (mid_uv.x as f64, mid_uv.y as f64);
+        let (mu, mv) = (mid_uv.0 as f64, mid_uv.1 as f64);
 
         let mut shift_u: f64 = 0.0;
         let mut shift_v: f64 = 0.0;
@@ -121,19 +121,21 @@ fn surface_periods(surface: &SurfaceGeom) -> (f64, f64) {
     }
 }
 
-fn shift_pcurve(pc: &CurveGeom, du: f32, dv: f32) -> CurveGeom {
-    let shift = Vec3::new(du, dv, 0.0);
+fn shift_pcurve(pc: &Curve2d, du: f32, dv: f32) -> Curve2d {
     match pc {
-        CurveGeom::Line { origin, direction } => CurveGeom::Line {
-            origin: *origin + shift,
+        Curve2d::Line { origin, direction } => Curve2d::Line {
+            origin: (origin.0 + du, origin.1 + dv),
             direction: *direction,
         },
-        CurveGeom::Circle { center, axis, radius, .. } => CurveGeom::circle(
-            *center + shift, *axis, *radius,
-        ),
-        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => CurveGeom::ellipse(
-            *center + shift, *axis, *semi_major, *semi_minor,
-        ),
+        Curve2d::Circle { center, radius } => Curve2d::Circle {
+            center: (center.0 + du, center.1 + dv),
+            radius: *radius,
+        },
+        Curve2d::Ellipse { center, semi_major, semi_minor } => Curve2d::Ellipse {
+            center: (center.0 + du, center.1 + dv),
+            semi_major: *semi_major,
+            semi_minor: *semi_minor,
+        },
         other => other.clone(),
     }
 }
@@ -325,6 +327,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation, WireKey};
     use rc3d_core::math::Vec3;
@@ -377,13 +380,13 @@ mod tests {
             origin: Vec3::new(1.0, 0.0, 0.0),
             direction: Vec3::new(0.0, 0.0, 1.0),
         };
-        let pc_normal = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
+        let pc_normal = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
         };
-        let pc_shifted = CurveGeom::Line {
-            origin: Vec3::new(std::f32::consts::TAU, 0.0, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
+        let pc_shifted = Curve2d::Line {
+            origin: (std::f32::consts::TAU, 0.0),
+            direction: (1.0, 0.0),
         };
         let e1 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
@@ -429,9 +432,9 @@ mod tests {
             origin: Vec3::new(1.0, 0.0, 0.0),
             direction: Vec3::new(0.0, 0.0, 1.0),
         };
-        let pc = CurveGeom::Line {
-            origin: Vec3::new(0.1, 0.0, 0.0),
-            direction: Vec3::new(0.5, 0.0, 0.0),
+        let pc = Curve2d::Line {
+            origin: (0.1, 0.0),
+            direction: (0.5, 0.0),
         };
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
         let e2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
@@ -465,7 +468,7 @@ mod tests {
             tolerance: 1e-4,
             v_low: v0.min(v1),
             v_high: v0.max(v1),
-            pcurves: HashMap::from([(fk, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X })]),
+            pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
         let wk = reg.wires.insert(BRepWire {
             edges: vec![(ek, Orientation::Forward)],
@@ -517,7 +520,7 @@ mod tests {
             tolerance: 1e-4,
             v_low: v0.min(v1),
             v_high: v0.max(v1),
-            pcurves: HashMap::from([(fk, circle)]),
+            pcurves: HashMap::from([(fk, Curve2d::Circle { center: (0.0, 0.0), radius: 1.0 })]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {
@@ -562,7 +565,7 @@ mod tests {
             tolerance: 1e-4,
             v_low: v0.min(v1),
             v_high: v0.max(v1),
-            pcurves: HashMap::from([(fk, CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X })]),
+            pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {

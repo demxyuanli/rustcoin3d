@@ -74,7 +74,7 @@ fn update_edge_tolerance(reg: &mut BRepStore, ek: EdgeKey, base_tol: f32) -> boo
                 None => continue,
             };
             let uv = pcurve.d0(t);
-            let on_surf = face.surface.d0_native(uv.x, uv.y);
+            let on_surf = face.surface.d0_native(uv.0, uv.1);
             max_dev = max_dev.max((on_surf - p3d).length());
         }
     }
@@ -97,7 +97,7 @@ mod tests {
     use rc3d_core::math::Vec3;
     use std::collections::HashMap;
 
-    use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+    use crate::step::brep::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::step::brep::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
 
     #[test]
@@ -123,9 +123,9 @@ mod tests {
         let mut pcurves = HashMap::new();
         pcurves.insert(
             face_key,
-            CurveGeom::Line {
-                origin: Vec3::ZERO,
-                direction: Vec3::new(1.0, 0.0, 0.0),
+            Curve2d::Line {
+                origin: (0.0, 0.0),
+                direction: (1.0, 0.0),
             },
         );
         let ek = reg.edges.insert(BRepEdge {

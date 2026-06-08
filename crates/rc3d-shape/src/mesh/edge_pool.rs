@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use rc3d_core::math::Vec3;
 
+use crate::geom::curve2d::Curve2d;
 use crate::geom::curve_eval::find_param_on_curve;
-use crate::geom::{CurveGeom, SurfaceGeom};
+use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 
@@ -375,7 +376,7 @@ pub fn build_face_boundary_pool(
 fn boundary_point_on_face(
     face_key: FaceKey,
     edge: &crate::topo::BRepEdge,
-    pcurve: &CurveGeom,
+    pcurve: &Curve2d,
     surface: &SurfaceGeom,
     pi: usize,
     _n: usize,
@@ -446,29 +447,29 @@ pub fn measure_face_boundary_surface_gap(
     max_gap
 }
 
-fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &CurveGeom, t: f32) -> f32 {
+fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &Curve2d, t: f32) -> f32 {
     let uv = pcurve.d0(t);
-    let mut best = (pt - surface.d0_native(uv.x, uv.y)).length();
+    let mut best = (pt - surface.d0_native(uv.0, uv.1)).length();
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
         const TAU: f32 = std::f32::consts::TAU;
-        if uv.x <= 1.0 + 1e-4 {
-            best = best.min((pt - surface.d0_native(uv.x * TAU, uv.y)).length());
+        if uv.0 <= 1.0 + 1e-4 {
+            best = best.min((pt - surface.d0_native(uv.0 * TAU, uv.1)).length());
         }
-        if uv.x >= TAU * 0.25 {
-            let un = uv.x / TAU;
-            if (un - uv.x).abs() > 1e-6 {
-                best = best.min((pt - surface.d0_native(un, uv.y)).length());
+        if uv.0 >= TAU * 0.25 {
+            let un = uv.0 / TAU;
+            if (un - uv.0).abs() > 1e-6 {
+                best = best.min((pt - surface.d0_native(un, uv.1)).length());
             }
         }
     }
     if let Some(pu) = surface.native_u_period() {
         for shift in [-1.0f32, 1.0] {
-            best = best.min((pt - surface.d0_native(uv.x + shift * pu, uv.y)).length());
+            best = best.min((pt - surface.d0_native(uv.0 + shift * pu, uv.1)).length());
         }
     }
     if let Some(pv) = surface.native_v_period() {
         for shift in [-1.0f32, 1.0] {
-            best = best.min((pt - surface.d0_native(uv.x, uv.y + shift * pv)).length());
+            best = best.min((pt - surface.d0_native(uv.0, uv.1 + shift * pv)).length());
         }
     }
     best
@@ -551,14 +552,8 @@ mod tests {
                 Vec3::new(10.0, 0.0, 0.0),
             ],
         };
-        let pcurve_a = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(10.0, 0.0, 0.0),
-        };
-        let pcurve_b = CurveGeom::Line {
-            origin: Vec3::new(0.0, 10.0, 0.0),
-            direction: Vec3::new(10.0, 0.0, 0.0),
-        };
+        let pcurve_a = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
+        let pcurve_b = Curve2d::Line { origin: (0.0, 10.0), direction: (10.0, 0.0) };
 
         // Two EdgeKeys for the same geometric edge (STEP duplicate-edge case).
         let ek_a = reg.add_edge_with_pcurve(v0, v1, curve_a, 1e-4, f0, pcurve_a);

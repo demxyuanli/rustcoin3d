@@ -222,7 +222,7 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32>
         let edge = reg.edges.get(ek)?;
         let pc = edge.pcurves.get(&fk)?;
         let uv = pc.d0(0.0);
-        pts.push((uv.x, uv.y));
+        pts.push(uv);
     }
     if pts.len() < 3 {
         return None;
@@ -231,7 +231,7 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32>
         if let Some(edge) = reg.edges.get(last_ek.0) {
             if let Some(pc) = edge.pcurves.get(&fk) {
                 let uv = pc.d0(1.0);
-                pts.push((uv.x, uv.y));
+                pts.push(uv);
             }
         }
     }
@@ -250,7 +250,7 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32>
 #[cfg(test)]
 mod vertex_tests {
     use super::*;
-    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
@@ -267,7 +267,8 @@ mod vertex_tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
+        let pc2d = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc2d);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {
             faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,
@@ -294,7 +295,8 @@ mod vertex_tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        let pc2d = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc2d);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {
             faces: vec![(fk, Orientation::Forward)],
@@ -309,7 +311,7 @@ mod vertex_tests {
 #[cfg(test)]
 mod split_tests {
     use super::*;
-    use crate::geom::{CurveGeom, SurfaceGeom};
+    use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
     use rc3d_core::math::Vec3;
 
@@ -323,7 +325,7 @@ mod split_tests {
         let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 2.0, 0.0), 1e-4);
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let pc = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(2.0, 0.0, 0.0) };
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (2.0, 0.0) };
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface, outer_wire: wk_outer, inner_wires: vec![],
@@ -361,7 +363,7 @@ mod split_tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let pc = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::new(3.0, 0.0, 0.0) };
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (3.0, 0.0) };
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
         let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
         let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone());
@@ -376,7 +378,7 @@ mod split_tests {
         let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
         let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
         let v7 = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 0.0), 1e-4);
-        let pc_inner = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(1.0, 0.0, 0.0) };
+        let pc_inner = Curve2d::Line { origin: (1.0, 1.0), direction: (1.0, 0.0) };
         let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner.clone());
         let ei2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner.clone());
         let ei3 = reg.add_edge_with_pcurve(v6, v7, line.clone(), 1e-4, fk, pc_inner.clone());

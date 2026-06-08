@@ -82,6 +82,7 @@ fn push_kept_face(
             std::slice::from_ref(sub),
             curves,
             reg,
+            None,
         );
         let has_new = !bf_result.new_faces.is_empty();
         selected.extend(bf_result.new_faces);

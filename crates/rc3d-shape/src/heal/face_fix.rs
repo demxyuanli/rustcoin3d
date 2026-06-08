@@ -1,7 +1,6 @@
 //! Face-level fixes: natural boundary + reversed 2d.
 
-use rc3d_core::math::Vec3;
-use crate::geom::{CurveGeom, SurfaceGeom};
+use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, WireKey};
 
@@ -57,9 +56,9 @@ pub(crate) fn fix_add_natural_bound(reg: &mut BRepStore, face_key: FaceKey) -> b
             origin: p0,
             direction: dir3,
         };
-        let pcurve = CurveGeom::Line {
-            origin: Vec3::new(u0, v0, 0.0),
-            direction: Vec3::new(u1 - u0, v1 - v0, 0.0),
+        let pcurve = Curve2d::Line {
+            origin: (u0, v0),
+            direction: (u1 - u0, v1 - v0),
         };
         let ek = reg.add_edge_with_pcurve(v0k, v1k, curve_3d, tolerance, face_key, pcurve);
         edges.push((ek, Orientation::Forward));
@@ -121,7 +120,7 @@ fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) ->
         for i in 0..=n {
             let t = i as f32 / n as f32;
             let uv = pcurve.d0(t);
-            pts.push((uv.x, uv.y));
+            pts.push((uv.0, uv.1));
         }
         if orient == Orientation::Reversed {
             pts.reverse();

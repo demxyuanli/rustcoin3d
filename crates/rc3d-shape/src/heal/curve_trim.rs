@@ -1,6 +1,6 @@
 //! Trim and split edge curves / PCurves at parameter values (OCC split support).
 
-use crate::geom::{CurveGeom, SurfaceGeom};
+use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 use rc3d_core::math::Vec3;
@@ -78,8 +78,15 @@ fn trim_polyline(points: &[Vec3], t0: f32, t1: f32) -> CurveGeom {
 }
 
 /// Trim a PCurve to [t0, t1] in edge parameter space.
-pub fn trim_pcurve(pc: &CurveGeom, t0: f32, t1: f32) -> CurveGeom {
-    trim_edge_curve(pc, t0, t1)
+pub fn trim_pcurve(pc: &Curve2d, t0: f32, t1: f32) -> Curve2d {
+    if (t0 - 0.0).abs() < 1e-8 && (t1 - 1.0).abs() < 1e-8 {
+        return pc.clone();
+    }
+    Curve2d::Trimmed {
+        basis: Box::new(pc.clone()),
+        t_min: t0,
+        t_max: t1,
+    }
 }
 
 /// Split an edge at interior parameters; returns new edge keys in order.
@@ -187,22 +194,22 @@ pub fn add_degenerated_edge_at_pole(
         origin: pole_3d,
         direction: Vec3::ZERO,
     };
-    let degen_pc = CurveGeom::Line {
-        origin: Vec3::new(uv_start.0, uv_start.1, 0.0),
-        direction: Vec3::new(uv_end.0 - uv_start.0, uv_end.1 - uv_start.1, 0.0),
+    let degen_pc = Curve2d::Line {
+        origin: (uv_start.0, uv_start.1),
+        direction: (uv_end.0 - uv_start.0, uv_end.1 - uv_start.1),
     };
     reg.add_seam_edge(pole_vk, pole_vk, zero_curve, tolerance, face_key, degen_pc)
 }
 
 fn pcurve_point_3d(
-    pc: &CurveGeom,
+    pc: &Curve2d,
     surface: Option<&SurfaceGeom>,
     fallback_curve: &CurveGeom,
     t: f32,
 ) -> Vec3 {
     if let Some(surf) = surface {
         let uv = pc.d0(t);
-        surf.d0_native(uv.x, uv.y)
+        surf.d0_native(uv.0, uv.1)
     } else {
         fallback_curve.d0(t)
     }
@@ -211,6 +218,7 @@ fn pcurve_point_3d(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::SurfaceGeom;
     use crate::topo::{BRepFace, BRepWire, Orientation};
 
@@ -234,6 +242,10 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
         let surface = SurfaceGeom::Plane {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -249,7 +261,7 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
         let parts = split_edge_at_params(ek, fk, Orientation::Forward, &[0.5], &mut reg);
         assert_eq!(parts.len(), 2);
         let e0 = reg.edges.get(parts[0].0).unwrap();

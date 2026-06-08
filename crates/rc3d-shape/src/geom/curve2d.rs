@@ -4,9 +4,17 @@
 //! Bézier clipping intersection for use in constrained Delaunay
 //! triangulation (CDT) constraint edge resolution.
 //!
-//! OCC alignment: Geom2d_Curve hierarchy + IntRes2d_Intersection
+//! OCC alignment: Geom2d_Curve hierarchy — the native 2D curve type
+//! for PCurves (parametric curves on surface UV space).
+
+use super::CurveGeom;
+use rc3d_core::math::Vec3;
 
 /// 2D curve in UV parameter space.
+///
+/// OCC alignment: Geom2d_Curve — each variant maps to an OCC
+/// Geom2d_Line, Geom2d_Circle, Geom2d_Ellipse, Geom2d_BSplineCurve,
+/// Geom2d_TrimmedCurve, Geom2d_Polyline, or Geom2d_OffsetCurve.
 #[derive(Debug, Clone)]
 pub enum Curve2d {
     Line {
@@ -16,6 +24,11 @@ pub enum Curve2d {
     Circle {
         center: (f32, f32),
         radius: f32,
+    },
+    Ellipse {
+        center: (f32, f32),
+        semi_major: f32,
+        semi_minor: f32,
     },
     BSpline {
         degree: usize,
@@ -27,6 +40,12 @@ pub enum Curve2d {
         basis: Box<Curve2d>,
         t_min: f32,
         t_max: f32,
+    },
+    Polyline {
+        points: Vec<(f32, f32)>,
+    },
+    Composite {
+        segments: Vec<(Curve2d, bool)>,
     },
 }
 
@@ -41,6 +60,10 @@ impl Curve2d {
                 let theta = t * std::f32::consts::TAU;
                 (center.0 + radius * theta.cos(), center.1 + radius * theta.sin())
             }
+            Curve2d::Ellipse { center, semi_major, semi_minor } => {
+                let theta = t * std::f32::consts::TAU;
+                (center.0 + semi_major * theta.cos(), center.1 + semi_minor * theta.sin())
+            }
             Curve2d::BSpline { degree, control_points, knots, weights } => {
                 bspline_2d_d0(*degree, control_points, knots, weights.as_deref(), t)
             }
@@ -50,6 +73,109 @@ impl Curve2d {
                     return basis.d0(*t_min);
                 }
                 basis.d0(t_min + t * span)
+            }
+            Curve2d::Polyline { points } => {
+                if points.len() < 2 {
+                    return points.first().copied().unwrap_or((0.0, 0.0));
+                }
+                let n = points.len() - 1;
+                let idx_f = t.clamp(0.0, 1.0) * n as f32;
+                let idx = idx_f as usize;
+                let frac = idx_f - idx as f32;
+                let a = points[idx.min(n)];
+                let b = points[(idx + 1).min(n)];
+                (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
+            }
+            Curve2d::Composite { segments } => {
+                if segments.is_empty() {
+                    return (0.0, 0.0);
+                }
+                if segments.len() == 1 {
+                    return segments[0].0.d0(t);
+                }
+                // Map t ∈ [0,1] to segment index and local parameter
+                let n = segments.len() as f32;
+                let idx_f = t.clamp(0.0, 1.0) * n;
+                let idx = (idx_f as usize).min(segments.len() - 1);
+                let local_t = idx_f - idx as f32;
+                segments[idx].0.d0(local_t.clamp(0.0, 1.0))
+            }
+        }
+    }
+
+    /// Evaluate first derivative at parameter t ∈ [0, 1].
+    /// Returns (point, tangent_direction).
+    pub fn d1(&self, t: f32) -> ((f32, f32), (f32, f32)) {
+        match self {
+            Curve2d::Line { origin, direction } => {
+                let p = (origin.0 + direction.0 * t, origin.1 + direction.1 * t);
+                (p, *direction)
+            }
+            Curve2d::Circle { center, radius } => {
+                let theta = t * std::f32::consts::TAU;
+                let p = (center.0 + radius * theta.cos(), center.1 + radius * theta.sin());
+                let dt = (-radius * theta.sin(), radius * theta.cos());
+                (p, dt)
+            }
+            Curve2d::Ellipse { center, semi_major, semi_minor } => {
+                let theta = t * std::f32::consts::TAU;
+                let p = (center.0 + semi_major * theta.cos(), center.1 + semi_minor * theta.sin());
+                let dt = (-semi_major * theta.sin(), semi_minor * theta.cos());
+                (p, dt)
+            }
+            Curve2d::BSpline { degree, control_points, knots, weights: _ } => {
+                // Analytical derivative via degree-reduced CPs (Piegl & Tiller)
+                if *degree == 0 {
+                    // Degree-0 B-spline: derivative is zero
+                    return (self.d0(t), (0.0, 0.0));
+                }
+                let p = *degree;
+                let n = control_points.len();
+                if n < p + 1 {
+                    return (self.d0(t), (0.0, 0.0));
+                }
+                // Build derivative CPs: Q_i = p * (P_{i+1} - P_i) / (k_{i+p+1} - k_{i+1})
+                let mut d_cps: Vec<(f32, f32)> = Vec::with_capacity(n - 1);
+                for i in 0..n - 1 {
+                    let denom = knots[i + p + 1] - knots[i + 1];
+                    let scale = if denom.abs() > 1e-10 { p as f32 / denom } else { 0.0 };
+                    d_cps.push((
+                        scale * (control_points[i + 1].0 - control_points[i].0),
+                        scale * (control_points[i + 1].1 - control_points[i].1),
+                    ));
+                }
+                // Derivative B-spline is degree p-1 on the same knot vector
+                let dt = bspline_2d_d0(p - 1, &d_cps, knots, None::<&[f32]>, t);
+                let pos = self.d0(t);
+                (pos, dt)
+            }
+            Curve2d::Trimmed { basis, t_min, t_max } => {
+                let span = t_max - t_min;
+                if span.abs() < 1e-10 {
+                    return basis.d1(*t_min);
+                }
+                let (p, d) = basis.d1(t_min + t * span);
+                (p, (d.0 * span, d.1 * span))
+            }
+            Curve2d::Polyline { points } => {
+                let p = self.d0(t);
+                if points.len() < 2 {
+                    return (p, (0.0, 0.0));
+                }
+                let n = points.len() - 1;
+                let idx_f = t.clamp(0.0, 1.0) * n as f32;
+                let idx = (idx_f as usize).min(n - 1);
+                let a = points[idx];
+                let b = points[idx + 1];
+                (p, (b.0 - a.0, b.1 - a.1))
+            }
+            Curve2d::Composite { segments: _ } => {
+                // Numerical derivative for composite
+                let eps = 1e-4;
+                let p0 = self.d0((t - eps).max(0.0));
+                let p1 = self.d0((t + eps).min(1.0));
+                let dt = ((p1.0 - p0.0) / (2.0 * eps), (p1.1 - p0.1) / (2.0 * eps));
+                (self.d0(t), dt)
             }
         }
     }
@@ -91,6 +217,158 @@ impl Curve2d {
                 let all = basis.to_beziers();
                 clip_beziers_to_range(&all, *t_min, *t_max)
             }
+            Curve2d::Ellipse { center, semi_major, semi_minor } => {
+                // Approximate ellipse with 4 cubic Bézier arcs (90° each)
+                const K: f32 = 0.5522847498;
+                let cx = center.0;
+                let cy = center.1;
+                let a = *semi_major;
+                let b = *semi_minor;
+                vec![
+                    Bezier2d { c0: (cx + a, cy), c1: (cx + a, cy + b * K),
+                        c2: (cx + a * K, cy + b), c3: (cx, cy + b) },
+                    Bezier2d { c0: (cx, cy + b), c1: (cx - a * K, cy + b),
+                        c2: (cx - a, cy + b * K), c3: (cx - a, cy) },
+                    Bezier2d { c0: (cx - a, cy), c1: (cx - a, cy - b * K),
+                        c2: (cx - a * K, cy - b), c3: (cx, cy - b) },
+                    Bezier2d { c0: (cx, cy - b), c1: (cx + a * K, cy - b),
+                        c2: (cx + a, cy - b * K), c3: (cx + a, cy) },
+                ]
+            }
+            Curve2d::Polyline { points } => {
+                // One linear Bézier per polyline segment
+                if points.len() < 2 {
+                    return vec![];
+                }
+                points.windows(2).map(|w| {
+                    let p0 = w[0];
+                    let p3 = w[1];
+                    let p1 = (p0.0 + (p3.0 - p0.0) / 3.0, p0.1 + (p3.1 - p0.1) / 3.0);
+                    let p2 = (p3.0 - (p3.0 - p0.0) / 3.0, p3.1 - (p3.1 - p0.1) / 3.0);
+                    Bezier2d { c0: p0, c1: p1, c2: p2, c3: p3 }
+                }).collect()
+            }
+            Curve2d::Composite { segments } => {
+                segments.iter().flat_map(|(seg, _)| seg.to_beziers()).collect()
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Conversion: CurveGeom (3D, used as PCurve with Vec3(u,v,0)) ↔ Curve2d
+// ═══════════════════════════════════════════════════════════════════════
+
+impl Curve2d {
+    /// Convert a 3D CurveGeom used as a PCurve (where d0 returns Vec3(u, v, 0))
+    /// into a native 2D Curve2d.
+    ///
+    /// OCC alignment: Geom2dAdaptor_Curve — adapts between 3D and 2D representations.
+    pub fn from_pcurve_3d(curve: &CurveGeom) -> Self {
+        match curve {
+            CurveGeom::Line { origin, direction } => Curve2d::Line {
+                origin: (origin.x, origin.y),
+                direction: (direction.x, direction.y),
+            },
+            CurveGeom::Circle { center, radius, .. } => Curve2d::Circle {
+                center: (center.x, center.y),
+                radius: *radius,
+            },
+            CurveGeom::Ellipse { center, semi_major, semi_minor, .. } => Curve2d::Ellipse {
+                center: (center.x, center.y),
+                semi_major: *semi_major,
+                semi_minor: *semi_minor,
+            },
+            CurveGeom::BSpline { degree, control_points, knots, weights } => Curve2d::BSpline {
+                degree: *degree,
+                control_points: control_points.iter().map(|p| (p.x, p.y)).collect(),
+                knots: knots.clone(),
+                weights: weights.clone(),
+            },
+            CurveGeom::Trimmed { basis, t_min, t_max } => Curve2d::Trimmed {
+                basis: Box::new(Curve2d::from_pcurve_3d(basis)),
+                t_min: *t_min,
+                t_max: *t_max,
+            },
+            CurveGeom::Polyline { points } => Curve2d::Polyline {
+                points: points.iter().map(|p| (p.x, p.y)).collect(),
+            },
+            CurveGeom::Composite { segments, .. } => Curve2d::Composite {
+                segments: segments.iter().map(|(seg, reversed)| {
+                    (Curve2d::from_pcurve_3d(seg), *reversed)
+                }).collect(),
+            },
+            CurveGeom::Hyperbola { center, semi_major, semi_minor, .. } => {
+                // Approximate as ellipse for 2D PCurve purposes
+                Curve2d::Ellipse {
+                    center: (center.x, center.y),
+                    semi_major: *semi_major,
+                    semi_minor: *semi_minor,
+                }
+            }
+            CurveGeom::Parabola { center: _, focal_dist: _, .. } => {
+                // Approximate as polyline via sampling
+                let n = 32;
+                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let p = curve.d0(t);
+                    (p.x, p.y)
+                }).collect();
+                Curve2d::Polyline { points: pts }
+            }
+            CurveGeom::Offset { basis: _, offset_dir: _, distance: _ } => {
+                // Sample the offset curve as a polyline
+                let n = 64;
+                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let p = curve.d0(t);
+                    (p.x, p.y)
+                }).collect();
+                Curve2d::Polyline { points: pts }
+            }
+        }
+    }
+
+    /// Convert back to a 3D CurveGeom used as PCurve (Vec3(u, v, 0) convention).
+    pub fn to_pcurve_3d(&self) -> CurveGeom {
+        match self {
+            Curve2d::Line { origin, direction } => CurveGeom::Line {
+                origin: Vec3::new(origin.0, origin.1, 0.0),
+                direction: Vec3::new(direction.0, direction.1, 0.0),
+            },
+            Curve2d::Circle { center, radius } => CurveGeom::Circle {
+                center: Vec3::new(center.0, center.1, 0.0),
+                axis: Vec3::Z,
+                radius: *radius,
+                x_dir: Vec3::X,
+                y_dir: Vec3::Y,
+            },
+            Curve2d::Ellipse { center, semi_major, semi_minor } => CurveGeom::Ellipse {
+                center: Vec3::new(center.0, center.1, 0.0),
+                axis: Vec3::Z,
+                semi_major: *semi_major,
+                semi_minor: *semi_minor,
+                x_dir: Vec3::X,
+                y_dir: Vec3::Y,
+            },
+            Curve2d::BSpline { degree, control_points, knots, weights } => CurveGeom::BSpline {
+                degree: *degree,
+                control_points: control_points.iter().map(|&(u, v)| Vec3::new(u, v, 0.0)).collect(),
+                knots: knots.clone(),
+                weights: weights.clone(),
+            },
+            Curve2d::Trimmed { basis, t_min, t_max } => CurveGeom::Trimmed {
+                basis: Box::new(basis.to_pcurve_3d()),
+                t_min: *t_min,
+                t_max: *t_max,
+            },
+            Curve2d::Polyline { points } => CurveGeom::Polyline {
+                points: points.iter().map(|&(u, v)| Vec3::new(u, v, 0.0)).collect(),
+            },
+            Curve2d::Composite { segments } => CurveGeom::Composite {
+                segments: segments.iter().map(|(seg, rev)| (seg.to_pcurve_3d(), *rev)).collect(),
+                cached_lengths: None,
+            },
         }
     }
 }

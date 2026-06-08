@@ -130,6 +130,8 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_vertex_tolerance = true;
             config.fix_small_area = true;
             config.fix_vertex_position = true;
+            config.fix_free_bounds = true;
+            config.fix_compose_shell = true;
         }
     } else {
         if check.has_uv_gaps || check.has_pcurve_issues {
@@ -157,6 +159,9 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             if check.has_inner_wires || check.has_intersecting_wires {
                 config.fix_intersecting_wires = true;
             }
+            if check.has_face_self_intersections {
+                config.fix_face_fold = true;
+            }
         }
     }
 
@@ -166,6 +171,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
     use crate::store::BRepStore;
@@ -195,9 +201,13 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::X,
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, line.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, line.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, line);
+        let pc = Curve2d::Line {
+            origin: (0.0, 0.0),
+            direction: (1.0, 0.0),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, pc);
         let orient_for = |ek, from_vk| {
             let edge = reg.edges.get(ek).unwrap();
             if edge.v_low == from_vk {

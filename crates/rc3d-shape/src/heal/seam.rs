@@ -2,7 +2,7 @@
 
 use rc3d_core::math::Vec3;
 
-use crate::geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
+use crate::geom::{Curve2d, CurveGeom, SurfaceGeom, SurfaceParamRange};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation};
 
@@ -175,8 +175,8 @@ fn fix_trimmed_periodic_seam(
         for i in 0..=32 {
             let t = i as f32 / 32.0;
             let uv = pcurve.d0(t);
-            min_u = min_u.min(uv.x);
-            max_u = max_u.max(uv.x);
+            min_u = min_u.min(uv.0);
+            max_u = max_u.max(uv.0);
             has_uv = true;
         }
     }
@@ -229,10 +229,10 @@ fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfacePa
             for i in 0..=32 {
                 let t = i as f32 / 32.0;
                 let uv = pcurve.d0(t);
-                u_min = u_min.min(uv.x);
-                u_max = u_max.max(uv.x);
-                v_min = v_min.min(uv.y);
-                v_max = v_max.max(uv.y);
+                u_min = u_min.min(uv.0);
+                u_max = u_max.max(uv.0);
+                v_min = v_min.min(uv.1);
+                v_max = v_max.max(uv.1);
                 has_uv = true;
             }
         }
@@ -311,7 +311,7 @@ fn build_u_isoparam_seam(
     }
 
     let curve_3d = CurveGeom::Polyline { points: pts_3d.clone() };
-    let pcurve = CurveGeom::Polyline { points: pts_uv };
+    let pcurve = Curve2d::Polyline { points: pts_uv };
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
@@ -351,7 +351,7 @@ fn build_v_isoparam_seam(
     }
 
     let curve_3d = CurveGeom::Polyline { points: pts_3d.clone() };
-    let pcurve = CurveGeom::Polyline { points: pts_uv };
+    let pcurve = Curve2d::Polyline { points: pts_uv };
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
@@ -406,7 +406,7 @@ fn seam_polyline_within_face(
             for i in 0..=16 {
                 let t = i as f32 / 16.0;
                 let uv = pcurve.d0(t);
-                let p = face.surface.d0_native(uv.x, uv.y);
+                let p = face.surface.d0_native(uv.0, uv.1);
                 mn = mn.min(p);
                 mx = mx.max(p);
                 has_pts = true;
@@ -430,7 +430,7 @@ fn sample_isoparam(
     hold_u: bool,
     segs: u32,
     pr: &crate::geom::SurfaceParamRange,
-) -> (Vec<Vec3>, Vec<Vec3>) {
+) -> (Vec<Vec3>, Vec<(f32, f32)>) {
     let mut pts_3d = Vec::with_capacity(segs as usize + 1);
     let mut pts_uv = Vec::with_capacity(segs as usize + 1);
     for i in 0..=segs {
@@ -441,7 +441,7 @@ fn sample_isoparam(
             (pr.u_min + t * (pr.u_max - pr.u_min), param)
         };
         pts_3d.push(surface.d0_native(u, v));
-        pts_uv.push(Vec3::new(u, v, 0.0));
+        pts_uv.push((u, v));
     }
     (pts_3d, pts_uv)
 }
@@ -513,9 +513,9 @@ mod tests {
             let v0 = reg.find_or_add_vertex(pa, 1e-4);
             let v1 = reg.find_or_add_vertex(pb, 1e-4);
             let curve_3d = CurveGeom::Line { origin: pa, direction: pb - pa };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(ua, va, 0.0),
-                direction: Vec3::new(ub - ua, vb - va, 0.0),
+            let pcurve = Curve2d::Line {
+                origin: (ua, va),
+                direction: (ub - ua, vb - va),
             };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             wire_edges.push((ek, Orientation::Forward));
@@ -564,9 +564,9 @@ mod tests {
             let v0 = reg.find_or_add_vertex(pa, 1e-4);
             let v1 = reg.find_or_add_vertex(pb, 1e-4);
             let curve_3d = CurveGeom::Line { origin: pa, direction: pb - pa };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(ua, va, 0.0),
-                direction: Vec3::new(ub - ua, vb - va, 0.0),
+            let pcurve = Curve2d::Line {
+                origin: (ua, va),
+                direction: (ub - ua, vb - va),
             };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             wire_edges.push((ek, Orientation::Forward));

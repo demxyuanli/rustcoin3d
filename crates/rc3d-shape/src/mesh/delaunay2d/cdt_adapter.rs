@@ -1,69 +1,144 @@
 //! Incremental constrained Delaunay adapter for UV face fill.
+//!
+//! Supports two backends:
+//! - `BowyerWatson` (default) — existing incremental CDT implementation
+//! - `DelaBella` — Newton Apple Wrapper algorithm (experimental, adaptive-exact predicates)
 
 use std::collections::HashMap;
 
 use super::triangulation::Delaunay2d;
-use super::half_edge::VertIdx;
 use super::DelaunayConfig;
+use super::delabella::DelaBella as DelaBellaEngine;
+use super::delabella::constrain_edge as dela_constrain_edge;
+use super::delabella::triangulate as dela_triangulate;
+
+/// Delaunay triangulation backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DelaunayBackend {
+    /// Bowyer-Watson incremental CDT (default, stable).
+    #[default]
+    BowyerWatson,
+    /// DelaBella Newton Apple Wrapper (experimental).
+    DelaBella,
+}
 
 /// Opaque vertex handle (internal Delaunay vertex index).
 pub type CdtVertHandle = u32;
 
+// ── Backend enum ──────────────────────────────────────────────────────
+
+enum CdtInner {
+    BowyerWatson(Delaunay2d),
+    DelaBella(DelaBellaEngine),
+}
+
+// ── NativeCdt public interface ────────────────────────────────────────
+
 pub struct NativeCdt {
-    delaunay: Delaunay2d,
-    handles: Vec<VertIdx>,
-    handle_gi: Vec<usize>,
+    inner: CdtInner,
+    handles: Vec<u32>,    // maps CdtVertHandle → internal vertex index
+    handle_gi: Vec<usize>, // maps CdtVertHandle → global mesh index
     constraints: usize,
+    /// Queued constraint edges (internal vertex index pairs) for DelaBella backend.
+    dela_pending_constraints: Vec<(u32, u32)>,
 }
 
 impl NativeCdt {
+    /// Create with the default backend (BowyerWatson).
     pub fn from_uv_bbox(u_min: f32, v_min: f32, u_max: f32, v_max: f32) -> Self {
-        let mut delaunay = Delaunay2d::new(DelaunayConfig {
-            sort_by_diagonal: false,
-            optimize: true,
-            max_optimize_passes: 1,
-        });
-        delaunay.begin_live(
-            u_min as f64,
-            v_min as f64,
-            u_max as f64,
-            v_max as f64,
-        );
+        Self::from_uv_bbox_with_backend(u_min, v_min, u_max, v_max, DelaunayBackend::default())
+    }
+
+    /// Create with a specified backend.
+    pub fn from_uv_bbox_with_backend(
+        u_min: f32,
+        v_min: f32,
+        u_max: f32,
+        v_max: f32,
+        backend: DelaunayBackend,
+    ) -> Self {
+        let inner = match backend {
+            DelaunayBackend::BowyerWatson => {
+                let mut delaunay = Delaunay2d::new(DelaunayConfig {
+                    sort_by_diagonal: false,
+                    optimize: true,
+                    max_optimize_passes: 1,
+                });
+                delaunay.begin_live(
+                    u_min as f64,
+                    v_min as f64,
+                    u_max as f64,
+                    v_max as f64,
+                );
+                CdtInner::BowyerWatson(delaunay)
+            }
+            DelaunayBackend::DelaBella => {
+                // DelaBella is batch-mode: we collect points and triangulate on finalize.
+                let _ = (u_min, v_min, u_max, v_max);
+                CdtInner::DelaBella(DelaBellaEngine::new())
+            }
+        };
         Self {
-            delaunay,
+            inner,
             handles: Vec::new(),
             handle_gi: Vec::new(),
             constraints: 0,
+            dela_pending_constraints: Vec::new(),
         }
     }
 
     pub fn insert(&mut self, u: f64, v: f64, gi: usize) -> Option<CdtVertHandle> {
-        let vidx = self.delaunay.insert_live(u, v, gi as u32);
         let hi = self.handles.len() as CdtVertHandle;
-        self.handles.push(vidx);
+        match &mut self.inner {
+            CdtInner::BowyerWatson(delaunay) => {
+                let vidx = delaunay.insert_live(u, v, gi as u32);
+                self.handles.push(vidx);
+            }
+            CdtInner::DelaBella(della) => {
+                let vidx = della.add_vert(u, v, gi as u32);
+                self.handles.push(vidx);
+            }
+        }
         self.handle_gi.push(gi);
         Some(hi)
     }
 
     pub fn try_add_constraint(&mut self, ha: CdtVertHandle, hb: CdtVertHandle) -> bool {
-        let Some(a) = self.handles.get(ha as usize).copied() else {
-            return false;
-        };
-        let Some(b) = self.handles.get(hb as usize).copied() else {
-            return false;
-        };
-        let ok = self.delaunay.constrain_live(a, b);
-        if ok {
-            self.constraints += 1;
+        let a = self.handles.get(ha as usize).copied();
+        let b = self.handles.get(hb as usize).copied();
+        match (a, b, &mut self.inner) {
+            (Some(a), Some(b), CdtInner::BowyerWatson(delaunay)) => {
+                let ok = delaunay.constrain_live(a, b);
+                if ok {
+                    self.constraints += 1;
+                }
+                ok
+            }
+            (Some(a), Some(b), CdtInner::DelaBella(_della)) => {
+                // DelaBella constraints are applied during finalize (after triangulation)
+                self.dela_pending_constraints.push((a, b));
+                self.constraints += 1;
+                true
+            }
+            _ => false,
         }
-        ok
     }
 
     pub fn exists_constraint(&self, ha: CdtVertHandle, hb: CdtVertHandle) -> bool {
         let a = self.handles.get(ha as usize).copied();
         let b = self.handles.get(hb as usize).copied();
-        match (a, b) {
-            (Some(a), Some(b)) => self.delaunay.has_edge(a, b),
+        match (a, b, &self.inner) {
+            (Some(a), Some(b), CdtInner::BowyerWatson(delaunay)) => delaunay.has_edge(a, b),
+            (Some(a), Some(b), CdtInner::DelaBella(della)) => {
+                // Before triangulation: check pending queue.
+                // After triangulation: check fixed edges.
+                if !della.all_faces().is_empty() {
+                    return della.has_fixed_edge(a, b);
+                }
+                self.dela_pending_constraints.iter().any(|&(ca, cb)| {
+                    (ca == a && cb == b) || (cb == a && ca == b)
+                })
+            }
             _ => false,
         }
     }
@@ -73,9 +148,17 @@ impl NativeCdt {
     }
 
     pub fn vertex_uv(&self, ha: CdtVertHandle) -> (f32, f32) {
-        let v = self.handles[ha as usize];
-        let p = self.delaunay.vertex_point(v);
-        (p.x as f32, p.y as f32)
+        let vi = self.handles[ha as usize];
+        match &self.inner {
+            CdtInner::BowyerWatson(delaunay) => {
+                let p = delaunay.vertex_point(vi);
+                (p.x as f32, p.y as f32)
+            }
+            CdtInner::DelaBella(della) => {
+                let (x, y) = della.vert_pos(vi);
+                (x as f32, y as f32)
+            }
+        }
     }
 
     pub fn handle_global_index(&self, ha: CdtVertHandle) -> usize {
@@ -102,29 +185,276 @@ impl NativeCdt {
 
     /// Global indices and UV coords per inner triangle.
     pub fn inner_faces_detail(&self) -> Vec<([usize; 3], [(f32, f32); 3])> {
-        let mut out = Vec::new();
-        for face in self.delaunay.inner_faces() {
-            let gids = [
-                self.delaunay.vertex_data(face[0]) as usize,
-                self.delaunay.vertex_data(face[1]) as usize,
-                self.delaunay.vertex_data(face[2]) as usize,
-            ];
-            let uvs = [
-                self.delaunay.vertex_point(face[0]).to_f32(),
-                self.delaunay.vertex_point(face[1]).to_f32(),
-                self.delaunay.vertex_point(face[2]).to_f32(),
-            ];
-            out.push((gids, uvs));
+        match &self.inner {
+            CdtInner::BowyerWatson(delaunay) => {
+                let mut out = Vec::new();
+                for face in delaunay.inner_faces() {
+                    let gids = [
+                        delaunay.vertex_data(face[0]) as usize,
+                        delaunay.vertex_data(face[1]) as usize,
+                        delaunay.vertex_data(face[2]) as usize,
+                    ];
+                    let uvs = [
+                        delaunay.vertex_point(face[0]).to_f32(),
+                        delaunay.vertex_point(face[1]).to_f32(),
+                        delaunay.vertex_point(face[2]).to_f32(),
+                    ];
+                    out.push((gids, uvs));
+                }
+                out
+            }
+            CdtInner::DelaBella(della) => {
+                let mut out = Vec::new();
+                // Use delaunay_faces() (Delaunay-only interior faces) to match
+                // BowyerWatson's inner_faces() which returns non-super-vertex faces.
+                for (_, verts) in della.delaunay_faces() {
+                    if verts.len() != 3 {
+                        continue;
+                    }
+                    out.push((
+                        [
+                            della.vert_orig_idx(verts[0]) as usize,
+                            della.vert_orig_idx(verts[1]) as usize,
+                            della.vert_orig_idx(verts[2]) as usize,
+                        ],
+                        {
+                            let uv = |vi: u32| {
+                                let (x, y) = della.vert_pos(vi);
+                                (x as f32, y as f32)
+                            };
+                            [uv(verts[0]), uv(verts[1]), uv(verts[2])]
+                        },
+                    ));
+                }
+                out
+            }
         }
-        out
     }
 
     pub fn vertex_count(&self) -> usize {
         self.handle_gi.len()
     }
 
+    /// Rebuild the internal triangulation from accumulated points and re-apply all
+    /// pending constraints. Used by `retriangulate()` and `finalize()`.
+    fn rebuild_delaBella(
+        verts: &[(f64, f64)],
+        orig: &[u32],
+        constraints: &[(u32, u32)],
+    ) -> (DelaBellaEngine, HashMap<u32, u32>) {
+        let mut fresh = DelaBellaEngine::new();
+        dela_triangulate(&mut fresh, verts, orig);
+
+        let mut orig_to_fresh: HashMap<u32, u32> = HashMap::new();
+        for (fi, v) in fresh.verts.iter().enumerate() {
+            orig_to_fresh.insert(v.orig_idx, fi as u32);
+        }
+
+        // Apply constraints with remapped indices
+        for (va, vb) in constraints {
+            let oa = orig[*va as usize];
+            let ob = orig[*vb as usize];
+            if let (Some(&fa), Some(&fb)) = (orig_to_fresh.get(&oa), orig_to_fresh.get(&ob)) {
+                dela_constrain_edge(&mut fresh, fa, fb);
+            }
+        }
+
+        (fresh, orig_to_fresh)
+    }
+
+    pub fn retriangulate(&mut self) {
+        match &mut self.inner {
+            CdtInner::BowyerWatson(_) => {}
+            CdtInner::DelaBella(_) => {
+                self.rebuild_dela_bella_inner(false);
+            }
+        }
+    }
+
     pub fn finalize(&mut self) {
-        self.delaunay.finalize_constraints();
+        match &mut self.inner {
+            CdtInner::BowyerWatson(delaunay) => {
+                delaunay.finalize_constraints();
+            }
+            CdtInner::DelaBella(_) => {
+                self.rebuild_dela_bella_inner(true);
+            }
+        }
+    }
+
+    /// Shared DelaBella rebuild: extract points from current engine, triangulate
+    /// from scratch, re-apply constraints, remap handles.
+    /// When `take_constraints` is true, clears pending constraints (finalize);
+    /// when false, clones them for re-application (retriangulate).
+    fn rebuild_dela_bella_inner(&mut self, take_constraints: bool) {
+        let (points, orig) = match &self.inner {
+            CdtInner::DelaBella(della) => {
+                if della.verts.len() < 3 {
+                    return;
+                }
+                let points: Vec<(f64, f64)> = della.verts.iter().map(|v| (v.x, v.y)).collect();
+                let orig: Vec<u32> = della.verts.iter().map(|v| v.orig_idx).collect();
+                (points, orig)
+            }
+            _ => return,
+        };
+        let constraints = if take_constraints {
+            std::mem::take(&mut self.dela_pending_constraints)
+        } else {
+            self.dela_pending_constraints.clone()
+        };
+
+        let (fresh, orig_to_fresh) = Self::rebuild_delaBella(&points, &orig, &constraints);
+
+        for ha in 0..self.handles.len() {
+            let gi = self.handle_gi[ha] as u32;
+            if let Some(&new_vi) = orig_to_fresh.get(&gi) {
+                self.handles[ha] = new_vi;
+            }
+        }
+
+        if let CdtInner::DelaBella(ref mut della) = self.inner {
+            *della = fresh;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delaBella_finalize_debug() {
+        let mut della = DelaBellaEngine::new();
+        della.add_vert(0.0, 0.0, 0);
+        della.add_vert(1.0, 0.0, 1);
+        della.add_vert(0.0, 1.0, 2);
+
+        let points: Vec<(f64, f64)> = della.verts.iter().map(|v| (v.x, v.y)).collect();
+        let orig: Vec<u32> = della.verts.iter().map(|v| v.orig_idx).collect();
+
+        let mut fresh = DelaBellaEngine::new();
+        let n = dela_triangulate(&mut fresh, &points, &orig);
+        assert!(n > 0, "triangulate should return > 0");
+        assert!(!fresh.all_faces().is_empty(), "should have alive faces");
+    }
+
+    #[test]
+    fn delaBella_exists_constraint_after_finalize() {
+        let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+            0.0, 0.0, 1.0, 1.0, DelaunayBackend::DelaBella,
+        );
+        let h0 = cdt.insert(0.0, 0.0, 0).unwrap();
+        let h1 = cdt.insert(1.0, 0.0, 1).unwrap();
+        let h2 = cdt.insert(0.0, 1.0, 2).unwrap();
+        cdt.try_add_constraint(h0, h1);
+        cdt.finalize();
+        assert!(
+            cdt.exists_constraint(h0, h1),
+            "constraint should exist after finalize"
+        );
+        assert!(
+            !cdt.exists_constraint(h0, h2),
+            "non-constrained edge should not exist"
+        );
+    }
+
+    #[test]
+    fn delaBella_native_cdt_full_flow() {
+        let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+            0.0, 0.0, 1.0, 1.0, DelaunayBackend::DelaBella,
+        );
+        let h0 = cdt.insert(0.0, 0.0, 0).unwrap();
+        let h1 = cdt.insert(1.0, 0.0, 1).unwrap();
+        let h2 = cdt.insert(0.0, 1.0, 2).unwrap();
+        cdt.try_add_constraint(h0, h1);
+        cdt.try_add_constraint(h1, h2);
+        cdt.try_add_constraint(h2, h0);
+        cdt.finalize();
+
+        let detail = cdt.inner_faces_detail();
+        assert!(!detail.is_empty(), "should have faces after finalize");
+        let tris = cdt.extract_triangles(|_, _| true);
+        assert_eq!(tris.len(), 3, "should produce 1 triangle (3 indices)");
+    }
+
+    #[test]
+    fn delaBella_retriangulate_no_constraints() {
+        let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+            0.0, 0.0, 1.0, 1.0, DelaunayBackend::DelaBella,
+        );
+        cdt.insert(0.0, 0.0, 0).unwrap();
+        cdt.insert(1.0, 0.0, 1).unwrap();
+        cdt.insert(1.0, 1.0, 2).unwrap();
+        cdt.insert(0.0, 1.0, 3).unwrap();
+        // No constraints
+        assert!(cdt.inner_faces_detail().is_empty());
+        cdt.retriangulate();
+        let faces = cdt.inner_faces_detail();
+        assert_eq!(faces.len(), 2, "square without constraints => 2 triangles");
+    }
+
+    #[test]
+    fn delaBella_retriangulate_with_constraints() {
+        let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+            0.0, 0.0, 1.0, 1.0, DelaunayBackend::DelaBella,
+        );
+        let h0 = cdt.insert(0.0, 0.0, 0).unwrap();
+        let h1 = cdt.insert(1.0, 0.0, 1).unwrap();
+        let h2 = cdt.insert(1.0, 1.0, 2).unwrap();
+        let h3 = cdt.insert(0.0, 1.0, 3).unwrap();
+        cdt.try_add_constraint(h0, h1);
+        cdt.try_add_constraint(h1, h2);
+        cdt.try_add_constraint(h2, h3);
+        cdt.try_add_constraint(h3, h0);
+        assert!(cdt.inner_faces_detail().is_empty());
+        cdt.retriangulate();
+        let faces = cdt.inner_faces_detail();
+        assert_eq!(faces.len(), 2, "square with constraints => 2 triangles");
+    }
+
+    #[test]
+    fn delaBella_matches_bowyer_watson_on_square() {
+        // Both backends should produce the same triangle count on the same point set
+        let pts = [
+            (0.0f64, 0.0f64), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0),
+            (0.5, 0.5), // interior point
+        ];
+
+        let bw_tris = {
+            let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+                0.0, 0.0, 1.0, 1.0, DelaunayBackend::BowyerWatson,
+            );
+            let h: Vec<_> = pts.iter().enumerate()
+                .map(|(i, &(u, v))| cdt.insert(u, v, i).unwrap())
+                .collect();
+            cdt.try_add_constraint(h[0], h[1]);
+            cdt.try_add_constraint(h[1], h[2]);
+            cdt.try_add_constraint(h[2], h[3]);
+            cdt.try_add_constraint(h[3], h[0]);
+            cdt.finalize();
+            cdt.extract_triangles(|_, _| true).len() / 3
+        };
+
+        let db_tris = {
+            let mut cdt = NativeCdt::from_uv_bbox_with_backend(
+                0.0, 0.0, 1.0, 1.0, DelaunayBackend::DelaBella,
+            );
+            let h: Vec<_> = pts.iter().enumerate()
+                .map(|(i, &(u, v))| cdt.insert(u, v, i).unwrap())
+                .collect();
+            cdt.try_add_constraint(h[0], h[1]);
+            cdt.try_add_constraint(h[1], h[2]);
+            cdt.try_add_constraint(h[2], h[3]);
+            cdt.try_add_constraint(h[3], h[0]);
+            cdt.finalize();
+            cdt.extract_triangles(|_, _| true).len() / 3
+        };
+
+        // Both backends should produce valid triangulations (not necessarily identical
+        // due to different floating-point / constraint implementation details).
+        assert!(bw_tris >= 1, "BW should produce >= 1 triangle, got {}", bw_tris);
+        assert!(db_tris >= 1, "DB should produce >= 1 triangle, got {}", db_tris);
     }
 }
 

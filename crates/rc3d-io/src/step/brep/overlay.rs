@@ -3,13 +3,14 @@
 use std::collections::HashSet;
 
 use rc3d_core::math::Vec3;
+use rc3d_shape::geom::curve2d::Curve2d;
 use rc3d_scene::SceneGraph;
 use rc3d_scene::node_data::{
     AnnotationNode, Coordinate3Node, IndexedLineSetNode, SeparatorNode, TransformNode,
 };
 
 use crate::step::assembly::AssemblyTransform;
-use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
+use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::mesh::edge_disc::{discretize_edge_overlay, EdgeDiscConfig};
 use crate::step::brep::mesh::BRepMeshConfig;
 use crate::step::brep::registry::BRepStore;
@@ -203,7 +204,7 @@ fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
     for (i, p) in chain.iter_mut().enumerate() {
         let t = i as f32 / denom;
         let uv = pcurve.d0(t);
-        let mut n = face.surface.normal_native(uv.x, uv.y);
+        let mut n = face.surface.normal_native(uv.0, uv.1);
         if !face.same_sense {
             n = -n;
         }
@@ -212,7 +213,7 @@ fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
     }
 }
 
-fn primary_face_pcurve(edge: &crate::step::brep::topo::BRepEdge) -> Option<(FaceKey, &CurveGeom)> {
+fn primary_face_pcurve(edge: &crate::step::brep::topo::BRepEdge) -> Option<(FaceKey, &Curve2d)> {
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = *keys.first()?;

@@ -48,6 +48,8 @@ pub struct FaceFillConfig {
     /// Maximum CDT vertices per face (OCC IMeshTools_Parameters::MaxNodes).
     /// Prevents runaway memory on large faces with tight deflection.
     pub max_cdt_vertices: usize,
+    /// Delaunay triangulation backend for CDT face meshing.
+    pub delaunay_backend: super::delaunay2d::DelaunayBackend,
 }
 
 impl Default for FaceFillConfig {
@@ -63,6 +65,7 @@ impl Default for FaceFillConfig {
             parameter_division_max_depth: 1,
             skip_interior_edge_split: true,
             max_cdt_vertices: 4096,
+            delaunay_backend: super::delaunay2d::DelaunayBackend::default(),
         }
     }
 }
@@ -290,28 +293,6 @@ fn triangulate_loops_cdt(
     (tris, max_chord_error)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn try_cdt_or_earcut(
-    work_loops: &FaceUvLoops,
-    face: &BRepFace,
-    face_key: FaceKey,
-    reg: &BRepStore,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
-    fill_cfg: &FaceFillConfig,
-) -> (Vec<(i32, i32, i32)>, f32) {
-    triangulate_loops_cdt(
-        work_loops,
-        face,
-        face_key,
-        reg,
-        global_vertices,
-        global_normals,
-        pos_to_idx,
-        fill_cfg,
-    )
-}
 
 fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
@@ -613,7 +594,7 @@ pub fn fill_trimmed(
         }
         (seg_tris, 0.0f32)
     } else {
-        try_cdt_or_earcut(
+        triangulate_loops_cdt(
             &work_loops,
             face,
             face_key,
@@ -630,7 +611,7 @@ pub fn fill_trimmed(
     }
 
     if tris.is_empty() && use_segmentation {
-        let (cdt_tris, chord) = try_cdt_or_earcut(
+        let (cdt_tris, chord) = triangulate_loops_cdt(
             &work_loops,
             face,
             face_key,

@@ -17,6 +17,9 @@ pub mod pipeline;
 pub mod curve_trim;
 pub(crate) mod geom2d;
 pub mod topo_diag;
+pub(crate) mod free_bounds;
+pub(crate) mod compose_shell;
+pub(crate) mod face_fold;
 
 use std::collections::HashSet;
 
@@ -71,6 +74,10 @@ pub struct HealReport {
     pub split_faces_created: usize,
     pub natural_bounds_added: usize,
     pub reversed_2d_fixed: usize,
+    pub free_bounds_closed: usize,
+    pub free_bounds_open_found: usize,
+    pub shells_composed: usize,
+    pub face_folds_repaired: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
     skip_faces_seen: HashSet<FaceKey>,
@@ -100,6 +107,10 @@ impl Default for HealReport {
             split_faces_created: 0,
             natural_bounds_added: 0,
             reversed_2d_fixed: 0,
+            free_bounds_closed: 0,
+            free_bounds_open_found: 0,
+            shells_composed: 0,
+            face_folds_repaired: 0,
             check_errors: 0,
             check_warnings: 0,
             skip_faces_seen: HashSet::new(),
@@ -165,6 +176,9 @@ pub struct HealConfig {
     pub fix_split_face: bool,
     pub fix_natural_bound: bool,
     pub fix_reversed_2d: bool,
+    pub fix_free_bounds: bool,
+    pub fix_compose_shell: bool,
+    pub fix_face_fold: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -194,6 +208,9 @@ impl HealConfig {
             fix_split_face: false,
             fix_natural_bound: false,
             fix_reversed_2d: false,
+            fix_free_bounds: false,
+            fix_compose_shell: false,
+            fix_face_fold: false,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 0.0,
         }
@@ -234,6 +251,9 @@ impl Default for HealConfig {
             fix_split_face: true,
             fix_natural_bound: true,
             fix_reversed_2d: true,
+            fix_free_bounds: true,
+            fix_compose_shell: false,
+            fix_face_fold: true,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -422,6 +442,11 @@ fn heal_face_passes(
         report.degenerate_edges_created += dr.degenerate_edges_created;
     }
 
+    if config.fix_face_fold {
+        let fr = face_fold::fix_face_folds(face_key, reg);
+        report.face_folds_repaired += fr.folds_repaired;
+    }
+
     true
 }
 
@@ -565,6 +590,24 @@ pub fn heal_shell(
         report.split_faces_created += sr.faces_created;
     }
 
+    // Free bounds: detect and close open edges
+    if config.fix_free_bounds {
+        let fb = free_bounds::close_free_bounds(shell_key, reg, config.gap_tolerance);
+        report.free_bounds_closed += fb.edges_closed;
+        report.free_bounds_open_found += fb.open_edges_found;
+    }
+
+    // Compose shell: verify face connectivity via shared edges.
+    // OCC alignment: ShapeFix_ComposeShell — detects disconnected face groups.
+    if config.fix_compose_shell {
+        let faces: Vec<FaceKey> = face_keys.iter()
+            .filter(|(fk, _)| !report.skip_faces_seen.contains(fk))
+            .map(|(fk, _)| *fk)
+            .collect();
+        let groups = compose_shell::compose_shells(&faces, reg);
+        report.shells_composed = groups.len();
+    }
+
     let check_report = check_shell(shell_key, reg);
     report.check_errors = check_report.errors.len();
     report.check_warnings = check_report.warnings.len();
@@ -631,6 +674,7 @@ fn fix_small_area(shell_key: ShellKey, reg: &BRepStore) -> Vec<FaceKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
     use rc3d_core::math::Vec3;
@@ -662,19 +706,23 @@ mod tests {
             origin: a,
             direction: b - a,
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, line(Vec3::ZERO, Vec3::X));
+        let pc = |a: rc3d_core::math::Vec3, b: rc3d_core::math::Vec3| Curve2d::Line {
+            origin: (a.x, a.y),
+            direction: (b.x - a.x, b.y - a.y),
+        };
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X));
         let gap_v = reg.vertices.insert(crate::topo::BRepVertex {
             position: Vec3::new(1.0, 0.00005, 0.0),
             tolerance: 1e-6,
         });
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
         let e2_orient = if gap_v < v2 {
             Orientation::Forward
         } else {
             Orientation::Reversed
         };
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
-        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, e2_orient),

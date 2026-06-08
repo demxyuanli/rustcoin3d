@@ -129,6 +129,7 @@ pub fn deflection_from_report(report: &ShellMeshReport) -> DeflectionMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepShell, BRepSolid, BRepWire, Orientation};
 
@@ -160,10 +161,7 @@ mod tests {
             let v0 = reg.find_or_add_vertex(a, 1e-4);
             let v1 = reg.find_or_add_vertex(b, 1e-4);
             let curve_3d = CurveGeom::Line { origin: a, direction: b - a };
-            let pcurve = CurveGeom::Line {
-                origin: Vec3::new(a.x, a.y, 0.0),
-                direction: Vec3::new(b.x - a.x, b.y - a.y, 0.0),
-            };
+            let pcurve = Curve2d::Line { origin: (a.x, a.y), direction: (b.x - a.x, b.y - a.y) };
             let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
             wire_edges.push((ek, Orientation::Forward));
         }
