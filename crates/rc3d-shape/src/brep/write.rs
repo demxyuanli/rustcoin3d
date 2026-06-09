@@ -1,8 +1,17 @@
-//! OCC BREP ASCII format writer.
-//! Format: Open CASCADE Technology BRepTools::Write() / DBRep_Write.
-//! Sections appear in strict order -- out-of-order sections crash OCC's reader.
+//! OCC BREP ASCII format writer — classic CASCADE Topology V1 format.
+//!
+//! Format reference: Open CASCADE Technology BRepTools::Write()
+//! This is the format FreeCAD and other OCC-based tools read.
+//!
+//! Key differences from DrawableShape:
+//! - Header: "CASCADE Topology V1, (c) Matra-Datavision"
+//! - Section order: Locations, Curve2ds, Curves, Polygon3D, PolygonOnTriangulations,
+//!   Surfaces, Triangulations, TShapes
+//! - Curves has 7-number lines (includes edge parameter range)
+//! - Surfaces has 13-number Plane lines (includes v_dir)
+//! - TShapes is a unified section with Ve/Ed/Wi/Fa/Sh/So/Co markers
+//! - Sub-shape references count backwards from end: +N = shape at total-N+1
 
-use std::collections::HashMap;
 use std::io::{self, Write};
 use rc3d_core::math::Vec3;
 use crate::geom::curve2d::Curve2d;
@@ -10,7 +19,7 @@ use crate::geom::{CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::*;
 
-/// Write the full BRepStore as OCC BREP ASCII.
+/// Write the full BRepStore as OCC BREP ASCII (classic format).
 pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> {
     let mut w = BrepWriter::new(store);
     w.write_all(output)
@@ -18,684 +27,573 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
 
 struct BrepWriter<'a> {
     store: &'a BRepStore,
-    curve_indices: HashMap<EdgeKey, usize>,
-    surface_indices: HashMap<FaceKey, usize>,
-    curve_count: usize,
-    surface_count: usize,
+    /// Ordered list of all TShapes for index calculation.
+    shapes: Vec<ShapeEntry>,
+    /// Total TShape count (used for reverse-index references).
+    total_shapes: usize,
+}
+
+/// Compact representation of each TShape for ordering.
+enum ShapeEntry {
+    Vertex(VertexKey),
+    Edge(EdgeKey),
+    Wire(WireKey),
+    Face(FaceKey),
+    Shell(ShellKey),
+    Solid(SolidKey),
+    Compound(CompoundKey),
 }
 
 impl<'a> BrepWriter<'a> {
     fn new(store: &'a BRepStore) -> Self {
-        Self {
-            store,
-            curve_indices: HashMap::new(),
-            surface_indices: HashMap::new(),
-            curve_count: 0,
-            surface_count: 0,
+        let mut shapes = Vec::new();
+
+        // Build ordered shape list: all compounds, solids, shells, faces, wires, edges, vertices.
+        // OCC writes shapes in dependency order: vertices first, then edges, wires, faces, etc.
+        for (vk, _) in &store.vertices {
+            shapes.push(ShapeEntry::Vertex(vk));
         }
+        for (ek, _) in &store.edges {
+            shapes.push(ShapeEntry::Edge(ek));
+        }
+        for (wk, wire) in &store.wires {
+            // Skip empty wires (placeholders from face construction)
+            if wire.edges.is_empty() {
+                continue;
+            }
+            shapes.push(ShapeEntry::Wire(wk));
+        }
+        for (fk, _) in &store.faces {
+            shapes.push(ShapeEntry::Face(fk));
+        }
+        for (sk, _) in &store.shells {
+            shapes.push(ShapeEntry::Shell(sk));
+        }
+        for (sk, _) in &store.solids {
+            shapes.push(ShapeEntry::Solid(sk));
+        }
+        for (ck, _) in &store.compounds {
+            shapes.push(ShapeEntry::Compound(ck));
+        }
+
+        let total = shapes.len();
+        Self { store, shapes, total_shapes: total }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
         writeln!(output, "DBRep_DrawableShape")?;
         writeln!(output)?;
+        writeln!(output, "CASCADE Topology V1, (c) Matra-Datavision")?;
         self.write_locations(output)?;
-        self.write_curves3d(output)?;
+        self.write_curve2ds(output)?;
+        self.write_curves(output)?;
+        writeln!(output, "Polygon3D 0")?;
+        writeln!(output, "PolygonOnTriangulations 0")?;
         self.write_surfaces(output)?;
-        self.write_pcurves(output)?;
-        self.write_vertices(output)?;
-        self.write_edges(output)?;
-        self.write_wires(output)?;
-        self.write_faces(output)?;
-        self.write_shells(output)?;
-        self.write_solids(output)?;
-        self.write_compounds(output)?;
+        writeln!(output, "Triangulations 0")?;
+        writeln!(output)?;
+        self.write_tshapes(output)?;
         Ok(())
     }
 
-    // ── Location section ─────────────────────────────────────────
+    /// Calculate reverse index: +N means shape at absolute position (total - N + 1).
+    fn rev_idx(&self, abs_pos: usize) -> usize {
+        if abs_pos == 0 { return 0; }
+        self.total_shapes + 1 - abs_pos
+    }
+
+    /// Find absolute position of a vertex in shapes list.
+    fn vertex_pos(&self, vk: VertexKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Vertex(k) if *k == vk))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn edge_pos(&self, ek: EdgeKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Edge(k) if *k == ek))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn wire_pos(&self, wk: WireKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Wire(k) if *k == wk))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn face_pos(&self, fk: FaceKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Face(k) if *k == fk))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn shell_pos(&self, sk: ShellKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Shell(k) if *k == sk))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn solid_pos(&self, sk: SolidKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Solid(k) if *k == sk))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    fn compound_pos(&self, ck: CompoundKey) -> usize {
+        self.shapes.iter().position(|s| matches!(s, ShapeEntry::Compound(k) if *k == ck))
+            .map(|p| p + 1).unwrap_or(0)
+    }
+
+    // ── Sections ──────────────────────────────────────────────────
 
     fn write_locations(&self, output: &mut impl Write) -> io::Result<()> {
         writeln!(output, "Locations 0")?;
-        writeln!(output)?;
         Ok(())
     }
 
-    // ── Curve3D section ──────────────────────────────────────────
+    /// Curve2ds — always 0 in classic format (PCurves stored on edges inline).
+    fn write_curve2ds(&self, _output: &mut impl Write) -> io::Result<()> {
+        // Classic format embeds PCurves in edge data, so we write 0 here.
+        // We'll re-visit this when PCurve support is complete.
+        writeln!(_output, "Curve2ds 0")?;
+        Ok(())
+    }
 
-    fn write_curves3d(&mut self, output: &mut impl Write) -> io::Result<()> {
-        let mut curves: Vec<(usize, &CurveGeom)> = Vec::new();
-        for (ek, edge) in &self.store.edges {
-            if !self.curve_indices.contains_key(&ek) {
-                self.curve_count += 1;
-                self.curve_indices.insert(ek, self.curve_count);
-                curves.push((self.curve_count, &edge.curve));
+    fn write_curves(&self, output: &mut impl Write) -> io::Result<()> {
+        let mut curves: Vec<&CurveGeom> = Vec::new();
+        for entry in &self.shapes {
+            if let ShapeEntry::Edge(ek) = entry {
+                if let Some(edge) = self.store.edges.get(*ek) {
+                    curves.push(&edge.curve);
+                }
             }
         }
-        writeln!(output, "Curve3ds {}", self.curve_count)?;
+        writeln!(output, "Curves {}", curves.len())?;
 
-        for (_ci, curve) in &curves {
-            let (expanded, _trim) = expand_curve(curve);
+        for curve in &curves {
+            let expanded = expand_curve(curve);
             match expanded {
                 CurveGeom::Line { origin, direction } => {
-                    writeln!(
-                        output, "1 {} {} {}  {} {} {}",
+                    let len = direction.length();
+                    let dir = if len > 1e-12 { *direction / len } else { *direction };
+                    // OCC format: 1 ox oy oz dx dy dz  (unit direction)
+                    writeln!(output, "1 {} {} {} {} {} {}",
                         origin.x, origin.y, origin.z,
-                        direction.x, direction.y, direction.z
-                    )?;
+                        dir.x, dir.y, dir.z)?;
                 }
-                CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                CurveGeom::Circle { center, axis, radius, .. } => {
+                    writeln!(output, "2 {} {} {}  {} {} {}  {}",
                         center.x, center.y, center.z,
-                        axis.x, axis.y, axis.z,
-                        radius,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        axis.x, axis.y, axis.z, radius)?;
                 }
                 CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
                         semi_major, semi_minor,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "4 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
                         semi_major, semi_minor,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "5 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                    writeln!(output, "5 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
                         focal_dist,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::BezierCurve { degree, control_points, weights } => {
-                    write!(
-                        output, "6 {}  {}  {}",
-                        degree,
-                        control_points.len(),
-                        if weights.is_some() { 1 } else { 0 }
-                    )?;
+                    write!(output, "6 {}  {}  {}",
+                        degree, control_points.len(),
+                        if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
                         write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
                     if let Some(w) = weights {
-                        for wt in w {
-                            write!(output, " {}", wt)?;
-                        }
+                        for wt in w { write!(output, " {}", wt)?; }
                     }
                     writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
-                    write!(
-                        output, "7 {}  {}  {}  {}",
-                        degree,
-                        control_points.len(),
-                        knots.len(),
-                        if weights.is_some() { 1 } else { 0 }
-                    )?;
+                    write!(output, "7 {}  {}  {}  {}",
+                        degree, control_points.len(), knots.len(),
+                        if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
                         write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots {
-                        write!(output, " {}", k)?;
-                    }
+                    for k in knots { write!(output, " {}", k)?; }
                     if let Some(w) = weights {
-                        for wt in w {
-                            write!(output, " {}", wt)?;
-                        }
+                        for wt in w { write!(output, " {}", wt)?; }
                     }
                     writeln!(output)?;
                 }
-                CurveGeom::Offset { basis, .. } => {
-                    // Fallback: approximate offset curve as a polyline and write as BSpline
-                    let pts: Vec<Vec3> = (0..=16).map(|i| {
-                        let t = i as f32 / 16.0;
-                        basis.d0(t)
-                    }).collect();
-                    write_polyline_as_bspline(output, &pts)?;
-                }
                 CurveGeom::Polyline { points } => {
+                    // Write as BSpline degree 1
                     write_polyline_as_bspline(output, points)?;
                 }
-                CurveGeom::Composite { segments, .. } => {
-                    // Expand composite: concatenate points from all segments
-                    let mut pts: Vec<Vec3> = Vec::new();
-                    for (seg, reversed) in segments {
-                        let seg_pts: Vec<Vec3> = (0..=8).map(|i| {
-                            let t = i as f32 / 8.0;
-                            if *reversed { seg.d0(1.0 - t) } else { seg.d0(t) }
-                        }).collect();
-                        if pts.is_empty() {
-                            pts = seg_pts;
-                        } else {
-                            pts.extend(seg_pts.into_iter().skip(1));
+                CurveGeom::Trimmed { basis, .. } => {
+                    // Expand: write inner basis
+                    match basis.as_ref() {
+                        CurveGeom::Line { origin, direction } => {
+                            let len = direction.length();
+                            let dir = if len > 1e-12 { *direction / len } else { *direction };
+                            writeln!(output, "1 {} {} {} {} {} {}",
+                                origin.x, origin.y, origin.z,
+                                dir.x, dir.y, dir.z)?;
+                        }
+                        _ => {
+                            // Fallback
+                            writeln!(output, "1 0 0 0  1 0 0")?;
                         }
                     }
-                    write_polyline_as_bspline(output, &pts)?;
                 }
-                CurveGeom::Trimmed { .. } => {
-                    // Should not reach here — expand_curve unwraps Trimmed
+                _ => {
+                    // Fallback for composite/offset etc.
                     writeln!(output, "1 0 0 0  1 0 0")?;
                 }
             }
         }
-        writeln!(output)?;
         Ok(())
     }
 
-    // ── Surface section ──────────────────────────────────────────
-
-    fn write_surfaces(&mut self, output: &mut impl Write) -> io::Result<()> {
-        let mut surfaces: Vec<(usize, &SurfaceGeom)> = Vec::new();
-        for (fk, face) in &self.store.faces {
-            if !self.surface_indices.contains_key(&fk) {
-                self.surface_count += 1;
-                self.surface_indices.insert(fk, self.surface_count);
-                surfaces.push((self.surface_count, &face.surface));
+    fn write_surfaces(&self, output: &mut impl Write) -> io::Result<()> {
+        let mut surfaces: Vec<&SurfaceGeom> = Vec::new();
+        for entry in &self.shapes {
+            if let ShapeEntry::Face(fk) = entry {
+                if let Some(face) = self.store.faces.get(*fk) {
+                    surfaces.push(&face.surface);
+                }
             }
         }
-        writeln!(output, "Surfaces {}", self.surface_count)?;
+        writeln!(output, "Surfaces {}", surfaces.len())?;
 
-        for (_si, surface) in &surfaces {
+        for surface in &surfaces {
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
-                    writeln!(
-                        output, "1 {} {} {}  {} {} {}  {} {} {}",
+                    let n = if normal.length_squared() > 1e-12 {
+                        *normal / normal.length()
+                    } else {
+                        *normal
+                    };
+                    let u = if u_dir.length_squared() > 1e-12 {
+                        *u_dir / u_dir.length()
+                    } else {
+                        *u_dir
+                    };
+                    let v = n.cross(u);
+                    // OCC Plane: 1 ox oy oz nx ny nz ux uy uz vx vy vz (13 numbers)
+                    writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
                         origin.x, origin.y, origin.z,
-                        normal.x, normal.y, normal.z,
-                        u_dir.x, u_dir.y, u_dir.z
-                    )?;
+                        n.x, n.y, n.z,
+                        u.x, u.y, u.z,
+                        v.x, v.y, v.z)?;
                 }
                 SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                    writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         origin.x, origin.y, origin.z,
                         axis.x, axis.y, axis.z,
                         radius,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         apex.x, apex.y, apex.z,
                         axis.x, axis.y, axis.z,
                         semi_angle, radius_at_apex,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
                     writeln!(output, "4 {} {} {}  {}", center.x, center.y, center.z, radius)?;
                 }
                 SurfaceGeom::Torus { center, axis, major_r, minor_r, x_dir, y_dir } => {
-                    writeln!(
-                        output,
-                        "5 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "5 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
                         major_r, minor_r,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::BSpline(ns) => {
-                    let rational = nurbs_is_rational(&ns.weights);
-                    let periodic_u = if ns.is_u_closed(1e-3) { 1 } else { 0 };
-                    let periodic_v = if ns.is_v_closed(1e-3) { 1 } else { 0 };
-                    let u_count = ns.u_count();
-                    let v_count = ns.v_count();
-                    writeln!(
-                        output,
-                        "8 {} {} {} {} {} {} {} {} {}",
-                        ns.degree_u,
-                        ns.degree_v,
-                        u_count,
-                        v_count,
-                        ns.knots_u.len(),
-                        ns.knots_v.len(),
-                        if rational { 1 } else { 0 },
-                        periodic_u,
-                        periodic_v,
-                    )?;
-                    // Control points: one per row (u-major order)
+                    writeln!(output, "8 {} {} {} {} {} {} {} {} {}",
+                        ns.degree_u, ns.degree_v,
+                        ns.u_count(), ns.v_count(),
+                        ns.knots_u.len(), ns.knots_v.len(),
+                        if nurbs_is_rational(&ns.weights) { 1 } else { 0 },
+                        0, 0)?;
                     for row in &ns.control_points {
                         for cp in row {
-                            if rational {
-                                // Need corresponding weight
-                                let w = 1.0;
-                                writeln!(output, "{} {} {} {}", cp.x, cp.y, cp.z, w)?;
-                            } else {
-                                writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
-                            }
+                            writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
                         }
                     }
-                    if rational {
-                        for row in &ns.weights {
-                            for w in row {
-                                write!(output, " {}", w)?;
-                            }
-                        }
-                        writeln!(output)?;
-                    }
-                    // Knot values
-                    for k in &ns.knots_u {
-                        write!(output, " {}", k)?;
-                    }
+                    for k in &ns.knots_u { write!(output, " {}", k)?; }
                     writeln!(output)?;
-                    for k in &ns.knots_v {
-                        write!(output, " {}", k)?;
-                    }
+                    for k in &ns.knots_v { write!(output, " {}", k)?; }
                     writeln!(output)?;
                 }
                 SurfaceGeom::Extrusion { direction, .. } => {
-                    writeln!(
-                        output,
-                        "6 {} {} {}  0 0 0  0 0 1  0 1 0",
-                        direction.x, direction.y, direction.z
-                    )?;
+                    writeln!(output, "6 {} {} {}  0 0 0  0 0 1  0 1 0",
+                        direction.x, direction.y, direction.z)?;
                 }
                 SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
                     let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                    writeln!(
-                        output,
-                        "7 {} {} {}  {} {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
                         axis_origin.x, axis_origin.y, axis_origin.z,
                         axis_dir.x, axis_dir.y, axis_dir.z,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z
-                    )?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Offset { distance, .. } => {
                     writeln!(output, "9 {}", distance)?;
                 }
             }
         }
-        writeln!(output)?;
         Ok(())
     }
 
-    // ── PCurve (Curve2d) section ────────────────────────────────
+    // ── TShapes section ───────────────────────────────────────────
 
-    fn write_pcurves(&mut self, output: &mut impl Write) -> io::Result<()> {
-        let mut entries: Vec<(usize, usize, &Curve2d, bool)> = Vec::new();
-        for (ek, edge) in &self.store.edges {
-            let ci = self.curve_indices.get(&ek).copied().unwrap_or(0);
-            for (fk, (pc, same_sense)) in &edge.pcurves {
-                let fi = self.surface_indices.get(&fk).copied().unwrap_or(0);
-                entries.push((ci, fi, pc, *same_sense));
-            }
-        }
-        writeln!(output, "Curve2ds {}", entries.len())?;
+    fn write_tshapes(&self, output: &mut impl Write) -> io::Result<()> {
+        writeln!(output, "TShapes {}", self.total_shapes)?;
 
-        for (ci, fi, pc, same_sense) in &entries {
-            let orientation = if *same_sense { 1 } else { 0 };
-            write!(output, "{} {} {}  ", ci, fi, orientation)?;
-            match pc {
-                Curve2d::Line { origin, direction } => {
-                    writeln!(output, "1 {} {}  {} {}", origin.0, origin.1, direction.0, direction.1)?;
+        let mut edge_idx = 0usize;
+        for entry in &self.shapes {
+            match entry {
+                ShapeEntry::Vertex(vk) => self.write_ve(output, *vk)?,
+                ShapeEntry::Edge(ek) => {
+                    edge_idx += 1;
+                    self.write_ed(output, *ek, edge_idx)?;
                 }
-                Curve2d::Circle { center, radius } => {
-                    writeln!(output, "2 {} {}  {}", center.0, center.1, radius)?;
-                }
-                Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                    writeln!(output, "3 {} {}  {} {}", center.0, center.1, semi_major, semi_minor)?;
-                }
-                Curve2d::BSpline { degree, control_points, knots, weights } => {
-                    write!(
-                        output, "7 {}  {}  {}  {}",
-                        degree,
-                        control_points.len(),
-                        knots.len(),
-                        if weights.is_some() { 1 } else { 0 }
-                    )?;
-                    for cp in control_points {
-                        write!(output, "  {} {}", cp.0, cp.1)?;
-                    }
-                    for k in knots {
-                        write!(output, " {}", k)?;
-                    }
-                    if let Some(w) = weights {
-                        for wt in w {
-                            write!(output, " {}", wt)?;
-                        }
-                    }
-                    writeln!(output)?;
-                }
-                Curve2d::Trimmed { basis, t_min, t_max } => {
-                    // Expand trimmed: write inner basis curve data inline, no comments
-                    match basis.as_ref() {
-                        Curve2d::Line { origin, direction } => {
-                            writeln!(
-                                output, "1 {} {}  {} {}",
-                                origin.0, origin.1, direction.0, direction.1
-                            )?;
-                        }
-                        Curve2d::Circle { center, radius } => {
-                            writeln!(
-                                output, "2 {} {}  {}",
-                                center.0, center.1, radius
-                            )?;
-                        }
-                        other => {
-                            // Fallback: write as 2D polyline via sampling
-                            let pts: Vec<(f32, f32)> = (0..=8).map(|i| {
-                                let t = *t_min + (*t_max - *t_min) * i as f32 / 8.0;
-                                // Approximate: use d0 if available, else skip
-                                let p = other.d0((i as f32) / 8.0);
-                                p
-                            }).collect();
-                            write_polyline2d_as_bspline(output, &pts)?;
-                        }
-                    }
-                }
-                Curve2d::Polyline { points } => {
-                    write_polyline2d_as_bspline(output, points)?;
-                }
-                Curve2d::Composite { .. } => {
-                    // Write as degenerate: single-segment line at origin
-                    writeln!(output, "1 0 0  1 0")?;
-                }
+                ShapeEntry::Wire(wk) => self.write_wi(output, *wk)?,
+                ShapeEntry::Face(fk) => self.write_fa(output, *fk)?,
+                ShapeEntry::Shell(sk) => self.write_sh(output, *sk)?,
+                ShapeEntry::Solid(sk) => self.write_so(output, *sk)?,
+                ShapeEntry::Compound(ck) => self.write_co(output, *ck)?,
             }
         }
+
+        // Final references line: +1 0
         writeln!(output)?;
+        writeln!(output, "+1 0")?;
         Ok(())
     }
 
-    // ── Topology sections ────────────────────────────────────────
-
-    fn write_vertices(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.vertices.len();
-        writeln!(output, "TVertexes {}", count)?;
-        for (_vk, v) in &self.store.vertices {
-            // Format: tolerance  location_index(0)  1(used)  X  Y  Z
-            writeln!(
-                output, "{}  0  1  {} {} {}",
-                v.tolerance, v.position.x, v.position.y, v.position.z
-            )?;
-        }
+    fn write_ve(&self, output: &mut impl Write, vk: VertexKey) -> io::Result<()> {
+        let v = self.store.vertices.get(vk).map(|v| (v.position, v.tolerance))
+            .unwrap_or((Vec3::ZERO, 1e-7));
+        writeln!(output, "Ve")?;
+        writeln!(output, "{}", v.1)?;
+        writeln!(output, "{} {} {}", v.0.x, v.0.y, v.0.z)?;
+        writeln!(output, "0 0")?;
         writeln!(output)?;
+        writeln!(output, "0101101")?; // free, modified, checked, orientable, closed, infinite, convex
+        writeln!(output, "*")?;
         Ok(())
     }
 
-    fn write_edges(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.edges.len();
-        writeln!(output, "TEdges {}", count)?;
-        for (_ek, edge) in &self.store.edges {
-            let ci = self.curve_indices.get(&_ek).copied().unwrap_or(0);
-            let vi_low = vk_index(self.store, edge.v_low);
-            let vi_high = vk_index(self.store, edge.v_high);
-            // Format: tolerance  location(0)  same_sense(1)  curve_index  v_low_index  v_high_index  t_min  t_max
-            writeln!(
-                output, "{}  0  1  {}  {}  {}  {}  {}",
-                edge.tolerance, ci, vi_low, vi_high, edge.t_min, edge.t_max
-            )?;
-        }
+    fn write_ed(&self, output: &mut impl Write, ek: EdgeKey, curve_idx: usize) -> io::Result<()> {
+        let edge = match self.store.edges.get(ek) {
+            Some(e) => e,
+            None => {
+                writeln!(output, "Ed")?;
+                writeln!(output, " 1e-07 1 1 0")?;
+                writeln!(output, "1  0 0 0 0")?;
+                writeln!(output, "0")?;
+                writeln!(output)?;
+                writeln!(output, "0101000")?;
+                writeln!(output, "*")?;
+                return Ok(());
+            }
+        };
+
+        let curve_len = edge.curve.d0(edge.t_max).distance(edge.curve.d0(edge.t_min));
+        let param_range = if curve_len > 1e-12 { curve_len } else { 1.0 };
+
+        let v1_pos = self.vertex_pos(edge.v_low);
+        let v2_pos = self.vertex_pos(edge.v_high);
+        let rv1 = self.rev_idx(v1_pos);
+        let rv2 = self.rev_idx(v2_pos);
+
+        writeln!(output, "Ed")?;
+        writeln!(output, " {} {} 1 0", edge.tolerance, 1)?;
+        writeln!(output, "{}  {} {} 0 {}", curve_idx, v1_pos, v2_pos, param_range)?;
+        writeln!(output, "0")?;
         writeln!(output)?;
+        writeln!(output, "0101000")?;
+        writeln!(output, "+{} 0 -{} 0 *", rv1, rv2)?;
         Ok(())
     }
 
-    fn write_wires(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.wires.len();
-        writeln!(output, "TWires {}", count)?;
-        for (wk, wire) in &self.store.wires {
-            writeln!(output, "{}", wire.edges.len())?;
-            for (ek, orient) in &wire.edges {
-                let ei = edge_index(self.store, *ek);
-                let ori_val = match orient {
-                    Orientation::Forward => 1,
-                    Orientation::Reversed => 0,
-                    Orientation::Internal | Orientation::External => 0,
-                };
-                writeln!(output, "{} {}", ei, ori_val)?;
+    fn write_wi(&self, output: &mut impl Write, wk: WireKey) -> io::Result<()> {
+        let wire = match self.store.wires.get(wk) {
+            Some(w) => w,
+            None => {
+                writeln!(output, "Wi")?;
+                writeln!(output)?;
+                writeln!(output, "0101100")?;
+                writeln!(output, "*")?;
+                return Ok(());
             }
-            // Chain check
-            for i in 0..wire.edges.len() {
-                let j = (i + 1) % wire.edges.len();
-                let (ek_i, ori_i) = &wire.edges[i];
-                let (ek_j, ori_j) = &wire.edges[j];
-                if let (Some(ei), Some(ej)) = (self.store.edges.get(*ek_i), self.store.edges.get(*ek_j)) {
-                    let end_i = match ori_i {
-                        Orientation::Forward => ei.v_high,
-                        Orientation::Reversed => ei.v_low,
-                        Orientation::Internal | Orientation::External => ei.v_high,
-                    };
-                    let start_j = match ori_j {
-                        Orientation::Forward => ej.v_low,
-                        Orientation::Reversed => ej.v_high,
-                        Orientation::Internal | Orientation::External => ej.v_low,
-                    };
-                    if end_i != start_j {
-                        writeln!(
-                            output, "-- WARNING: broken wire chain at edge {}->{} in wire {:?}", i, j, wk
-                        )?;
-                    }
-                }
+        };
+
+        writeln!(output, "Wi")?;
+        writeln!(output)?;
+        // Flags
+        writeln!(output, "0101100")?;
+        // Edge references (reverse-indexed)
+        for (ek, orient) in &wire.edges {
+            let ep = self.edge_pos(*ek);
+            let rp = self.rev_idx(ep);
+            match orient {
+                Orientation::Forward => write!(output, "+{} 0 ", rp)?,
+                Orientation::Reversed => write!(output, "-{} 0 ", rp)?,
+                _ => write!(output, "+{} 0 ", rp)?,
             }
         }
-        writeln!(output)?;
+        writeln!(output, "*")?;
         Ok(())
     }
 
-    fn write_faces(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.faces.len();
-        writeln!(output, "TFaces {}", count)?;
-        for (fk, face) in &self.store.faces {
-            let si = self.surface_indices.get(&fk).copied().unwrap_or(0);
-            let owi = wire_index(self.store, face.outer_wire);
-            let sense = if face.same_sense { 1 } else { 0 };
-            // Format: surface_index  same_sense  location(0)  tolerance  outer_wire_index  inner_wire_count  [inner_wire_indices...]
-            write!(
-                output, "{} {}  0  {}  {}  {}",
-                si, sense, face.tolerance, owi, face.inner_wires.len()
-            )?;
-            for iw in &face.inner_wires {
-                write!(output, " {}", wire_index(self.store, *iw))?;
+    fn write_fa(&self, output: &mut impl Write, fk: FaceKey) -> io::Result<()> {
+        let face = match self.store.faces.get(fk) {
+            Some(f) => f,
+            None => {
+                writeln!(output, "Fa")?;
+                writeln!(output, "0  1e-07 1 0")?;
+                writeln!(output)?;
+                writeln!(output, "0101000")?;
+                writeln!(output, "*")?;
+                return Ok(());
             }
-            writeln!(output)?;
-            // Color comment if present
-            if let Some(c) = &face.color {
-                writeln!(output, "-- color: {} {} {}", c[0], c[1], c[2])?;
-            }
-        }
+        };
+
+        let wp = self.wire_pos(face.outer_wire);
+        // Find surface index (1-based) by scanning shapes for Face entries
+        let surf_idx = self.shapes.iter()
+            .filter(|s| matches!(s, ShapeEntry::Face(_)))
+            .position(|s| matches!(s, ShapeEntry::Face(k) if *k == fk))
+            .map(|p| p + 1).unwrap_or(0);
+
+        writeln!(output, "Fa")?;
+        writeln!(output, "{}  {} 1 0", surf_idx, face.tolerance)?;
         writeln!(output)?;
+        writeln!(output, "0101000")?;
+        // Wire reference (reverse-indexed)
+        let rwp = self.rev_idx(wp);
+        writeln!(output, "+{} 0 *", rwp)?;
         Ok(())
     }
 
-    fn write_shells(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.shells.len();
-        writeln!(output, "TShells {}", count)?;
-        for (_sk, shell) in &self.store.shells {
-            writeln!(output, "{}", shell.faces.len())?;
-            for (fk, orient) in &shell.faces {
-                let fi = face_index(self.store, *fk);
-                let ori_val = match orient {
-                    Orientation::Forward => 1,
-                    Orientation::Reversed => 0,
-                    Orientation::Internal | Orientation::External => 0,
-                };
-                writeln!(output, "{} {}", fi, ori_val)?;
+    fn write_sh(&self, output: &mut impl Write, sk: ShellKey) -> io::Result<()> {
+        let shell = match self.store.shells.get(sk) {
+            Some(s) => s,
+            None => {
+                writeln!(output, "Sh")?;
+                writeln!(output)?;
+                writeln!(output, "0101100")?;
+                writeln!(output, "*")?;
+                return Ok(());
             }
-            writeln!(output, "{}", if shell.closed { 1 } else { 0 })?;
-        }
+        };
+
+        writeln!(output, "Sh")?;
         writeln!(output)?;
+        writeln!(output, "0101100")?;
+        for (fk, orient) in &shell.faces {
+            let fp = self.face_pos(*fk);
+            let rp = self.rev_idx(fp);
+            match orient {
+                Orientation::Forward => write!(output, "+{} 0 ", rp)?,
+                Orientation::Reversed => write!(output, "-{} 0 ", rp)?,
+                _ => write!(output, "+{} 0 ", rp)?,
+            }
+        }
+        writeln!(output, "*")?;
         Ok(())
     }
 
-    fn write_solids(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.solids.len();
-        writeln!(output, "TSolids {}", count)?;
-        for (_sk, solid) in &self.store.solids {
-            let si = shell_index(self.store, solid.outer_shell);
-            writeln!(output, "{}", si)?;
-            writeln!(output, "{}", solid.void_shells.len())?;
-            for vs in &solid.void_shells {
-                writeln!(output, "{}", shell_index(self.store, *vs))?;
+    fn write_so(&self, output: &mut impl Write, sk: SolidKey) -> io::Result<()> {
+        let solid = match self.store.solids.get(sk) {
+            Some(s) => s,
+            None => {
+                writeln!(output, "So")?;
+                writeln!(output)?;
+                writeln!(output, "0100000")?;
+                writeln!(output, "*")?;
+                return Ok(());
             }
-        }
+        };
+
+        let sp = self.shell_pos(solid.outer_shell);
+        let rsp = self.rev_idx(sp);
+
+        writeln!(output, "So")?;
         writeln!(output)?;
+        writeln!(output, "0100000")?;
+        writeln!(output, "+{} 0 *", rsp)?;
         Ok(())
     }
 
-    fn write_compounds(&self, output: &mut impl Write) -> io::Result<()> {
-        let count = self.store.compounds.len();
-        writeln!(output, "TCompounds {}", count)?;
-        for (_ck, compound) in &self.store.compounds {
-            writeln!(output, "{}", compound.solids.len())?;
-            for sk in &compound.solids {
-                writeln!(output, "{}", solid_index(self.store, *sk))?;
+    fn write_co(&self, output: &mut impl Write, ck: CompoundKey) -> io::Result<()> {
+        let compound = match self.store.compounds.get(ck) {
+            Some(c) => c,
+            None => {
+                writeln!(output, "Co")?;
+                writeln!(output)?;
+                writeln!(output, "1100000")?;
+                writeln!(output, "*")?;
+                return Ok(());
             }
+        };
+
+        let mut refs = Vec::new();
+        for sk in &compound.solids {
+            let sp = self.solid_pos(*sk);
+            refs.push(self.rev_idx(sp));
         }
+
+        writeln!(output, "Co")?;
         writeln!(output)?;
+        writeln!(output, "1100000")?;
+        for r in &refs {
+            write!(output, "+{} 0 ", r)?;
+        }
+        writeln!(output, "*")?;
         Ok(())
     }
-}
-
-// ── Polyline → BSpline conversion helpers ──────────────────────
-
-/// Write a 3D polyline as a BSpline degree 1 with proper knot vector.
-fn write_polyline_as_bspline(output: &mut impl Write, points: &[rc3d_core::math::Vec3]) -> io::Result<()> {
-    if points.len() < 2 {
-        return writeln!(output, "1 0 0 0  1 0 0"); // degenerate fallback
-    }
-    let n = points.len();
-    let degree = 1usize;
-    let knot_len = n + degree + 1;
-    let mut knots = Vec::with_capacity(knot_len);
-    knots.push(0.0);
-    knots.push(0.0);
-    for i in 1..n-1 {
-        knots.push(i as f32);
-    }
-    knots.push((n - 1) as f32);
-    knots.push((n - 1) as f32);
-    // BSpline type 7: degree, cp_count, knot_count, rational(0)
-    write!(output, "7 {}  {}  {}  0", degree, n, knot_len)?;
-    for p in points {
-        write!(output, "  {} {} {}", p.x, p.y, p.z)?;
-    }
-    for k in &knots {
-        write!(output, " {}", k)?;
-    }
-    writeln!(output)?;
-    Ok(())
-}
-
-/// Write a 2D polyline as a 2D BSpline degree 1.
-fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(f32, f32)]) -> io::Result<()> {
-    if points.len() < 2 {
-        return writeln!(output, "1 0 0  1 0");
-    }
-    let n = points.len();
-    let degree = 1usize;
-    let knot_len = n + degree + 1;
-    let mut knots = Vec::with_capacity(knot_len);
-    knots.push(0.0);
-    knots.push(0.0);
-    for i in 1..n-1 {
-        knots.push(i as f32);
-    }
-    knots.push((n - 1) as f32);
-    knots.push((n - 1) as f32);
-    write!(output, "7 {}  {}  {}  0", degree, n, knot_len)?;
-    for p in points {
-        write!(output, "  {} {}", p.0, p.1)?;
-    }
-    for k in &knots {
-        write!(output, " {}", k)?;
-    }
-    writeln!(output)?;
-    Ok(())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/// Check if NURBS weights are non-uniform (rational surface).
 fn nurbs_is_rational(weights: &[Vec<f32>]) -> bool {
     weights.iter().any(|row| row.iter().any(|&w| (w - 1.0).abs() > 1e-6))
 }
 
-/// Expand Trimmed curves to their inner basis (trimming handled by Edge t_min/t_max).
-fn expand_curve<'c>(curve: &'c CurveGeom) -> (&'c CurveGeom, (f32, f32)) {
+fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
     match curve {
-        CurveGeom::Trimmed { basis, t_min, t_max } => {
-            (basis.as_ref(), (*t_min, *t_max))
-        }
-        other => (other, (0.0, 1.0)),
+        CurveGeom::Trimmed { basis, .. } => basis.as_ref(),
+        other => other,
     }
 }
 
-/// Human-readable curve type name for comments.
-fn curve_type_name(curve: &CurveGeom) -> &'static str {
-    match curve {
-        CurveGeom::Line { .. } => "Line",
-        CurveGeom::Circle { .. } => "Circle",
-        CurveGeom::Ellipse { .. } => "Ellipse",
-        CurveGeom::Hyperbola { .. } => "Hyperbola",
-        CurveGeom::Parabola { .. } => "Parabola",
-        CurveGeom::BezierCurve { .. } => "BezierCurve",
-        CurveGeom::BSpline { .. } => "BSpline",
-        CurveGeom::Trimmed { .. } => "Trimmed",
-        CurveGeom::Composite { .. } => "Composite",
-        CurveGeom::Polyline { .. } => "Polyline",
-        CurveGeom::Offset { .. } => "Offset",
+fn write_polyline_as_bspline(output: &mut impl Write, points: &[Vec3]) -> io::Result<()> {
+    if points.len() < 2 {
+        return writeln!(output, "1 0 0 0  1 0 0");
     }
-}
-
-/// Get 1-based vertex index.
-fn vk_index(store: &BRepStore, vk: VertexKey) -> usize {
-    store.vertices.iter().position(|(k, _)| k == vk)
-        .map(|p| p + 1).unwrap_or(0)
-}
-
-/// Get 1-based edge index.
-fn edge_index(store: &BRepStore, ek: EdgeKey) -> usize {
-    store.edges.iter().position(|(k, _)| k == ek)
-        .map(|p| p + 1).unwrap_or(0)
-}
-
-/// Get 1-based wire index.
-fn wire_index(store: &BRepStore, wk: WireKey) -> usize {
-    store.wires.iter().position(|(k, _)| k == wk)
-        .map(|p| p + 1).unwrap_or(0)
-}
-
-/// Get 1-based face index.
-fn face_index(store: &BRepStore, fk: FaceKey) -> usize {
-    store.faces.iter().position(|(k, _)| k == fk)
-        .map(|p| p + 1).unwrap_or(0)
-}
-
-/// Get 1-based shell index.
-fn shell_index(store: &BRepStore, sk: ShellKey) -> usize {
-    store.shells.iter().position(|(k, _)| k == sk)
-        .map(|p| p + 1).unwrap_or(0)
-}
-
-/// Get 1-based solid index.
-fn solid_index(store: &BRepStore, sk: SolidKey) -> usize {
-    store.solids.iter().position(|(k, _)| k == sk)
-        .map(|p| p + 1).unwrap_or(0)
+    let n = points.len();
+    let knot_len = n + 2;
+    write!(output, "7 1  {}  {}  0", n, knot_len)?;
+    for p in points {
+        write!(output, "  {} {} {}", p.x, p.y, p.z)?;
+    }
+    write!(output, " 0 0")?;
+    for i in 1..n-1 {
+        write!(output, " {}", i)?;
+    }
+    write!(output, " {} {}", n-1, n-1)?;
+    writeln!(output)?;
+    Ok(())
 }

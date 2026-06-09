@@ -32,18 +32,17 @@ fn brep_export_cube_has_expected_sections() {
     let text = String::from_utf8(buf).expect("valid utf8");
 
     // Verify all required sections exist
+    // Classic CASCADE Topology V1 format
     let required_sections = [
         "DBRep_DrawableShape",
+        "CASCADE Topology V1",
         "Locations 0",
-        "Curve3ds",
-        "Surfaces",
         "Curve2ds",
-        "TVertexes",
-        "TEdges",
-        "TWires",
-        "TFaces",
-        "TShells",
-        "TSolids",
+        "Curves",
+        "Polygon3D",
+        "Surfaces",
+        "Triangulations",
+        "TShapes",
     ];
     for section in &required_sections {
         assert!(
@@ -53,10 +52,10 @@ fn brep_export_cube_has_expected_sections() {
         );
     }
 
-    // Verify topology counts are non-zero
-    assert!(text.contains("TVertexes"), "no vertices section");
-    assert!(text.contains("TEdges"), "no edges section");
-    assert!(text.contains("TFaces"), "no faces section");
+    // Verify TShapes section contains Ve/Ed/Fa markers (classic format)
+    assert!(text.contains("Ve"), "no vertex markers");
+    assert!(text.contains("Ed"), "no edge markers");
+    assert!(text.contains("Fa"), "no face markers");
 }
 
 #[test]
