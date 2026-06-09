@@ -141,7 +141,7 @@ pub fn discretize_edge(
 
     let params_3d = if is_seam_or_isoparam_edge(ek, edge, reg) {
         if let Some(exact) = sample_polyline_on_surface_exact(edge, reg) {
-            exact
+            cap_polyline_params(exact, config.max_points)
         } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
             if matches!(&edge.curve, CurveGeom::Line { .. }) && pcurve_is_line(pcurve) {
                 sample_straight_pcurve(pcurve, surface)
@@ -237,6 +237,20 @@ fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepStore) -> bo
     reg.faces
         .iter()
         .any(|(_, face)| face.seam_edges.contains(&ek))
+}
+
+/// Uniformly subsample dense polylines (STEP POLYLINE / B-spline control nets).
+fn cap_polyline_params(params: Vec<(f32, Vec3)>, max_points: usize) -> Vec<(f32, Vec3)> {
+    if params.len() <= max_points || max_points < 2 {
+        return params;
+    }
+    let n = params.len();
+    (0..max_points)
+        .map(|i| {
+            let src = i * (n - 1) / (max_points - 1);
+            params[src]
+        })
+        .collect()
 }
 
 /// Use stored polyline knots exactly (seam / isoparam edges aligned with surface mesh grid).

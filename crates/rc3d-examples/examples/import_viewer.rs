@@ -138,43 +138,15 @@ fn main() {
 
     let path = Path::new(path_arg);
     let high_contrast = parse_high_contrast(&args, path);
-
-    // Show STEP-specific statistics for .step/.stp files
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                match rc3d_io::step::parser::parse_exchange(&text) {
-                    Ok(exchange) => {
-                        let report = rc3d_io::validate_step(&exchange.entities);
-                        println!(
-                            "[STEP] {} entities | {} shells | {} faces | {} edges | {} points",
-                            report.entity_count,
-                            report.topology_info.shells,
-                            report.topology_info.faces,
-                            report.topology_info.edges,
-                            report.topology_info.points,
-                        );
-                        for w in &report.warnings {
-                            println!("[STEP] warning: {}", w);
-                        }
-                        if !report.errors.is_empty() {
-                            eprintln!("[STEP] errors: {:?}", report.errors);
-                        }
-                        // Mark STEP export available
-                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
-                        println!("[STEP] export: {}_export.step (via write_step_file)", stem);
-                    }
-                    Err(e) => eprintln!("[STEP] parse error: {}", e),
-                }
-            }
-            Err(e) => eprintln!("[STEP] read error: {}", e),
-        }
-    }
 
     let graph = match rc3d_io::import_file(path) {
         Ok(g) => {
             println!("Loaded: {}", path.display());
+            if ext.eq_ignore_ascii_case("step") || ext.eq_ignore_ascii_case("stp") {
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
+                println!("[STEP] export: {}_export.step (via write_step_file)", stem);
+            }
             g
         }
         Err(e) => {
