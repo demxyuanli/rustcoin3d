@@ -102,7 +102,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 Some(e) => e,
                 None => continue,
             };
-            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
+            let (pc, _same_sense) = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
                 Some(p) => p,
                 None => match edge.pcurves.values().next() {
                     Some(p) => p,
@@ -185,7 +185,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 Some(e) => e,
                 None => continue,
             };
-            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
+            let (pc, _same_sense) = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
                 Some(p) => p,
                 None => match edge.pcurves.values().next() {
                     Some(p) => p,
@@ -869,7 +869,7 @@ mod tests {
             origin: Vec3::new(1.0, 0.0, 0.0),
             direction: Vec3::new(-1.0, 0.0, 1.0),
         };
-        let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, degen_pc);
+        let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, (degen_pc, true));
         if let Some(face) = reg.faces.get_mut(fk) {
             face.degenerated_edges.push(dek);
         }
@@ -953,7 +953,7 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::Z,
         };
-        let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, degen_pc);
+        let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, (degen_pc, true));
         if let Some(face) = reg.faces.get_mut(fk) {
             face.degenerated_edges.push(dek);
         }

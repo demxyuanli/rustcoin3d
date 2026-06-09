@@ -164,7 +164,7 @@ mod tests {
             let v1 = reg.find_or_add_vertex(b, 1e-4);
             let curve_3d = CurveGeom::Line { origin: a, direction: b - a };
             let pcurve = Curve2d::Line { origin: (a.x, a.y), direction: (b.x - a.x, b.y - a.y) };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer_wire = reg.wires.insert(BRepWire { edges: wire_edges });

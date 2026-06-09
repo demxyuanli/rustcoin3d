@@ -51,7 +51,7 @@ pub fn fix_self_intersecting_wire(
             Some(e) => e,
             None => return report,
         };
-        let pc = match edge.pcurves.get(&face_key) {
+        let (pc, _same_sense) = match edge.pcurves.get(&face_key) {
             Some(p) => p,
             None => return report,
         };
@@ -224,10 +224,10 @@ mod tests {
         let pc3 = Curve2d::Line { origin: (0.0, 2.0), direction: (2.0, -2.0) };
         let pc4 = Curve2d::Line { origin: (2.0, 0.0), direction: (-2.0, 0.0) };
 
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1);
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2);
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3);
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc1, true));
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc2, true));
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc3, true));
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc4, true));
 
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
@@ -285,9 +285,9 @@ mod tests {
             origin: (0.0, 0.0),
             direction: (1.0, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, pc);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, (pc, true));
 
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
@@ -324,7 +324,7 @@ mod tests {
             let a = reg.find_or_add_vertex(Vec3::new(cos_a, sin_a, 0.0), 1e-4);
             let b = reg.find_or_add_vertex(Vec3::new(-cos_a, -sin_a, 0.0), 1e-4);
             let pc = Curve2d::Line { origin: (cos_a, sin_a), direction: (-2.0 * cos_a, -2.0 * sin_a) };
-            let ek = reg.add_edge_with_pcurve(a, b, line.clone(), 1e-4, fk, pc);
+            let ek = reg.add_edge_with_pcurve(a, b, line.clone(), 1e-4, fk, (pc, true));
             edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = edges;

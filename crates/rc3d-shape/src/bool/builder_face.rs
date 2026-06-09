@@ -122,7 +122,7 @@ fn detect_edge_split_points(
                         let uv_at = |t: f32| -> (f32, f32) {
                             reg.edges.get(ek)
                                 .and_then(|e| e.pcurves.get(&face_key))
-                                .map(|pc| pc.d0(t))
+                                .map(|(pc, _)| pc.d0(t))
                                 .unwrap_or((0.0, 0.0))
                         };
                         points.push(EdgeSplitPoint {
@@ -227,7 +227,7 @@ fn split_edges_at_points(
                 Some(f) => f,
                 None => continue,
             };
-            let pc = match edge.pcurves.get(&face_key) {
+            let (pc, _same_sense) = match edge.pcurves.get(&face_key) {
                 Some(p) => p.clone(),
                 None => continue,
             };
@@ -309,7 +309,7 @@ fn create_edge_segment(
     let v1_pos = reg.vertices.get(v_end).map(|v| v.position).unwrap_or(p1);
     let tol = (p0 - v0_pos).length().max((p1 - v1_pos).length()).max(1e-4);
 
-    reg.add_edge_with_pcurve(v_start, v_end, trimmed_3d, tol, face_key, trimmed_pc)
+    reg.add_edge_with_pcurve(v_start, v_end, trimmed_3d, tol, face_key, (trimmed_pc, true))
 }
 
 /// Build a new BRep face from a sub-region.
@@ -357,7 +357,7 @@ fn build_face_from_region(
             direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
         };
 
-        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, new_face, edge_pc);
+        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, new_face, (edge_pc, true));
         wire_edges.push((ek, Orientation::Forward));
     }
 
@@ -385,10 +385,10 @@ fn build_face_from_region(
                 v0, v1,
                 CurveGeom::Line { origin: p0, direction: p1 - p0 },
                 1e-4, new_face,
-                Curve2d::Line {
+                (Curve2d::Line {
                     origin: (uv0.0, uv0.1),
                     direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
-                },
+                }, true),
             );
             inner_edges.push((ek, Orientation::Forward));
         }
@@ -463,7 +463,7 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d.clone(), 1e-4, fk, Curve2d::from_pcurve_3d(&edge_3d));
+        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d.clone(), 1e-4, fk, (Curve2d::from_pcurve_3d(&edge_3d), true));
         reg.wires.get_mut(wire).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         // Create an intersection curve with endpoint at (1, 0, 0) — on the edge

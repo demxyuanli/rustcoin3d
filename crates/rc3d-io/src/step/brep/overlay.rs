@@ -217,7 +217,7 @@ fn primary_face_pcurve(edge: &crate::step::brep::topo::BRepEdge) -> Option<(Face
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = *keys.first()?;
-    let pcurve = edge.pcurves.get(&face_key)?;
+    let (pcurve, _same_sense) = edge.pcurves.get(&face_key)?;
     Some((face_key, pcurve))
 }
 

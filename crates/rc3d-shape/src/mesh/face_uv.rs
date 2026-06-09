@@ -1011,7 +1011,7 @@ mod tests {
                 direction: b - a,
             };
             let pcurve = Curve2d::Line { origin: (u0.0, u0.1), direction: (u1.0 - u0.0, u1.1 - u0.1) };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
             edge_keys.push(ek);
         }
 

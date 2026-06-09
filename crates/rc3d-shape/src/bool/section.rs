@@ -119,7 +119,7 @@ mod tests {
             let pc = crate::geom::curve2d::Curve2d::Line {
                 origin: (pa.x, pa.y), direction: (pb.x - pa.x, pb.y - pa.y),
             };
-            let ek = reg.add_edge_with_pcurve(va, vb, line, 1e-4, fk, pc);
+            let ek = reg.add_edge_with_pcurve(va, vb, line, 1e-4, fk, (pc, true));
             wire_edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = wire_edges;

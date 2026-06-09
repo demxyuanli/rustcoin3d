@@ -90,7 +90,7 @@ impl BRepStore {
         curve: CurveGeom,
         tolerance: f32,
         face: FaceKey,
-        pcurve: Curve2d,
+        pcurve: (Curve2d, bool),
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
         let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
@@ -145,7 +145,7 @@ impl BRepStore {
         curve: CurveGeom,
         tolerance: f32,
         face: FaceKey,
-        pcurve: Curve2d,
+        pcurve: (Curve2d, bool),
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start <= v_end {
             (v_start, v_end)
@@ -233,13 +233,13 @@ impl BRepStore {
     }
 
     /// Get mutable access to an edge's PCurve for a specific face.
-    pub fn pcurve_mut(&mut self, ek: EdgeKey, face_key: FaceKey) -> Option<&mut Curve2d> {
+    pub fn pcurve_mut(&mut self, ek: EdgeKey, face_key: FaceKey) -> Option<&mut (Curve2d, bool)> {
         self.edges.get_mut(ek).and_then(|e| e.pcurves.get_mut(&face_key))
     }
 
     /// Replace or insert a PCurve for an (edge, face) pair.
     /// Returns the old PCurve if one existed.
-    pub fn set_pcurve(&mut self, ek: EdgeKey, face_key: FaceKey, pcurve: Curve2d) -> Option<Curve2d> {
+    pub fn set_pcurve(&mut self, ek: EdgeKey, face_key: FaceKey, pcurve: (Curve2d, bool)) -> Option<(Curve2d, bool)> {
         self.edges.get_mut(ek).and_then(|e| e.pcurves.insert(face_key, pcurve))
     }
 
@@ -287,12 +287,12 @@ pub struct PCurveEdit {
     pub edge_key: crate::topo::EdgeKey,
     pub face_key: crate::topo::FaceKey,
     /// Replacement PCurve. None = remove existing.
-    pub new_pcurve: Option<Curve2d>,
+    pub new_pcurve: Option<(Curve2d, bool)>,
 }
 
 impl BRepStore {
     /// Apply a PCurveEdit to the store. Returns the old PCurve if replaced.
-    pub fn apply_pcurve_edit(&mut self, edit: &PCurveEdit) -> Option<Curve2d> {
+    pub fn apply_pcurve_edit(&mut self, edit: &PCurveEdit) -> Option<(Curve2d, bool)> {
         let ek = edit.edge_key;
         let fk = edit.face_key;
         match &edit.new_pcurve {
@@ -352,8 +352,8 @@ mod tests {
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
 
         assert_eq!(e0, e1, "same endpoint pair should return same edge");
         let edge = reg.edges.get(e0).unwrap();
@@ -372,8 +372,8 @@ mod tests {
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
 
         let shared = reg.find_shared_edges(f0, f1);
         assert_eq!(shared.len(), 1, "f0 and f1 share one edge");
@@ -389,14 +389,14 @@ mod tests {
         let f0 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
 
         let new_pcurve = Curve2d::Line { origin: (1.0, 0.0), direction: (1.0, 0.0) };
-        let old = reg.set_pcurve(ek, f0, new_pcurve);
+        let old = reg.set_pcurve(ek, f0, (new_pcurve, true));
         assert!(old.is_some());
 
         let edge = reg.edges.get(ek).unwrap();
-        let pcurve = edge.pcurves.get(&f0).unwrap();
+        let (pcurve, _same_sense) = edge.pcurves.get(&f0).unwrap();
         match pcurve {
             Curve2d::Line { origin, .. } => {
                 assert!((origin.0 - 1.0).abs() < 1e-6, "expected new pcurve origin");
@@ -413,15 +413,15 @@ mod tests {
         let f0 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
 
         let pcurve = reg.pcurve_mut(ek, f0).unwrap();
-        *pcurve = Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) };
+        *pcurve = (Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) }, false);
         // Explicitly end the mutable borrow before reading back
         let _ = pcurve;
 
         let edge = reg.edges.get(ek).unwrap();
-        let updated = edge.pcurves.get(&f0).unwrap();
+        let (updated, _same_sense) = edge.pcurves.get(&f0).unwrap();
         match updated {
             Curve2d::Line { origin, direction } => {
                 assert!((origin.0 - 2.0).abs() < 1e-6);
@@ -440,9 +440,9 @@ mod tests {
         let f1 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
 
-        let old = reg.set_pcurve(ek, f1, pc.clone());
+        let old = reg.set_pcurve(ek, f1, (pc.clone(), true));
         assert!(old.is_none(), "f1 had no pcurve before");
 
         let edge = reg.edges.get(ek).unwrap();
@@ -462,8 +462,8 @@ mod tests {
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (-1.0, 1.0) };
 
-        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc);
-        let e1 = reg.add_edge_with_pcurve(v1, v2, line2.clone(), 1e-4, f0, pc2);
+        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc, true));
+        let e1 = reg.add_edge_with_pcurve(v1, v2, line2.clone(), 1e-4, f0, (pc2, true));
 
         let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();
         assert_eq!(v0_edges, &vec![e0], "v0 belongs only to e0");
@@ -483,9 +483,9 @@ mod tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone());
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
         // Adding same edge from f1 should reuse ek
-        let ek2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
+        let ek2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
         assert_eq!(ek, ek2, "should reuse existing edge");
 
         // edge_to_faces should have both faces
@@ -506,7 +506,7 @@ mod tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
-        let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, pc);
+        let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, (pc, true));
 
         // vertex_to_edges should have v0 → ek (only once, not duplicated)
         let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();

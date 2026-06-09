@@ -168,7 +168,7 @@ fn fix_trimmed_periodic_seam(
             Some(e) => e,
             None => continue,
         };
-        let pcurve = match edge.pcurves.get(&face_key) {
+        let (pcurve, _) = match edge.pcurves.get(&face_key) {
             Some(c) => c,
             None => continue,
         };
@@ -222,7 +222,7 @@ fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfacePa
                 Some(e) => e,
                 None => continue,
             };
-            let pcurve = match edge.pcurves.get(&face_key) {
+            let (pcurve, _) = match edge.pcurves.get(&face_key) {
                 Some(c) => c,
                 None => continue,
             };
@@ -315,11 +315,11 @@ fn build_u_isoparam_seam(
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
-        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, pcurve))
+        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, (pcurve, true)))
     } else {
         let v0 = reg.find_or_add_vertex(p_lo, tol);
         let v1 = reg.find_or_add_vertex(p_hi, tol);
-        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, pcurve))
+        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, (pcurve, true)))
     }
 }
 
@@ -355,11 +355,11 @@ fn build_v_isoparam_seam(
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
-        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, pcurve))
+        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, (pcurve, true)))
     } else {
         let v0 = reg.find_or_add_vertex(p_lo, tol);
         let v1 = reg.find_or_add_vertex(p_hi, tol);
-        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, pcurve))
+        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, (pcurve, true)))
     }
 }
 
@@ -402,7 +402,7 @@ fn seam_polyline_within_face(
             mx = mx.max(v1.position);
             has_pts = true;
         }
-        if let Some(pcurve) = edge.pcurves.get(&face_key) {
+        if let Some((pcurve, _)) = edge.pcurves.get(&face_key) {
             for i in 0..=16 {
                 let t = i as f32 / 16.0;
                 let uv = pcurve.d0(t);
@@ -517,7 +517,7 @@ mod tests {
                 origin: (ua, va),
                 direction: (ub - ua, vb - va),
             };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer = reg.wires.insert(BRepWire { edges: wire_edges });
@@ -568,7 +568,7 @@ mod tests {
                 origin: (ua, va),
                 direction: (ub - ua, vb - va),
             };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer = reg.wires.insert(BRepWire { edges: wire_edges });

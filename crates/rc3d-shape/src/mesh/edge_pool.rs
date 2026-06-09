@@ -338,7 +338,7 @@ pub fn build_face_boundary_pool(
                 let Some(edge) = reg.edges.get(ek) else {
                     continue;
                 };
-                let Some(pcurve) = edge.pcurves.get(&face_key) else {
+                let Some((pcurve, _same_sense)) = edge.pcurves.get(&face_key) else {
                     continue;
                 };
                 let Some(poly) = edge_polygons.get(&ek) else {
@@ -437,7 +437,7 @@ pub fn measure_face_boundary_surface_gap(
                     Some(e) => e,
                     None => continue,
                 };
-                let pcurve = match edge.pcurves.get(&face_key) {
+                let (pcurve, _same_sense) = match edge.pcurves.get(&face_key) {
                     Some(pc) => pc,
                     None => continue,
                 };
@@ -570,8 +570,8 @@ mod tests {
         let pcurve_b = Curve2d::Line { origin: (0.0, 10.0), direction: (10.0, 0.0) };
 
         // Two EdgeKeys for the same geometric edge (STEP duplicate-edge case).
-        let ek_a = reg.add_edge_with_pcurve(v0, v1, curve_a, 1e-4, f0, pcurve_a);
-        let ek_b = reg.add_edge_with_pcurve(v0, v1, curve_b, 1e-4, f1, pcurve_b);
+        let ek_a = reg.add_edge_with_pcurve(v0, v1, curve_a, 1e-4, f0, (pcurve_a, true));
+        let ek_b = reg.add_edge_with_pcurve(v0, v1, curve_b, 1e-4, f1, (pcurve_b, true));
         assert_ne!(ek_a, ek_b);
 
         let w0 = reg.wires.insert(BRepWire {

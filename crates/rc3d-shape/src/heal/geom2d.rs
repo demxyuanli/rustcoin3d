@@ -9,7 +9,7 @@ pub fn collect_wire_uv_polygon(
     let mut points = Vec::new();
     for &(ek, _) in &wire.edges {
         if let Some(edge) = reg.edges.get(ek) {
-            if let Some(pc) = edge.pcurves.get(&face_key) {
+            if let Some((pc, _)) = edge.pcurves.get(&face_key) {
                 let uv = pc.d0(0.0);
                 points.push((uv.0, uv.1));
             }
@@ -17,7 +17,7 @@ pub fn collect_wire_uv_polygon(
     }
     if points.len() >= 2 {
         if let Some(last_edge) = wire.edges.last().and_then(|&(ek, _)| {
-            reg.edges.get(ek).and_then(|e| e.pcurves.get(&face_key)).map(|pc| {
+            reg.edges.get(ek).and_then(|e| e.pcurves.get(&face_key)).map(|(pc, _)| {
                 let uv = pc.d0(1.0);
                 (uv.0, uv.1)
             })

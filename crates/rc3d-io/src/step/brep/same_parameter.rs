@@ -68,7 +68,7 @@ fn update_edge_tolerance(reg: &mut BRepStore, ek: EdgeKey, base_tol: f32) -> boo
     for i in 0..=SAMPLE_COUNT {
         let t = i as f32 / SAMPLE_COUNT as f32;
         let p3d = edge.curve.d0(t);
-        for (&face_key, pcurve) in &edge.pcurves {
+        for (&face_key, (pcurve, _same_sense)) in &edge.pcurves {
             let face = match reg.faces.get(face_key) {
                 Some(f) => f,
                 None => continue,
@@ -123,10 +123,10 @@ mod tests {
         let mut pcurves = HashMap::new();
         pcurves.insert(
             face_key,
-            Curve2d::Line {
+            (Curve2d::Line {
                 origin: (0.0, 0.0),
                 direction: (1.0, 0.0),
-            },
+            }, true),
         );
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0,

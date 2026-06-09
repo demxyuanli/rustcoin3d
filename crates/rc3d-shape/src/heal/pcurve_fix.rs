@@ -41,7 +41,7 @@ pub(crate) fn fix_shifted_pcurves(
     let mut count = 0u32;
     for &(ek, _) in &edges {
         if let Some(edge) = reg.edges.get(ek) {
-            if let Some(pc) = edge.pcurves.get(&face_key) {
+            if let Some((pc, _)) = edge.pcurves.get(&face_key) {
                 let uv_start = pc.d0(0.0);
                 let uv_end = pc.d0(1.0);
                 uv_sum.0 += (uv_start.0 + uv_end.0) as f64 * 0.5;
@@ -61,7 +61,7 @@ pub(crate) fn fix_shifted_pcurves(
             Some(e) => e,
             None => continue,
         };
-        let pc = match edge.pcurves.get(&face_key) {
+        let (pc, _) = match edge.pcurves.get(&face_key) {
             Some(p) => p,
             None => continue,
         };
@@ -100,7 +100,8 @@ pub(crate) fn fix_shifted_pcurves(
 
         if shift_u != 0.0 || shift_v != 0.0 {
             if let Some(pc) = reg.pcurve_mut(ek, face_key) {
-                *pc = shift_pcurve(pc, shift_u as f32, shift_v as f32);
+                let new_curve = shift_pcurve(&pc.0, shift_u as f32, shift_v as f32);
+                pc.0 = new_curve;
                 report.shifts_applied += 1;
             }
         }
@@ -392,22 +393,22 @@ mod tests {
         let e1 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
-            pcurves: HashMap::from([(fk, pc_normal.clone())]),
+            pcurves: HashMap::from([(fk, (pc_normal.clone(), true))]),
         });
         let e2 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
-            pcurves: HashMap::from([(fk, pc_normal.clone())]),
+            pcurves: HashMap::from([(fk, (pc_normal.clone(), true))]),
         });
         let e3 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
-            pcurves: HashMap::from([(fk, pc_normal)]),
+            pcurves: HashMap::from([(fk, (pc_normal, true))]),
         });
         let e4 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d, tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
-            pcurves: HashMap::from([(fk, pc_shifted)]),
+            pcurves: HashMap::from([(fk, (pc_shifted, true))]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
@@ -441,8 +442,8 @@ mod tests {
             origin: (0.1, 0.0),
             direction: (0.5, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
-        let e2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
+        let e2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc, true));
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, Orientation::Forward),
@@ -475,7 +476,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
+            pcurves: HashMap::from([(fk, (Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true))]),
         });
         let wk = reg.wires.insert(BRepWire {
             edges: vec![(ek, Orientation::Forward)],
@@ -529,7 +530,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, Curve2d::Circle { center: (0.0, 0.0), radius: 1.0 })]),
+            pcurves: HashMap::from([(fk, (Curve2d::Circle { center: (0.0, 0.0), radius: 1.0 }, true))]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {
@@ -576,7 +577,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
+            pcurves: HashMap::from([(fk, (Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true))]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {

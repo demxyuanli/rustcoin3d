@@ -480,7 +480,7 @@ mod tests {
         for (va, vb, pa, pb) in edges_data {
             let curve = CurveGeom::Line { origin: pa, direction: pb - pa };
             let pc = Curve2d::Line { origin: (pa.x, pa.y), direction: (pb.x - pa.x, pb.y - pa.y) };
-            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, pc);
+            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, (pc, true));
             wire_edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = wire_edges;

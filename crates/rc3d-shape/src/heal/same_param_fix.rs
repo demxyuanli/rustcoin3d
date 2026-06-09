@@ -36,7 +36,7 @@ pub(crate) fn fix_same_parameter_edge(
     tolerance: f32,
     max_iterations: usize,
 ) -> SameParamReport {
-    let (curve_3d, pcurve, surface) = {
+    let (curve_3d, pcurve_entry, surface) = {
         let edge = match reg.edges.get(ek) {
             Some(e) => e,
             None => return SameParamReport::default(),
@@ -45,7 +45,7 @@ pub(crate) fn fix_same_parameter_edge(
         if edge.v_low == edge.v_high {
             return SameParamReport::default();
         }
-        let pcurve = match edge.pcurves.get(&face_key) {
+        let pcurve_entry = match edge.pcurves.get(&face_key) {
             Some(pc) => pc.clone(),
             None => return SameParamReport::default(),
         };
@@ -53,11 +53,12 @@ pub(crate) fn fix_same_parameter_edge(
             Some(f) => f,
             None => return SameParamReport::default(),
         };
-        (edge.curve.clone(), pcurve, face.surface.clone())
+        (edge.curve.clone(), pcurve_entry, face.surface.clone())
     };
+    let (mut best_pcurve, same_sense) = pcurve_entry;
 
     // Initial deviation
-    let (mut best_max_dev, _samples) = sample_deviation(&curve_3d, &pcurve, &surface, tolerance);
+    let (mut best_max_dev, _samples) = sample_deviation(&curve_3d, &best_pcurve, &surface, tolerance);
     if best_max_dev < tolerance {
         return SameParamReport {
             max_deviation_before: best_max_dev,
@@ -67,7 +68,6 @@ pub(crate) fn fix_same_parameter_edge(
     }
 
     let before_max_dev = best_max_dev;
-    let mut best_pcurve = pcurve;
     let mut fixed_count = 0usize;
     let mut no_improve_streak = 0usize;
 
@@ -147,7 +147,7 @@ pub(crate) fn fix_same_parameter_edge(
 
     // Replace pcurve only if improved
     if fixed_count > 0 {
-        reg.set_pcurve(ek, face_key, best_pcurve);
+        reg.set_pcurve(ek, face_key, (best_pcurve, same_sense));
     }
 
     SameParamReport {
@@ -580,7 +580,7 @@ mod tests {
             tolerance: 1e-4,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, pcurve)]),
+            pcurves: HashMap::from([(fk, (pcurve, true))]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         (reg, ek, fk, wk)
@@ -739,7 +739,7 @@ mod tests {
             tolerance: 1e-4,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, bad_pcurve)]),
+            pcurves: HashMap::from([(fk, (bad_pcurve, true))]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 

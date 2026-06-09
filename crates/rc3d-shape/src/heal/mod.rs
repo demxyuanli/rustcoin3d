@@ -710,19 +710,19 @@ mod tests {
             origin: (a.x, a.y),
             direction: (b.x - a.x, b.y - a.y),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, (pc(Vec3::ZERO, Vec3::X), true));
         let gap_v = reg.vertices.insert(crate::topo::BRepVertex {
             position: Vec3::new(1.0, 0.00005, 0.0),
             tolerance: 1e-6,
         });
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, (pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)), true));
         let e2_orient = if gap_v < v2 {
             Orientation::Forward
         } else {
             Orientation::Reversed
         };
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
-        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, (pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), true));
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, (pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), true));
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, e2_orient),

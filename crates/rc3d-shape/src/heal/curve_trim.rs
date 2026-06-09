@@ -138,7 +138,7 @@ pub fn split_edge_at_params(
             continue;
         }
         let seg_curve = trim_edge_curve(&curve, t0, t1);
-        let seg_pc = trim_pcurve(&pcurve, t0, t1);
+        let seg_pc = trim_pcurve(&pcurve.0, t0, t1);
         let p_start = pcurve_point_3d(&seg_pc, surface.as_ref(), &seg_curve, 0.0);
         let p_end = pcurve_point_3d(&seg_pc, surface.as_ref(), &seg_curve, 1.0);
         let vk0 = reg.find_or_add_vertex(p_start, tolerance);
@@ -148,7 +148,7 @@ pub fn split_edge_at_params(
         } else {
             (vk1, vk0)
         };
-        let nek = reg.add_edge_with_pcurve(v_lo, v_hi, seg_curve, tolerance, face_key, seg_pc);
+        let nek = reg.add_edge_with_pcurve(v_lo, v_hi, seg_curve, tolerance, face_key, (seg_pc, true));
         out.push((nek, orient));
     }
 
@@ -198,7 +198,7 @@ pub fn add_degenerated_edge_at_pole(
         origin: (uv_start.0, uv_start.1),
         direction: (uv_end.0 - uv_start.0, uv_end.1 - uv_start.1),
     };
-    reg.add_seam_edge(pole_vk, pole_vk, zero_curve, tolerance, face_key, degen_pc)
+    reg.add_seam_edge(pole_vk, pole_vk, zero_curve, tolerance, face_key, (degen_pc, true))
 }
 
 fn pcurve_point_3d(
@@ -261,7 +261,7 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc, true));
         let parts = split_edge_at_params(ek, fk, Orientation::Forward, &[0.5], &mut reg);
         assert_eq!(parts.len(), 2);
         let e0 = reg.edges.get(parts[0].0).unwrap();

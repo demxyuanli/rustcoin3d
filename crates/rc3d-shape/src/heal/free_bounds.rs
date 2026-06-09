@@ -132,7 +132,7 @@ pub fn close_free_bounds(
 
                 // Copy PCurves from victim to survivor
                 if let Some(victim_edge) = reg.edges.get(victim) {
-                    let victim_pcurves: Vec<(FaceKey, Curve2d)> = victim_edge.pcurves
+                    let victim_pcurves: Vec<(FaceKey, (Curve2d, bool))> = victim_edge.pcurves
                         .iter()
                         .map(|(&fk, pc)| (fk, pc.clone()))
                         .collect();
@@ -258,26 +258,26 @@ mod tests {
         };
 
         let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)));
+            (make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true));
         let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
+            (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
         let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)));
+            (make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true));
         let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)));
+            (make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true));
 
         // Face B edges (e1 is shared with face A — v1→v2)
         let e4 = reg.add_edge_with_pcurve(v1, v4, make_line(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)));
+            (make_pc(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), true));
         // Shared edge — add fkb's pcurve to e1
         if let Some(edge) = reg.edges.get_mut(e1) {
-            edge.pcurves.insert(fkb, make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
+            edge.pcurves.insert(fkb, (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
         }
         reg.edge_to_faces.entry(e1).or_default().push(fkb);
         let e5 = reg.add_edge_with_pcurve(v4, v5, make_line(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)));
+            (make_pc(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), true));
         let e6 = reg.add_edge_with_pcurve(v5, v2, make_line(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)));
+            (make_pc(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), true));
 
         reg.wires.get_mut(wka).unwrap().edges = vec![
             (e0, Orientation::Forward), (e1, Orientation::Forward),
@@ -323,7 +323,7 @@ mod tests {
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, (pc, true));
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {
             faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,

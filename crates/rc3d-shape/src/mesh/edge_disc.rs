@@ -170,7 +170,7 @@ pub fn discretize_edge(
     };
 
     let mut params_2d = HashMap::new();
-    for (&face_key, pcurve) in &edge.pcurves {
+    for (&face_key, (pcurve, _)) in &edge.pcurves {
         if reg.faces.get(face_key).is_some() {
             let pts_2d: Vec<(f32, (f32, f32))> = params_3d
                 .iter()
@@ -247,7 +247,7 @@ fn sample_polyline_on_surface_exact(
     let mut face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     face_keys.sort_unstable();
     let face_key = *face_keys.first()?;
-    let pcurve = edge.pcurves.get(&face_key)?;
+    let (pcurve, _same_sense) = edge.pcurves.get(&face_key)?;
     let face = reg.faces.get(face_key)?;
     let crate::geom::Curve2d::Polyline { points: uv_pts } = pcurve else {
         return None;
@@ -291,7 +291,7 @@ fn primary_pcurve_on_surface<'a>(
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = keys.first()?;
-    let pcurve = edge.pcurves.get(face_key)?;
+    let (pcurve, _same_sense) = edge.pcurves.get(face_key)?;
     let face = reg.faces.get(*face_key)?;
     Some((pcurve, &face.surface))
 }
@@ -527,7 +527,7 @@ mod tests {
 
         let curve_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
         let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve);
+        let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
 
         let config = EdgeDiscConfig::default();
         let poly = discretize_edge(ek, &reg, &config);

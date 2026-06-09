@@ -330,9 +330,9 @@ mod tests {
             origin: (0.0, 0.0),
             direction: (1.0, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone());
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, pc);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, (pc, true));
         let orient_for = |ek, from_vk| {
             let edge = reg.edges.get(ek).unwrap();
             if edge.v_low == from_vk {

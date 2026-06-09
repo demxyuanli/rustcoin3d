@@ -48,7 +48,7 @@ pub fn auto_fix_edge_tolerance(
             Some(f) => f,
             None => continue,
         };
-        let pcurve = match edge.pcurves.get(fk) {
+        let (pcurve, _same_sense) = match edge.pcurves.get(fk) {
             Some(pc) => pc,
             None => continue,
         };
@@ -186,7 +186,7 @@ mod tests {
             v_high: v1,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: [(fk, pcurve)].into(),
+            pcurves: [(fk, (pcurve, true))].into(),
         });
 
         let new_tol = auto_fix_edge_tolerance(ek, &mut reg, 1e-6, 0.1, 32);
@@ -237,7 +237,7 @@ mod tests {
             v_high: v1,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: [(fk, pcurve)].into(),
+            pcurves: [(fk, (pcurve, true))].into(),
         });
 
         let new_tol = auto_fix_edge_tolerance(ek, &mut reg, 1e-6, 0.1, 16);

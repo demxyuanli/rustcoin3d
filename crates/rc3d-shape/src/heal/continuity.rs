@@ -151,9 +151,9 @@ mod tests {
         };
         let f1 = make_plane_face(&mut reg, surface.clone());
         let f2 = make_plane_face(&mut reg, surface);
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, f1, pc.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, f1, (pc.clone(), true));
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, (pc, true));
 
         reg.wires
             .get_mut(
@@ -209,8 +209,8 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, (pc, true));
         reg.wires.get_mut(wk1).unwrap().edges = vec![(ek, Orientation::Forward)];
         reg.wires.get_mut(wk2).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {
@@ -274,8 +274,8 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone());
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, pc);
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f2, (pc, true));
         reg.wires.get_mut(wk1).unwrap().edges = vec![(ek, Orientation::Forward)];
         reg.wires.get_mut(wk2).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(crate::topo::BRepShell {
