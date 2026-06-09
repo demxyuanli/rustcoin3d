@@ -129,7 +129,7 @@ impl<'a> BrepWriter<'a> {
                 store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
             } else { true }
         });
-        let pcurve_count = pcurve_entries.len();
+        let pcurve_count = 0; // Always 0 — let OCC auto-compute PCurves
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -228,17 +228,13 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
                         center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
-                Curve2d::BSpline { control_points, .. } => {
-                    // Write as single 2D line from first to last point
-                    if let (Some(first), Some(last)) = (control_points.first(), control_points.last()) {
-                        let dx = last.0 - first.0;
-                        let dy = last.1 - first.1;
-                        let len = (dx * dx + dy * dy).sqrt().max(0.01);
-                        let (ndx, ndy) = if len > 1e-12 { (dx / len, dy / len) } else { (1.0, 0.0) };
-                        writeln!(output, "1 0 {} {} {}", len, ndx, ndy)?;
-                    } else {
-                        writeln!(output, "1 0 1 1 0")?;
-                    }
+                Curve2d::BSpline { degree, control_points, knots, weights } => {
+                    write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
+                        if weights.is_some() { 1 } else { 0 })?;
+                    for cp in control_points { write!(output, " {} {}", cp.0, cp.1)?; }
+                    for k in knots { write!(output, " {}", k)?; }
+                    if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
+                    writeln!(output)?;
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
@@ -387,6 +383,22 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Surfaces {}", surfaces.len())?;
 
         for surface in &surfaces {
+            if !is_planar_surface(surface) {
+                let origin = match surface {
+                    SurfaceGeom::Cylinder { origin, .. } => *origin,
+                    SurfaceGeom::Cone { apex, .. } => *apex,
+                    SurfaceGeom::Sphere { center, .. } => *center,
+                    SurfaceGeom::Torus { center, .. } => *center,
+                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
+                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
+                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
+                    _ => Vec3::ZERO,
+                };
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
+                    origin.x, origin.y, origin.z)?;
+                continue;
+            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
@@ -469,8 +481,13 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                    sample_revolution_as_bspline(output, generatrix, *axis_origin, *axis_dir)?;
+                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
+                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
+                        axis_origin.x, axis_origin.y, axis_origin.z,
+                        axis_dir.x, axis_dir.y, axis_dir.z,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
@@ -938,36 +955,6 @@ fn write_revolution_as_bspline(
     Ok(())
 }
 
-fn sample_revolution_as_bspline(
-    output: &mut impl Write, generatrix: &CurveGeom, axis_origin: Vec3, axis_dir: Vec3,
-) -> io::Result<()> {
-    let nu = 16usize; let nv = 12usize;
-    let gen: Vec<Vec3> = (0..=nv).map(|i| generatrix.d0(i as f32 / nv as f32)).collect();
-    let ax = axis_dir.normalize();
-    let mut pts = Vec::new();
-    for i in 0..=nu {
-        let angle = (i as f32 / nu as f32) * std::f32::consts::TAU;
-        for p in &gen {
-            let rel = *p - axis_origin;
-            let ca = angle.cos(); let sa = angle.sin();
-            let r = rel * ca + ax.cross(rel) * sa + ax * ax.dot(rel) * (1.0 - ca);
-            pts.push(axis_origin + r);
-        }
-    }
-    let uc = nu + 1; let vc = nv + 1; let du = 2usize; let dv = 3usize.min(vc - 1);
-    let ku = uc + du + 1; let kv = vc + dv + 1;
-    writeln!(output, "8 {} {} {} {} {} {} 0 0 0", du, dv, uc, vc, ku, kv)?;
-    for p in &pts { writeln!(output, "{} {} {}", p.x, p.y, p.z)?; }
-    for i in 0..ku { write!(output, "{} ", i as f32)?; } writeln!(output)?;
-    for i in 0..kv {
-        if i <= dv { write!(output, "0 ")?; }
-        else if i >= kv - dv - 1 { write!(output, "{} ", (vc - dv) as f32)?; }
-        else { write!(output, "{} ", (i - dv) as f32)?; }
-    }
-    writeln!(output)?;
-    Ok(())
-}
-
 fn is_planar_surface(surface: &SurfaceGeom) -> bool {
     match surface {
         SurfaceGeom::Plane { .. } => true,
@@ -1029,46 +1016,32 @@ fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)>
     }
 }
 
-/// Generate a 2D PCurve by projecting 3D edge curve points to surface UV space.
-/// Uses `SurfaceGeom::project` which handles all surface types including
-/// Newton-Raphson for BSpline/Torus.
+/// Generate a 2D PCurve by projecting 3D edge curve onto the surface UV space.
 fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2d {
-    let n = 17usize;
+    let n = 17usize; // sample points
     let mut uv_points: Vec<(f32, f32)> = Vec::new();
     for i in 0..n {
         let t = i as f32 / (n - 1) as f32;
         let p3d = curve.d0(t);
-        if let Some(uv) = surface.project(p3d) {
+        if let Some(uv) = project_point_to_uv(p3d, surface) {
             uv_points.push(uv);
         }
     }
     if uv_points.len() < 2 {
         return Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
     }
-    // Deduplicate consecutive identical points
-    let mut deduped: Vec<(f32, f32)> = vec![uv_points[0]];
-    for i in 1..uv_points.len() {
-        let prev = deduped.last().unwrap();
-        let dx = uv_points[i].0 - prev.0;
-        let dy = uv_points[i].1 - prev.1;
-        if dx * dx + dy * dy > 1e-12 {
-            deduped.push(uv_points[i]);
-        }
-    }
-    if deduped.len() < 2 {
-        return Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-    }
-    let n_pts = deduped.len();
+    // Create 2D BSpline degree 1 from projected points
+    let n_pts = uv_points.len();
     let knots: Vec<f32> = {
         let mut k = vec![0.0f32, 0.0];
-        for i in 1..n_pts - 1 { k.push(i as f32); }
+        for i in 1..n_pts-1 { k.push(i as f32); }
         k.push((n_pts - 1) as f32);
         k.push((n_pts - 1) as f32);
         k
     };
     Curve2d::BSpline {
         degree: 1,
-        control_points: deduped,
+        control_points: uv_points,
         knots,
         weights: None,
     }
