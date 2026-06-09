@@ -228,13 +228,17 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
                         center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
-                Curve2d::BSpline { degree, control_points, knots, weights } => {
-                    write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
-                        if weights.is_some() { 1 } else { 0 })?;
-                    for cp in control_points { write!(output, " {} {}", cp.0, cp.1)?; }
-                    for k in knots { write!(output, " {}", k)?; }
-                    if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
-                    writeln!(output)?;
+                Curve2d::BSpline { control_points, .. } => {
+                    // Write as single 2D line from first to last point
+                    if let (Some(first), Some(last)) = (control_points.first(), control_points.last()) {
+                        let dx = last.0 - first.0;
+                        let dy = last.1 - first.1;
+                        let len = (dx * dx + dy * dy).sqrt().max(0.01);
+                        let (ndx, ndy) = if len > 1e-12 { (dx / len, dy / len) } else { (1.0, 0.0) };
+                        writeln!(output, "1 0 {} {} {}", len, ndx, ndy)?;
+                    } else {
+                        writeln!(output, "1 0 1 1 0")?;
+                    }
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
