@@ -372,7 +372,30 @@ impl<'a> BrepWriter<'a> {
         }
         writeln!(output, "Surfaces {}", surfaces.len())?;
 
+        // Check if all surfaces are planar — if not, approximate non-planar as planes
+        let all_planar = surfaces.iter().all(|s| is_planar_surface(s));
+
         for surface in &surfaces {
+            if !all_planar && !is_planar_surface(surface) {
+                // Approximate non-planar surface as a plane at the surface's origin
+                let p0 = match surface {
+                    SurfaceGeom::Cylinder { origin, .. } => *origin,
+                    SurfaceGeom::Cone { apex, .. } => *apex,
+                    SurfaceGeom::Sphere { center, .. } => *center,
+                    SurfaceGeom::Torus { center, .. } => *center,
+                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
+                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
+                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.0),
+                    SurfaceGeom::Offset { basis, .. } => match basis.as_ref() {
+                        SurfaceGeom::Plane { origin, .. } => *origin,
+                        _ => Vec3::ZERO,
+                    },
+                    _ => Vec3::ZERO,
+                };
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0", p0.x, p0.y, p0.z)?;
+                continue;
+            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
