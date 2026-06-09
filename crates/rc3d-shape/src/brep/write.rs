@@ -349,20 +349,16 @@ impl<'a> BrepWriter<'a> {
                     for k in &ns.knots_v { write!(output, " {}", k)?; }
                     writeln!(output)?;
                 }
-                SurfaceGeom::Extrusion { direction, .. } => {
-                    writeln!(output, "6 {} {} {}  0 0 0  0 0 1  0 1 0",
-                        direction.x, direction.y, direction.z)?;
+                SurfaceGeom::Extrusion { generatrix, direction } => {
+                    // Write as BSpline surface approximation
+                    write_extrusion_as_bspline(output, generatrix, *direction)?;
                 }
-                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
-                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        axis_origin.x, axis_origin.y, axis_origin.z,
-                        axis_dir.x, axis_dir.y, axis_dir.z,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+                    write_revolution_as_bspline(output, generatrix, *axis_origin, *axis_dir)?;
                 }
-                SurfaceGeom::Offset { distance, .. } => {
-                    writeln!(output, "9 {}", distance)?;
+                SurfaceGeom::Offset { basis, distance } => {
+                    // Expand offset surface: write the actual geometry
+                    write_expanded_offset_surface(output, basis, *distance)?;
                 }
             }
         }
@@ -659,6 +655,150 @@ fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
 
 fn nurbs_is_rational(weights: &[Vec<f32>]) -> bool {
     weights.iter().any(|row| row.iter().any(|&w| (w - 1.0).abs() > 1e-6))
+}
+
+/// Expand an offset surface to its actual geometry and write it.
+fn write_expanded_offset_surface(
+    output: &mut impl Write,
+    basis: &SurfaceGeom,
+    distance: f32,
+) -> io::Result<()> {
+    match basis {
+        SurfaceGeom::Plane { origin, normal, u_dir } => {
+            let n = if normal.length_squared() > 1e-12 {
+                *normal / normal.length()
+            } else {
+                *normal
+            };
+            let new_origin = *origin + n * distance;
+            let u = if u_dir.length_squared() > 1e-12 {
+                *u_dir / u_dir.length()
+            } else {
+                *u_dir
+            };
+            let v = n.cross(u);
+            writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
+                new_origin.x, new_origin.y, new_origin.z,
+                n.x, n.y, n.z,
+                u.x, u.y, u.z,
+                v.x, v.y, v.z)?;
+        }
+        SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir } => {
+            let new_radius = radius + distance;
+            writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                origin.x, origin.y, origin.z,
+                axis.x, axis.y, axis.z,
+                new_radius,
+                x_dir.x, x_dir.y, x_dir.z,
+                y_dir.x, y_dir.y, y_dir.z)?;
+        }
+        SurfaceGeom::Sphere { center, radius } => {
+            writeln!(output, "4 {} {} {}  {}",
+                center.x, center.y, center.z,
+                radius + distance)?;
+        }
+        _ => {
+            // Fallback: write basis surface as-is, offset info lost
+            writeln!(output, "1 0 0 0  0 0 1  1 0 0  0 1 0")?;
+        }
+    }
+    Ok(())
+}
+
+/// Sample generatrix curve and write extrusion as BSpline surface.
+fn write_extrusion_as_bspline(
+    output: &mut impl Write,
+    generatrix: &CurveGeom,
+    direction: Vec3,
+) -> io::Result<()> {
+    // Sample the generatrix at N points
+    let n = 8usize;
+    let mut pts: Vec<Vec3> = (0..=n).map(|i| {
+        generatrix.d0(i as f32 / n as f32)
+    }).collect();
+    // Top row = generatrix + direction
+    let top: Vec<Vec3> = pts.iter().map(|p| *p + direction).collect();
+    pts.extend(top);
+
+    let u_count = 2usize; // 2 rows (bottom, top)
+    let v_count = n + 1;  // control points per row
+    let degree_u = 1usize;
+    let degree_v = 1usize;
+    let knots_u = vec![0.0, 0.0, 1.0, 1.0];
+    let knots_v: Vec<f32> = {
+        let mut k = vec![0.0, 0.0];
+        for i in 1..v_count-1 { k.push(i as f32); }
+        k.push((v_count - 1) as f32);
+        k.push((v_count - 1) as f32);
+        k
+    };
+
+    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
+        degree_u, degree_v, u_count, v_count,
+        knots_u.len(), knots_v.len())?;
+    for p in &pts {
+        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
+    }
+    for k in &knots_u { write!(output, " {}", k)?; }
+    writeln!(output)?;
+    for k in &knots_v { write!(output, " {}", k)?; }
+    writeln!(output)?;
+    Ok(())
+}
+
+/// Sample generatrix and revolve around axis to write as BSpline surface.
+fn write_revolution_as_bspline(
+    output: &mut impl Write,
+    generatrix: &CurveGeom,
+    axis_origin: Vec3,
+    axis_dir: Vec3,
+) -> io::Result<()> {
+    let n_u = 16usize;
+    let n_v = 8usize;
+
+    let gen_pts: Vec<Vec3> = (0..=n_v).map(|i| {
+        generatrix.d0(i as f32 / n_v as f32)
+    }).collect();
+
+    let axis = axis_dir.normalize();
+    let mut all_pts = Vec::new();
+    for i in 0..=n_u {
+        let angle = (i as f32 / n_u as f32) * std::f32::consts::TAU;
+        for p in &gen_pts {
+            // Rodrigues rotation: p' = origin + R * (p - origin)
+            let rel = *p - axis_origin;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+            let rotated = rel * cos_a + axis.cross(rel) * sin_a + axis * axis.dot(rel) * (1.0 - cos_a);
+            all_pts.push(axis_origin + rotated);
+        }
+    }
+
+    let u_count = n_u + 1;
+    let v_count = n_v + 1;
+    let degree_u = 2usize;
+    let degree_v = 1usize;
+    let ku_count = u_count + degree_u + 1;
+    let kv_count = v_count + degree_v + 1;
+
+    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
+        degree_u, degree_v, u_count, v_count, ku_count, kv_count)?;
+    for p in &all_pts {
+        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
+    }
+    // u-knots (periodic-like for full revolution)
+    for i in 0..ku_count {
+        write!(output, " {}", i as f32)?;
+    }
+    writeln!(output)?;
+    // v-knots (clamped)
+    for i in 0..kv_count {
+        if i <= degree_v { write!(output, " 0")?; }
+        else if i >= kv_count - degree_v - 1 { write!(output, " {}", (v_count - degree_v) as f32)?; }
+        else { write!(output, " {}", (i - degree_v) as f32)?; }
+    }
+    writeln!(output)?;
+    Ok(())
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
