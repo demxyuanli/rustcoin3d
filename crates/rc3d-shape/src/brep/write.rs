@@ -310,17 +310,18 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
-                    write!(output, "7 {}  {}  {}  {}",
+                    writeln!(output, "7 {}  {}  {}  {}",
                         degree, control_points.len(), knots.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
+                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots { write!(output, " {}", k)?; }
-                    if let Some(w) = weights {
-                        for wt in w { write!(output, " {}", wt)?; }
-                    }
+                    for k in knots { write!(output, "{} ", k)?; }
                     writeln!(output)?;
+                    if let Some(w) = weights {
+                        for wt in w { write!(output, "{} ", wt)?; }
+                        writeln!(output)?;
+                    }
                 }
                 CurveGeom::Polyline { points } => {
                     // Write as BSpline degree 1
