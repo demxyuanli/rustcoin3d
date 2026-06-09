@@ -102,7 +102,7 @@ impl<'a> BrepWriter<'a> {
                         let is_handled = matches!(pc,
                             Curve2d::Line { .. } | Curve2d::Circle { .. } |
                             Curve2d::Ellipse { .. } | Curve2d::BSpline { .. } |
-                            Curve2d::Trimmed { .. }
+                            Curve2d::Trimmed { .. } | Curve2d::Polyline { .. }
                         );
                         if is_non_planar && is_handled {
                             let face_pos = shapes.iter()
@@ -242,6 +242,12 @@ impl<'a> BrepWriter<'a> {
                         }
                         _ => writeln!(output, "1 0 1 1 0")?,
                     }
+                }
+                Curve2d::Polyline { points } => {
+                    write_polyline2d_as_bspline(output, points)?;
+                }
+                Curve2d::Composite { .. } => {
+                    writeln!(output, "1 0 1 1 0")?;
                 }
                 _ => writeln!(output, "1 0 1 1 0")?,
             }
@@ -935,6 +941,23 @@ fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
         CurveGeom::Trimmed { basis, .. } => basis.as_ref(),
         other => other,
     }
+}
+
+/// Write a 2D polyline as a 2D BSpline degree 1.
+fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(f32, f32)]) -> io::Result<()> {
+    if points.len() < 2 {
+        return writeln!(output, "1 0 1 1 0");
+    }
+    let n = points.len();
+    let degree = 1usize;
+    let knot_len = n + degree + 1;
+    write!(output, "7 {} {} {} 0", degree, n, knot_len)?;
+    for p in points { write!(output, " {} {}", p.0, p.1)?; }
+    // Clamped knot vector: [0,0,1,2,...,n-2,n-1,n-1]
+    write!(output, " 0 0")?;
+    for i in 1..n-1 { write!(output, " {}", i)?; }
+    writeln!(output, " {} {}", n-1, n-1)?;
+    Ok(())
 }
 
 fn write_polyline_as_bspline(output: &mut impl Write, points: &[Vec3]) -> io::Result<()> {
