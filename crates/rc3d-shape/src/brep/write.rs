@@ -89,43 +89,9 @@ impl<'a> BrepWriter<'a> {
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && store.solids.len() > 0;
         // Check if any face is non-planar
-        let has_non_planar = store.faces.values().any(|f| !is_planar_surface(&f.surface));
-        // For non-planar shapes, compute per-face planes from wire vertices
-        let mut face_plane_map: std::collections::HashMap<FaceKey, (Vec3, Vec3, Vec3)> = std::collections::HashMap::new();
-        if has_non_planar {
-            for (fk, face) in &store.faces {
-                let mut verts: Vec<Vec3> = Vec::new();
-                let mut collect_wire_verts = |wk: WireKey| {
-                    if let Some(w) = store.wires.get(wk) {
-                        for (ek, _) in &w.edges {
-                            if let Some(e) = store.edges.get(*ek) {
-                                verts.push(e.curve.d0(0.0));
-                                verts.push(e.curve.d0(1.0));
-                            }
-                        }
-                    }
-                };
-                collect_wire_verts(face.outer_wire);
-                for iw in &face.inner_wires { collect_wire_verts(*iw); }
-                if verts.len() >= 3 {
-                    // Compute plane from first 3 non-collinear vertices
-                    let o = verts[0];
-                    let v1 = verts[1] - o;
-                    let (n, u) = if let Some(v2) = verts.iter().skip(2).find(|v| {
-                        let d = *v - o;
-                        v1.cross(d).length_squared() > 1e-12
-                    }) {
-                        let d = *v2 - o;
-                        let n = v1.cross(d).normalize();
-                        let u = v1.normalize();
-                        (n, u)
-                    } else {
-                        (Vec3::Z, Vec3::X)
-                    };
-                    face_plane_map.insert(fk, (o, n, u));
-                }
-            }
-        }
+        // Write actual surfaces (no plane approximation).
+        // Let OCC auto-compute PCurves for non-planar surfaces.
+        let face_plane_map: std::collections::HashMap<FaceKey, (Vec3, Vec3, Vec3)> = std::collections::HashMap::new();
 
         // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
         let mut pcurve_entries = Vec::new();
@@ -431,22 +397,6 @@ impl<'a> BrepWriter<'a> {
             }
             let surface = self.store.faces.get(*fk).map(|f| &f.surface);
             let Some(surface) = surface else { continue; };
-            if !is_planar_surface(surface) {
-                let origin = match surface {
-                    SurfaceGeom::Cylinder { origin, .. } => *origin,
-                    SurfaceGeom::Cone { apex, .. } => *apex,
-                    SurfaceGeom::Sphere { center, .. } => *center,
-                    SurfaceGeom::Torus { center, .. } => *center,
-                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
-                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
-                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
-                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
-                    _ => Vec3::ZERO,
-                };
-                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
-                    origin.x, origin.y, origin.z)?;
-                continue;
-            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
