@@ -99,19 +99,22 @@ impl<'a> BrepWriter<'a> {
                             .map(|f| !is_planar_surface(&f.surface))
                             .unwrap_or(false);
                         // Skip PCurves with unhandled types (Polyline/Composite)
-                        let is_handled = matches!(pc,
-                            Curve2d::Line { .. } | Curve2d::Circle { .. } |
-                            Curve2d::Ellipse { .. } | Curve2d::BSpline { .. } |
-                            Curve2d::Trimmed { .. } | Curve2d::Polyline { .. }
-                        );
-                        if is_non_planar && is_handled {
+                        if is_non_planar {
                             let face_pos = shapes.iter()
                                 .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
                                 .map(|p| p + 1).unwrap_or(0);
+                            // Generate projected PCurve from 3D edge points
+                            let projected = if let (Some(edge), Some(face)) =
+                                (store.edges.get(*ek), store.faces.get(*fk))
+                            {
+                                generate_projected_pcurve(&edge.curve, &face.surface)
+                            } else {
+                                Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }
+                            };
                             pcurve_entries.push(PCurveEntry {
                                 edge_abs_pos: i + 1,
                                 face_abs_pos: face_pos,
-                                curve: pc.clone(),
+                                curve: projected,
                                 same_sense: *same_sense,
                             });
                         }
@@ -374,20 +377,7 @@ impl<'a> BrepWriter<'a> {
 
         for surface in &surfaces {
             if !is_planar_surface(surface) {
-                let origin = match surface {
-                    SurfaceGeom::Cylinder { origin, .. } => *origin,
-                    SurfaceGeom::Cone { apex, .. } => *apex,
-                    SurfaceGeom::Sphere { center, .. } => *center,
-                    SurfaceGeom::Torus { center, .. } => *center,
-                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
-                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
-                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
-                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
-                    _ => Vec3::ZERO,
-                };
-                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
-                    origin.x, origin.y, origin.z)?;
-                continue;
+                // Write actual surface — PCurves are now generated via 3D→UV projection
             }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
@@ -949,6 +939,90 @@ fn is_planar_surface(surface: &SurfaceGeom) -> bool {
         SurfaceGeom::Plane { .. } => true,
         SurfaceGeom::Offset { basis, .. } => is_planar_surface(basis),
         _ => false,
+    }
+}
+
+/// Project 3D point to UV coordinates on a surface. Returns None if projection fails.
+fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)> {
+    match surface {
+        SurfaceGeom::Plane { origin, normal, u_dir } => {
+            let rel = point - *origin;
+            let n = normal.normalize();
+            let u = u_dir.normalize();
+            let v = n.cross(u);
+            Some((rel.dot(u), rel.dot(v)))
+        }
+        SurfaceGeom::Cylinder { origin, axis, radius: _, x_dir, y_dir } => {
+            let rel = point - *origin;
+            let ax = axis.normalize();
+            let v = rel.dot(ax); // height along axis
+            let radial = rel - ax * v;
+            let u = radial.y.atan2(radial.x); // angle
+            Some((u, v))
+        }
+        SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
+            let rel = point - *axis_origin;
+            let ax = axis_dir.normalize();
+            let v = rel.dot(ax);
+            let radial = rel - ax * v;
+            let u = radial.y.atan2(radial.x);
+            Some((u, v))
+        }
+        SurfaceGeom::Sphere { center, radius: _ } => {
+            let rel = point - *center;
+            let r = rel.length();
+            let u = rel.y.atan2(rel.x); // azimuth
+            let v = (rel.z / r).acos(); // polar angle
+            Some((u, v))
+        }
+        SurfaceGeom::Cone { apex, axis, semi_angle: _, .. } => {
+            let rel = point - *apex;
+            let ax = axis.normalize();
+            let v = rel.dot(ax);
+            let radial = rel - ax * v;
+            let u = radial.y.atan2(radial.x);
+            Some((u, v))
+        }
+        SurfaceGeom::Torus { center, axis, major_r: _, minor_r: _, .. } => {
+            let rel = point - *center;
+            let ax = axis.normalize();
+            let v = rel.dot(ax);
+            let radial = rel - ax * v;
+            let u = radial.y.atan2(radial.x);
+            Some((u, v))
+        }
+        _ => None,
+    }
+}
+
+/// Generate a 2D PCurve by projecting 3D edge curve onto the surface UV space.
+fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2d {
+    let n = 17usize; // sample points
+    let mut uv_points: Vec<(f32, f32)> = Vec::new();
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let p3d = curve.d0(t);
+        if let Some(uv) = project_point_to_uv(p3d, surface) {
+            uv_points.push(uv);
+        }
+    }
+    if uv_points.len() < 2 {
+        return Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+    }
+    // Create 2D BSpline degree 1 from projected points
+    let n_pts = uv_points.len();
+    let knots: Vec<f32> = {
+        let mut k = vec![0.0f32, 0.0];
+        for i in 1..n_pts-1 { k.push(i as f32); }
+        k.push((n_pts - 1) as f32);
+        k.push((n_pts - 1) as f32);
+        k
+    };
+    Curve2d::BSpline {
+        degree: 1,
+        control_points: uv_points,
+        knots,
+        weights: None,
     }
 }
 
