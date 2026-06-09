@@ -122,14 +122,14 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        // Only write PCurves if ALL surfaces are planar (no approximation needed).
-        // When surfaces are approximated as planes, OCC auto-computes PCurves.
+        // Write PCurves only for shapes with exclusively planar surfaces.
+        // For non-planar shapes, write Curve2ds 0 and let OCC auto-compute.
         let all_planar = shapes.iter().filter(|s| matches!(s, ShapeEntry::Face(_))).all(|s| {
             if let ShapeEntry::Face(fk) = s {
                 store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
             } else { true }
         });
-        let pcurve_count = if all_planar { pcurve_entries.len() } else { 0 };
+        let pcurve_count = 0; // Always 0 — let OCC auto-compute PCurves
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -427,12 +427,13 @@ impl<'a> BrepWriter<'a> {
                         y_dir.x, y_dir.y, y_dir.z, radius)?;
                 }
                 SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
-                    writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                    writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         apex.x, apex.y, apex.z,
                         axis.x, axis.y, axis.z,
                         x_dir.x, x_dir.y, x_dir.z,
                         y_dir.x, y_dir.y, y_dir.z,
-                        semi_angle, radius_at_apex)?;
+                        semi_angle)?;
+                    writeln!(output, "{}", radius_at_apex)?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
                     writeln!(output, "4 {} {} {}  {}", center.x, center.y, center.z, radius)?;
