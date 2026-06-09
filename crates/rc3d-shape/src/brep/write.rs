@@ -98,7 +98,13 @@ impl<'a> BrepWriter<'a> {
                         let is_non_planar = store.faces.get(*fk)
                             .map(|f| !is_planar_surface(&f.surface))
                             .unwrap_or(false);
-                        if is_non_planar {
+                        // Skip PCurves with unhandled types (Polyline/Composite)
+                        let is_handled = matches!(pc,
+                            Curve2d::Line { .. } | Curve2d::Circle { .. } |
+                            Curve2d::Ellipse { .. } | Curve2d::BSpline { .. } |
+                            Curve2d::Trimmed { .. }
+                        );
+                        if is_non_planar && is_handled {
                             let face_pos = shapes.iter()
                                 .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
                                 .map(|p| p + 1).unwrap_or(0);
@@ -113,9 +119,7 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        // FIXME: PCurves need edge param_range for correct 2D format.
-        // Currently zero — all files open, non-planar shapes empty.
-        let pcurve_count = 0; // use pcurve_entries.len() when format fixed
+        let pcurve_count = pcurve_entries.len();
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -195,20 +199,20 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
         for entry in &self.pcurve_entries {
             match &entry.curve {
-                Curve2d::Line { origin: _, direction } => {
+                Curve2d::Line { direction, .. } => {
                     let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
+                    let range = len.max(0.01);
                     let (dx, dy) = if len > 1e-12 {
                         (direction.0 / len, direction.1 / len)
                     } else {
                         (1.0, 0.0)
                     };
-                    // OCC 2D Line: 1 t_start t_end dir_x dir_y
-                    writeln!(output, "1 0 {} {} {}", len, dx, dy)?;
+                    writeln!(output, "1 0 {} {} {}", range, dx, dy)?;
                 }
                 Curve2d::Circle { center, radius } => {
-                    // OCC: 2 t_start t_end cx cy xdir_x xdir_y radius
+                    let r = radius.max(1e-6);
                     let tau = std::f32::consts::TAU;
-                    writeln!(output, "2 0 {} {} {} {} {} {}", tau * radius, center.0, center.1, 1.0, 0.0, *radius)?;
+                    writeln!(output, "2 0 {} {} {} {} {} {}", tau * r, center.0, center.1, 1.0, 0.0, r)?;
                 }
                 Curve2d::Ellipse { center, semi_major, semi_minor } => {
                     writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
@@ -224,16 +228,22 @@ impl<'a> BrepWriter<'a> {
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
-                        Curve2d::Line { origin, direction } => {
-                            writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
+                        Curve2d::Line { direction, .. } => {
+                            let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt().max(0.01);
+                            let (dx, dy) = if direction.0.abs() + direction.1.abs() > 1e-12 {
+                                let l = (direction.0 * direction.0 + direction.1 * direction.1).sqrt().max(1e-12);
+                                (direction.0 / l, direction.1 / l)
+                            } else { (1.0, 0.0) };
+                            writeln!(output, "1 0 {} {} {}", len, dx, dy)?;
                         }
                         Curve2d::Circle { center, radius } => {
-                            writeln!(output, "2 {} {} {} {} {} {}", center.0, center.1, 0.0, 0.0, 1.0, *radius)?;
+                            let r = radius.max(1e-6);
+                            writeln!(output, "2 0 {} {} {} {} {} {}", std::f32::consts::TAU * r, center.0, center.1, 1.0, 0.0, r)?;
                         }
-                        _ => writeln!(output, "1 0 0 1 0")?,
+                        _ => writeln!(output, "1 0 1 1 0")?,
                     }
                 }
-                _ => writeln!(output, "1 0 0 1 0")?,
+                _ => writeln!(output, "1 0 1 1 0")?,
             }
         }
         Ok(())
