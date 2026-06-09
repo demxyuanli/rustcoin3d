@@ -298,29 +298,30 @@ impl<'a> BrepWriter<'a> {
                         y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::BezierCurve { degree, control_points, weights } => {
-                    write!(output, "6 {}  {}  {}",
+                    writeln!(output, "6 {}  {}  {}",
                         degree, control_points.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
+                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
                     }
                     if let Some(w) = weights {
-                        for wt in w { write!(output, " {}", wt)?; }
+                        for wt in w { write!(output, "{} ", wt)?; }
+                        writeln!(output)?;
                     }
-                    writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
-                    write!(output, "7 {}  {}  {}  {}",
+                    writeln!(output, "7 {}  {}  {}  {}",
                         degree, control_points.len(), knots.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
+                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots { write!(output, " {}", k)?; }
-                    if let Some(w) = weights {
-                        for wt in w { write!(output, " {}", wt)?; }
-                    }
+                    for k in knots { write!(output, "{} ", k)?; }
                     writeln!(output)?;
+                    if let Some(w) = weights {
+                        for wt in w { write!(output, "{} ", wt)?; }
+                        writeln!(output)?;
+                    }
                 }
                 CurveGeom::Polyline { points } => {
                     // Write as BSpline degree 1
@@ -941,15 +942,14 @@ fn write_polyline_as_bspline(output: &mut impl Write, points: &[Vec3]) -> io::Re
     }
     let n = points.len();
     let knot_len = n + 2;
-    write!(output, "7 1  {}  {}  0", n, knot_len)?;
+    writeln!(output, "7 1  {}  {}  0", n, knot_len)?;
     for p in points {
-        write!(output, "  {} {} {}", p.x, p.y, p.z)?;
+        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
     }
-    write!(output, " 0 0")?;
+    write!(output, "0 0 ")?;
     for i in 1..n-1 {
-        write!(output, " {}", i)?;
+        write!(output, "{} ", i)?;
     }
-    write!(output, " {} {}", n-1, n-1)?;
-    writeln!(output)?;
+    writeln!(output, "{} {}", n-1, n-1)?;
     Ok(())
 }
