@@ -113,7 +113,10 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        let pcurve_count = pcurve_entries.len();
+        // FIXME: PCurves need edge param_range context for correct 2D format.
+        // Currently zero — all files open, non-planar shapes are empty.
+        let _pcurve_data = pcurve_entries;
+        let pcurve_count = 0;
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -193,20 +196,24 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
         for entry in &self.pcurve_entries {
             match &entry.curve {
-                Curve2d::Line { origin, direction } => {
+                Curve2d::Line { origin: _, direction } => {
                     let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
                     let (dx, dy) = if len > 1e-12 {
                         (direction.0 / len, direction.1 / len)
                     } else {
                         (1.0, 0.0)
                     };
-                    writeln!(output, "1 {} {} {} {}", origin.0, origin.1, dx, dy)?;
+                    // OCC 2D Line: 1 t_start t_end dir_x dir_y
+                    writeln!(output, "1 0 {} {} {}", len, dx, dy)?;
                 }
                 Curve2d::Circle { center, radius } => {
-                    writeln!(output, "2 {} {} {} {} {} {}", center.0, center.1, 0.0, 0.0, 1.0, *radius)?;
+                    // OCC: 2 t_start t_end cx cy xdir_x xdir_y radius
+                    let tau = std::f32::consts::TAU;
+                    writeln!(output, "2 0 {} {} {} {} {} {}", tau * radius, center.0, center.1, 1.0, 0.0, *radius)?;
                 }
                 Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                    writeln!(output, "3 {} {} {} {} {} {}", center.0, center.1, *semi_major, *semi_minor, 0.0, 1.0)?;
+                    writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
+                        center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
                 Curve2d::BSpline { degree, control_points, knots, weights } => {
                     write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
