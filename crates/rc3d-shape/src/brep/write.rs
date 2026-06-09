@@ -469,13 +469,8 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
-                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        axis_origin.x, axis_origin.y, axis_origin.z,
-                        axis_dir.x, axis_dir.y, axis_dir.z,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
+                    sample_revolution_as_bspline(output, generatrix, *axis_origin, *axis_dir)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
@@ -938,6 +933,36 @@ fn write_revolution_as_bspline(
         if i <= degree_v { write!(output, " 0")?; }
         else if i >= kv_count - degree_v - 1 { write!(output, " {}", (v_count - degree_v) as f32)?; }
         else { write!(output, " {}", (i - degree_v) as f32)?; }
+    }
+    writeln!(output)?;
+    Ok(())
+}
+
+fn sample_revolution_as_bspline(
+    output: &mut impl Write, generatrix: &CurveGeom, axis_origin: Vec3, axis_dir: Vec3,
+) -> io::Result<()> {
+    let nu = 16usize; let nv = 12usize;
+    let gen: Vec<Vec3> = (0..=nv).map(|i| generatrix.d0(i as f32 / nv as f32)).collect();
+    let ax = axis_dir.normalize();
+    let mut pts = Vec::new();
+    for i in 0..=nu {
+        let angle = (i as f32 / nu as f32) * std::f32::consts::TAU;
+        for p in &gen {
+            let rel = *p - axis_origin;
+            let ca = angle.cos(); let sa = angle.sin();
+            let r = rel * ca + ax.cross(rel) * sa + ax * ax.dot(rel) * (1.0 - ca);
+            pts.push(axis_origin + r);
+        }
+    }
+    let uc = nu + 1; let vc = nv + 1; let du = 2usize; let dv = 3usize.min(vc - 1);
+    let ku = uc + du + 1; let kv = vc + dv + 1;
+    writeln!(output, "8 {} {} {} {} {} {} 0 0 0", du, dv, uc, vc, ku, kv)?;
+    for p in &pts { writeln!(output, "{} {} {}", p.x, p.y, p.z)?; }
+    for i in 0..ku { write!(output, "{} ", i as f32)?; } writeln!(output)?;
+    for i in 0..kv {
+        if i <= dv { write!(output, "0 ")?; }
+        else if i >= kv - dv - 1 { write!(output, "{} ", (vc - dv) as f32)?; }
+        else { write!(output, "{} ", (i - dv) as f32)?; }
     }
     writeln!(output)?;
     Ok(())
