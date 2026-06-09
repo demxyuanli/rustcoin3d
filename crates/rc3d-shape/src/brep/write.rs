@@ -423,8 +423,7 @@ impl<'a> BrepWriter<'a> {
             }
         };
 
-        let curve_len = edge.curve.d0(edge.t_max).distance(edge.curve.d0(edge.t_min));
-        let param_range = if curve_len > 1e-12 { curve_len } else { 1.0 };
+        let param_range = curve_param_range(&expand_curve(&edge.curve), edge.t_min, edge.t_max);
 
         let curve_type = occ_curve_type(&expand_curve(&edge.curve));
         let v1_pos = self.vertex_pos(edge.v_low);
@@ -588,6 +587,53 @@ fn occ_curve_type(curve: &CurveGeom) -> usize {
         CurveGeom::Offset { .. } => 8,
         CurveGeom::Trimmed { basis, .. } => occ_curve_type(basis),
         CurveGeom::Composite { .. } => 7,
+    }
+}
+
+/// Compute the natural parameter range for a curve between t_min and t_max.
+/// OCC uses the curve's natural parameterization, not chord distance.
+fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
+    let span = (t_max - t_min).abs();
+    if span < 1e-12 { return 1.0; }
+    match curve {
+        CurveGeom::Line { direction, .. } => {
+            let len = direction.length();
+            if len > 1e-12 { len * span } else { 1.0 }
+        }
+        CurveGeom::Circle { radius, .. } => {
+            std::f32::consts::TAU * radius * span
+        }
+        CurveGeom::Ellipse { semi_major, semi_minor, .. } => {
+            // Approximate with Ramanujan's formula for perimeter
+            let a = semi_major.max(*semi_minor);
+            let b = semi_minor.min(*semi_major);
+            let h = ((a - b) / (a + b)).powi(2);
+            let perimeter = std::f32::consts::PI * (a + b) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()));
+            perimeter * span
+        }
+        CurveGeom::BSpline { control_points, knots, degree, .. } => {
+            // Approximate: chord length of control polygon
+            let mut total = 0.0f32;
+            for w in control_points.windows(2) {
+                total += w[0].distance(w[1]);
+            }
+            let domain_start = knots.get(*degree).copied().unwrap_or(0.0);
+            let domain_end = knots.get(control_points.len()).copied().unwrap_or(1.0);
+            let domain = (domain_end - domain_start).abs().max(1e-6);
+            total * span / domain
+        }
+        CurveGeom::Polyline { points } => {
+            let mut total = 0.0f32;
+            for w in points.windows(2) {
+                total += w[0].distance(w[1]);
+            }
+            total.max(1.0)
+        }
+        _ => {
+            // Fallback: chord distance
+            let d = curve.d0(t_max).distance(curve.d0(t_min));
+            if d > 1e-12 { d } else { 1.0 }
+        }
     }
 }
 
