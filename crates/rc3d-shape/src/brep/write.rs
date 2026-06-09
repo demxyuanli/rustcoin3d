@@ -178,10 +178,12 @@ impl<'a> BrepWriter<'a> {
                         origin.x, origin.y, origin.z,
                         dir.x, dir.y, dir.z)?;
                 }
-                CurveGeom::Circle { center, axis, radius, .. } => {
-                    writeln!(output, "2 {} {} {}  {} {} {}  {}",
+                CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
+                    writeln!(output, "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
-                        axis.x, axis.y, axis.z, radius)?;
+                        axis.x, axis.y, axis.z, radius,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
                     writeln!(output, "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
@@ -425,6 +427,7 @@ impl<'a> BrepWriter<'a> {
         let curve_len = edge.curve.d0(edge.t_max).distance(edge.curve.d0(edge.t_min));
         let param_range = if curve_len > 1e-12 { curve_len } else { 1.0 };
 
+        let curve_type = occ_curve_type(&expand_curve(&edge.curve));
         let v1_pos = self.vertex_pos(edge.v_low);
         let v2_pos = self.vertex_pos(edge.v_high);
         let rv1 = self.rev_idx(v1_pos);
@@ -433,8 +436,8 @@ impl<'a> BrepWriter<'a> {
         let tol = edge.tolerance.max(1e-7);
         writeln!(output, "Ed")?;
         writeln!(output, " {} {} 1 0", tol, 1)?;
-        // Line: curve_type(1=Line) curve_idx 0 0 param_range
-        writeln!(output, "1  {} 0 0 {}", curve_idx, param_range)?;
+        // curve_type curve_idx 0 0 param_range
+        writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
         writeln!(output, "0")?;
         writeln!(output)?;
         writeln!(output, "0101000")?;
@@ -572,6 +575,22 @@ impl<'a> BrepWriter<'a> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+/// Map CurveGeom to OCC curve type number.
+fn occ_curve_type(curve: &CurveGeom) -> usize {
+    match curve {
+        CurveGeom::Line { .. } => 1,
+        CurveGeom::Circle { .. } => 2,
+        CurveGeom::Ellipse { .. } => 3,
+        CurveGeom::Hyperbola { .. } => 4,
+        CurveGeom::Parabola { .. } => 5,
+        CurveGeom::BezierCurve { .. } => 6,
+        CurveGeom::BSpline { .. } | CurveGeom::Polyline { .. } => 7,
+        CurveGeom::Offset { .. } => 8,
+        CurveGeom::Trimmed { basis, .. } => occ_curve_type(basis),
+        CurveGeom::Composite { .. } => 7,
+    }
+}
 
 fn nurbs_is_rational(weights: &[Vec<f32>]) -> bool {
     weights.iter().any(|row| row.iter().any(|&w| (w - 1.0).abs() > 1e-6))
