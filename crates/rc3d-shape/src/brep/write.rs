@@ -39,6 +39,7 @@ struct BrepWriter<'a> {
     needs_default_compound: bool,
     pcurve_entries: Vec<PCurveEntry>,
     pcurve_count: usize,
+    has_non_planar: bool,
 }
 
 /// Compact representation of each TShape for ordering.
@@ -87,6 +88,7 @@ impl<'a> BrepWriter<'a> {
         // If no compounds exist but we have solids, create a single default compound
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && store.solids.len() > 0;
+        let has_non_planar = store.faces.values().any(|f| !is_planar_surface(&f.surface));
 
         // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
         let mut pcurve_entries = Vec::new();
@@ -132,7 +134,7 @@ impl<'a> BrepWriter<'a> {
         let pcurve_count = 0; // Always 0 — let OCC auto-compute PCurves
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
+        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count, has_non_planar }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -277,6 +279,15 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Curves {}", curves.len())?;
 
         for curve in &curves {
+            if self.has_non_planar {
+                let p0 = curve.d0(0.0);
+                let p1 = curve.d0(1.0);
+                let dir = p1 - p0;
+                let len = dir.length();
+                let d = if len > 1e-12 { dir / len } else { Vec3::X };
+                writeln!(output, "1 {} {} {} {} {} {}", p0.x, p0.y, p0.z, d.x, d.y, d.z)?;
+                continue;
+            }
             let expanded = expand_curve(curve);
             match expanded {
                 CurveGeom::Line { origin, direction } => {
@@ -372,6 +383,49 @@ impl<'a> BrepWriter<'a> {
     }
 
     fn write_surfaces(&self, output: &mut impl Write) -> io::Result<()> {
+        if self.has_non_planar {
+            // Per-face planes from wire vertices: one surface per face (matching face indices)
+            let mut face_count = 0usize;
+            for entry in &self.shapes {
+                if let ShapeEntry::Face(fk) = entry { face_count += 1; }
+            }
+            writeln!(output, "Surfaces {}", face_count)?;
+            for entry in &self.shapes {
+                if let ShapeEntry::Face(fk) = entry {
+                    let face = self.store.faces.get(*fk);
+                    // Get vertices from face wires
+                    let mut verts: Vec<Vec3> = Vec::new();
+                    if let Some(f) = face {
+                        let mut collect = |wk: WireKey| {
+                            if let Some(w) = self.store.wires.get(wk) {
+                                for (ek, _) in &w.edges {
+                                    if let Some(e) = self.store.edges.get(*ek) {
+                                        if let Some(v) = self.store.vertices.get(e.v_low) { verts.push(v.position); }
+                                        if let Some(v) = self.store.vertices.get(e.v_high) { verts.push(v.position); }
+                                    }
+                                }
+                            }
+                        };
+                        collect(f.outer_wire);
+                        for iw in &f.inner_wires { collect(*iw); }
+                    }
+                    // Fit plane from collected vertices
+                    let (o, n, u) = if verts.len() >= 3 {
+                        let o = verts[0];
+                        let v1 = (verts[1] - o).normalize();
+                        if let Some(v2) = verts.iter().find(|v| { let d = **v - o; v1.cross(d).length_squared() > 1e-12 }) {
+                            let n = v1.cross(*v2 - o).normalize();
+                            (o, n, v1)
+                        } else { (o, Vec3::Z, Vec3::X) }
+                    } else { (Vec3::ZERO, Vec3::Z, Vec3::X) };
+                    let v = n.cross(u);
+                    writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
+                        o.x, o.y, o.z, n.x, n.y, n.z, u.x, u.y, u.z, v.x, v.y, v.z)?;
+                }
+            }
+            return Ok(());
+        }
+
         let mut surfaces: Vec<&SurfaceGeom> = Vec::new();
         for entry in &self.shapes {
             if let ShapeEntry::Face(fk) = entry {
@@ -383,25 +437,6 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Surfaces {}", surfaces.len())?;
 
         for surface in &surfaces {
-            if !is_planar_surface(surface) {
-                let origin = match surface {
-                    SurfaceGeom::Cylinder { origin, .. } => *origin,
-                    SurfaceGeom::Cone { apex, .. } => *apex,
-                    SurfaceGeom::Sphere { center, .. } => *center,
-                    SurfaceGeom::Torus { center, .. } => *center,
-                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
-                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
-                    SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                        write_revolution_as_bspline_surface(output, generatrix, *axis_origin, *axis_dir)?;
-                        continue;
-                    }
-                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
-                    _ => Vec3::ZERO,
-                };
-                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
-                    origin.x, origin.y, origin.z)?;
-                continue;
-            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
