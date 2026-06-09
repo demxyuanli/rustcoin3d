@@ -392,23 +392,7 @@ impl<'a> BrepWriter<'a> {
                     SurfaceGeom::BSpline(ns) => ns.control_points.first()
                         .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
                     SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                        // Approximate as Cylinder — edges wrap around axis
-                        let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                        let samples: Vec<Vec3> = (0..=8).map(|i| generatrix.d0(i as f32 / 8.0)).collect();
-                        let avg_radius: f32 = samples.iter()
-                            .map(|p| {
-                                let rel = *p - *axis_origin;
-                                let ax = axis_dir.normalize();
-                                let radial = rel - ax * ax.dot(rel);
-                                radial.length()
-                            })
-                            .sum::<f32>() / samples.len() as f32;
-                        let r = avg_radius.max(0.01);
-                        writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
-                            axis_origin.x, axis_origin.y, axis_origin.z,
-                            axis_dir.x, axis_dir.y, axis_dir.z,
-                            x_dir.x, x_dir.y, x_dir.z,
-                            y_dir.x, y_dir.y, y_dir.z, r)?;
+                        write_revolution_as_bspline_surface(output, generatrix, *axis_origin, *axis_dir)?;
                         continue;
                     }
                     SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
@@ -1064,6 +1048,36 @@ fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2
         knots,
         weights: None,
     }
+}
+
+fn write_revolution_as_bspline_surface(
+    output: &mut impl Write, generatrix: &CurveGeom, axis_origin: Vec3, axis_dir: Vec3,
+) -> io::Result<()> {
+    let nu = 16usize; let nv = 12usize;
+    let gen: Vec<Vec3> = (0..=nv).map(|i| generatrix.d0(i as f32 / nv as f32)).collect();
+    let ax = axis_dir.normalize();
+    let mut pts = Vec::new();
+    for i in 0..=nu {
+        let a = (i as f32 / nu as f32) * std::f32::consts::TAU;
+        for p in &gen {
+            let rel = *p - axis_origin;
+            let ca = a.cos(); let sa = a.sin();
+            let r = rel * ca + ax.cross(rel) * sa + ax * ax.dot(rel) * (1.0 - ca);
+            pts.push(axis_origin + r);
+        }
+    }
+    let uc = nu + 1; let vc = nv + 1; let du = 2usize; let dv = 3usize.min(vc - 1);
+    let ku = uc + du + 1; let kv = vc + dv + 1;
+    writeln!(output, "8 {} {} {} {} {} {} 0 0 0", du, dv, uc, vc, ku, kv)?;
+    for p in &pts { writeln!(output, "{} {} {}", p.x, p.y, p.z)?; }
+    for i in 0..ku { write!(output, "{} ", i as f32)?; } writeln!(output)?;
+    for i in 0..kv {
+        if i <= dv { write!(output, "0 ")?; }
+        else if i >= kv - dv - 1 { write!(output, "{} ", (vc - dv) as f32)?; }
+        else { write!(output, "{} ", (i - dv) as f32)?; }
+    }
+    writeln!(output)?;
+    Ok(())
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
