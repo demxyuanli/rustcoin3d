@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::{
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{
     BRepEdge, BRepFace, BRepWire, EdgeKey, FaceKey, Orientation, VertexKey,
 };
 use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
@@ -287,8 +287,8 @@ pub fn chamfer_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::registry::BRepStore;
-    use crate::step::brep::topo::*;
+    use rc3d_shape::BRepStore;
+    use rc3d_shape::topo::*;
     use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
     use rc3d_core::math::Vec3;
 

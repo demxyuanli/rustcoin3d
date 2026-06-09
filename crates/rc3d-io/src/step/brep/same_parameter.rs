@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use super::registry::BRepStore;
-use super::topo::{EdgeKey, ShellKey};
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{EdgeKey, ShellKey};
 
 const SAMPLE_COUNT: usize = 32;
 
@@ -98,7 +98,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::step::brep::geom::{Curve2d, CurveGeom, SurfaceGeom};
-    use crate::step::brep::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
+    use rc3d_shape::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
 
     #[test]
     fn misaligned_pcurve_raises_edge_tolerance() {

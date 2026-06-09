@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::ShellKey;
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::ShellKey;
 
 /// Quality metrics for a single shell.
 #[derive(Debug, Clone, Default)]
@@ -40,8 +40,8 @@ pub fn compute_shell_quality(
     metrics.face_count = shell.faces.len();
 
     // Count unique edges and vertices
-    let mut edge_set: HashSet<crate::step::brep::topo::EdgeKey> = HashSet::new();
-    let mut vertex_set: HashSet<crate::step::brep::topo::VertexKey> = HashSet::new();
+    let mut edge_set: HashSet<rc3d_shape::topo::EdgeKey> = HashSet::new();
+    let mut vertex_set: HashSet<rc3d_shape::topo::VertexKey> = HashSet::new();
     for &(fk, _) in &shell.faces {
         if let Some(face) = reg.faces.get(fk) {
             if let Some(wire) = reg.wires.get(face.outer_wire) {
@@ -111,8 +111,8 @@ pub fn quality_score(metrics: &ShellQualityMetrics) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::registry::BRepStore;
-    use crate::step::brep::topo::*;
+    use rc3d_shape::BRepStore;
+    use rc3d_shape::topo::*;
 
     #[test]
     fn test_quality_empty_registry() {

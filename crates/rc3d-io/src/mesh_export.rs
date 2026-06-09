@@ -10,7 +10,7 @@ use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::mesh::face_uv::UvSource;
 use crate::step::brep::mesh::report::ShellMeshReport;
 use crate::step::brep::mesh::{BRepMeshConfig, ShellMeshOutput};
-use crate::step::brep::topo::{BRepFace, FaceKey};
+use rc3d_shape::topo::{BRepFace, FaceKey};
 use crate::step::brep::BRepStore;
 use crate::step::brep::heal::HealLevel;
 use crate::step::import_options::StepImportOptions;

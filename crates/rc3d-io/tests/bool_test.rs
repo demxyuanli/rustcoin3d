@@ -16,7 +16,7 @@ fn test_bool_op_enum() {
 fn test_boolean_brep_stub() {
     // boolean_brep is a stub that returns empty result
     // Full implementation comes in Phase 3
-    let reg = &mut rc3d_io::step::brep::registry::BRepStore::new();
+    let reg = &mut rc3d_shape::BRepStore::new();
     let result = boolean_brep(&[], &[], reg, BoolOp::Union);
     assert!(result.is_empty);
 }

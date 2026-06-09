@@ -9,8 +9,8 @@
 //! Current status: API skeleton with input validation.
 //! Full implementation requires robust NURBS offset support.
 
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::{FaceKey, ShellKey, SolidKey};
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{FaceKey, ShellKey, SolidKey};
 use crate::step::bool::{boolean_brep, BoolOp};
 use crate::step::brep::geom::SurfaceGeom;
 
@@ -82,8 +82,8 @@ pub fn make_thick_solid(
     let offset_face_count = offset_result.len();
 
     // Create inner shell from offset faces
-    let inner_shell = reg.shells.insert(crate::step::brep::topo::BRepShell {
-        faces: offset_result.iter().map(|&fk| (fk, crate::step::brep::topo::Orientation::Forward)).collect(),
+    let inner_shell = reg.shells.insert(rc3d_shape::topo::BRepShell {
+        faces: offset_result.iter().map(|&fk| (fk, rc3d_shape::topo::Orientation::Forward)).collect(),
         closed: false,
         step_id: None,
     });
@@ -188,8 +188,8 @@ fn offset_solid_faces(
         };
 
         if let Some(surface) = offset_surface {
-            let wire = reg.wires.insert(crate::step::brep::topo::BRepWire { edges: vec![] });
-            let new_fk = reg.faces.insert(crate::step::brep::topo::BRepFace {
+            let wire = reg.wires.insert(rc3d_shape::topo::BRepWire { edges: vec![] });
+            let new_fk = reg.faces.insert(rc3d_shape::topo::BRepFace {
                 surface,
                 outer_wire: wire,
                 inner_wires: vec![],
@@ -209,7 +209,7 @@ fn offset_solid_faces(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::step::brep::topo::*;
+    use rc3d_shape::topo::*;
     use rc3d_core::math::Vec3;
 
     fn make_test_solid(reg: &mut BRepStore) -> SolidKey {

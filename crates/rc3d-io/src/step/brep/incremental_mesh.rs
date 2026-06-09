@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use crate::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig, ShellMeshOutput};
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::{FaceKey, ShellKey};
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{FaceKey, ShellKey};
 
 /// Report of incremental mesh update.
 #[derive(Debug, Clone)]

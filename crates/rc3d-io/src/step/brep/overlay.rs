@@ -13,8 +13,8 @@ use crate::step::assembly::AssemblyTransform;
 use crate::step::brep::geom::SurfaceGeom;
 use crate::step::brep::mesh::edge_disc::{discretize_edge_overlay, EdgeDiscConfig};
 use crate::step::brep::mesh::BRepMeshConfig;
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::{EdgeKey, FaceKey, ShellKey, SolidKey};
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{EdgeKey, FaceKey, ShellKey, SolidKey};
 
 /// Pull seam/overlay lines slightly along the outward normal to avoid depth fighting.
 const SURFACE_NORMAL_BIAS_FRAC: f32 = 3e-5;
@@ -213,7 +213,7 @@ fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
     }
 }
 
-fn primary_face_pcurve(edge: &crate::step::brep::topo::BRepEdge) -> Option<(FaceKey, &Curve2d)> {
+fn primary_face_pcurve(edge: &rc3d_shape::topo::BRepEdge) -> Option<(FaceKey, &Curve2d)> {
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = *keys.first()?;

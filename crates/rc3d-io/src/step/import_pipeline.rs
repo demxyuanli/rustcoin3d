@@ -5,8 +5,8 @@ use rc3d_core::math::Vec3;
 use crate::step::brep::heal::{
     auto_heal_shell, check_shell_continuity, log_shell_topo_diag, HealLevel, HealReport,
 };
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::SolidKey;
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::SolidKey;
 use crate::step::import_options::StepImportReport;
 use crate::step::mesh_result::MeshResult;
 

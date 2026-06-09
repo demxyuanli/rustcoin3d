@@ -3,7 +3,7 @@
 
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::geom::{CurveGeom, SurfaceGeom};
-use rc3d_io::step::brep::topo::{EdgeKey, FaceKey, VertexKey};
+use rc3d_shape::topo::{EdgeKey, FaceKey, VertexKey};
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::parser;
 use std::path::Path;
@@ -73,7 +73,7 @@ fn inspect_shape_topology() {
             for (ek, orient) in &wire_edges {
                 let edge = reg.edges.get(*ek).unwrap();
                 let pc_count = edge.pcurves.len();
-                let dir = if matches!(orient, rc3d_io::step::brep::topo::Orientation::Forward) { "F" } else { "R" };
+                let dir = if matches!(orient, rc3d_shape::topo::Orientation::Forward) { "F" } else { "R" };
                 let ck = curve_name(&edge.curve);
                 let shared = edge_faces.get(ek).map(|v| v.len()).unwrap_or(0);
                 println!("  {:?} [{:?},{:?}] {} {} pc#{} by_{}",

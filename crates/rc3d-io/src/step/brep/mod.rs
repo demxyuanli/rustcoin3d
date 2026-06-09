@@ -1,6 +1,4 @@
 pub mod geom;
-pub mod topo;
-pub mod registry;
 pub mod build;
 pub mod same_parameter;
 pub mod overlay;
@@ -15,8 +13,8 @@ pub use rc3d_shape::mesh;
 
 pub use overlay::{build_edge_curves, build_mesh_wireframe};
 pub use geom::{CurveGeom, SurfaceGeom, SurfaceParamRange};
-pub use topo::{Orientation, BRepVertex, BRepEdge, BRepWire, BRepFace, BRepShell, BRepSolid};
-pub use registry::{BRepStore, PCurveEdit};
+pub use rc3d_shape::topo::{Orientation, BRepVertex, BRepEdge, BRepWire, BRepFace, BRepShell, BRepSolid};
+pub use rc3d_shape::store::{BRepStore, PCurveEdit};
 pub use build::{
     build_brep, build_brep_with_options, BRepBuildOptions, BRepBuildReport, BRepBuildResult,
 };

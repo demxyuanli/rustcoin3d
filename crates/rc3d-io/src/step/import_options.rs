@@ -6,7 +6,7 @@ use rc3d_shape::mesh::config::TessellationTier;
 
 use crate::step::adapter::{AdapterMode, AdapterOptions};
 use crate::step::brep::heal::HealLevel;
-use crate::step::brep::topo::FaceKey;
+use rc3d_shape::topo::FaceKey;
 use crate::step::parser::EntityIndex;
 
 /// How strictly STEP import treats parse/build/heal issues.

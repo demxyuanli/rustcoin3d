@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_shape::{ShapeDocument, ShapeId};
 
-use crate::step::brep::registry::BRepStore;
-use crate::step::brep::topo::{ShellKey, SolidKey};
+use rc3d_shape::BRepStore;
+use rc3d_shape::topo::{ShellKey, SolidKey};
 use crate::step::import_options::StepImportMode;
 
 /// Resolve explode factor: explicit > 0, else Preview + overlapping solids -> 0.35.
