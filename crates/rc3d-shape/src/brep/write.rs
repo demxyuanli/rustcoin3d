@@ -186,6 +186,10 @@ impl<'a> BrepWriter<'a> {
 
     /// Write PCurves section with actual 2D curve data.
     fn write_curve2ds(&self, output: &mut impl Write) -> io::Result<()> {
+        if self.pcurve_count == 0 {
+            writeln!(output, "Curve2ds 0")?;
+            return Ok(());
+        }
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
         // Count edges before this one to compute curve_index
         let mut edge_count = 0usize;
