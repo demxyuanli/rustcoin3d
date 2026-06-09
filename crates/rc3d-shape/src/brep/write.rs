@@ -391,7 +391,26 @@ impl<'a> BrepWriter<'a> {
                     SurfaceGeom::Torus { center, .. } => *center,
                     SurfaceGeom::BSpline(ns) => ns.control_points.first()
                         .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
-                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
+                        // Approximate as Cylinder — edges wrap around axis
+                        let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
+                        let samples: Vec<Vec3> = (0..=8).map(|i| generatrix.d0(i as f32 / 8.0)).collect();
+                        let avg_radius: f32 = samples.iter()
+                            .map(|p| {
+                                let rel = *p - *axis_origin;
+                                let ax = axis_dir.normalize();
+                                let radial = rel - ax * ax.dot(rel);
+                                radial.length()
+                            })
+                            .sum::<f32>() / samples.len() as f32;
+                        let r = avg_radius.max(0.01);
+                        writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                            axis_origin.x, axis_origin.y, axis_origin.z,
+                            axis_dir.x, axis_dir.y, axis_dir.z,
+                            x_dir.x, x_dir.y, x_dir.z,
+                            y_dir.x, y_dir.y, y_dir.z, r)?;
+                        continue;
+                    }
                     SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
                     _ => Vec3::ZERO,
                 };
