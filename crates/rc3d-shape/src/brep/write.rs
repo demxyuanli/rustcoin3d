@@ -113,13 +113,10 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        // TODO: When Curve2ds format is fixed, use pcurve_entries for real data.
-        // Currently forced to 0 because our entry format (edge_pos+face_pos+ori+type+data)
-        // doesn't match OCC's raw-2D-curve format, causing parse failures.
-        let pcurve_count = 0; // FIXME: pcurve_entries.len()
+        let pcurve_count = pcurve_entries.len();
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries: vec![], pcurve_count }
+        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -187,45 +184,29 @@ impl<'a> BrepWriter<'a> {
         Ok(())
     }
 
-    /// Write PCurves section with actual 2D curve data.
+    /// Write PCurves section — raw 2D curves in OCC format (same types as 3D Curves).
     fn write_curve2ds(&self, output: &mut impl Write) -> io::Result<()> {
         if self.pcurve_count == 0 {
             writeln!(output, "Curve2ds 0")?;
             return Ok(());
         }
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
-        // Count edges before this one to compute curve_index
-        let mut edge_count = 0usize;
-        let mut edge_to_curve: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        for entry in &self.shapes {
-            if matches!(entry, ShapeEntry::Edge(_)) {
-                edge_count += 1;
-                // Map edge TShape position -> curve index
-                // We need to find positions of edges...
-            }
-        }
-        // Build edge TShape position -> curve index map
-        let mut curve_idx_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        let mut ci = 0usize;
-        for (pos, entry) in self.shapes.iter().enumerate() {
-            if matches!(entry, ShapeEntry::Edge(_)) {
-                ci += 1;
-                curve_idx_map.insert(pos + 1, ci);
-            }
-        }
         for entry in &self.pcurve_entries {
-            let ori = if entry.same_sense { 1 } else { 0 };
-            let curve_idx = curve_idx_map.get(&entry.edge_abs_pos).copied().unwrap_or(0);
-            write!(output, "{} {} {} ", curve_idx, entry.face_abs_pos, ori)?;
             match &entry.curve {
                 Curve2d::Line { origin, direction } => {
-                    writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
+                    let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
+                    let (dx, dy) = if len > 1e-12 {
+                        (direction.0 / len, direction.1 / len)
+                    } else {
+                        (1.0, 0.0)
+                    };
+                    writeln!(output, "1 {} {} {} {}", origin.0, origin.1, dx, dy)?;
                 }
                 Curve2d::Circle { center, radius } => {
-                    writeln!(output, "2 {} {} {}", center.0, center.1, radius)?;
+                    writeln!(output, "2 {} {} {} {} {} {}", center.0, center.1, 0.0, 0.0, 1.0, *radius)?;
                 }
                 Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                    writeln!(output, "3 {} {} {} {}", center.0, center.1, semi_major, semi_minor)?;
+                    writeln!(output, "3 {} {} {} {} {} {}", center.0, center.1, *semi_major, *semi_minor, 0.0, 1.0)?;
                 }
                 Curve2d::BSpline { degree, control_points, knots, weights } => {
                     write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
@@ -235,13 +216,13 @@ impl<'a> BrepWriter<'a> {
                     if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
                     writeln!(output)?;
                 }
-                Curve2d::Trimmed { basis, t_min, t_max } => {
+                Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
                         Curve2d::Line { origin, direction } => {
                             writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
                         }
                         Curve2d::Circle { center, radius } => {
-                            writeln!(output, "2 {} {} {}", center.0, center.1, radius)?;
+                            writeln!(output, "2 {} {} {} {} {} {}", center.0, center.1, 0.0, 0.0, 1.0, *radius)?;
                         }
                         _ => writeln!(output, "1 0 0 1 0")?,
                     }
@@ -547,26 +528,25 @@ impl<'a> BrepWriter<'a> {
         // curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
 
-        // PCurve references for this edge (use curve index, not edge position)
-        let edge_abs = self.edge_pos(ek);
-        let curve_idx_for_edge = curve_idx;
+        // PCurve references — OCC format: one line per PCurve
+        // Format: 2  curve2d_idx  face_pos  0  0  param_range
         if self.pcurve_count == 0 {
             writeln!(output, "0")?;
         } else {
-            let mut pc_indices: Vec<usize> = Vec::new();
+            let edge_abs = self.edge_pos(ek);
+            let mut pc_lines: Vec<(usize, usize, f32)> = Vec::new(); // (curve2d_idx, face_abs_pos, param)
             for (idx, entry) in self.pcurve_entries.iter().enumerate() {
                 if entry.edge_abs_pos == edge_abs {
-                    pc_indices.push(idx + 1); // 1-based
+                    pc_lines.push((idx + 1, entry.face_abs_pos, param_range));
                 }
             }
-            if pc_indices.is_empty() {
+            if pc_lines.is_empty() {
                 writeln!(output, "0")?;
             } else {
-                write!(output, "{} C0", pc_indices.len())?;
-                for pi in &pc_indices {
-                    write!(output, " {} 0", pi)?;
+                for (pc_idx, face_pos, param) in &pc_lines {
+                    writeln!(output, "2  {} {} 0 0 {}", pc_idx, face_pos, param)?;
                 }
-                writeln!(output)?;
+                writeln!(output, "0")?;
             }
         }
         writeln!(output)?;
