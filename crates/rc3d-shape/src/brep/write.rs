@@ -266,7 +266,23 @@ impl<'a> BrepWriter<'a> {
         }
         writeln!(output, "Curves {}", curves.len())?;
 
+        // Check if any curve belongs to a non-planar face — if so, write as Line
+        let has_non_planar = curves.iter().any(|c| {
+            if let CurveGeom::BSpline { .. } | CurveGeom::Circle { .. } = expand_curve(c) { true } else { false }
+        });
+
         for curve in &curves {
+            if has_non_planar {
+                // Write as Line approximation (endpoints match vertex positions)
+                let p0 = curve.d0(0.0);
+                let p1 = curve.d0(1.0);
+                let dir = p1 - p0;
+                let len = dir.length();
+                let d = if len > 1e-12 { dir / len } else { Vec3::X };
+                writeln!(output, "1 {} {} {} {} {} {}",
+                    p0.x, p0.y, p0.z, d.x, d.y, d.z)?;
+                continue;
+            }
             let expanded = expand_curve(curve);
             match expanded {
                 CurveGeom::Line { origin, direction } => {
@@ -372,13 +388,9 @@ impl<'a> BrepWriter<'a> {
         }
         writeln!(output, "Surfaces {}", surfaces.len())?;
 
-        // Check if all surfaces are planar — if not, approximate non-planar as planes
-        let all_planar = surfaces.iter().all(|s| is_planar_surface(s));
-
         for surface in &surfaces {
-            if !all_planar && !is_planar_surface(surface) {
-                // Approximate non-planar surface as a plane at the surface's origin
-                let p0 = match surface {
+            if !is_planar_surface(surface) {
+                let origin = match surface {
                     SurfaceGeom::Cylinder { origin, .. } => *origin,
                     SurfaceGeom::Cone { apex, .. } => *apex,
                     SurfaceGeom::Sphere { center, .. } => *center,
@@ -386,14 +398,11 @@ impl<'a> BrepWriter<'a> {
                     SurfaceGeom::BSpline(ns) => ns.control_points.first()
                         .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
                     SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
-                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.0),
-                    SurfaceGeom::Offset { basis, .. } => match basis.as_ref() {
-                        SurfaceGeom::Plane { origin, .. } => *origin,
-                        _ => Vec3::ZERO,
-                    },
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
                     _ => Vec3::ZERO,
                 };
-                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0", p0.x, p0.y, p0.z)?;
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
+                    origin.x, origin.y, origin.z)?;
                 continue;
             }
             match surface {
