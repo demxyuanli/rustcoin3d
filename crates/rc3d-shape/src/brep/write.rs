@@ -316,17 +316,6 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Curves {}", curves.len())?;
 
         for curve in &curves {
-            // For non-planar shapes with per-face planes, write all curves as Lines
-            if !self.face_plane_map.is_empty() {
-                let p0 = curve.d0(0.0);
-                let p1 = curve.d0(1.0);
-                let dir = p1 - p0;
-                let len = dir.length();
-                let d = if len > 1e-12 { dir / len } else { Vec3::X };
-                writeln!(output, "1 {} {} {} {} {} {}",
-                    p0.x, p0.y, p0.z, d.x, d.y, d.z)?;
-                continue;
-            }
             let expanded = expand_curve(curve);
             match expanded {
                 CurveGeom::Line { origin, direction } => {
