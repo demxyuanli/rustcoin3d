@@ -1,4 +1,4 @@
-//! Multi-hole plate STEP solid test: square hole + true circular hole.
+//! Multi-hole plate STEP solid test: square hole + circular hole + hexagonal hole.
 //!
 //! Reads `steps/HoledPlate.step` (hand-written closed-shell BRep) and verifies
 //! top/bottom face triangles do not fall inside the holes after meshing.
@@ -47,13 +47,23 @@ fn test_multi_hole_step_import_and_mesh() {
     }
     assert!(total_tris > 0, "expected mesh triangles from holed plate STEP");
 
-    // Holes: square + circle approximated by 32-gon for point-in-trim test.
+    // Holes: square + circle (32-gon) + hexagon from HoledPlate.step wire vertices.
     let holes: Vec<Vec<(f32, f32)>> = vec![
-        vec![(19.0,34.0),(19.0,46.0),(31.0,46.0),(31.0,34.0)],
-        (0..32).map(|i| {
-            let angle = std::f32::consts::TAU * i as f32 / 32.0;
-            (50.0 + angle.cos() * 8.0, 40.0 + angle.sin() * 8.0)
-        }).collect(),
+        vec![(19.0, 34.0), (19.0, 46.0), (31.0, 46.0), (31.0, 34.0)],
+        (0..32)
+            .map(|i| {
+                let angle = std::f32::consts::TAU * i as f32 / 32.0;
+                (50.0 + angle.cos() * 8.0, 40.0 + angle.sin() * 8.0)
+            })
+            .collect(),
+        vec![
+            (83.0, 40.0),
+            (79.0, 46.928_203),
+            (71.0, 46.928_203),
+            (67.0, 40.0),
+            (71.0, 33.071_797),
+            (79.0, 33.071_797),
+        ],
     ];
     let outer_poly = vec![(0.0,0.0),(100.0,0.0),(100.0,80.0),(0.0,80.0)];
 

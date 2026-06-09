@@ -5,6 +5,7 @@ cache/**
 pipeline_cache.bin
 *.txt
 *.bak
+*.orig
 .gitignore
 CLAUDE.md
 .github/**
