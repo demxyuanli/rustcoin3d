@@ -1,6 +1,7 @@
 //! Engine-level B-Rep shape document kernel (OCC TopoDS + XDE aligned).
 
 pub mod bool;
+pub mod brep;
 pub mod document;
 pub mod emit_plan;
 pub mod error;
