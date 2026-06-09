@@ -266,36 +266,28 @@ impl<'a> BrepWriter<'a> {
                         origin.x, origin.y, origin.z,
                         dir.x, dir.y, dir.z)?;
                 }
-                CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
-                    writeln!(output, "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                CurveGeom::Circle { center, axis, radius, .. } => {
+                    writeln!(output, "2 {} {} {}  {} {} {}  {}",
                         center.x, center.y, center.z,
-                        axis.x, axis.y, axis.z, radius,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        axis.x, axis.y, axis.z, radius)?;
                 }
-                CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => {
+                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        semi_major, semi_minor)?;
                 }
-                CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, .. } => {
+                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        semi_major, semi_minor)?;
                 }
-                CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir } => {
-                    writeln!(output, "5 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                CurveGeom::Parabola { center, axis, focal_dist, .. } => {
+                    writeln!(output, "5 {} {} {}  {} {} {}  {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        focal_dist,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        focal_dist)?;
                 }
                 CurveGeom::BezierCurve { degree, control_points, weights } => {
                     writeln!(output, "6 {}  {}  {}",
