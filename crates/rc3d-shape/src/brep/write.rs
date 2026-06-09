@@ -172,8 +172,7 @@ impl<'a> BrepWriter<'a> {
             match expanded {
                 CurveGeom::Line { origin, direction } => {
                     let len = direction.length();
-                    let dir = if len > 1e-12 { *direction / len } else { *direction };
-                    // OCC format: 1 ox oy oz dx dy dz  (unit direction)
+                    let dir = if len > 1e-12 { *direction / len } else { Vec3::X };
                     writeln!(output, "1 {} {} {} {} {} {}",
                         origin.x, origin.y, origin.z,
                         dir.x, dir.y, dir.z)?;
