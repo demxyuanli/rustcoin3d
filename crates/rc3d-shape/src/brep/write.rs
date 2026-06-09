@@ -39,7 +39,6 @@ struct BrepWriter<'a> {
     needs_default_compound: bool,
     pcurve_entries: Vec<PCurveEntry>,
     pcurve_count: usize,
-    face_plane_map: std::collections::HashMap<FaceKey, (Vec3, Vec3, Vec3)>,
 }
 
 /// Compact representation of each TShape for ordering.
@@ -88,10 +87,6 @@ impl<'a> BrepWriter<'a> {
         // If no compounds exist but we have solids, create a single default compound
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && store.solids.len() > 0;
-        // Check if any face is non-planar
-        // Write actual surfaces (no plane approximation).
-        // Let OCC auto-compute PCurves for non-planar surfaces.
-        let face_plane_map: std::collections::HashMap<FaceKey, (Vec3, Vec3, Vec3)> = std::collections::HashMap::new();
 
         // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
         let mut pcurve_entries = Vec::new();
@@ -134,10 +129,10 @@ impl<'a> BrepWriter<'a> {
                 store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
             } else { true }
         });
-        let pcurve_count = if face_plane_map.is_empty() { pcurve_entries.len() } else { 0 };
+        let pcurve_count = 0; // Always 0 — let OCC auto-compute PCurves
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count, face_plane_map }
+        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -377,26 +372,33 @@ impl<'a> BrepWriter<'a> {
     }
 
     fn write_surfaces(&self, output: &mut impl Write) -> io::Result<()> {
-        let mut face_keys: Vec<FaceKey> = Vec::new();
+        let mut surfaces: Vec<&SurfaceGeom> = Vec::new();
         for entry in &self.shapes {
             if let ShapeEntry::Face(fk) = entry {
-                face_keys.push(*fk);
-            }
-        }
-        writeln!(output, "Surfaces {}", face_keys.len())?;
-
-        for fk in &face_keys {
-            // Use per-face best-fit plane for non-planar shapes
-            if !self.face_plane_map.is_empty() {
-                if let Some((o, n, u)) = self.face_plane_map.get(fk) {
-                    let v = n.cross(*u);
-                    writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        o.x, o.y, o.z, n.x, n.y, n.z, u.x, u.y, u.z, v.x, v.y, v.z)?;
-                    continue;
+                if let Some(face) = self.store.faces.get(*fk) {
+                    surfaces.push(&face.surface);
                 }
             }
-            let surface = self.store.faces.get(*fk).map(|f| &f.surface);
-            let Some(surface) = surface else { continue; };
+        }
+        writeln!(output, "Surfaces {}", surfaces.len())?;
+
+        for surface in &surfaces {
+            if !is_planar_surface(surface) {
+                let origin = match surface {
+                    SurfaceGeom::Cylinder { origin, .. } => *origin,
+                    SurfaceGeom::Cone { apex, .. } => *apex,
+                    SurfaceGeom::Sphere { center, .. } => *center,
+                    SurfaceGeom::Torus { center, .. } => *center,
+                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
+                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
+                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
+                    _ => Vec3::ZERO,
+                };
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
+                    origin.x, origin.y, origin.z)?;
+                continue;
+            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
@@ -479,10 +481,13 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                    // OCC classic format may not support Revolution (type 7).
-                    // Decompose to BSpline by sampling the revolution.
-                    write_revolution_as_bspline_surface(output, generatrix, *axis_origin, *axis_dir)?;
+                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
+                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
+                        axis_origin.x, axis_origin.y, axis_origin.z,
+                        axis_dir.x, axis_dir.y, axis_dir.z,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
@@ -1040,58 +1045,6 @@ fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2
         knots,
         weights: None,
     }
-}
-
-/// Convert Revolution surface to BSpline surface by sampling.
-fn write_revolution_as_bspline_surface(
-    output: &mut impl Write,
-    generatrix: &CurveGeom,
-    axis_origin: Vec3,
-    axis_dir: Vec3,
-) -> io::Result<()> {
-    let n_u = 16usize; // angular samples
-    let n_v = 12usize; // generatrix samples
-
-    let gen_pts: Vec<Vec3> = (0..=n_v).map(|i| {
-        generatrix.d0(i as f32 / n_v as f32)
-    }).collect();
-
-    let axis = axis_dir.normalize();
-    let mut all_pts = Vec::new();
-    for i in 0..=n_u {
-        let angle = (i as f32 / n_u as f32) * std::f32::consts::TAU;
-        for p in &gen_pts {
-            let rel = *p - axis_origin;
-            let cos_a = angle.cos();
-            let sin_a = angle.sin();
-            let rotated = rel * cos_a + axis.cross(rel) * sin_a + axis * axis.dot(rel) * (1.0 - cos_a);
-            all_pts.push(axis_origin + rotated);
-        }
-    }
-
-    let u_count = n_u + 1;
-    let v_count = n_v + 1;
-    let degree_u = 2usize;
-    let degree_v = 3usize.min(v_count - 1);
-    let ku_count = u_count + degree_u + 1;
-    let kv_count = v_count + degree_v + 1;
-
-    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
-        degree_u, degree_v, u_count, v_count, ku_count, kv_count)?;
-    for p in &all_pts {
-        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
-    }
-    for i in 0..ku_count {
-        write!(output, "{} ", i as f32)?;
-    }
-    writeln!(output)?;
-    for i in 0..kv_count {
-        if i <= degree_v { write!(output, "0 ")?; }
-        else if i >= kv_count - degree_v - 1 { write!(output, "{} ", (v_count - degree_v) as f32)?; }
-        else { write!(output, "{} ", (i - degree_v) as f32)?; }
-    }
-    writeln!(output)?;
-    Ok(())
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
