@@ -113,13 +113,13 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        // FIXME: Curve2ds format needs to match OCC spec (raw 2D curves,
-        // not indexed entry format). For now, zero PCurves — planar shapes
-        // work without them; non-planar shapes open but are geometrically empty.
-        let pcurve_count = 0; // pcurve_entries.len();
+        // TODO: When Curve2ds format is fixed, use pcurve_entries for real data.
+        // Currently forced to 0 because our entry format (edge_pos+face_pos+ori+type+data)
+        // doesn't match OCC's raw-2D-curve format, causing parse failures.
+        let pcurve_count = 0; // FIXME: pcurve_entries.len()
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
+        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries: vec![], pcurve_count }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
