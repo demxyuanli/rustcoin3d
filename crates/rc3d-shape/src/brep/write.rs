@@ -113,7 +113,10 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        let pcurve_count = pcurve_entries.len();
+        // FIXME: Curve2ds format needs to match OCC spec (raw 2D curves,
+        // not indexed entry format). For now, zero PCurves — planar shapes
+        // work without them; non-planar shapes open but are geometrically empty.
+        let pcurve_count = 0; // pcurve_entries.len();
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
