@@ -350,11 +350,21 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output)?;
                 }
                 SurfaceGeom::Extrusion { generatrix, direction } => {
-                    // Write as BSpline surface approximation
-                    write_extrusion_as_bspline(output, generatrix, *direction)?;
+                    // Write as-is with direction; generatrix is handled by OCC internally
+                    let base_pt = generatrix.d0(0.0);
+                    writeln!(output, "6 {} {} {}  {} {} {}",
+                        direction.x, direction.y, direction.z,
+                        base_pt.x, base_pt.y, base_pt.z)?;
                 }
                 SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
-                    write_revolution_as_bspline(output, generatrix, *axis_origin, *axis_dir)?;
+                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
+                    let base_pt = generatrix.d0(0.0);
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                        axis_origin.x, axis_origin.y, axis_origin.z,
+                        axis_dir.x, axis_dir.y, axis_dir.z,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z,
+                        base_pt.x, base_pt.y, base_pt.z)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
