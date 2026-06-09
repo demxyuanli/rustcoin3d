@@ -88,21 +88,27 @@ impl<'a> BrepWriter<'a> {
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && store.solids.len() > 0;
 
-        // Pre-collect PCurve entries (edge_abs_pos, face_abs_pos, curve, same_sense)
+        // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
         let mut pcurve_entries = Vec::new();
         for (i, entry) in shapes.iter().enumerate() {
             if let ShapeEntry::Edge(ek) = entry {
                 if let Some(edge) = store.edges.get(*ek) {
                     for (fk, (pc, same_sense)) in &edge.pcurves {
-                        let face_pos = shapes.iter()
-                            .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
-                            .map(|p| p + 1).unwrap_or(0);
-                        pcurve_entries.push(PCurveEntry {
-                            edge_abs_pos: i + 1,
-                            face_abs_pos: face_pos,
-                            curve: pc.clone(),
-                            same_sense: *same_sense,
-                        });
+                        // Only include PCurves for non-planar faces
+                        let is_non_planar = store.faces.get(*fk)
+                            .map(|f| !matches!(f.surface, crate::geom::SurfaceGeom::Plane { .. }))
+                            .unwrap_or(false);
+                        if is_non_planar {
+                            let face_pos = shapes.iter()
+                                .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
+                                .map(|p| p + 1).unwrap_or(0);
+                            pcurve_entries.push(PCurveEntry {
+                                edge_abs_pos: i + 1,
+                                face_abs_pos: face_pos,
+                                curve: pc.clone(),
+                                same_sense: *same_sense,
+                            });
+                        }
                     }
                 }
             }
@@ -181,9 +187,29 @@ impl<'a> BrepWriter<'a> {
     /// Write PCurves section with actual 2D curve data.
     fn write_curve2ds(&self, output: &mut impl Write) -> io::Result<()> {
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
+        // Count edges before this one to compute curve_index
+        let mut edge_count = 0usize;
+        let mut edge_to_curve: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for entry in &self.shapes {
+            if matches!(entry, ShapeEntry::Edge(_)) {
+                edge_count += 1;
+                // Map edge TShape position -> curve index
+                // We need to find positions of edges...
+            }
+        }
+        // Build edge TShape position -> curve index map
+        let mut curve_idx_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut ci = 0usize;
+        for (pos, entry) in self.shapes.iter().enumerate() {
+            if matches!(entry, ShapeEntry::Edge(_)) {
+                ci += 1;
+                curve_idx_map.insert(pos + 1, ci);
+            }
+        }
         for entry in &self.pcurve_entries {
             let ori = if entry.same_sense { 1 } else { 0 };
-            write!(output, "{} {} {} ", entry.edge_abs_pos, entry.face_abs_pos, ori)?;
+            let curve_idx = curve_idx_map.get(&entry.edge_abs_pos).copied().unwrap_or(0);
+            write!(output, "{} {} {} ", curve_idx, entry.face_abs_pos, ori)?;
             match &entry.curve {
                 Curve2d::Line { origin, direction } => {
                     writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
@@ -515,8 +541,9 @@ impl<'a> BrepWriter<'a> {
         // curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
 
-        // PCurve references for this edge
+        // PCurve references for this edge (use curve index, not edge position)
         let edge_abs = self.edge_pos(ek);
+        let curve_idx_for_edge = curve_idx;
         if self.pcurve_count == 0 {
             writeln!(output, "0")?;
         } else {
