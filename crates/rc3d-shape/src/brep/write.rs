@@ -481,13 +481,10 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
-                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        axis_origin.x, axis_origin.y, axis_origin.z,
-                        axis_dir.x, axis_dir.y, axis_dir.z,
-                        x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
+                    // OCC classic format may not support Revolution (type 7).
+                    // Decompose to BSpline by sampling the revolution.
+                    write_revolution_as_bspline_surface(output, generatrix, *axis_origin, *axis_dir)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
@@ -1045,6 +1042,58 @@ fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2
         knots,
         weights: None,
     }
+}
+
+/// Convert Revolution surface to BSpline surface by sampling.
+fn write_revolution_as_bspline_surface(
+    output: &mut impl Write,
+    generatrix: &CurveGeom,
+    axis_origin: Vec3,
+    axis_dir: Vec3,
+) -> io::Result<()> {
+    let n_u = 16usize; // angular samples
+    let n_v = 12usize; // generatrix samples
+
+    let gen_pts: Vec<Vec3> = (0..=n_v).map(|i| {
+        generatrix.d0(i as f32 / n_v as f32)
+    }).collect();
+
+    let axis = axis_dir.normalize();
+    let mut all_pts = Vec::new();
+    for i in 0..=n_u {
+        let angle = (i as f32 / n_u as f32) * std::f32::consts::TAU;
+        for p in &gen_pts {
+            let rel = *p - axis_origin;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+            let rotated = rel * cos_a + axis.cross(rel) * sin_a + axis * axis.dot(rel) * (1.0 - cos_a);
+            all_pts.push(axis_origin + rotated);
+        }
+    }
+
+    let u_count = n_u + 1;
+    let v_count = n_v + 1;
+    let degree_u = 2usize;
+    let degree_v = 3usize.min(v_count - 1);
+    let ku_count = u_count + degree_u + 1;
+    let kv_count = v_count + degree_v + 1;
+
+    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
+        degree_u, degree_v, u_count, v_count, ku_count, kv_count)?;
+    for p in &all_pts {
+        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
+    }
+    for i in 0..ku_count {
+        write!(output, "{} ", i as f32)?;
+    }
+    writeln!(output)?;
+    for i in 0..kv_count {
+        if i <= degree_v { write!(output, "0 ")?; }
+        else if i >= kv_count - degree_v - 1 { write!(output, "{} ", (v_count - degree_v) as f32)?; }
+        else { write!(output, "{} ", (i - degree_v) as f32)?; }
+    }
+    writeln!(output)?;
+    Ok(())
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
