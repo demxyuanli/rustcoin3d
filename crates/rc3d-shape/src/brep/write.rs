@@ -266,23 +266,7 @@ impl<'a> BrepWriter<'a> {
         }
         writeln!(output, "Curves {}", curves.len())?;
 
-        // Check if any curve belongs to a non-planar face — if so, write as Line
-        let has_non_planar = curves.iter().any(|c| {
-            if let CurveGeom::BSpline { .. } | CurveGeom::Circle { .. } = expand_curve(c) { true } else { false }
-        });
-
         for curve in &curves {
-            if has_non_planar {
-                // Write as Line approximation (endpoints match vertex positions)
-                let p0 = curve.d0(0.0);
-                let p1 = curve.d0(1.0);
-                let dir = p1 - p0;
-                let len = dir.length();
-                let d = if len > 1e-12 { dir / len } else { Vec3::X };
-                writeln!(output, "1 {} {} {} {} {} {}",
-                    p0.x, p0.y, p0.z, d.x, d.y, d.z)?;
-                continue;
-            }
             let expanded = expand_curve(curve);
             match expanded {
                 CurveGeom::Line { origin, direction } => {
