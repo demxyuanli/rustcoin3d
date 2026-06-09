@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 use slotmap::SlotMap;
 use rc3d_core::math::Vec3;
-use rc3d_core::utils::hash::f32x3_quantized_bits;
+use rc3d_core::utils::spatial::SpatialIndex;
 use crate::topo::*;
+use crate::tolerance::ToleranceContext;
 use crate::geom::CurveGeom;
 use crate::geom::curve2d::Curve2d;
 use crate::geom::normalize_edge_curve_to_vertices;
@@ -18,8 +19,9 @@ pub struct BRepStore {
     pub faces: SlotMap<FaceKey, BRepFace>,
     pub shells: SlotMap<ShellKey, BRepShell>,
     pub solids: SlotMap<SolidKey, BRepSolid>,
-    /// Spatial hash → VertexKey for O(1) vertex deduplication.
-    pub vertex_hash_index: HashMap<[u32; 3], VertexKey>,
+    pub compounds: SlotMap<CompoundKey, BRepCompound>,
+    /// Spatial grid → VertexKey for tolerance-aware vertex deduplication.
+    pub vertex_spatial_index: SpatialIndex<VertexKey>,
     /// Ordered endpoint pair → EdgeKey for O(1) edge deduplication.
     pub edge_hash_index: HashMap<(VertexKey, VertexKey), Vec<EdgeKey>>,
     /// Inverted index: edge → faces that reference this edge.
@@ -30,10 +32,17 @@ pub struct BRepStore {
     /// Inverted index: vertex → edges that reference this vertex.
     /// Auto-maintained (no explicit build call needed).
     pub vertex_to_edges: HashMap<VertexKey, Vec<EdgeKey>>,
+    /// Model/heal/mesh distance tolerances for this shape document.
+    pub tolerance: ToleranceContext,
 }
 
 impl BRepStore {
     pub fn new() -> Self {
+        Self::with_tolerance(ToleranceContext::default())
+    }
+
+    pub fn with_tolerance(tolerance: ToleranceContext) -> Self {
+        let cell = tolerance.vertex_cell_size();
         Self {
             vertices: SlotMap::with_key(),
             edges: SlotMap::with_key(),
@@ -41,26 +50,31 @@ impl BRepStore {
             faces: SlotMap::with_key(),
             shells: SlotMap::with_key(),
             solids: SlotMap::with_key(),
-            vertex_hash_index: HashMap::new(),
+            compounds: SlotMap::with_key(),
+            vertex_spatial_index: SpatialIndex::with_cell_size(cell),
             edge_hash_index: HashMap::new(),
             edge_to_faces: HashMap::new(),
             vertex_to_edges: HashMap::new(),
+            tolerance,
         }
     }
 
     /// Insert or find an existing vertex at the given position within tolerance.
-    /// Uses `f32x3_quantized_bits` spatial hashing for O(1) lookup.
     pub fn find_or_add_vertex(&mut self, position: Vec3, tolerance: f32) -> VertexKey {
-        let hash = f32x3_quantized_bits([position.x, position.y, position.z]);
-        if let Some(&key) = self.vertex_hash_index.get(&hash) {
-            if let Some(v) = self.vertices.get(key) {
-                if (v.position - position).length() <= tolerance {
-                    return key;
-                }
-            }
+        let p = [position.x, position.y, position.z];
+        if let Some(key) = self.vertex_spatial_index.find_near(p, tolerance, |k| {
+            self.vertices
+                .get(k)
+                .map(|v| {
+                    let pos = v.position;
+                    [pos.x, pos.y, pos.z]
+                })
+                .unwrap_or([0.0; 3])
+        }) {
+            return key;
         }
         let key = self.vertices.insert(BRepVertex { position, tolerance });
-        self.vertex_hash_index.insert(hash, key);
+        self.vertex_spatial_index.insert(key, p);
         key
     }
 
@@ -107,6 +121,8 @@ impl BRepStore {
             tolerance,
             v_low: v_lo,
             v_high: v_hi,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: {
                 let mut m = HashMap::new();
                 m.insert(face, pcurve);
@@ -148,6 +164,8 @@ impl BRepStore {
             tolerance,
             v_low: v_lo,
             v_high: v_hi,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: {
                 let mut m = HashMap::new();
                 m.insert(face, pcurve);
@@ -304,6 +322,24 @@ mod tests {
         let b = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-4);
         assert_eq!(a, b);
         assert_eq!(reg.vertices.len(), 1);
+    }
+
+    #[test]
+    fn test_find_or_add_vertex_near_duplicate_within_tolerance() {
+        let mut reg = BRepStore::new();
+        let a = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-3);
+        let b = reg.find_or_add_vertex(Vec3::new(1.0 + 5e-4, 2.0, 3.0), 1e-3);
+        assert_eq!(a, b);
+        assert_eq!(reg.vertices.len(), 1);
+    }
+
+    #[test]
+    fn test_find_or_add_vertex_distinct_beyond_tolerance() {
+        let mut reg = BRepStore::new();
+        let a = reg.find_or_add_vertex(Vec3::ZERO, 1e-5);
+        let b = reg.find_or_add_vertex(Vec3::new(1e-4, 0.0, 0.0), 1e-5);
+        assert_ne!(a, b);
+        assert_eq!(reg.vertices.len(), 2);
     }
 
     #[test]

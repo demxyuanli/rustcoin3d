@@ -1,11 +1,18 @@
 //! Verification STL export from the same import/emit pipeline used by visualization.
-//! Single file:  cargo test -p rc3d-io --test export_step_stl case_shape --release -- --exact case_shape
-//! All three:    cargo test -p rc3d-io --test export_step_stl case_all --release -- --exact case_all
-//! Optional cs.step: set RC3D_EXPORT_CS=1
+//!
+//! Fast (regression speed):
+//!   cargo test -p rc3d-io --test export_step_stl case_shape --release -- --ignored --exact
+//!
+//! Quality (Standard heal + relative deflection, slower):
+//!   cargo test -p rc3d-io --test export_step_stl case_shape_quality --release -- --ignored --exact
+//!
+//! All files: cargo test -p rc3d-io --test export_step_stl case_all --release -- --ignored --exact
 //! Layout: set RC3D_EXPORT_LAYOUT=merged|per_instance (default: CI->merged, local->per_instance)
 //! Format: set RC3D_EXPORT_STL=ascii|binary (default: ascii)
 
 use rc3d_core::math::Vec3;
+use rc3d_shape::ToleranceContext;
+use rc3d_io::step::brep::heal::HealLevel;
 use rc3d_io::step::{emit_plan_options_from_step, import_step_file_with_options, StepImportOptions};
 use rc3d_io::step::mesh_result::MeshResult;
 use rc3d_io::{write_ascii_stl, write_binary_stl, StlError};
@@ -18,11 +25,24 @@ enum ExportLayout {
     PerInstance,
 }
 
+/// Fast: Basic heal + preview mesh (CI regression). Quality: Standard heal + relative deflection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportProfile {
+    Fast,
+    Quality,
+}
+
 fn test_data(name: &str) -> PathBuf {
-    let steps = std::env::var("RC3D_STEP_DIR")
+    let primary = std::env::var("RC3D_STEP_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../steps"));
-    steps.join(name)
+    let candidate = primary.join(name);
+    if candidate.exists() {
+        return candidate;
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test_data")
+        .join(name)
 }
 
 enum StlFormat {
@@ -51,6 +71,23 @@ fn export_layout() -> ExportLayout {
     }
 }
 
+fn import_options_for(profile: ExportProfile) -> StepImportOptions {
+    let mut import_options = StepImportOptions::default();
+    import_options.skip_visualization = true;
+    match profile {
+        ExportProfile::Fast => {
+            import_options.heal_level = HealLevel::Basic;
+            import_options.fast_export = true;
+        }
+        ExportProfile::Quality => {
+            import_options.heal_level = HealLevel::Standard;
+            import_options.fast_export = false;
+            import_options.mesh_relative_deflection = 0.001;
+        }
+    }
+    import_options
+}
+
 fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: rc3d_core::math::Mat4) {
     let offset = dst.vertices.len() as i32;
     for &v in &src.vertices {
@@ -76,7 +113,11 @@ fn write_mesh_stl(path: &Path, mesh: &MeshResult) -> Result<(), StlError> {
     }
 }
 
-fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf>> {
+fn mesh_and_export_stl(
+    step_name: &str,
+    output_dir: &Path,
+    profile: ExportProfile,
+) -> Option<Vec<PathBuf>> {
     let step_path = test_data(step_name);
     if !step_path.exists() {
         println!("  SKIP: {} not found", step_name);
@@ -84,15 +125,18 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
     }
 
     let t0 = Instant::now();
-    println!("=== {} ===", step_name);
+    let profile_label = match profile {
+        ExportProfile::Fast => "fast",
+        ExportProfile::Quality => "quality",
+    };
+    println!("=== {} ({}) ===", step_name, profile_label);
 
-    let mut import_options = StepImportOptions::default();
-    import_options.skip_visualization = true;
-    import_options.heal_level = rc3d_io::step::brep::heal::HealLevel::Basic;
-    import_options.fast_export = true;
+    let import_options = import_options_for(profile);
     let mut result = import_step_file_with_options(&step_path, &import_options).expect("import step");
 
-    let plan_options = emit_plan_options_from_step(&import_options);
+    let mut plan_options = emit_plan_options_from_step(&import_options);
+    ToleranceContext::from_model(result.document.store.tolerance.model)
+        .apply_to_mesh_config(&mut plan_options.mesh_config);
     let plan = result
         .document
         .build_emit_plan(&plan_options)
@@ -100,6 +144,10 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
 
     let layout = export_layout();
     let stem = step_name.trim_end_matches(".step").trim_end_matches(".stp");
+    let suffix = match profile {
+        ExportProfile::Fast => "",
+        ExportProfile::Quality => "_quality",
+    };
     let mut out_paths = Vec::new();
 
     match layout {
@@ -118,7 +166,7 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
                 println!("  WARN: no mesh produced");
                 return None;
             }
-            let stl_path = output_dir.join(format!("{}.stl", stem));
+            let stl_path = output_dir.join(format!("{}{}.stl", stem, suffix));
             write_mesh_stl(&stl_path, &merged).expect("write stl");
             let file_size = std::fs::metadata(&stl_path).map(|m| m.len()).unwrap_or(0);
             println!(
@@ -144,7 +192,7 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
                 total_tris += cached.mesh.indices.len() / 4;
                 let mut mesh = MeshResult::default();
                 append_mesh_with_transform(&mut mesh, &cached.mesh, inst.world_transform);
-                let stl_path = output_dir.join(format!("{}__inst{:03}.stl", stem, i));
+                let stl_path = output_dir.join(format!("{}__inst{:03}{}.stl", stem, i, suffix));
                 write_mesh_stl(&stl_path, &mesh).expect("write stl");
                 out_paths.push(stl_path);
             }
@@ -164,12 +212,15 @@ fn mesh_and_export_stl(step_name: &str, output_dir: &Path) -> Option<Vec<PathBuf
 }
 
 fn corpus_files() -> Vec<&'static str> {
-    let mut files = vec!["Shape.step", "Shape-1.step", "Shape-2.step"];
-    if std::env::var("RC3D_EXPORT_CS").is_ok() {
-        files.push("cs.step");
-    }
-    files.extend(["Cube.step", "asse.step"]);
-    files
+    vec![
+        "Shape.step",
+        "Shape-1.step",
+        "Shape-2.step",
+        "Cube.step",
+        "cs.step",
+        "OffsetPlaneHoleEdge.step",
+        "asse.step",
+    ]
 }
 
 fn assert_stl_paths(step_name: &str, paths: &[PathBuf]) {
@@ -186,7 +237,7 @@ fn assert_stl_paths(step_name: &str, paths: &[PathBuf]) {
     }
 }
 
-fn export_one(step_name: &str) {
+fn export_one(step_name: &str, profile: ExportProfile) {
     let step_path = test_data(step_name);
     if !step_path.exists() {
         eprintln!("SKIP: {} not found (set RC3D_STEP_DIR to enable)", step_name);
@@ -194,42 +245,73 @@ fn export_one(step_name: &str) {
     }
     let output_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output");
     std::fs::create_dir_all(&output_dir).ok();
-    let stl_paths = mesh_and_export_stl(step_name, &output_dir).expect("export failed");
+    let stl_paths = mesh_and_export_stl(step_name, &output_dir, profile).expect("export failed");
     assert_stl_paths(step_name, &stl_paths);
 }
 
-/// Heavy integration tests: import + mesh + STL export from real STEP files.
-/// Run manually with: cargo test -p rc3d-io --test export_step_stl --release -- --ignored
-/// Requires RC3D_STEP_DIR env pointing to a directory with Shape.step etc.
-
+/// Fast export: Basic heal + preview mesh (regression / CI).
 #[test]
-#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
+#[ignore = "requires external STEP files; run with --ignored"]
 fn case_shape() {
-    export_one("Shape.step");
+    export_one("Shape.step", ExportProfile::Fast);
 }
 
 #[test]
-#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
+#[ignore = "requires external STEP files; run with --ignored"]
 fn case_shape1() {
-    export_one("Shape-1.step");
+    export_one("Shape-1.step", ExportProfile::Fast);
 }
 
 #[test]
-#[ignore = "requires external STEP files + minutes of CPU; run with --ignored"]
+#[ignore = "requires external STEP files; run with --ignored"]
 fn case_shape2() {
-    export_one("Shape-2.step");
+    export_one("Shape-2.step", ExportProfile::Fast);
 }
 
-/// Run export with a per-file timeout. Returns Some(paths) on success,
-/// None on timeout or error.
-fn mesh_and_export_with_timeout(step_name: &str, output_dir: &Path, timeout_secs: u64) -> Option<Vec<PathBuf>> {
+#[test]
+#[ignore = "requires external STEP files; run with --ignored"]
+fn case_cs() {
+    export_one("cs.step", ExportProfile::Fast);
+}
+
+#[test]
+#[ignore = "requires external STEP files; run with --ignored"]
+fn case_offset_plane_hole_edge() {
+    export_one("OffsetPlaneHoleEdge.step", ExportProfile::Fast);
+}
+
+/// Quality export: Standard heal + relative deflection 0.1% (slower, denser mesh).
+#[test]
+#[ignore = "requires external STEP files + quality mesh; run with --ignored"]
+fn case_shape_quality() {
+    export_one("Shape.step", ExportProfile::Quality);
+}
+
+#[test]
+#[ignore = "requires external STEP files + quality mesh; run with --ignored"]
+fn case_shape1_quality() {
+    export_one("Shape-1.step", ExportProfile::Quality);
+}
+
+#[test]
+#[ignore = "requires external STEP files + quality mesh; run with --ignored"]
+fn case_shape2_quality() {
+    export_one("Shape-2.step", ExportProfile::Quality);
+}
+
+fn mesh_and_export_with_timeout(
+    step_name: &str,
+    output_dir: &Path,
+    profile: ExportProfile,
+    timeout_secs: u64,
+) -> Option<Vec<PathBuf>> {
     use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
     let name = step_name.to_string();
     let dir = output_dir.to_path_buf();
 
     std::thread::spawn(move || {
-        let result = mesh_and_export_stl(&name, &dir);
+        let result = mesh_and_export_stl(&name, &dir, profile);
         let _ = tx.send(result);
     });
 
@@ -246,7 +328,6 @@ fn mesh_and_export_with_timeout(step_name: &str, output_dir: &Path, timeout_secs
 #[test]
 #[ignore = "requires external STEP files; run with --ignored"]
 fn case_all() {
-    // Per-file timeout: quick files get 60s, large files get 300s
     let quick_timeout = 60;
     let large_timeout = 300;
 
@@ -258,15 +339,13 @@ fn case_all() {
     let mut failures: Vec<String> = Vec::new();
 
     for name in corpus_files() {
-        // Shape-1 and Shape-2 have complex B-Rep that may hang during mesh
-        // generation; use a shorter timeout to avoid blocking the suite.
         let timeout = if name.contains("Shape-1") || name.contains("Shape-2") {
             large_timeout
         } else {
             quick_timeout
         };
 
-        match mesh_and_export_with_timeout(name, &output_dir, timeout) {
+        match mesh_and_export_with_timeout(name, &output_dir, ExportProfile::Fast, timeout) {
             Some(paths) => {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     assert_stl_paths(name, &paths);

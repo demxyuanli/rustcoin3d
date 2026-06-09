@@ -79,12 +79,34 @@ pub fn newton_refine_ssi(
         let du_b_dot = du_b.x * lambda_x + du_b.y * lambda_y + du_b.z * lambda_z;
         let dv_b_dot = dv_b.x * lambda_x + dv_b.y * lambda_y + dv_b.z * lambda_z;
 
-        // Update UV parameters with damping
-        let step_scale = 0.8; // damped step for stability
-        uv_a.0 += du_a_dot * step_scale;
-        uv_a.1 += dv_a_dot * step_scale;
-        uv_b.0 -= du_b_dot * step_scale; // note the -du_b in Jacobian means we add to uv_b
-        uv_b.1 -= dv_b_dot * step_scale;
+        // Backtracking line search: try full step, 1/2, 1/4, 1/8.
+        // Accept the first step that reduces the residual (OCC math_Gauss integration).
+        let mut accepted = false;
+        for &scale in &[1.0f32, 0.5, 0.25, 0.125] {
+            let ua_try = uv_a.0 + du_a_dot * scale;
+            let va_try = uv_a.1 + dv_a_dot * scale;
+            let ub_try = uv_b.0 - du_b_dot * scale;
+            let vb_try = uv_b.1 - dv_b_dot * scale;
+
+            // Evaluate trial position
+            let pa_try = surf_a.d0_native(ua_try, va_try);
+            let pb_try = surf_b.d0_native(ub_try, vb_try);
+            let dist_try = (pa_try - pb_try).length();
+
+            if dist_try < dist {
+                uv_a = (ua_try, va_try);
+                uv_b = (ub_try, vb_try);
+                accepted = true;
+                break;
+            }
+        }
+        if !accepted {
+            // No step reduced the residual — use damped fallback.
+            uv_a.0 += du_a_dot * 0.2;
+            uv_a.1 += dv_a_dot * 0.2;
+            uv_b.0 -= du_b_dot * 0.2;
+            uv_b.1 -= dv_b_dot * 0.2;
+        }
 
         // Clamp to reasonable parameter ranges
         let range_a = surf_a.param_range();

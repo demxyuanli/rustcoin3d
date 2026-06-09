@@ -6,6 +6,100 @@ use crate::store::BRepStore;
 use super::{CheckReport, HealConfig, HealReport, check_shell, heal_shell};
 use super::edge_tolerance::auto_fix_shell_edge_tolerances;
 
+// ── Heal policy (tier-driven heal configuration) ─────────────────
+
+use crate::mesh::config::TessellationTier;
+
+/// Heal pass identifiers for policy-driven pass selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HealPassId {
+    FixConnected,
+    RemoveSmallEdges,
+    ReorderWire,
+    FixSameParameter,
+    FixPCurve,
+    FixSeam,
+    ShellFix,
+    ContinuityCheck,
+    FixSmallArea,
+}
+
+/// Tier-driven heal policy — derived from `TessellationTier` via `for_tier()`.
+#[derive(Debug, Clone)]
+pub struct HealPolicy {
+    pub level: HealLevel,
+    pub max_iterations: usize,
+    pub passes: Vec<HealPassId>,
+    pub skip_on_non_manifold: bool,
+    pub continuity_check: bool,
+    pub same_parameter_pre_mesh: bool,
+}
+
+impl HealPolicy {
+    /// Create heal policy for the given tessellation tier.
+    pub fn for_tier(tier: TessellationTier) -> Self {
+        match tier {
+            TessellationTier::Preview => Self {
+                level: HealLevel::Basic,
+                max_iterations: 2,
+                passes: vec![
+                    HealPassId::FixConnected,
+                    HealPassId::RemoveSmallEdges,
+                    HealPassId::ReorderWire,
+                    HealPassId::FixSameParameter,
+                ],
+                skip_on_non_manifold: true,
+                continuity_check: false,
+                same_parameter_pre_mesh: false,
+            },
+            TessellationTier::Standard => Self {
+                level: HealLevel::Standard,
+                max_iterations: 5,
+                passes: vec![
+                    HealPassId::FixConnected,
+                    HealPassId::RemoveSmallEdges,
+                    HealPassId::ReorderWire,
+                    HealPassId::FixSameParameter,
+                    HealPassId::FixPCurve,
+                    HealPassId::FixSeam,
+                    HealPassId::ShellFix,
+                    HealPassId::ContinuityCheck,
+                    HealPassId::FixSmallArea,
+                ],
+                skip_on_non_manifold: false,
+                continuity_check: true,
+                same_parameter_pre_mesh: true,
+            },
+            TessellationTier::Precision => Self {
+                level: HealLevel::Standard,
+                max_iterations: 5,
+                passes: vec![
+                    HealPassId::FixConnected,
+                    HealPassId::RemoveSmallEdges,
+                    HealPassId::ReorderWire,
+                    HealPassId::FixSameParameter,
+                    HealPassId::FixPCurve,
+                    HealPassId::FixSeam,
+                    HealPassId::ShellFix,
+                    HealPassId::ContinuityCheck,
+                    HealPassId::FixSmallArea,
+                ],
+                skip_on_non_manifold: false,
+                continuity_check: true,
+                same_parameter_pre_mesh: true,
+            },
+        }
+    }
+}
+
+impl Default for HealPolicy {
+    fn default() -> Self {
+        Self::for_tier(TessellationTier::Standard)
+    }
+}
+
+// ── Heal level ─────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HealLevel {
     /// FixConnected + FixSmall + GapClose3d + FixOrientation only
@@ -96,6 +190,22 @@ pub fn auto_heal_shell(
 
     total_report.check_errors = check.errors.len();
     total_report.check_warnings = check.warnings.len();
+
+    // Post-heal: run SameParameter reparameterization if requested by policy.
+    // This adjusts PCurves so that surface(pcurve(t)) ≈ curve3d(t) within tolerance,
+    // improving mesh watertightness across face boundaries.
+    if level >= HealLevel::Standard {
+        let _ts = std::time::Instant::now();
+        let (results, adjusted) =
+            super::same_param_reparam::same_parameter_reparam(reg, &[shell_key], 1e-4, 5);
+        if adjusted > 0 {
+            log::info!(
+                "[BRep heal] SameParameter reparam: adjusted {} PCurves in {:.1}s ({} total edges checked)",
+                adjusted, _ts.elapsed().as_secs_f32(), results.len()
+            );
+        }
+    }
+
     total_report
 }
 
@@ -107,6 +217,21 @@ pub fn auto_heal_shell(
 /// | Standard | + same parameter, UV gaps, shifted, periodic degen, edge curves, lacking, seams, natural bound, reversed 2d |
 /// | Advanced | Standard + self-intersection, degenerated, intersecting wires |
 /// | Advanced | + self-intersection, degenerated, intersecting wires (when check flags set) |
+/// Map a HealPassId to the corresponding HealConfig boolean flag.
+pub fn apply_pass_to_config(pass: HealPassId, config: &mut HealConfig) {
+    match pass {
+        HealPassId::FixConnected => config.fix_connected = true,
+        HealPassId::RemoveSmallEdges => config.fix_small_edges = true,
+        HealPassId::ReorderWire => config.fix_reorder = true,
+        HealPassId::FixSameParameter => config.fix_same_parameter = true,
+        HealPassId::FixPCurve => { config.fix_shifted = true; config.fix_edge_curves = true; },
+        HealPassId::FixSeam => config.fix_missing_seams = true,
+        HealPassId::ShellFix => { config.fix_vertex_position = true; config.fix_free_bounds = true; },
+        HealPassId::ContinuityCheck => {}, // read-only check, no config flag
+        HealPassId::FixSmallArea => config.fix_small_area = true,
+    }
+}
+
 pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckReport) -> HealConfig {
     let mut config = HealConfig::all_disabled();
 

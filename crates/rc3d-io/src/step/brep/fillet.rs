@@ -187,6 +187,8 @@ pub fn constant_radius_fillet(
         tolerance,
         v_low: v_lo_a,
         v_high: v_hi_a,
+        t_min: 0.0,
+        t_max: 1.0,
         pcurves: HashMap::new(),
     });
     let ek_b = reg.edges.insert(BRepEdge {
@@ -194,6 +196,8 @@ pub fn constant_radius_fillet(
         tolerance,
         v_low: v_lo_b,
         v_high: v_hi_b,
+        t_min: 0.0,
+        t_max: 1.0,
         pcurves: HashMap::new(),
     });
 
@@ -324,6 +328,8 @@ mod tests {
             tolerance: 1e-6,
             v_low: v_lo,
             v_high: v_hi,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::new(),
         });
 
@@ -390,6 +396,8 @@ mod tests {
             tolerance: 1e-6,
             v_low: v0,
             v_high: v1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: std::collections::HashMap::new(),
         });
         // Don't add edge to edge_to_faces — it will be empty

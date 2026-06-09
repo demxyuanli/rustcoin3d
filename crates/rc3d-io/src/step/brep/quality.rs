@@ -137,6 +137,8 @@ mod tests {
                 direction: rc3d_core::math::Vec3::X,
             },
             tolerance: 1e-6,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: Default::default(),
         });
         let e1 = reg.edges.insert(BRepEdge {
@@ -146,6 +148,8 @@ mod tests {
                 direction: rc3d_core::math::Vec3::Y - rc3d_core::math::Vec3::X,
             },
             tolerance: 1e-6,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: Default::default(),
         });
         let e2 = reg.edges.insert(BRepEdge {
@@ -155,6 +159,8 @@ mod tests {
                 direction: -rc3d_core::math::Vec3::Y,
             },
             tolerance: 1e-6,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: Default::default(),
         });
 

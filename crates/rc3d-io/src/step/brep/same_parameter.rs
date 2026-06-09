@@ -136,6 +136,8 @@ mod tests {
                 direction: Vec3::new(1.0, 0.0, 0.0),
             },
             tolerance: 1e-6,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves,
         });
         reg.wires.get_mut(wire).unwrap().edges.push((ek, Orientation::Forward));

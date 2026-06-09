@@ -6,7 +6,7 @@ use rc3d_core::math::{Mat4, Vec3};
 
 use crate::document::ShapeDocument;
 use crate::error::ShapeError;
-use crate::mesh::{mesh_solid_with_voids, BRepMeshConfig};
+use crate::mesh::{mesh_solid_with_voids, report::ShellMeshReport, BRepMeshConfig};
 use crate::mesh_result::MeshResult;
 use crate::mesh_split::FaceTriRange;
 use crate::shape::ShapeId;
@@ -45,6 +45,7 @@ pub struct CachedMesh {
     pub mesh: MeshResult,
     pub face_tri_ranges: HashMap<FaceKey, FaceTriRange>,
     pub face_split_viable: bool,
+    pub report: ShellMeshReport,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +79,10 @@ pub struct SceneEmitPlan {
     pub mesh_table: HashMap<MeshSlotId, CachedMesh>,
     pub face_materials: HashMap<MeshSlotId, Vec<FaceMaterialGroup>>,
     pub pmi_refs: Vec<PmiPlacement>,
+    /// Distinct tessellated mesh slots in `mesh_table`.
+    pub mesh_slot_count: usize,
+    /// Instance rows sharing a mesh slot with at least one other row.
+    pub shared_mesh_instance_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +132,7 @@ pub fn mesh_solid_local(
         mesh: out.mesh,
         face_tri_ranges: out.face_tri_ranges,
         face_split_viable: true,
+        report: out.report,
     })
 }
 
@@ -214,6 +220,7 @@ impl ShapeDocument {
                 });
             }
             populate_pmi_refs(self, &mut plan);
+            finalize_plan_stats(&mut plan);
             eprintln!("[emit_plan] roots path: {:.1}s  {} instances, {} slots",
                 _t_plan.elapsed().as_secs_f32(), plan.instances.len(), plan.mesh_table.len());
             return Ok(plan);
@@ -233,10 +240,16 @@ impl ShapeDocument {
         }
 
         populate_pmi_refs(self, &mut plan);
+        finalize_plan_stats(&mut plan);
         eprintln!("[emit_plan] labels path: {:.1}s  {} instances, {} slots",
             _t_plan.elapsed().as_secs_f32(), plan.instances.len(), plan.mesh_table.len());
         Ok(plan)
     }
+}
+
+fn finalize_plan_stats(plan: &mut SceneEmitPlan) {
+    plan.mesh_slot_count = plan.mesh_table.len();
+    plan.shared_mesh_instance_count = plan.instances.len().saturating_sub(plan.mesh_slot_count);
 }
 
 fn apply_explode_offset(
@@ -341,6 +354,7 @@ fn ensure_mesh_slot(
             mesh: entry.mesh.clone(),
             face_tri_ranges: entry.face_tri_ranges.clone(),
             face_split_viable: entry.face_split_viable,
+            report: entry.report.clone(),
         },
     );
     slot
@@ -509,6 +523,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
 
@@ -540,6 +555,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
         cache.insert(
@@ -548,6 +564,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
         assert_eq!(cache.entries.len(), 2);
@@ -605,6 +622,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
 
@@ -663,6 +681,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
 

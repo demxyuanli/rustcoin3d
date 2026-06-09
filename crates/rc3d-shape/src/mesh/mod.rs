@@ -15,19 +15,24 @@ pub(crate) mod diagnostic;
 pub(crate) mod algo_factory;
 pub(crate) mod void_subtract;
 pub mod face_dispatch;
+pub mod face_mesher;
+pub mod face_strategy_chain;
+pub mod quality_gate;
+pub mod strategies;
 pub mod shell_mesh;
 pub(crate) mod orient;
 pub(crate) mod uv_source;
 pub(crate) mod solid_mesh;
 
 mod boundary;
-mod config;
+pub mod config;
 mod fallback_policy;
 mod grid;
 mod edge_pool;
 mod param_div;
 mod post_process;
 mod ruled;
+mod shell_pipeline;
 mod shell_impl;
 
 pub use config::{BRepMeshConfig, MESH_CLOSED_SURFACE_SEGS};

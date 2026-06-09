@@ -10,6 +10,7 @@ pub enum EntityType {
     Ellipse,
     Hyperbola,
     Parabola,
+    Conic,       // AP242 supertype for Circle/Ellipse/Hyperbola/Parabola
     Polyline,
     BSplineCurve,
     BSplineCurveWithKnots,
@@ -142,6 +143,7 @@ impl EntityType {
             "ELLIPSE" => Self::Ellipse,
             "HYPERBOLA" => Self::Hyperbola,
             "PARABOLA" => Self::Parabola,
+            "CONIC" => Self::Conic,
             "POLYLINE" => Self::Polyline,
             "B_SPLINE_CURVE" => Self::BSplineCurve,
             "B_SPLINE_CURVE_WITH_KNOTS" => Self::BSplineCurveWithKnots,

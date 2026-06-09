@@ -125,6 +125,7 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::geom::curve2d::Curve2d;
+    use rc3d_core::math::Vec3;
 
     #[test]
     fn test_compose_shells_disjoint_groups() {

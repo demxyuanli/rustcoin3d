@@ -39,12 +39,41 @@ fn test_data(name: &str) -> PathBuf {
         .join(name)
 }
 
+use rc3d_shape::mesh::config::TessellationTier;
+
 /// Single B-Rep parse → heal → mesh path (no scene graph / edge overlay).
 fn run_corpus_brep(file: &str) -> CorpusRun {
-    run_corpus_brep_adapter(file, AdapterMode::CompatMerge)
+    run_corpus_brep_tier(file, AdapterMode::CompatMerge, TessellationTier::Standard)
+}
+
+/// Corpus run with explicit tier — uses tier-driven heal + mesh config.
+fn run_corpus_brep_tier(file: &str, adapter_mode: AdapterMode, tier: TessellationTier) -> CorpusRun {
+    let heal_policy = rc3d_shape::heal::HealPolicy::for_tier(tier);
+    let mesh_policy = rc3d_shape::mesh::config::TessellationPolicy::for_tier(tier);
+    run_corpus_brep_with_policies(file, adapter_mode, &heal_policy, &mesh_policy)
+}
+
+fn run_corpus_brep_with_policies(
+    file: &str,
+    adapter_mode: AdapterMode,
+    heal_policy: &rc3d_shape::heal::HealPolicy,
+    mesh_policy: &rc3d_shape::mesh::config::TessellationPolicy,
+) -> CorpusRun {
+    run_corpus_brep_adapter_inner(file, adapter_mode, heal_policy, mesh_policy)
 }
 
 fn run_corpus_brep_adapter(file: &str, adapter_mode: AdapterMode) -> CorpusRun {
+    let heal_policy = rc3d_shape::heal::HealPolicy::for_tier(TessellationTier::Standard);
+    let mesh_policy = rc3d_shape::mesh::config::TessellationPolicy::for_tier(TessellationTier::Standard);
+    run_corpus_brep_adapter_inner(file, adapter_mode, &heal_policy, &mesh_policy)
+}
+
+fn run_corpus_brep_adapter_inner(
+    file: &str,
+    adapter_mode: AdapterMode,
+    _heal_policy: &rc3d_shape::heal::HealPolicy,
+    mesh_policy: &rc3d_shape::mesh::config::TessellationPolicy,
+) -> CorpusRun {
     let path = test_data(file);
     assert!(path.exists(), "missing test data: {file}");
     let start = Instant::now();
@@ -59,11 +88,11 @@ fn run_corpus_brep_adapter(file: &str, adapter_mode: AdapterMode) -> CorpusRun {
     let mut skip_face_keys = Vec::new();
     for &sk in &brep.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            let heal = auto_heal_shell(solid.outer_shell, &mut reg, HealLevel::Standard, 5);
+            let heal = auto_heal_shell(solid.outer_shell, &mut reg, _heal_policy.level, _heal_policy.max_iterations);
             skip_face_keys.extend(heal.skip_face_keys);
         }
     }
-    let mesh_config = BRepMeshConfig::default();
+    let mesh_config = mesh_policy.to_mesh_config();
     let mut tris = 0usize;
     let mut verts = 0usize;
     let mut meshed = 0usize;
@@ -363,5 +392,55 @@ fn t2_shape2() {
         },
         &run,
         &BRepMeshConfig::default(),
+    );
+}
+
+/// Shape-2 at Preview tier: fast import, no self-intersect output.
+/// Skipped faces are acceptable; the gate is "no exploded mesh".
+#[test]
+fn t2_shape2_preview() {
+    println!("\n=== T2 Shape-2.step (Preview tier) ===");
+    let run = run_corpus_brep_tier("Shape-2.step", AdapterMode::CompatMerge, TessellationTier::Preview);
+    assert!(
+        run.tris > 0,
+        "Shape-2 Preview: expected triangles > 0, got {}",
+        run.tris
+    );
+    assert!(
+        run.meshed > 0,
+        "Shape-2 Preview: expected at least 1 face meshed, got {}",
+        run.meshed
+    );
+    println!(
+        "  Preview: {} tris, {}/{} faces, {:.2}s",
+        run.tris, run.meshed, run.total_faces, run.secs
+    );
+}
+
+/// Verify tier differentiation: Preview produces fewer/equal triangles than Standard
+/// (fast-export mode skips post-refine, optimization, and chord checks).
+#[test]
+fn t2_shape2_tier_differentiation() {
+    println!("\n=== T2 Shape-2.step (Tier differentiation) ===");
+    let run_preview = run_corpus_brep_tier("Shape-2.step", AdapterMode::CompatMerge, TessellationTier::Preview);
+    let run_standard = run_corpus_brep_tier("Shape-2.step", AdapterMode::CompatMerge, TessellationTier::Standard);
+
+    assert!(run_preview.tris > 0, "Preview must produce triangles");
+    assert!(run_standard.tris > 0, "Standard must produce triangles");
+
+    // Preview should finish faster (fast_export=true skips optimization).
+    // Standard produces same or more triangles (post-refine + optimize enabled).
+    println!(
+        "  Preview:  {} tris, {}/{} faces, {:.2}s",
+        run_preview.tris, run_preview.meshed, run_preview.total_faces, run_preview.secs
+    );
+    println!(
+        "  Standard: {} tris, {}/{} faces, {:.2}s",
+        run_standard.tris, run_standard.meshed, run_standard.total_faces, run_standard.secs
+    );
+    assert!(
+        run_standard.tris >= run_preview.tris,
+        "Standard ({} tris) should produce >= Preview ({} tris)",
+        run_standard.tris, run_preview.tris
     );
 }

@@ -114,6 +114,29 @@ pub fn auto_fix_shell_edge_tolerances(
     report
 }
 
+/// Collect all unique edge keys from a shell's faces and wires.
+pub(crate) fn collect_shell_edges(
+    reg: &BRepStore,
+    shell_key: crate::topo::ShellKey,
+) -> Vec<crate::topo::EdgeKey> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let Some(shell) = reg.shells.get(shell_key) else { return out; };
+    for &(fk, _) in &shell.faces {
+        let Some(face) = reg.faces.get(fk) else { continue; };
+        let wires = std::iter::once(face.outer_wire).chain(face.inner_wires.iter().copied());
+        for wk in wires {
+            let Some(wire) = reg.wires.get(wk) else { continue; };
+            for &(ek, _) in &wire.edges {
+                if seen.insert(ek) { out.push(ek); }
+            }
+        }
+        for &ek in &face.seam_edges { if seen.insert(ek) { out.push(ek); } }
+        for &ek in &face.degenerated_edges { if seen.insert(ek) { out.push(ek); } }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +184,8 @@ mod tests {
             tolerance: 1e-6,
             v_low: v0,
             v_high: v1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: [(fk, pcurve)].into(),
         });
 
@@ -210,6 +235,8 @@ mod tests {
             tolerance: 1e-6,
             v_low: v0,
             v_high: v1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: [(fk, pcurve)].into(),
         });
 

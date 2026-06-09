@@ -311,6 +311,8 @@ mod tests {
         let ek = reg.edges.insert(BRepEdge {
             curve, tolerance: 1e-4,
             v_low: v0, v_high: v1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::new(),
         });
         let edge = reg.edges.get(ek).unwrap();

@@ -283,7 +283,7 @@ pub fn collect_face_loops(
     }
 }
 
-fn collect_wire_loop(
+pub(crate) fn collect_wire_loop(
     face_key: FaceKey,
     wire_key: WireKey,
     surface: &SurfaceGeom,
@@ -532,6 +532,23 @@ pub(crate) fn rebuild_loop_uv_local_frame(
     global_vertices: &[Vec3],
     surface: Option<&SurfaceGeom>,
 ) {
+    if let Some(SurfaceGeom::Plane {
+        origin,
+        normal: n,
+        u_dir,
+    }) = surface
+    {
+        let (u_axis, v_axis) = plane_tangent_basis(*n, *u_dir);
+        for v in &mut loop_data.boundary {
+            let Some(pt) = global_vertices.get(v.global_idx) else {
+                continue;
+            };
+            let rel = *pt - *origin;
+            v.uv = (rel.dot(u_axis), rel.dot(v_axis));
+        }
+        return;
+    }
+
     let pts: Vec<Vec3> = loop_data
         .boundary
         .iter()
@@ -551,21 +568,6 @@ pub(crate) fn rebuild_loop_uv_local_frame(
     }
 
     if normal.length_squared() < 1e-20 {
-        if let Some(SurfaceGeom::Plane {
-            origin,
-            normal: n,
-            u_dir,
-        }) = surface
-        {
-            let (u_axis, v_axis) = plane_tangent_basis(*n, *u_dir);
-            for v in &mut loop_data.boundary {
-                let Some(pt) = global_vertices.get(v.global_idx) else {
-                    continue;
-                };
-                let rel = *pt - *origin;
-                v.uv = (rel.dot(u_axis), rel.dot(v_axis));
-            }
-        }
         return;
     }
 

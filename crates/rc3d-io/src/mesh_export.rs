@@ -1,20 +1,21 @@
 //! STEP meshing and ASCII STL export (shared by `export_mesh` example and diagnostics).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Mat4, Vec3};
+use rc3d_shape::{EmitPlanOptions, SceneEmitPlan, ShapeDocument};
 
-use crate::step::brep::build_brep;
 use crate::step::brep::geom::SurfaceGeom;
-use crate::step::brep::heal::{auto_heal_shell, HealLevel};
 use crate::step::brep::mesh::face_uv::UvSource;
 use crate::step::brep::mesh::report::ShellMeshReport;
-use crate::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig, ShellMeshOutput};
-use crate::step::brep::topo::{BRepFace, BRepSolid, FaceKey};
+use crate::step::brep::mesh::{BRepMeshConfig, ShellMeshOutput};
+use crate::step::brep::topo::{BRepFace, FaceKey};
 use crate::step::brep::BRepStore;
+use crate::step::brep::heal::HealLevel;
 use crate::step::import_options::StepImportOptions;
+use crate::step::import_step_file_with_options;
 use crate::step::mesh_result::MeshResult;
-use crate::step::parser;
 use crate::{parse_stl_triangles, write_ascii_stl, StlError};
 
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +56,7 @@ pub struct StepMeshResult {
     pub mesh: MeshResult,
     pub report: ShellMeshReport,
     pub solid_count: usize,
+    pub instance_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -73,39 +75,38 @@ pub fn default_stl_output(input: &Path) -> PathBuf {
     input.with_extension("stl")
 }
 
-pub fn mesh_step_file(path: &Path, options: &MeshExportOptions) -> Result<StepMeshResult, MeshExportError> {
-    let (reg, brep_solids, skip_face_keys) = prepare_brep(path, options)?;
-    let solid_count = brep_solids.len();
-
-    let mut combined = MeshResult::default();
-    let mut report = ShellMeshReport::default();
-    for solid in brep_solids {
-        // Mesh outer shell
-        let out = mesh_brep_shell_with_report(
-            solid.outer_shell,
-            &reg,
-            &options.mesh_config,
-            &skip_face_keys,
-        );
-        combined.append_from(&out.mesh);
-        report = merge_reports(&report, &out.report);
-
-        // Mesh void shells (OCC Reverse orientation relative to solid)
-        for &vk in &solid.void_shells {
-            let void_out = mesh_brep_shell_with_report(
-                vk,
-                &reg,
-                &options.mesh_config,
-                &skip_face_keys,
-            );
-            append_void_shell(void_out, &mut combined, &mut report);
+/// Append a tessellated solid mesh under an assembly instance transform.
+pub fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: Mat4) {
+    let offset = dst.vertices.len() as i32;
+    for &v in &src.vertices {
+        let p = world * v.extend(1.0);
+        dst.vertices.push(Vec3::new(p.x, p.y, p.z));
+    }
+    for &n in &src.normals {
+        let t = world * n.extend(0.0);
+        dst.normals.push(Vec3::new(t.x, t.y, t.z).normalize_or_zero());
+    }
+    for &idx in &src.indices {
+        if idx == -1 {
+            dst.indices.push(-1);
+        } else {
+            dst.indices.push(idx + offset);
         }
     }
+}
+
+pub fn mesh_step_file(path: &Path, options: &MeshExportOptions) -> Result<StepMeshResult, MeshExportError> {
+    let (document, plan) = build_export_emit_plan(path, options)?;
+    let (combined, report) = merge_emit_plan_meshes(&plan);
+    let solid_count = plan.mesh_table.len();
+    let instance_count = plan.instances.len();
+    let _ = document;
 
     Ok(StepMeshResult {
         mesh: combined,
         report,
         solid_count,
+        instance_count,
     })
 }
 
@@ -128,37 +129,21 @@ pub fn export_step_per_face_ascii_stl(
     output_dir: &Path,
     options: &MeshExportOptions,
 ) -> Result<ExportSummary, MeshExportError> {
-    let (reg, brep_solids, skip_face_keys) = prepare_brep(input, options)?;
+    let (document, plan) = build_export_emit_plan(input, options)?;
 
     std::fs::create_dir_all(output_dir)?;
 
-    let mut combined = MeshResult::default();
-    let mut report = ShellMeshReport::default();
     let mut file_count = 0usize;
-    for solid in brep_solids {
-        // Process outer shell
-        let out = mesh_brep_shell_with_report(
-            solid.outer_shell,
-            &reg,
-            &options.mesh_config,
-            &skip_face_keys,
-        );
-        write_per_face_stl(&out, &reg, output_dir, &mut file_count)?;
-        combined.append_from(&out.mesh);
-        report = merge_reports(&report, &out.report);
 
-        // Process void shells (Reversed winding for solid semantics)
-        for &vk in &solid.void_shells {
-            let void_out = mesh_brep_shell_with_report(
-                vk,
-                &reg,
-                &options.mesh_config,
-                &skip_face_keys,
-            );
-            write_per_face_stl(&void_out, &reg, output_dir, &mut file_count)?;
-            append_void_shell(void_out, &mut combined, &mut report);
-        }
+    for cached in plan.mesh_table.values() {
+        let out = ShellMeshOutput {
+            mesh: cached.mesh.clone(),
+            report: cached.report.clone(),
+        };
+        write_per_face_stl(&out, &document.store, output_dir, &mut file_count)?;
     }
+
+    let (combined, report) = merge_emit_plan_meshes(&plan);
 
     Ok(summary_from_mesh(
         input,
@@ -211,7 +196,6 @@ pub fn export_file_to_ascii_stl(
 
     match ext.as_str() {
         "step" | "stp" => {
-            // Mesh once, reuse for both combined STL and per-face export.
             let meshed = mesh_step_file(input, options)?;
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -223,7 +207,6 @@ pub fn export_file_to_ascii_stl(
             );
 
             if let Some(dir) = per_face_dir {
-                // Re-mesh per face for individual STL files.
                 let face_summary = export_step_per_face_ascii_stl(input, dir, options)?;
                 summary.per_face_files = face_summary.per_face_files;
             }
@@ -233,6 +216,65 @@ pub fn export_file_to_ascii_stl(
         "stl" => convert_stl_to_ascii(input, output),
         other => Err(MeshExportError::Unsupported(other.to_string())),
     }
+}
+
+fn import_options_for_export(options: &MeshExportOptions) -> StepImportOptions {
+    let mut io = options.import_options.clone();
+    io.skip_visualization = true;
+    if options.heal {
+        io.heal_level = options.heal_level;
+    }
+    io
+}
+
+fn emit_plan_options_for_export(
+    options: &MeshExportOptions,
+    heal_skip_faces: &[FaceKey],
+) -> EmitPlanOptions {
+    EmitPlanOptions {
+        mesh_config: options.mesh_config.clone(),
+        heal_skip_faces: heal_skip_faces.to_vec(),
+        default_material: Default::default(),
+        explode_offsets: Default::default(),
+    }
+}
+
+fn build_export_emit_plan(
+    path: &Path,
+    options: &MeshExportOptions,
+) -> Result<(ShapeDocument, SceneEmitPlan), MeshExportError> {
+    let import_options = import_options_for_export(options);
+    let import_result = import_step_file_with_options(path, &import_options)
+        .map_err(|e| MeshExportError::Step(format!("{e}")))?;
+    let mut document = import_result.document;
+    let mut plan_options = emit_plan_options_for_export(
+        options,
+        &import_result.report.heal_skip_face_keys,
+    );
+    document
+        .store
+        .tolerance
+        .apply_to_mesh_config(&mut plan_options.mesh_config);
+    let plan = document
+        .build_emit_plan(&plan_options)
+        .map_err(|e| MeshExportError::Step(format!("{e}")))?;
+    Ok((document, plan))
+}
+
+fn merge_emit_plan_meshes(plan: &SceneEmitPlan) -> (MeshResult, ShellMeshReport) {
+    let mut combined = MeshResult::default();
+    let mut report = ShellMeshReport::default();
+    let mut reported_slots = HashSet::new();
+    for inst in &plan.instances {
+        let Some(cached) = plan.mesh_table.get(&inst.mesh_slot) else {
+            continue;
+        };
+        append_mesh_with_transform(&mut combined, &cached.mesh, inst.world_transform);
+        if reported_slots.insert(inst.mesh_slot) {
+            report = merge_reports(&report, &cached.report);
+        }
+    }
+    (combined, report)
 }
 
 fn summary_from_mesh(
@@ -281,25 +323,12 @@ fn face_stl_name(
     format!("face_{fk_id}_{kind}{uv}_{}tris.stl", fs.tri_count)
 }
 
-/// Append a void shell mesh to a combined mesh with reversed winding for correct solid semantics.
-fn append_void_shell(
-    void_out: ShellMeshOutput,
-    combined: &mut MeshResult,
-    report: &mut ShellMeshReport,
-) {
-    let mut void_mesh = void_out.mesh;
-    if !void_mesh.vertices.is_empty() && !void_mesh.indices.is_empty() {
-        void_mesh.reverse_winding();
-        combined.append_from(&void_mesh);
-    }
-    *report = merge_reports(report, &void_out.report);
-}
-
 fn merge_reports(acc: &ShellMeshReport, shell: &ShellMeshReport) -> ShellMeshReport {
     let mut merged = acc.clone();
     merged.face_count += shell.face_count;
     merged.meshed_faces += shell.meshed_faces;
     merged.grid_fallback_count += shell.grid_fallback_count;
+    merged.cdt_constraint_failure_count += shell.cdt_constraint_failure_count;
     merged.total_tris += shell.total_tris;
     merged.shell_diag = merged.shell_diag.max(shell.shell_diag);
     merged.max_equiv_edge_weld_gap = merged
@@ -307,42 +336,6 @@ fn merge_reports(acc: &ShellMeshReport, shell: &ShellMeshReport) -> ShellMeshRep
         .max(shell.max_equiv_edge_weld_gap);
     merged.faces.extend_from_slice(&shell.faces);
     merged
-}
-
-/// Shared B-Rep preparation: parse STEP file, build topology, optionally heal.
-fn prepare_brep(
-    path: &Path,
-    options: &MeshExportOptions,
-) -> Result<(BRepStore, Vec<BRepSolid>, Vec<FaceKey>), MeshExportError> {
-    let text = std::fs::read_to_string(path)?;
-    let exchange = parser::parse_exchange_with_options(&text, &options.import_options)
-        .map_err(|e| MeshExportError::Step(format!("{e:?}")))?;
-    let brep = build_brep(&exchange.entities)
-        .map_err(|e| MeshExportError::Step(format!("{e:?}")))?;
-
-    let mut reg = brep.registry;
-    let mut skip_face_keys = Vec::new();
-    if options.heal {
-        for &sk in &brep.root_solids {
-            if let Some(solid) = reg.solids.get(sk) {
-                let heal = auto_heal_shell(
-                    solid.outer_shell,
-                    &mut reg,
-                    options.heal_level,
-                    options.heal_passes,
-                );
-                skip_face_keys.extend(heal.skip_face_keys);
-            }
-        }
-    }
-
-    let solids: Vec<BRepSolid> = brep
-        .root_solids
-        .iter()
-        .filter_map(|sk| reg.solids.get(*sk).cloned())
-        .collect();
-
-    Ok((reg, solids, skip_face_keys))
 }
 
 /// Write per-face STL files from a shell mesh output.

@@ -85,6 +85,24 @@ impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
 
 impl NurbsSurface {
     /// Number of control points in u direction.
+    /// Find the knot span index in U direction: knots[i] <= t < knots[i+1].
+    pub fn find_span_u(&self, t: f32) -> usize {
+        let n = self.knots_u.len() - self.degree_u - 2;
+        for i in (self.degree_u..=n).rev() {
+            if t >= self.knots_u[i] { return i; }
+        }
+        self.degree_u
+    }
+
+    /// Find the knot span index in V direction.
+    pub fn find_span_v(&self, t: f32) -> usize {
+        let n = self.knots_v.len() - self.degree_v - 2;
+        for i in (self.degree_v..=n).rev() {
+            if t >= self.knots_v[i] { return i; }
+        }
+        self.degree_v
+    }
+
     pub fn u_count(&self) -> usize {
         self.control_points.len()
     }
@@ -628,6 +646,121 @@ impl NurbsSurface {
 
         self.degree_v += 1;
     }
+
+    /// Try to reduce degree in U by 1 using approximate inverse of elevation.
+    /// Returns false if shape deviation exceeds tolerance.
+    /// OCC: BSplCLib::ReduceDegree
+    pub fn reduce_degree_u(&mut self, tolerance: f32) -> bool {
+        if self.degree_u <= 1 { return false; }
+        let new_deg = self.degree_u - 1;
+        let n_u = self.u_count();
+        let n_v = self.v_count();
+        if n_u < new_deg + 2 { return false; }
+
+        // Approximate inverse of degree elevation:
+        // elevated_cp[i] = α*original[i-1] + (1-α)*original[i]
+        // → original[i] ≈ (elevated[i] - α*original[i-1]) / (1-α)
+        // For each u-row, try reduction independently.
+        let mut new_cps = Vec::with_capacity(n_u - 1);
+        let mut new_ws = Vec::with_capacity(n_u - 1);
+        for i in 0..n_u {
+            if i == 0 {
+                new_cps.push(self.control_points[0].clone());
+                new_ws.push(self.weights[0].clone());
+            } else if i == n_u - 1 {
+                new_cps.push(self.control_points[n_u - 1].clone());
+                new_ws.push(self.weights[n_u - 1].clone());
+            } else {
+                let alpha = i as f32 / self.degree_u as f32;
+                let one_minus_a = 1.0 - alpha;
+                let prev_cp = &new_cps[new_cps.len() - 1];
+                let prev_w = &new_ws[new_ws.len() - 1];
+                let mut row_cp = Vec::with_capacity(n_v);
+                let mut row_w = Vec::with_capacity(n_v);
+                for j in 0..n_v {
+                    let cp = if one_minus_a.abs() > 1e-10 {
+                        (self.control_points[i][j] - prev_cp[j] * alpha) / one_minus_a
+                    } else { self.control_points[i][j] };
+                    let w = if one_minus_a.abs() > 1e-10 {
+                        (self.weights[i][j] - prev_w[j] * alpha) / one_minus_a
+                    } else { self.weights[i][j] };
+                    row_cp.push(cp); row_w.push(w);
+                }
+                new_cps.push(row_cp); new_ws.push(row_w);
+            }
+        }
+
+        // Deviation check: sample and compare
+        if !self.reduce_deviation_ok(&new_cps, &new_ws, tolerance) { return false; }
+        self.control_points = new_cps;
+        self.weights = new_ws;
+        self.degree_u = new_deg;
+        let n = self.u_count();
+        self.knots_u = clamped_uniform_knots(new_deg, n);
+        true
+    }
+
+    /// Try to reduce degree in V by 1.
+    pub fn reduce_degree_v(&mut self, tolerance: f32) -> bool {
+        if self.degree_v <= 1 { return false; }
+        let new_deg = self.degree_v - 1;
+        let n_u = self.u_count();
+        let n_v = self.v_count();
+        if n_v < new_deg + 2 { return false; }
+
+        let mut new_cp_per_row: Vec<Vec<Vec3>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
+        let mut new_w_per_row: Vec<Vec<f32>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
+
+        for i_u in 0..n_u {
+            let mut row_cps = Vec::with_capacity(n_v - 1);
+            let mut row_ws = Vec::with_capacity(n_v - 1);
+            for j in 0..n_v {
+                if j == 0 {
+                    row_cps.push(self.control_points[i_u][0]);
+                    row_ws.push(self.weights[i_u][0]);
+                } else if j == n_v - 1 {
+                    row_cps.push(self.control_points[i_u][n_v - 1]);
+                    row_ws.push(self.weights[i_u][n_v - 1]);
+                } else {
+                    let alpha = j as f32 / self.degree_v as f32;
+                    let one_minus_a = 1.0 - alpha;
+                    let prev_cp = *row_cps.last().unwrap();
+                    let prev_w = *row_ws.last().unwrap();
+                    let cp = if one_minus_a.abs() > 1e-10 {
+                        (self.control_points[i_u][j] - prev_cp * alpha) / one_minus_a
+                    } else { self.control_points[i_u][j] };
+                    let w = if one_minus_a.abs() > 1e-10 {
+                        (self.weights[i_u][j] - prev_w * alpha) / one_minus_a
+                    } else { self.weights[i_u][j] };
+                    row_cps.push(cp); row_ws.push(w);
+                }
+            }
+            new_cp_per_row[i_u] = row_cps;
+            new_w_per_row[i_u] = row_ws;
+        }
+
+        if !self.reduce_deviation_ok(&new_cp_per_row, &new_w_per_row, tolerance) { return false; }
+        self.control_points = new_cp_per_row;
+        self.weights = new_w_per_row;
+        self.degree_v = new_deg;
+        let n = self.v_count();
+        self.knots_v = clamped_uniform_knots(new_deg, n);
+        true
+    }
+
+    /// Check deviation of proposed CPs/weights by sampling and comparing.
+    fn reduce_deviation_ok(&self, new_cps: &[Vec<Vec3>], new_ws: &[Vec<f32>], tol: f32) -> bool {
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let u = i as f32 / 8.0;
+                let v = j as f32 / 8.0;
+                let orig = self.evaluate(u, v);
+                let new_val = self.evaluate_with_cps(new_cps, new_ws, u, v);
+                if (new_val - orig).length() > tol { return false; }
+            }
+        }
+        true
+    }
 }
 
 /// Linear scan lookup in a short basis derivative list (3-6 entries).
@@ -657,6 +790,180 @@ fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<f32> {
         knots.push(1.0);
     }
     knots
+}
+
+// ── Knot removal (inverse Boehm, OCC BSplCLib::RemoveKnot) ─────────
+
+impl NurbsSurface {
+    /// Try to remove one copy of knot `t` in the U direction.
+    pub fn remove_knot_u(&mut self, t: f32, tolerance: f32) -> bool {
+        let p = self.degree_u;
+        let mult = knot_multiplicity(&self.knots_u, t);
+        if mult == 0 { return false; }
+        let is_end = (t - self.knots_u[0]).abs() < 1e-10
+            || (t - self.knots_u[self.knots_u.len() - 1]).abs() < 1e-10;
+        if is_end && mult <= p + 1 { return false; }
+
+        let span = self.find_span_u(t);
+        let start = span.saturating_sub(p + 1) + 1;
+
+        let n_cp = self.u_count();
+        let n_v = self.v_count();
+        let mut new_cps: Vec<Vec<Vec3>> = Vec::with_capacity(n_cp - 1);
+        let mut new_ws: Vec<Vec<f32>> = Vec::with_capacity(n_cp - 1);
+
+        for i_u in 0..n_cp {
+            let is_affected = i_u >= start && i_u < span;
+            if !is_affected {
+                new_cps.push(self.control_points[i_u].clone());
+                new_ws.push(self.weights[i_u].clone());
+                continue;
+            }
+            let alpha = {
+                let denom = self.knots_u[i_u + p + 1] - self.knots_u[i_u];
+                if denom.abs() > 1e-10 { ((t - self.knots_u[i_u]) / denom).clamp(0.0, 1.0) } else { 0.0 }
+            };
+            let one_minus_a = 1.0 - alpha;
+            let prev_cp = new_cps.last().unwrap();
+            let prev_w = new_ws.last().unwrap();
+            let mut row_cp = Vec::with_capacity(n_v);
+            let mut row_w = Vec::with_capacity(n_v);
+            for j in 0..n_v {
+                let cp_new = if alpha.abs() > 1e-10 {
+                    (self.control_points[i_u][j] - prev_cp[j] * one_minus_a) / alpha
+                } else { self.control_points[i_u][j] };
+                let w_new = if alpha.abs() > 1e-10 {
+                    (self.weights[i_u][j] - prev_w[j] * one_minus_a) / alpha
+                } else { self.weights[i_u][j] };
+                row_cp.push(cp_new); row_w.push(w_new);
+            }
+            new_cps.push(row_cp); new_ws.push(row_w);
+        }
+
+        // Deviation check at sample points
+        if !self.knot_removal_deviation_ok(&new_cps, &new_ws, tolerance) { return false; }
+
+        self.control_points = new_cps;
+        self.weights = new_ws;
+        let pos = self.knots_u.iter().position(|&k| (k - t).abs() < 1e-10).unwrap_or(span);
+        self.knots_u.remove(pos);
+        true
+    }
+
+    /// Try to remove one copy of knot `t` in the V direction.
+    pub fn remove_knot_v(&mut self, t: f32, tolerance: f32) -> bool {
+        let p = self.degree_v;
+        let mult = knot_multiplicity(&self.knots_v, t);
+        if mult == 0 { return false; }
+        let is_end = (t - self.knots_v[0]).abs() < 1e-10
+            || (t - self.knots_v[self.knots_v.len() - 1]).abs() < 1e-10;
+        if is_end && mult <= p + 1 { return false; }
+
+        let span = self.find_span_v(t);
+        let start = span.saturating_sub(p + 1) + 1;
+        let n_u = self.u_count();
+        let n_cp = self.v_count();
+
+        let mut new_cp_per_row: Vec<Vec<Vec3>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
+        let mut new_w_per_row: Vec<Vec<f32>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
+
+        for i_u in 0..n_u {
+            for j_v in 0..n_cp {
+                let is_affected = j_v >= start && j_v < span;
+                if !is_affected {
+                    new_cp_per_row[i_u].push(self.control_points[i_u][j_v]);
+                    new_w_per_row[i_u].push(self.weights[i_u][j_v]);
+                    continue;
+                }
+                let alpha = {
+                    let denom = self.knots_v[j_v + p + 1] - self.knots_v[j_v];
+                    if denom.abs() > 1e-10 { ((t - self.knots_v[j_v]) / denom).clamp(0.0, 1.0) } else { 0.0 }
+                };
+                let one_minus_a = 1.0 - alpha;
+                let prev_cp = new_cp_per_row[i_u].last().copied().unwrap_or(Vec3::ZERO);
+                let prev_w = new_w_per_row[i_u].last().copied().unwrap_or(1.0);
+                let curr_cp = self.control_points[i_u][j_v];
+                let curr_w = self.weights[i_u][j_v];
+                let cp_new = if alpha.abs() > 1e-10 {
+                    (curr_cp - prev_cp * one_minus_a) / alpha
+                } else { curr_cp };
+                let w_new = if alpha.abs() > 1e-10 {
+                    (curr_w - prev_w * one_minus_a) / alpha
+                } else { curr_w };
+                new_cp_per_row[i_u].push(cp_new); new_w_per_row[i_u].push(w_new);
+            }
+        }
+
+        if !self.knot_removal_deviation_ok(&new_cp_per_row, &new_w_per_row, tolerance) { return false; }
+
+        self.control_points = new_cp_per_row;
+        self.weights = new_w_per_row;
+        let pos = self.knots_v.iter().position(|&k| (k - t).abs() < 1e-10).unwrap_or(span);
+        self.knots_v.remove(pos);
+        true
+    }
+
+    /// Check whether proposed new CPs/weights deviate within tolerance.
+    fn knot_removal_deviation_ok(&self, new_cps: &[Vec<Vec3>], new_ws: &[Vec<f32>], tol: f32) -> bool {
+        let samples = 8usize;
+        for i in 0..=samples {
+            for j in 0..=samples {
+                let u = i as f32 / samples as f32;
+                let v = j as f32 / samples as f32;
+                let orig = self.evaluate_with_cps(&self.control_points, &self.weights, u, v);
+                let new_val = self.evaluate_with_cps(new_cps, new_ws, u, v);
+                if (new_val - orig).length() > tol { return false; }
+            }
+        }
+        true
+    }
+
+    /// Evaluate surface with explicit control points and weights (for deviation checking).
+    fn evaluate_with_cps(&self, cps: &[Vec<Vec3>], ws: &[Vec<f32>], u: f32, v: f32) -> Vec3 {
+        let span_u = self.find_span_u(u);
+        let span_v = self.find_span_v(v);
+        let basis_u = self.basis_funs(span_u, u, self.degree_u, &self.knots_u);
+        let basis_v = self.basis_funs(span_v, v, self.degree_v, &self.knots_v);
+
+        let mut p = Vec3::ZERO;
+        let mut w_sum = 0.0f32;
+        for (iu, &nu) in basis_u.iter().enumerate() {
+            let ci = span_u.saturating_sub(self.degree_u) + iu;
+            if ci >= cps.len() { continue; }
+            for (iv, &nv) in basis_v.iter().enumerate() {
+                let cj = span_v.saturating_sub(self.degree_v) + iv;
+                if cj >= ws[ci].len() { continue; }
+                let w = ws[ci][cj] * nu * nv;
+                p = p + cps[ci][cj] * w;
+                w_sum += w;
+            }
+        }
+        if w_sum.abs() > 1e-10 { p / w_sum } else { p }
+    }
+
+    /// Compute B-spline basis functions for given span and parameter.
+    fn basis_funs(&self, span: usize, t: f32, degree: usize, knots: &[f32]) -> Vec<f32> {
+        let mut n = vec![0.0f32; degree + 1];
+        n[0] = 1.0;
+        let mut left = vec![0.0f32; degree + 1];
+        let mut right = vec![0.0f32; degree + 1];
+        for j in 1..=degree {
+            left[j] = t - knots[span + 1 - j];
+            right[j] = knots[span + j] - t;
+            let mut saved = 0.0f32;
+            for r in 0..j {
+                let temp = n[r] / (right[r + 1] + left[j - r] + 1e-12);
+                n[r] = saved + right[r + 1] * temp;
+                saved = left[j - r] * temp;
+            }
+            n[j] = saved;
+        }
+        n
+    }
+}
+
+fn knot_multiplicity(knots: &[f32], t: f32) -> usize {
+    knots.iter().filter(|&&k| (k - t).abs() < 1e-10).count()
 }
 
 /// Compute first-order B-spline basis function derivatives using the analytical

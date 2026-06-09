@@ -22,6 +22,7 @@ pub mod topology;
 pub mod curve;
 pub mod mesh_result;
 pub mod import_options;
+pub mod pipeline;
 mod import_pipeline;
 mod caf_transfer;
 mod scene_emit;
@@ -271,6 +272,18 @@ fn exchange_to_import_result(
 
     let assembly_ctx = assembly::AssemblyContext::build(&exchange.entities);
     let shell_instances = assembly_ctx.shell_instances(&exchange.entities);
+    let asm_diag = assembly_ctx.diagnostics();
+    import_report.assembly_multi_parent_pd_count = asm_diag.multi_parent_pd_count;
+    import_report.assembly_dropped_parent_link_count = asm_diag.dropped_parent_link_count;
+    import_report.assembly_shell_instance_count = shell_instances.len();
+    if asm_diag.multi_parent_pd_count > 0 {
+        log::warn!(
+            "[STEP] assembly DAG: {} product-definition node(s) have multiple parents; \
+             enumerating all placement paths ({} shell instance(s))",
+            asm_diag.multi_parent_pd_count,
+            shell_instances.len(),
+        );
+    }
     let assembly_geom_nodes = document
         .labels
         .labels
@@ -295,6 +308,7 @@ fn exchange_to_import_result(
     );
     import_report.heal_check_errors = total_heal.check_errors;
     import_report.skipped_faces += total_heal.skip_face_keys.len();
+    import_report.heal_skip_face_keys = total_heal.skip_face_keys.clone();
     if !options.skip_visualization {
         import_pipeline::run_continuity_checks(
             &document.store,
@@ -322,6 +336,7 @@ fn exchange_to_import_result(
     }
 
     let mut plan_options = emit_plan_options_from_step(options);
+    rc3d_shape::ToleranceContext::from_model(g0_tol).apply_to_mesh_config(&mut plan_options.mesh_config);
     plan_options.heal_skip_faces = total_heal.skip_face_keys.clone();
     plan_options.explode_offsets = assembly_explode::compute_assembly_explode_offsets(
         &mut document,

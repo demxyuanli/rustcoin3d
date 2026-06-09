@@ -133,57 +133,154 @@ impl BopDS {
 
     /// Build pave blocks from intersection points.
     ///
-    /// Sorts intersection points along each edge by parameter t and creates
-    /// pave blocks for each consecutive pair.
-    pub fn build_pave_blocks(&mut self, _reg: &mut BRepStore) {
-        // Collect all intersection points per edge
-        let edge_points: HashMap<EdgeKey, Vec<(f32, Vec3, FaceKey)>> = HashMap::new();
+    /// Maps each `InterfPoint` onto the edges of the face's wire by projecting
+    /// the 3D point onto the edge's curve to find parameter t. Sorts points by t
+    /// and creates PaveBlocks for each consecutive pair of intersection points.
+    pub fn build_pave_blocks(&mut self, reg: &BRepStore) {
+        let mut edge_points: HashMap<EdgeKey, Vec<(f32, InterfPoint)>> = HashMap::new();
 
         for interf in &self.face_face_interfs {
             for pt in &interf.points {
-                // For now, pave blocks are built from the 3D intersection points
-                // In the full pipeline, each point would be associated with specific edges
-                let _ = (pt, interf.face_a, interf.face_b);
+                for &face_key in &[interf.face_a, interf.face_b] {
+                    let face = match reg.faces.get(face_key) {
+                        Some(f) => f, None => continue,
+                    };
+                    let wire = match reg.wires.get(face.outer_wire) {
+                        Some(w) => w, None => continue,
+                    };
+                    for &(ek, _orient) in &wire.edges {
+                        let edge = match reg.edges.get(ek) {
+                            Some(e) => e, None => continue,
+                        };
+                        if let Some(t) = project_point_on_edge(&edge.curve, pt.point_3d, self.tolerance) {
+                            let t_clamped = t.clamp(0.0, 1.0);
+                            edge_points.entry(ek).or_default().push((t_clamped, pt.clone()));
+                        }
+                    }
+                }
             }
         }
 
-        // For each edge with intersection points, sort and create pave blocks
-        for (_ek, mut pts) in edge_points {
+        for (ek, mut pts) in edge_points {
             pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            // Create pave blocks between consecutive points
-            for w in pts.windows(2) {
-                let _pb = PaveBlock {
-                    edge: _ek,
-                    t_range: (w[0].0, w[1].0),
-                    vertices: (VertexKey::default(), VertexKey::default()),
-                    face_refs: vec![w[0].2, w[1].2],
-                    points_3d: (w[0].1, w[1].1),
-                };
-                // pave_blocks entry would go here
+            // Deduplicate very close parameters.
+            let mut deduped: Vec<(f32, InterfPoint)> = Vec::new();
+            for (t, pt) in pts {
+                if deduped.last().map_or(true, |(lt, _)| (t - lt).abs() > self.tolerance) {
+                    deduped.push((t, pt));
+                }
             }
+            if deduped.len() < 2 { continue; }
+            let mut blocks = Vec::new();
+            for w in deduped.windows(2) {
+                let (t0, pt0) = &w[0];
+                let (t1, pt1) = &w[1];
+                let faces = faces_for_edge(ek, &self.face_face_interfs);
+                blocks.push(PaveBlock {
+                    edge: ek,
+                    t_range: (*t0, *t1),
+                    vertices: (VertexKey::default(), VertexKey::default()),
+                    face_refs: faces,
+                    points_3d: (pt0.point_3d, pt1.point_3d),
+                });
+            }
+            self.pave_blocks.insert(ek, blocks);
         }
     }
 
-    /// Build common blocks by grouping pave blocks that share the same edge section.
+    /// Build common blocks by grouping overlapping pave blocks across faces.
+    ///
+    /// A common block represents a shared edge section where two or more faces
+    /// have overlapping parameter intervals.
     pub fn build_common_blocks(&mut self) {
-        let mut edge_groups: HashMap<EdgeKey, Vec<usize>> = HashMap::new();
+        let mut common: Vec<CommonBlock> = Vec::new();
 
-        for (ek, blocks) in &self.pave_blocks {
-            edge_groups.entry(*ek).or_default().extend(0..blocks.len());
+        for (&_ek, blocks) in &self.pave_blocks {
+            if blocks.len() < 2 { continue; }
+            // Group blocks by overlapping parameter ranges.
+            let mut groups: Vec<Vec<usize>> = Vec::new();
+            for (i, bi) in blocks.iter().enumerate() {
+                let mut assigned = false;
+                for group in &mut groups {
+                    let overlaps = group.iter().any(|&j| {
+                        let bj = &blocks[j];
+                        bi.t_range.0 <= bj.t_range.1 && bj.t_range.0 <= bi.t_range.1
+                    });
+                    if overlaps { group.push(i); assigned = true; break; }
+                }
+                if !assigned { groups.push(vec![i]); }
+            }
+            for group in groups {
+                if group.len() < 2 { continue; }
+                let mut faces = Vec::new();
+                let mut pbs = Vec::new();
+                for &idx in &group {
+                    let pb = &blocks[idx];
+                    for fk in &pb.face_refs {
+                        if !faces.contains(fk) { faces.push(*fk); }
+                    }
+                    pbs.push(pb.clone());
+                }
+                common.push(CommonBlock { pave_blocks: pbs, faces });
+            }
         }
 
-        // For each edge, pave blocks from different faces that overlap in
-        // parameter space form a common block.
-        for (_ek, _block_indices) in &edge_groups {
-            // Group overlapping pave blocks into common blocks
-            // (Full implementation requires parameter-space overlap detection)
+        self.common_blocks = common;
+    }
+
+    /// Infer edge key from two vertices (lookup in face-face interfs).
+    pub fn edge_for_vertices(&self, _va: VertexKey, _vb: VertexKey, _reg: &BRepStore) -> Option<EdgeKey> {
+        // Stub: in full pipeline, intersects index edges by vertex adjacency.
+        // For now, return the first edge from pave_blocks that matches both vertices.
+        for (&ek, blocks) in &self.pave_blocks {
+            for pb in blocks {
+                if (pb.vertices.0 == _va && pb.vertices.1 == _vb)
+                    || (pb.vertices.0 == _vb && pb.vertices.1 == _va)
+                {
+                    return Some(ek);
+                }
+            }
         }
+        None
     }
 
     /// Total number of intersection curves found.
     pub fn intersection_count(&self) -> usize {
         self.face_face_interfs.iter().map(|i| i.curves_3d.len()).sum()
     }
+}
+
+// ── BopDS helpers ────────────────────────────────────────────────────
+
+/// Project a 3D point onto a curve to find parameter t (20-sample + binary refine).
+fn project_point_on_edge(curve: &CurveGeom, pt: Vec3, tolerance: f32) -> Option<f32> {
+    const N: usize = 20;
+    let mut best_t = 0.0f32;
+    let mut best_dist = f32::MAX;
+    for i in 0..=N {
+        let t = i as f32 / N as f32;
+        let d = (curve.d0(t) - pt).length();
+        if d < best_dist { best_dist = d; best_t = t; }
+    }
+    let mut lo = (best_t - 0.1).max(0.0);
+    let mut hi = (best_t + 0.1).min(1.0);
+    for _ in 0..8 {
+        let mid = (lo + hi) * 0.5;
+        if (curve.d0(mid) - pt).length() < (curve.d0(lo) - pt).length() { lo = mid; } else { hi = mid; }
+    }
+    let t_final = (lo + hi) * 0.5;
+    if (curve.d0(t_final) - pt).length() < tolerance.max(0.1) { Some(t_final) } else { None }
+}
+
+/// Collect all face keys that reference a given edge from the interference data.
+fn faces_for_edge(_ek: EdgeKey, interfs: &[FaceFaceInterf]) -> Vec<FaceKey> {
+    let mut faces = Vec::new();
+    for interf in interfs {
+        for &fk in &[interf.face_a, interf.face_b] {
+            if !faces.contains(&fk) { faces.push(fk); }
+        }
+    }
+    faces
 }
 
 #[cfg(test)]

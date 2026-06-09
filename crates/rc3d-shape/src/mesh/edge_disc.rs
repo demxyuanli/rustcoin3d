@@ -38,6 +38,47 @@ pub struct EdgePolygon {
     pub params_2d: HashMap<FaceKey, Vec<(f32, (f32, f32))>>,
 }
 
+impl EdgePolygon {
+    /// Refine the polygon by inserting midpoints between consecutive segments.
+    pub fn subdivide(&mut self) {
+        if self.params_3d.len() < 2 {
+            return;
+        }
+        let mut new_3d = Vec::with_capacity(self.params_3d.len() * 2 - 1);
+        for w in self.params_3d.windows(2) {
+            let (t0, p0) = w[0];
+            let (t1, p1) = w[1];
+            new_3d.push((t0, p0));
+            let t_mid = (t0 + t1) * 0.5;
+            let p_mid = (p0 + p1) * 0.5;
+            new_3d.push((t_mid, p_mid));
+        }
+        if let Some(&last) = self.params_3d.last() {
+            new_3d.push(last);
+        }
+        self.params_3d = new_3d;
+
+        for (_fk, pts) in self.params_2d.iter_mut() {
+            if pts.len() < 2 {
+                continue;
+            }
+            let mut new_2d = Vec::with_capacity(pts.len() * 2 - 1);
+            for w in pts.windows(2) {
+                let (t0, uv0) = w[0];
+                let (t1, uv1) = w[1];
+                new_2d.push((t0, uv0));
+                let t_mid = (t0 + t1) * 0.5;
+                let uv_mid = ((uv0.0 + uv1.0) * 0.5, (uv0.1 + uv1.1) * 0.5);
+                new_2d.push((t_mid, uv_mid));
+            }
+            if let Some(&last) = pts.last() {
+                new_2d.push(last);
+            }
+            *pts = new_2d;
+        }
+    }
+}
+
 /// Discretize all unique edges in a registry. Shared edges are discretized once.
 pub fn discretize_all_edges(
     reg: &BRepStore,
@@ -102,7 +143,9 @@ pub fn discretize_edge(
         if let Some(exact) = sample_polyline_on_surface_exact(edge, reg) {
             exact
         } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
-            if is_usable_pcurve(pcurve) {
+            if matches!(&edge.curve, CurveGeom::Line { .. }) && pcurve_is_line(pcurve) {
+                sample_straight_pcurve(pcurve, surface)
+            } else if is_usable_pcurve(pcurve) {
                 sample_pcurve_on_surface(pcurve, surface, &ec)
             } else {
                 let mesh_curve = mesh_curve_for_edge(edge, reg);
@@ -113,7 +156,9 @@ pub fn discretize_edge(
             sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
         }
     } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
-        if is_usable_pcurve(pcurve) {
+        if matches!(&edge.curve, CurveGeom::Line { .. }) && pcurve_is_line(pcurve) {
+            sample_straight_pcurve(pcurve, surface)
+        } else if is_usable_pcurve(pcurve) {
             sample_pcurve_on_surface(pcurve, surface, &ec)
         } else {
             let mesh_curve = mesh_curve_for_edge(edge, reg);
@@ -266,6 +311,24 @@ fn is_usable_pcurve(pcurve: &crate::geom::Curve2d) -> bool {
 }
 
 pub use crate::geom::eval_pcurve_on_surface;
+
+fn pcurve_is_line(pcurve: &crate::geom::Curve2d) -> bool {
+    match pcurve {
+        crate::geom::Curve2d::Line { .. } => true,
+        crate::geom::Curve2d::Trimmed { basis, .. } => pcurve_is_line(basis),
+        _ => false,
+    }
+}
+
+fn sample_straight_pcurve(
+    pcurve: &crate::geom::Curve2d,
+    surface: &SurfaceGeom,
+) -> Vec<(f32, Vec3)> {
+    vec![
+        (0.0, eval_pcurve_on_surface(pcurve, surface, 0.0)),
+        (1.0, eval_pcurve_on_surface(pcurve, surface, 1.0)),
+    ]
+}
 
 fn eval_pcurve_on_surface_d1(pcurve: &crate::geom::Curve2d, surface: &SurfaceGeom, t: f32) -> Vec3 {
     let uv = pcurve.d0(t);

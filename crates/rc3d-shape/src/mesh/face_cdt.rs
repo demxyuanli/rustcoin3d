@@ -4,14 +4,29 @@
 use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
-use rc3d_core::utils::hash::f32x3_quantized_bits;
 
+use super::boundary::{
+    register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
+};
 use super::delaunay2d::{insert_uv_native, uv_bbox_from_loops, NativeCdt};
 use super::face_fill::{effective_min_size, FaceFillConfig};
 use super::face_uv::{point_in_trim, FaceUvLoops, UvSource};
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
+
+/// Result of constrained Delaunay edge enforcement for one face.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CdtConstraintReport {
+    pub failed: usize,
+    pub total: usize,
+}
+
+impl CdtConstraintReport {
+    pub fn has_failures(&self) -> bool {
+        self.failed > 0
+    }
+}
 
 fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
@@ -53,7 +68,7 @@ fn compute_uv_span(loops: &FaceUvLoops) -> (f32, f32) {
 }
 
 /// Native Bowyer-Watson CDT path (OCC BRepMesh_Delaun-style).
-/// Returns (flat list of global vertex indices per triangle, max_chord_error).
+/// Returns (flat triangle global indices, max chord error, constraint report).
 #[allow(clippy::too_many_arguments)]
 pub fn triangulate_uv_cdt_with_steiner(
     loops: &FaceUvLoops,
@@ -61,12 +76,13 @@ pub fn triangulate_uv_cdt_with_steiner(
     face_key: Option<FaceKey>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
     reg: Option<&BRepStore>,
-) -> (Vec<usize>, f32) {
+    shared_boundary: Option<&SharedBoundaryPool>,
+) -> (Vec<usize>, f32, CdtConstraintReport) {
     if loops.outer.boundary.len() < 3 {
-        return (Vec::new(), 0.0);
+        return (Vec::new(), 0.0, CdtConstraintReport::default());
     }
 
     let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
@@ -76,7 +92,32 @@ pub fn triangulate_uv_cdt_with_steiner(
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
         .collect();
 
-    let (u_min, v_min, u_max, v_max) = uv_bbox_from_loops(&outer_uv, &inner_uv);
+    let (mut u_min, mut v_min, mut u_max, mut v_max) = uv_bbox_from_loops(&outer_uv, &inner_uv);
+
+    // Expand bbox to cover degenerate edge UVs (e.g., sphere pole edges may extend
+    // beyond the outer loop range). The super-triangle must enclose all insertable points.
+    if let Some(reg) = reg {
+        for &dek in &face.degenerated_edges {
+            let edge = match reg.edges.get(dek) {
+                Some(e) => e,
+                None => continue,
+            };
+            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
+                Some(p) => p,
+                None => match edge.pcurves.values().next() {
+                    Some(p) => p,
+                    None => continue,
+                },
+            };
+            let uv0 = pc.d0(0.0);
+            let uv1 = pc.d0(1.0);
+            u_min = u_min.min(uv0.0).min(uv1.0);
+            u_max = u_max.max(uv0.0).max(uv1.0);
+            v_min = v_min.min(uv0.1).min(uv1.1);
+            v_max = v_max.max(uv0.1).max(uv1.1);
+        }
+    }
+
     let mut cdt = NativeCdt::from_uv_bbox_with_backend(
         u_min, v_min, u_max, v_max, config.delaunay_backend,
     );
@@ -94,12 +135,12 @@ pub fn triangulate_uv_cdt_with_steiner(
             span_opt,
             quant_key,
         ) else {
-            return (Vec::new(), 0.0);
+            return (Vec::new(), 0.0, CdtConstraintReport::default());
         };
         outer_handles.push(h);
     }
     if outer_handles.len() < 3 {
-        return (Vec::new(), 0.0);
+        return (Vec::new(), 0.0, CdtConstraintReport::default());
     }
     let n_outer = outer_handles.len();
     for i in 0..n_outer {
@@ -119,7 +160,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 span_opt,
                 quant_key,
             ) else {
-                return (Vec::new(), 0.0);
+                return (Vec::new(), 0.0, CdtConstraintReport::default());
             };
             inner_handles.push(h);
         }
@@ -133,7 +174,7 @@ pub fn triangulate_uv_cdt_with_steiner(
             let before = cdt.num_constraints();
             let ok = cdt.try_add_constraint(a, b);
             if !ok && cdt.num_constraints() == before && !cdt.exists_constraint(a, b) {
-                return (Vec::new(), 0.0);
+                return (Vec::new(), 0.0, CdtConstraintReport::default());
             }
         }
     }
@@ -158,28 +199,34 @@ pub fn triangulate_uv_cdt_with_steiner(
             }
             let pt0 = face.surface.d0_native(uv0.0, uv0.1);
             let pt1 = face.surface.d0_native(uv1.0, uv1.1);
-            let hash0 = f32x3_quantized_bits([pt0.x, pt0.y, pt0.z]);
-            let hash1 = f32x3_quantized_bits([pt1.x, pt1.y, pt1.z]);
-            let gi0 = *pos_to_idx.entry(hash0).or_insert_with(|| {
-                let i = global_vertices.len();
-                global_vertices.push(pt0);
-                let mut n = face.surface.normal_native(uv0.0, uv0.1);
-                if !face.same_sense {
-                    n = -n;
-                }
-                global_normals.push(n);
-                i
-            });
-            let gi1 = *pos_to_idx.entry(hash1).or_insert_with(|| {
-                let i = global_vertices.len();
-                global_vertices.push(pt1);
-                let mut n = face.surface.normal_native(uv1.0, uv1.1);
-                if !face.same_sense {
-                    n = -n;
-                }
-                global_normals.push(n);
-                i
-            });
+            let gi0 = register_boundary_point_with_normal_indexed_shared(
+                pt0,
+                global_vertices,
+                global_normals,
+                pos_to_idx,
+                shared_boundary,
+                || {
+                    let mut n = face.surface.normal_native(uv0.0, uv0.1);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    n
+                },
+            );
+            let gi1 = register_boundary_point_with_normal_indexed_shared(
+                pt1,
+                global_vertices,
+                global_normals,
+                pos_to_idx,
+                shared_boundary,
+                || {
+                    let mut n = face.surface.normal_native(uv1.0, uv1.1);
+                    if !face.same_sense {
+                        n = -n;
+                    }
+                    n
+                },
+            );
             let h0 = match insert_uv_native(
                 &mut cdt,
                 (uv0.0, uv0.1),
@@ -263,17 +310,20 @@ pub fn triangulate_uv_cdt_with_steiner(
                 }
                 if point_in_trim(*u, *v, &outer_uv, &inner_uv) {
                     let pt_3d = face.surface.d0_native(*u, *v);
-                    let hash = f32x3_quantized_bits([pt_3d.x, pt_3d.y, pt_3d.z]);
-                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                        let i = global_vertices.len();
-                        global_vertices.push(pt_3d);
-                        let mut n = face.surface.normal_native(*u, *v);
-                        if !face.same_sense {
-                            n = -n;
-                        }
-                        global_normals.push(n);
-                        i
-                    });
+                    let gi = register_boundary_point_with_normal_indexed_shared(
+                        pt_3d,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                        shared_boundary,
+                        || {
+                            let mut n = face.surface.normal_native(*u, *v);
+                            if !face.same_sense {
+                                n = -n;
+                            }
+                            n
+                        },
+                    );
                     if insert_uv_native(
                         &mut cdt,
                         (*u, *v),
@@ -306,7 +356,11 @@ pub fn triangulate_uv_cdt_with_steiner(
                 // Re-triangulate for DelaBella backend (no-op for BowyerWatson).
                 // This ensures inner_faces_detail() returns valid data for chord checking.
                 cdt.retriangulate();
-                let mut splits: Vec<(f64, f64)> = Vec::new();
+                // OCC BRepMesh_NodeInsertionMeshAlgo: per-triangle split strategy.
+                // - 1 failing edge → insert at its UV midpoint
+                // - 2+ failing edges → insert at triangle UV centroid
+                // - Sort by descending chord error → worst triangles refined first.
+                let mut splits: Vec<((f64, f64), f32)> = Vec::new(); // ((u,v), chord_error)
                 for (_gids, uvs) in cdt.inner_faces_detail() {
                     let uv0 = uvs[0];
                     let uv1 = uvs[1];
@@ -318,11 +372,15 @@ pub fn triangulate_uv_cdt_with_steiner(
                     if area_3d < 1e-12 {
                         continue;
                     }
-                    for (a, b, uva, uvb) in [
+
+                    // Collect which edges fail and their chord errors.
+                    let mut failed_edges: Vec<(usize, f32, (f32, f32))> = Vec::new(); // (edge_idx, chord_err, uv_mid)
+                    let edges: [(&Vec3, &Vec3, (f32, f32), (f32, f32)); 3] = [
                         (&p0, &p1, uv0, uv1),
                         (&p1, &p2, uv1, uv2),
                         (&p2, &p0, uv2, uv0),
-                    ] {
+                    ];
+                    for (ei, &(a, b, uva, uvb)) in edges.iter().enumerate() {
                         let edge_len = (*a - *b).length();
                         if edge_len <= min_sz {
                             continue;
@@ -332,54 +390,64 @@ pub fn triangulate_uv_cdt_with_steiner(
                         let surf_mid = face.surface.d0_native(uv_mid.0, uv_mid.1);
                         let dev = (mid_3d - surf_mid).length();
                         max_chord = max_chord.max(dev);
-                        let mut needs_split = false;
-                        if dev > config.deflection_interior {
-                            needs_split = true;
+                        let mut needs = dev > config.deflection_interior;
+                        if !needs {
+                            let na = face.surface.normal_native(uva.0, uva.1);
+                            let nb = face.surface.normal_native(uvb.0, uvb.1);
+                            let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
+                            needs = angle > config.angular_deflection;
                         }
-                        let na = face.surface.normal_native(uva.0, uva.1);
-                        let nb = face.surface.normal_native(uvb.0, uvb.1);
-                        let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
-                        if angle > config.angular_deflection {
-                            needs_split = true;
+                        if needs {
+                            failed_edges.push((ei, dev, uv_mid));
                         }
-                        if needs_split {
-                            // Use UV midpoint directly instead of surface.project().
-                            // OCC's BRepMesh_NodeInsertionMeshAlgo does the same: insert at
-                            // the midpoint of the edge's UV parameter range, which is the
-                            // natural split point in parametric space. This avoids the
-                            // expensive Newton-Raphson surface projection (5-13x faster on
-                            // NURBS faces). The chord error is already measured above via
-                            // d0_native(uv_mid), so the quality is preserved.
-                            let u = uv_mid.0;
-                            let v = uv_mid.1;
-                            if point_in_trim(u, v, &outer_uv, &inner_uv) {
-                                splits.push((u as f64, v as f64));
-                            }
-                        }
+                    }
+
+                    if failed_edges.is_empty() {
+                        continue;
+                    }
+
+                    // OCC strategy: single-edge fail → midpoint; multi-edge → centroid.
+                    let split_uv = if failed_edges.len() == 1 {
+                        let (_, _, uv_mid) = failed_edges[0];
+                        uv_mid
+                    } else {
+                        // Centroid of the triangle in UV space.
+                        let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
+                        let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
+                        (cu, cv)
+                    };
+                    if point_in_trim(split_uv.0, split_uv.1, &outer_uv, &inner_uv) {
+                        let max_dev = failed_edges.iter().map(|&(_, d, _)| d).fold(0.0f32, f32::max);
+                        splits.push(((split_uv.0 as f64, split_uv.1 as f64), max_dev));
                     }
                 }
                 if splits.is_empty() {
                     break;
                 }
+                // Sort by descending chord error — worst triangles refined first.
+                splits.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let mut dedup = HashSet::new();
-                for (u, v) in splits {
+                for ((u, v), _dev) in splits {
                     let key = ((u * 1e4) as u64, (v * 1e4) as u64);
                     if dedup.contains(&key) {
                         continue;
                     }
                     dedup.insert(key);
                     let pt_3d = face.surface.d0_native(u as f32, v as f32);
-                    let hash = f32x3_quantized_bits([pt_3d.x, pt_3d.y, pt_3d.z]);
-                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                        let i = global_vertices.len();
-                        global_vertices.push(pt_3d);
-                        let mut n = face.surface.normal_native(u as f32, v as f32);
-                        if !face.same_sense {
-                            n = -n;
-                        }
-                        global_normals.push(n);
-                        i
-                    });
+                    let gi = register_boundary_point_with_normal_indexed_shared(
+                        pt_3d,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                        shared_boundary,
+                        || {
+                            let mut n = face.surface.normal_native(u as f32, v as f32);
+                            if !face.same_sense {
+                                n = -n;
+                            }
+                            n
+                        },
+                    );
                     insert_uv_native(
                         &mut cdt,
                         (u as f32, v as f32),
@@ -401,11 +469,23 @@ pub fn triangulate_uv_cdt_with_steiner(
     } else {
         cdt.extract_triangles(|_, _| true)
     };
-    if tris.is_empty() && use_trim {
+    if tris.is_empty() && use_trim && loops.inners.is_empty() {
         tris = cdt.extract_triangles(|_, _| true);
     }
 
-    (tris, max_chord)
+    let constraint_report = CdtConstraintReport {
+        failed: cdt.constraint_failure_count(),
+        total: cdt.num_constraints(),
+    };
+    if constraint_report.has_failures() {
+        log::debug!(
+            "[BRep mesh] CDT constraint enforcement failed {}/{} edges",
+            constraint_report.failed,
+            constraint_report.total
+        );
+    }
+
+    (tris, max_chord, constraint_report)
 }
 
 /// Backward-compat: UV-only CDT without surface/refinement (no Steiner points).
@@ -429,13 +509,13 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
     };
     let mut verts = Vec::new();
     let mut norms = Vec::new();
-    let mut pmap = HashMap::new();
+    let mut pmap = BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
     let config = FaceFillConfig {
         enable_interior: false,
         ..Default::default()
     };
-    let (tris, _) = triangulate_uv_cdt_with_steiner(
-        loops, &face, None, &mut verts, &mut norms, &mut pmap, &config, None,
+    let (tris, _, _) = triangulate_uv_cdt_with_steiner(
+        loops, &face, None, &mut verts, &mut norms, &mut pmap, &config, None, None,
     );
     if tris.is_empty() {
         None
@@ -450,7 +530,6 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use super::super::face_uv::{point_in_trim, UvLoop, UvSource, UvVertex};
     use crate::geom::CurveGeom;
-    use rc3d_core::utils::hash::f32x3_quantized_bits;
 
     #[test]
     fn steiner_split_on_curved_surface() {
@@ -501,9 +580,10 @@ mod tests {
             face.surface.d0_native(0.0, 2.5708),
         ];
         let mut norms = vec![Vec3::Z; 4];
-        let mut pos_map = HashMap::new();
+        let mut pos_map =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
-            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+            pos_map.insert(i, [v.x, v.y, v.z]);
         }
 
         let config_loose = FaceFillConfig {
@@ -519,8 +599,8 @@ mod tests {
             ..Default::default()
         };
 
-        let (tris_loose, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_loose, None,
+        let (tris_loose, _, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_loose, None, None,
         );
         let verts_before = verts.len();
 
@@ -531,8 +611,8 @@ mod tests {
             skip_interior_edge_split: false, // enable Steiner edge splits
             ..config_loose.clone()
         };
-        let (tris_tight, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_tight, None,
+        let (tris_tight, _, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config_tight, None, None,
         );
         assert!(
             verts.len() > verts_before,
@@ -671,16 +751,17 @@ mod tests {
             Vec3::new(2.0, 1.0, 0.0),
         ];
         let mut norms = vec![Vec3::Z; 4];
-        let mut pos_map = HashMap::new();
+        let mut pos_map =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
-            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+            pos_map.insert(i, [v.x, v.y, v.z]);
         }
         let config = FaceFillConfig {
             enable_interior: false,
             ..Default::default()
         };
-        let (tris, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None,
+        let (tris, _, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None, None,
         );
         assert!(!tris.is_empty());
         for chunk in tris.chunks(3) {
@@ -738,9 +819,10 @@ mod tests {
             surface.d0_native(0.0, 2.5708),
         ];
         let mut norms = vec![Vec3::Z; 4];
-        let mut pos_map = HashMap::new();
+        let mut pos_map =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
-            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+            pos_map.insert(i, [v.x, v.y, v.z]);
         }
         let config = FaceFillConfig {
             enable_interior: true,
@@ -751,8 +833,8 @@ mod tests {
             ..Default::default()
         };
         let before = verts.len();
-        let (tris, _) = triangulate_uv_cdt_with_steiner(
-            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None,
+        let (tris, _, _) = triangulate_uv_cdt_with_steiner(
+            &loops, &face, None, &mut verts, &mut norms, &mut pos_map, &config, None, None,
         );
         assert!(verts.len() > before, "Steiner should add interior vertices");
         assert!(!tris.is_empty());
@@ -825,11 +907,12 @@ mod tests {
             equator_pos,
         ];
         let mut norms = vec![Vec3::Z; verts.len()];
-        let mut pos_map = HashMap::new();
+        let mut pos_map =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
-            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+            pos_map.insert(i, [v.x, v.y, v.z]);
         }
-        let (tris, _) = triangulate_uv_cdt_with_steiner(
+        let (tris, _, _) = triangulate_uv_cdt_with_steiner(
             &loops,
             &face,
             Some(fk),
@@ -838,6 +921,7 @@ mod tests {
             &mut pos_map,
             &FaceFillConfig::default(),
             Some(&reg),
+            None,
         );
         assert!(
             !tris.is_empty(),
@@ -906,11 +990,12 @@ mod tests {
             surface.d0_native(0.0, 0.4),
         ];
         let mut norms = vec![Vec3::Z; verts.len()];
-        let mut pos_map = HashMap::new();
+        let mut pos_map =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
-            pos_map.insert(f32x3_quantized_bits([v.x, v.y, v.z]), i);
+            pos_map.insert(i, [v.x, v.y, v.z]);
         }
-        let (tris, _) = triangulate_uv_cdt_with_steiner(
+        let (tris, _, _) = triangulate_uv_cdt_with_steiner(
             &loops,
             &face,
             Some(fk),
@@ -919,6 +1004,7 @@ mod tests {
             &mut pos_map,
             &FaceFillConfig::default(),
             Some(&reg),
+            None,
         );
         assert!(
             !tris.is_empty(),

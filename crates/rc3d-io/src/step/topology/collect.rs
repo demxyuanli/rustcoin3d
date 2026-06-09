@@ -132,14 +132,14 @@ pub fn global_tolerance(entities: &EntityIndex) -> f32 {
                 if let StepValue::Typed(tag, inner) = typed {
                     if tag == "LENGTH_MEASURE" {
                         if let StepValue::Real(v) = inner.as_ref() {
-                            return (*v as f32).clamp(1e-5, 0.01);
+                            return rc3d_shape::ToleranceContext::from_model(*v as f32).model;
                         }
                     }
                 }
             }
         }
     }
-    1e-4
+    rc3d_shape::ToleranceContext::default().model
 }
 
 /// Collect all Shell entities and extract their faces, keeping shells separate.

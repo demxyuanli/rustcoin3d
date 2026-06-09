@@ -647,6 +647,58 @@ impl CurveGeom {
         cross.dot(d3) / cross_len_sq
     }
 
+    /// Higher-order derivatives up to `order` (OCC Geom_Curve::DN).
+    /// Returns Vec of [d0, d1, d2, ..., dN] where d0 is position.
+    /// For orders > 2, uses finite-difference on lower-order derivatives.
+    /// Line: d3+ = zero. Circle/Ellipse: trigonometric recurrence.
+    pub fn dn(&self, t: f32, order: usize) -> Vec<Vec3> {
+        if order == 0 { return vec![self.d0(t)]; }
+        let mut result = Vec::with_capacity(order + 1);
+        result.push(self.d0(t));
+        if order >= 1 { result.push(self.d1(t)); }
+        if order >= 2 { result.push(self.d2(t)); }
+        if order <= 2 { return result; }
+
+        match self {
+            CurveGeom::Line { .. } => {
+                for _ in 3..=order { result.push(Vec3::ZERO); }
+            }
+            CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
+                let twopi = std::f32::consts::TAU;
+                for n in 3..=order {
+                    let deriv = circle_deriv_n(t, n, *x_dir, *y_dir, *radius, twopi);
+                    result.push(deriv);
+                }
+            }
+            CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
+                let twopi = std::f32::consts::TAU;
+                for n in 3..=order {
+                    let deriv = ellipse_deriv_n(t, n, *x_dir, *y_dir, *semi_major, *semi_minor, twopi);
+                    result.push(deriv);
+                }
+            }
+            _ => {
+                // Finite-difference: dN = (d(N-1)(t+eps) - d(N-1)(t-eps)) / (2*eps)
+                let eps = 1e-4;
+                for n in 3..=order {
+                    let t_hi = (t + eps).min(1.0);
+                    let t_lo = (t - eps).max(0.0);
+                    let _prev = &result[n - 1];
+                    // Recurse: compute d(n-1) at t_hi and t_lo
+                    let fwd = self.dn(t_hi, n - 1);
+                    let bwd = self.dn(t_lo, n - 1);
+                    let d_n = if fwd.len() >= n && bwd.len() >= n {
+                        (fwd[n - 1] - bwd[n - 1]) / (2.0 * eps)
+                    } else {
+                        Vec3::ZERO
+                    };
+                    result.push(d_n);
+                }
+            }
+        }
+        result
+    }
+
     /// Combined position, first, and second derivative in one call.
     /// For BSpline curves, this avoids 3× redundant Cox-de Boor evaluation
     /// vs calling `d0`, `d1`, `d2` separately.
@@ -1236,4 +1288,42 @@ mod tests {
         let r = (p.x * p.x + p.y * p.y).sqrt();
         assert!((r - 1.5).abs() < 0.02, "expected radius ~1.5, got {}", r);
     }
+
+    #[test]
+    fn test_line_dn_d3_is_zero() {
+        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let d = line.dn(0.5, 3);
+        assert_eq!(d.len(), 4); // [d0, d1, d2, d3]
+        assert!((d[3] - Vec3::ZERO).length() < 1e-6); // d3 of line = 0
+    }
+
+    #[test]
+    fn test_circle_d3_matches_recurrence() {
+        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 2.0);
+        // d3 of circle: (2π)^3 * r * (+sin * x_dir - cos * y_dir) at t=0
+        let d = circle.dn(0.0, 3);
+        assert_eq!(d.len(), 4);
+        let twopi3 = (2.0 * std::f32::consts::PI).powi(3) * 2.0; // radius=2
+        // At t=0: sin(0)=0, cos(0)=1 → d3 = twopi3 * (0*x_dir - 1*y_dir) = -twopi3 * y_dir
+        assert!((d[3] - Vec3::new(0.0, -twopi3, 0.0)).length() < 1.0);
+    }
+}
+
+// ── Trigonometric derivative recurrence for circle/ellipse ──────────
+
+fn circle_deriv_n(t: f32, n: usize, x_dir: Vec3, y_dir: Vec3, r: f32, twopi: f32) -> Vec3 {
+    let theta = t * twopi;
+    let twopi_n = twopi.powi(n as i32);
+    // d^n/dt^n [r*cos(θ)*x + r*sin(θ)*y]
+    // = r * (2π)^n * [cos(θ+nπ/2)*x + sin(θ+nπ/2)*y]
+    let phase = theta + n as f32 * std::f32::consts::FRAC_PI_2;
+    let scale = r * twopi_n;
+    scale * (phase.cos() * x_dir + phase.sin() * y_dir)
+}
+
+fn ellipse_deriv_n(t: f32, n: usize, x_dir: Vec3, y_dir: Vec3, a: f32, b: f32, twopi: f32) -> Vec3 {
+    let theta = t * twopi;
+    let twopi_n = twopi.powi(n as i32);
+    let phase = theta + n as f32 * std::f32::consts::FRAC_PI_2;
+    twopi_n * (a * phase.cos() * x_dir + b * phase.sin() * y_dir)
 }

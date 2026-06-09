@@ -87,11 +87,18 @@ impl CircleIndex {
             slot
         };
 
-        // Insert into all overlapping cells
+        // Insert into all overlapping cells (capped to avoid O(R^2) blow-up on huge circles).
+        const MAX_CELLS_PER_AXIS: usize = 32;
         let min_cx = self.cell_x(center.x - radius);
-        let max_cx = self.cell_x(center.x + radius);
+        let mut max_cx = self.cell_x(center.x + radius);
         let min_cy = self.cell_y(center.y - radius);
-        let max_cy = self.cell_y(center.y + radius);
+        let mut max_cy = self.cell_y(center.y + radius);
+        if max_cx.saturating_sub(min_cx) > MAX_CELLS_PER_AXIS {
+            max_cx = min_cx + MAX_CELLS_PER_AXIS;
+        }
+        if max_cy.saturating_sub(min_cy) > MAX_CELLS_PER_AXIS {
+            max_cy = min_cy + MAX_CELLS_PER_AXIS;
+        }
 
         for cy in min_cy..=max_cy {
             for cx in min_cx..=max_cx {

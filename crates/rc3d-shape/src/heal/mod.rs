@@ -14,13 +14,13 @@ pub(crate) mod face_self_intersect;
 pub(crate) mod intersecting_wires;
 pub mod continuity;
 pub mod pipeline;
+pub mod same_param_reparam;
 pub mod curve_trim;
 pub(crate) mod geom2d;
 pub mod topo_diag;
 pub(crate) mod free_bounds;
 pub(crate) mod compose_shell;
 pub(crate) mod face_fold;
-
 use std::collections::HashSet;
 
 use crate::topo::{FaceKey, ShellKey, WireKey};
@@ -41,7 +41,7 @@ pub use topo_diag::{
     check_shell_topo_diag, log_shell_topo_diag, topo_diag_enabled, TopoDiagReport,
 };
 pub use continuity::check_shell_continuity;
-pub use pipeline::{auto_heal_shell, HealLevel};
+pub use pipeline::{auto_heal_shell, HealLevel, HealPassId, HealPolicy};
 
 /// Why a face was excluded from meshing after heal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

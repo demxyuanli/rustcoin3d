@@ -37,3 +37,5 @@ docs/superpowers/**
 .gitignore
 .qoder/**
 .codegraph/**
+.agents/**
+.codex/**

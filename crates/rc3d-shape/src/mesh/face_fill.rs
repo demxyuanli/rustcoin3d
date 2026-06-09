@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
 
-use super::face_cdt::triangulate_uv_cdt_with_steiner;
+use super::face_cdt::{triangulate_uv_cdt_with_steiner, CdtConstraintReport};
+use super::grid::mesh_trimmed_uv_grid;
 use super::face_uv::{
-    ensure_loop_orientation,
+    ensure_loop_orientation, point_in_trim,
     rebuild_loop_uv_local_frame, revolution_boundary_v_collapsed, revolution_u_span_collapsed,
     split_boundary_chains_at_3d_jumps, FaceUvLoops,
     loops_native_surface_uv, UvSource, uv_loop_is_degenerate,
@@ -70,13 +71,15 @@ impl Default for FaceFillConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FaceMeshRange {
     pub face_key: FaceKey,
     pub first_tri: usize,
     pub tri_count: usize,
     pub boundary_global: HashSet<usize>,
     pub max_chord_error: f32,
+    /// CDT boundary constraints that failed enforcement (0 = success).
+    pub cdt_constraint_failures: usize,
 }
 
 
@@ -270,10 +273,11 @@ fn triangulate_loops_cdt(
     reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     fill_cfg: &FaceFillConfig,
-) -> (Vec<(i32, i32, i32)>, f32) {
-    let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
+    shared_boundary: Option<&super::boundary::SharedBoundaryPool>,
+) -> (Vec<(i32, i32, i32)>, f32, CdtConstraintReport) {
+    let (tris_flat, max_chord_error, constraint_report) = triangulate_uv_cdt_with_steiner(
         work_loops,
         face,
         Some(face_key),
@@ -282,6 +286,7 @@ fn triangulate_loops_cdt(
         pos_to_idx,
         fill_cfg,
         Some(reg),
+        shared_boundary,
     );
     let mut tris = Vec::new();
     for chunk in tris_flat.chunks(3) {
@@ -290,32 +295,323 @@ fn triangulate_loops_cdt(
         }
         tris.push((chunk[0] as i32, chunk[1] as i32, chunk[2] as i32));
     }
-    (tris, max_chord_error)
+    (tris, max_chord_error, constraint_report)
+}
+
+fn uv_bounds_from_loops(loops: &FaceUvLoops) -> (f32, f32, f32, f32) {
+    loops.outer.boundary.iter().fold(
+        (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+        |(u0, u1, v0, v1), v| (u0.min(v.uv.0), u1.max(v.uv.0), v0.min(v.uv.1), v1.max(v.uv.1)),
+    )
 }
 
 
+fn filter_tris_outside_uv_holes(
+    tris: Vec<(i32, i32, i32)>,
+    work_loops: &FaceUvLoops,
+) -> Vec<(i32, i32, i32)> {
+    if work_loops.inners.is_empty() {
+        return tris;
+    }
+    let outer_uv: Vec<(f32, f32)> = work_loops
+        .outer
+        .boundary
+        .iter()
+        .map(|v| v.uv)
+        .collect();
+    let holes: Vec<Vec<(f32, f32)>> = work_loops
+        .inners
+        .iter()
+        .map(|l| l.boundary.iter().map(|v| v.uv).collect())
+        .collect();
+    let mut uv_by_gi: HashMap<usize, (f32, f32)> = HashMap::new();
+    for v in work_loops
+        .outer
+        .boundary
+        .iter()
+        .chain(work_loops.inners.iter().flat_map(|l| l.boundary.iter()))
+    {
+        uv_by_gi.insert(v.global_idx, v.uv);
+    }
+    tris.into_iter()
+        .filter(|&(i0, i1, i2)| {
+            let Some(uv0) = uv_by_gi.get(&(i0 as usize)) else {
+                return false;
+            };
+            let Some(uv1) = uv_by_gi.get(&(i1 as usize)) else {
+                return false;
+            };
+            let Some(uv2) = uv_by_gi.get(&(i2 as usize)) else {
+                return false;
+            };
+            let cu = (uv0.0 + uv1.0 + uv2.0) / 3.0;
+            let cv = (uv0.1 + uv1.1 + uv2.1) / 3.0;
+            point_in_trim(cu, cv, &outer_uv, &holes)
+        })
+        .collect()
+}
+
+fn loop_uv_centroid(boundary: &[super::face_uv::UvVertex]) -> (f32, f32) {
+    let n = boundary.len() as f32;
+    if n < 1.0 {
+        return (0.0, 0.0);
+    }
+    let (su, sv) = boundary
+        .iter()
+        .fold((0.0f32, 0.0f32), |(u, v), vtx| (u + vtx.uv.0, v + vtx.uv.1));
+    (su / n, sv / n)
+}
+
+fn match_inner_indices_by_quadrant(
+    outer: &[super::face_uv::UvVertex],
+    inner: &[super::face_uv::UvVertex],
+) -> Vec<usize> {
+    let oc = loop_uv_centroid(outer);
+    let ic = loop_uv_centroid(inner);
+    outer
+        .iter()
+        .map(|ov| {
+            let o_hi_u = ov.uv.0 >= oc.0;
+            let o_hi_v = ov.uv.1 >= oc.1;
+            let mut best = 0usize;
+            let mut best_d2 = f32::MAX;
+            for (ii, iv) in inner.iter().enumerate() {
+                if (iv.uv.0 >= ic.0) != o_hi_u || (iv.uv.1 >= ic.1) != o_hi_v {
+                    continue;
+                }
+                let du = ov.uv.0 - iv.uv.0;
+                let dv = ov.uv.1 - iv.uv.1;
+                let d2 = du * du + dv * dv;
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    best = ii;
+                }
+            }
+            best
+        })
+        .collect()
+}
+
+fn inner_corner_indices_adjacent(a: usize, b: usize, n: usize) -> bool {
+    n >= 3 && (a + 1) % n == b || (b + 1) % n == a
+}
+
+/// Equal-vertex loops: pair corners by quadrant and emit corridor quads (2 tris each).
+fn triangulate_holed_uv_corridor_quads(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    if work_loops.inners.len() != 1 {
+        return Vec::new();
+    }
+    let outer = &work_loops.outer.boundary;
+    let inner = &work_loops.inners[0].boundary;
+    let n = outer.len();
+    if n != inner.len() || n < 3 {
+        return Vec::new();
+    }
+    let matches = match_inner_indices_by_quadrant(outer, inner);
+    for i in 0..n {
+        if !inner_corner_indices_adjacent(matches[i], matches[(i + 1) % n], n) {
+            return Vec::new();
+        }
+    }
+    let mut tris = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let o0 = &outer[i];
+        let o1 = &outer[(i + 1) % n];
+        let i0 = &inner[matches[i]];
+        let i1 = &inner[matches[(i + 1) % n]];
+        tris.push((
+            o0.global_idx as i32,
+            o1.global_idx as i32,
+            i1.global_idx as i32,
+        ));
+        tris.push((
+            o0.global_idx as i32,
+            i1.global_idx as i32,
+            i0.global_idx as i32,
+        ));
+    }
+    filter_tris_outside_uv_holes(tris, work_loops)
+}
+
+fn find_closest_bridge_pair(
+    poly: &[(usize, (f32, f32))],
+    inner: &[super::face_uv::UvVertex],
+) -> (usize, usize) {
+    let mut best_pi = 0usize;
+    let mut best_ii = 0usize;
+    let mut best_d2 = f32::MAX;
+    for (pi, &(_, puv)) in poly.iter().enumerate() {
+        for (ii, iv) in inner.iter().enumerate() {
+            let du = puv.0 - iv.uv.0;
+            let dv = puv.1 - iv.uv.1;
+            let d2 = du * du + dv * dv;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_pi = pi;
+                best_ii = ii;
+            }
+        }
+    }
+    (best_pi, best_ii)
+}
+
+fn insert_hole_loop_into_polygon(
+    poly: &mut Vec<(usize, (f32, f32))>,
+    insert_after: usize,
+    inner: &[super::face_uv::UvVertex],
+    inner_start: usize,
+) {
+    let n = inner.len();
+    if n < 3 {
+        return;
+    }
+    let bridge = &inner[inner_start];
+    let mut hole_verts: Vec<(usize, (f32, f32))> = vec![(bridge.global_idx, bridge.uv)];
+    for i in 1..n {
+        let v = &inner[(inner_start + n - i) % n];
+        hole_verts.push((v.global_idx, v.uv));
+    }
+    // Duplicate bridge vertex so the slit returns to the outer ring.
+    hole_verts.push((bridge.global_idx, bridge.uv));
+
+    let tail = poly.split_off(insert_after + 1);
+    poly.extend(hole_verts);
+    poly.extend(tail);
+}
+
+/// Multi-hole earcut: connect each inner loop to the outer via a bridge slit.
+fn triangulate_holed_uv_multi_bridge_earcut(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    if work_loops.inners.is_empty() {
+        return Vec::new();
+    }
+    let outer = &work_loops.outer.boundary;
+    if outer.len() < 3 {
+        return Vec::new();
+    }
+    let mut poly: Vec<(usize, (f32, f32))> = outer
+        .iter()
+        .map(|v| (v.global_idx, v.uv))
+        .collect();
+
+    for inner_loop in &work_loops.inners {
+        if inner_loop.boundary.len() < 3 {
+            continue;
+        }
+        let (insert_after, inner_start) = find_closest_bridge_pair(&poly, &inner_loop.boundary);
+        insert_hole_loop_into_polygon(&mut poly, insert_after, &inner_loop.boundary, inner_start);
+    }
+    if poly.len() < 3 {
+        return Vec::new();
+    }
+
+    let uv_pairs: Vec<(f64, f64)> = poly
+        .iter()
+        .map(|&(_, (u, v))| (u as f64, v as f64))
+        .collect();
+    let ear_tris = super::delaunay2d::earcut_uv_polygon(&uv_pairs, &[]);
+    if ear_tris.is_empty() {
+        return Vec::new();
+    }
+    let mut tris = Vec::with_capacity(ear_tris.len());
+    for tri in &ear_tris {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
+        if i0 >= poly.len() || i1 >= poly.len() || i2 >= poly.len() {
+            continue;
+        }
+        tris.push((
+            poly[i0].0 as i32,
+            poly[i1].0 as i32,
+            poly[i2].0 as i32,
+        ));
+    }
+    filter_tris_outside_uv_holes(tris, work_loops)
+}
+
+fn triangulate_planar_holed_face(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    let corridor = triangulate_holed_uv_corridor_quads(work_loops);
+    if !corridor.is_empty() {
+        return corridor;
+    }
+    if work_loops.inners.len() == 1 {
+        let single = triangulate_holed_uv_bridge_earcut(work_loops);
+        if !single.is_empty() {
+            return single;
+        }
+    }
+    triangulate_holed_uv_multi_bridge_earcut(work_loops)
+}
+
+/// Single-hole earcut via a bridge edge (outer CCW + inner reversed).
+fn triangulate_holed_uv_bridge_earcut(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
+    if work_loops.inners.len() != 1 {
+        return Vec::new();
+    }
+    let outer = &work_loops.outer.boundary;
+    let inner = &work_loops.inners[0].boundary;
+    if outer.len() < 3 || inner.len() < 3 {
+        return Vec::new();
+    }
+
+    let mut best_oi = 0usize;
+    let mut best_ii = 0usize;
+    let mut best_d2 = f32::MAX;
+    for (oi, ov) in outer.iter().enumerate() {
+        for (ii, iv) in inner.iter().enumerate() {
+            let du = ov.uv.0 - iv.uv.0;
+            let dv = ov.uv.1 - iv.uv.1;
+            let d2 = du * du + dv * dv;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_oi = oi;
+                best_ii = ii;
+            }
+        }
+    }
+
+    let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::with_capacity(outer.len() + inner.len() + 1);
+    for i in 0..outer.len() {
+        let v = &outer[(best_oi + i) % outer.len()];
+        earcut_verts.push((v.global_idx, v.uv));
+    }
+    earcut_verts.push((inner[best_ii].global_idx, inner[best_ii].uv));
+    for i in 1..inner.len() {
+        let v = &inner[(best_ii + inner.len() - i) % inner.len()];
+        earcut_verts.push((v.global_idx, v.uv));
+    }
+
+    let uv_pairs: Vec<(f64, f64)> = earcut_verts
+        .iter()
+        .map(|&(_, (u, v))| (u as f64, v as f64))
+        .collect();
+    let ear_tris = super::delaunay2d::earcut_uv_polygon(&uv_pairs, &[]);
+    if ear_tris.is_empty() {
+        return Vec::new();
+    }
+    let mut tris = Vec::with_capacity(ear_tris.len());
+    for tri in &ear_tris {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
+        if i0 >= earcut_verts.len() || i1 >= earcut_verts.len() || i2 >= earcut_verts.len() {
+            continue;
+        }
+        tris.push((
+            earcut_verts[i0].0 as i32,
+            earcut_verts[i1].0 as i32,
+            earcut_verts[i2].0 as i32,
+        ));
+    }
+    filter_tris_outside_uv_holes(tris, work_loops)
+}
+
 fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32, i32)> {
     let mut tris: Vec<(i32, i32, i32)> = Vec::new();
+    if !work_loops.inners.is_empty() {
+        return triangulate_planar_holed_face(work_loops);
+    }
     let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
     for v in &work_loops.outer.boundary {
         earcut_verts.push((v.global_idx, v.uv));
     }
-    let mut hole_indices = Vec::new();
-    for inner in &work_loops.inners {
-        hole_indices.push(earcut_verts.len());
-        for v in &inner.boundary {
-            earcut_verts.push((v.global_idx, v.uv));
-        }
-    }
     if earcut_verts.len() < 3 {
-        return tris;
-    }
-    // For polygons with holes, go directly to fan triangulation.
-    if !hole_indices.is_empty() {
-        let g0 = earcut_verts[0].0 as i32;
-        for i in 1..earcut_verts.len() - 1 {
-            tris.push((g0, earcut_verts[i].0 as i32, earcut_verts[i + 1].0 as i32));
-        }
         return tris;
     }
     let uv_pairs: Vec<(f64, f64)> = earcut_verts
@@ -428,6 +724,28 @@ pub(crate) fn surface_uv_basis(surface: &SurfaceGeom) -> &SurfaceGeom {
     }
 }
 
+/// Plane or offset-of-plane: trim loops share the basis plane UV frame.
+pub(crate) fn surface_is_planar_trim(surface: &SurfaceGeom) -> bool {
+    matches!(surface, SurfaceGeom::Plane { .. })
+        || matches!(
+            surface,
+            SurfaceGeom::Offset { basis, .. }
+                if matches!(basis.as_ref(), SurfaceGeom::Plane { .. })
+        )
+}
+
+fn planar_uv_basis(surface: &SurfaceGeom) -> Option<&SurfaceGeom> {
+    match surface {
+        SurfaceGeom::Plane { .. } => Some(surface),
+        SurfaceGeom::Offset { basis, .. }
+            if matches!(basis.as_ref(), SurfaceGeom::Plane { .. }) =>
+        {
+            Some(basis.as_ref())
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn wire_pair_is_same_edge_seam(wire_edges: &[(EdgeKey, Vec<usize>)]) -> bool {
     wire_edges.len() == 2 && wire_edges[0].0 == wire_edges[1].0
 }
@@ -450,7 +768,8 @@ pub use super::fill_plane::{
     mesh_plane_fan_wire_polygons, orient_plane_ring_ccw, plane_angle_at,
     plane_fan_max_edge, plane_ring_circular_mean_angle, plane_ring_signed_area,
     plane_unwrap_angle_near, project_point_to_plane, sort_plane_ring_by_angle,
-    triangulate_plane_center_fan, triangulate_plane_center_fan_from_boundary,
+    triangulate_plane_boundary_fan, triangulate_plane_center_fan,
+    triangulate_plane_center_fan_from_boundary,
 };
 
 
@@ -462,9 +781,10 @@ pub fn fill_trimmed(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     wire_edge_count: usize,
     config: &FaceFillConfig,
+    shared_boundary: Option<&super::boundary::SharedBoundaryPool>,
 ) -> FaceMeshRange {
     let first_tri = all_indices.len() / 4;
     let mut boundary_global = HashSet::new();
@@ -477,22 +797,25 @@ pub fn fill_trimmed(
         }
     }
 
-    let is_plane = matches!(face.surface, SurfaceGeom::Plane { .. });
+    let is_planar_trim = surface_is_planar_trim(&face.surface);
     let is_revolution = matches!(face.surface, SurfaceGeom::Revolution { .. });
     let prefer_closed_cdt = matches!(
         &face.surface,
         SurfaceGeom::Revolution { .. }
             | SurfaceGeom::BSpline(_)
-            | SurfaceGeom::Offset { .. }
             | SurfaceGeom::Cylinder { .. }
             | SurfaceGeom::Cone { .. }
+    ) || matches!(
+        &face.surface,
+        SurfaceGeom::Offset { basis, .. }
+            if !matches!(basis.as_ref(), SurfaceGeom::Plane { .. })
     );
     let revolution_uv_ok = is_revolution
         && loops
             .native_uv_bounds()
             .map(|(u0, u1, _, _)| !revolution_u_span_collapsed(u1 - u0))
             .unwrap_or(false);
-    let mut work_loops = if is_plane {
+    let mut work_loops = if is_planar_trim {
         loops.clone()
     } else if is_revolution {
         let native = loops_native_surface_uv(loops, face, global_vertices);
@@ -527,15 +850,15 @@ pub fn fill_trimmed(
         loops_native_surface_uv(loops, face, global_vertices)
     };
 
-    // Always rebuild plane loops from 3D boundary (STEP PCURVE UV can be skewed, e.g. Cube.step).
-    if is_plane {
+    // Rebuild plane / offset-of-plane loops from 3D boundary (STEP PCURVE UV can be skewed).
+    if let Some(plane_basis) = planar_uv_basis(&face.surface) {
         rebuild_loop_uv_local_frame(
             &mut work_loops.outer,
             global_vertices,
-            Some(&face.surface),
+            Some(plane_basis),
         );
         for inner in &mut work_loops.inners {
-            rebuild_loop_uv_local_frame(inner, global_vertices, Some(&face.surface));
+            rebuild_loop_uv_local_frame(inner, global_vertices, Some(plane_basis));
         }
         ensure_loop_orientation(&mut work_loops.outer.boundary, false);
         for inner in &mut work_loops.inners {
@@ -543,16 +866,26 @@ pub fn fill_trimmed(
         }
         work_loops.uv_source = UvSource::Synthetic;
 
-        // Planar faces: 3D sorted center fan (wire-order/UV earcut leaves holes on Cube.step).
+        // Planar faces: sorted boundary fan (no Steiner verts; cube quad → 2 tris/face).
         if work_loops.inners.is_empty() {
-            let tris = triangulate_plane_center_fan(
+            let mut tris = triangulate_plane_boundary_fan(
                 face,
                 &work_loops,
                 global_vertices,
                 global_normals,
                 pos_to_idx,
-                config,
             );
+            if tris.is_empty() {
+                tris = triangulate_plane_center_fan(
+                    face,
+                    &work_loops,
+                    global_vertices,
+                    global_normals,
+                    pos_to_idx,
+                    config,
+                    shared_boundary,
+                );
+            }
             if !tris.is_empty() {
                 let emitted = emit_filtered_triangles(
                     tris,
@@ -569,6 +902,30 @@ pub fn fill_trimmed(
                     tri_count: emitted,
                     boundary_global,
                     max_chord_error: 0.0,
+                    cdt_constraint_failures: 0,
+                };
+            }
+        }
+
+        if !work_loops.inners.is_empty() {
+            let holed_tris = triangulate_planar_holed_face(&work_loops);
+            if !holed_tris.is_empty() {
+                let emitted = emit_filtered_triangles(
+                    holed_tris,
+                    false,
+                    f32::MAX,
+                    face,
+                    global_vertices,
+                    global_normals,
+                    all_indices,
+                );
+                return FaceMeshRange {
+                    face_key,
+                    first_tri,
+                    tri_count: emitted,
+                    boundary_global,
+                    max_chord_error: 0.0,
+                    cdt_constraint_failures: 0,
                 };
             }
         }
@@ -585,14 +942,14 @@ pub fn fill_trimmed(
         8.0,
     );
     let use_segmentation =
-        !is_plane && !prefer_closed_cdt && chains.len() >= 2 && long_count >= 2;
+        !is_planar_trim && !prefer_closed_cdt && chains.len() >= 2 && long_count >= 2;
 
-    let (mut tris, mut max_chord_error) = if use_segmentation {
+    let (mut tris, mut max_chord_error, mut cdt_report) = if use_segmentation {
         let mut seg_tris = Vec::new();
         for chain in &chains {
             seg_tris.extend(triangulate_open_chain_uv(chain, global_vertices));
         }
-        (seg_tris, 0.0f32)
+        (seg_tris, 0.0f32, CdtConstraintReport::default())
     } else {
         triangulate_loops_cdt(
             &work_loops,
@@ -603,15 +960,91 @@ pub fn fill_trimmed(
             global_normals,
             pos_to_idx,
             &fill_cfg,
+            shared_boundary,
         )
     };
+
+    if cdt_report.has_failures() {
+        log::debug!(
+            "[BRep mesh] face {:?}: {} CDT constraint failures, trimmed UV grid fallback",
+            face_key,
+            cdt_report.failed
+        );
+        if is_planar_trim && !work_loops.inners.is_empty() {
+            let bridge_tris = triangulate_planar_holed_face(&work_loops);
+            if !bridge_tris.is_empty() {
+                let emitted = emit_filtered_triangles(
+                    bridge_tris,
+                    false,
+                    f32::MAX,
+                    face,
+                    global_vertices,
+                    global_normals,
+                    all_indices,
+                );
+                return FaceMeshRange {
+                    face_key,
+                    first_tri,
+                    tri_count: emitted,
+                    boundary_global,
+                    max_chord_error: 0.0,
+                    cdt_constraint_failures: cdt_report.failed,
+                };
+            }
+            tris = triangulate_loops_earcut_fallback(&work_loops);
+            if !tris.is_empty() {
+                let emitted = emit_filtered_triangles(
+                    tris,
+                    false,
+                    f32::MAX,
+                    face,
+                    global_vertices,
+                    global_normals,
+                    all_indices,
+                );
+                return FaceMeshRange {
+                    face_key,
+                    first_tri,
+                    tri_count: emitted,
+                    boundary_global,
+                    max_chord_error: 0.0,
+                    cdt_constraint_failures: cdt_report.failed,
+                };
+            }
+        }
+        tris.clear();
+        let grid_first = all_indices.len() / 4;
+        mesh_trimmed_uv_grid(
+            face,
+            &work_loops,
+            uv_bounds_from_loops(&work_loops),
+            Some(&fill_cfg),
+            None,
+            global_vertices,
+            global_normals,
+            pos_to_idx,
+            all_indices,
+            shared_boundary,
+        );
+        let grid_count = all_indices.len() / 4 - grid_first;
+        if grid_count > 0 {
+            return FaceMeshRange {
+                face_key,
+                first_tri,
+                tri_count: grid_count,
+                boundary_global,
+                max_chord_error: 0.0,
+                cdt_constraint_failures: cdt_report.failed,
+            };
+        }
+    }
 
     if tris.is_empty() {
         tris = triangulate_loops_earcut_fallback(&work_loops);
     }
 
     if tris.is_empty() && use_segmentation {
-        let (cdt_tris, chord) = triangulate_loops_cdt(
+        let (cdt_tris, chord, seg_report) = triangulate_loops_cdt(
             &work_loops,
             face,
             face_key,
@@ -620,12 +1053,14 @@ pub fn fill_trimmed(
             global_normals,
             pos_to_idx,
             &fill_cfg,
+            shared_boundary,
         );
         tris = cdt_tris;
         max_chord_error = chord;
+        cdt_report = seg_report;
     }
 
-    if tris.is_empty() && is_plane {
+    if tris.is_empty() && is_planar_trim && work_loops.inners.is_empty() {
         tris = fan_triangulate_outer(&work_loops);
     }
 
@@ -637,15 +1072,20 @@ pub fn fill_trimmed(
             tri_count: 0,
             boundary_global,
             max_chord_error: 0.0,
+            cdt_constraint_failures: cdt_report.failed,
         };
     }
 
-    let apply_quality = !is_plane && !use_segmentation && !prefer_closed_cdt;
+    let apply_quality = !is_planar_trim && !use_segmentation && !prefer_closed_cdt;
     let max_edge = if apply_quality {
         max_allowed_triangle_edge(&work_loops, global_vertices)
     } else {
         f32::MAX
     };
+
+    if is_planar_trim && !work_loops.inners.is_empty() {
+        tris = filter_tris_outside_uv_holes(tris, &work_loops);
+    }
 
     let emitted = emit_filtered_triangles(
         tris,
@@ -663,6 +1103,7 @@ pub fn fill_trimmed(
         tri_count: emitted,
         boundary_global,
         max_chord_error,
+        cdt_constraint_failures: cdt_report.failed,
     }
 }
 
@@ -894,7 +1335,12 @@ mod tests {
         ];
         let mut norms = vec![Vec3::Z; 8];
         let mut indices = Vec::new();
-        let mut pos_map = HashMap::new();
+        let mut pos_map = crate::mesh::boundary::BoundaryPosIndex::with_cell_size(
+            crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE,
+        );
+        for (i, v) in verts.iter().enumerate() {
+            pos_map.insert(i, [v.x, v.y, v.z]);
+        }
         let reg = BRepStore::new();
         let fk = FaceKey::default();
         let range = fill_trimmed(
@@ -911,6 +1357,7 @@ mod tests {
                 enable_interior: false,
                 ..Default::default()
             },
+            None,
         );
         assert!(range.tri_count > 0);
         let hole = vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)];

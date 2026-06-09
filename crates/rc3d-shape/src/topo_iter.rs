@@ -226,6 +226,17 @@ pub fn deep_faces_of_solid(solid_key: SolidKey, reg: &BRepStore) -> Vec<FaceKey>
     faces
 }
 
+/// Iterate all solids in a compound.
+pub fn iter_solids_of_compound(compound: crate::topo::CompoundKey, reg: &BRepStore) -> Vec<crate::topo::SolidKey> {
+    let Some(c) = reg.compounds.get(compound) else { return vec![]; };
+    c.solids.clone()
+}
+
+/// Iterate all faces of a compsolid (outer + void shells).
+pub fn iter_faces_of_compsolid(compsolid: crate::topo::SolidKey, reg: &BRepStore) -> Vec<crate::topo::FaceKey> {
+    deep_faces_of_solid(compsolid, reg)
+}
+
 /// Recursively collect all vertices of a shell.
 ///
 /// OCC equivalent: `TopExp_Explorer(shell, TopAbs_VERTEX)`
@@ -309,6 +320,8 @@ mod tests {
             tolerance: 1e-4,
             v_low: v0,
             v_high: v1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }),
                                      (face_b, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
@@ -317,6 +330,8 @@ mod tests {
             tolerance: 1e-4,
             v_low: v1,
             v_high: v2,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, 1.0) })]),
         });
         let e23 = reg.edges.insert(BRepEdge {
@@ -324,6 +339,8 @@ mod tests {
             tolerance: 1e-4,
             v_low: v2,
             v_high: v3,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (-1.0, 0.0) })]),
         });
         let e30 = reg.edges.insert(BRepEdge {
@@ -331,6 +348,8 @@ mod tests {
             tolerance: 1e-4,
             v_low: v3,
             v_high: v0,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, -1.0) })]),
         });
 

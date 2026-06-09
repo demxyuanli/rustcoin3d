@@ -16,6 +16,7 @@ pub struct FaceMeshStats {
     pub uv_source: UvSource,
     pub max_chord_error: f32,
     pub grid_fallback: bool,
+    pub cdt_constraint_failures: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -23,6 +24,7 @@ pub struct ShellMeshReport {
     pub face_count: usize,
     pub meshed_faces: usize,
     pub grid_fallback_count: usize,
+    pub cdt_constraint_failure_count: usize,
     pub total_tris: usize,
     pub shell_diag: f32,
     /// Max 3D gap between boundary samples on duplicate EdgeKeys (same vertex pair).

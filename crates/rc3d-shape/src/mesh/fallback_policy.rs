@@ -103,7 +103,10 @@ pub fn uses_closed_parametric_mesh(reg: &BRepStore, face: &crate::topo::BRepFace
     }
     if !matches!(
         &face.surface,
-        SurfaceGeom::Sphere { .. } | SurfaceGeom::Torus { .. }
+        SurfaceGeom::Sphere { .. }
+            | SurfaceGeom::Torus { .. }
+            | SurfaceGeom::Revolution { .. }
+            | SurfaceGeom::Cone { .. }
     ) {
         return false;
     }
@@ -111,7 +114,7 @@ pub fn uses_closed_parametric_mesh(reg: &BRepStore, face: &crate::topo::BRepFace
         Some(w) => w,
         None => return false,
     };
-    if wire.edges.is_empty() {
+    if wire.edges.is_empty() || wire.edges.len() == 1 {
         return true;
     }
     if face

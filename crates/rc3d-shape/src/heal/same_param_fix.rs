@@ -578,6 +578,8 @@ mod tests {
             v_high: v0.max(v1),
             curve: curve_3d,
             tolerance: 1e-4,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(fk, pcurve)]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -735,6 +737,8 @@ mod tests {
             v_high: v0.max(v1),
             curve: curve_3d,
             tolerance: 1e-4,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::from([(fk, bad_pcurve)]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];

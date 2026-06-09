@@ -41,6 +41,8 @@ pub struct NativeCdt {
     constraints: usize,
     /// Queued constraint edges (internal vertex index pairs) for DelaBella backend.
     dela_pending_constraints: Vec<(u32, u32)>,
+    /// Constraints that failed enforcement during the last `finalize`.
+    constraint_failures: usize,
 }
 
 impl NativeCdt {
@@ -84,7 +86,12 @@ impl NativeCdt {
             handle_gi: Vec::new(),
             constraints: 0,
             dela_pending_constraints: Vec::new(),
+            constraint_failures: 0,
         }
+    }
+
+    pub fn constraint_failure_count(&self) -> usize {
+        self.constraint_failures
     }
 
     pub fn insert(&mut self, u: f64, v: f64, gi: usize) -> Option<CdtVertHandle> {
@@ -108,7 +115,8 @@ impl NativeCdt {
         let b = self.handles.get(hb as usize).copied();
         match (a, b, &mut self.inner) {
             (Some(a), Some(b), CdtInner::BowyerWatson(delaunay)) => {
-                let ok = delaunay.constrain_live(a, b);
+                // Queue only; enforce all constraints at finalize (after interior inserts).
+                let ok = delaunay.add_constraint(a, b);
                 if ok {
                     self.constraints += 1;
                 }
@@ -241,7 +249,7 @@ impl NativeCdt {
         verts: &[(f64, f64)],
         orig: &[u32],
         constraints: &[(u32, u32)],
-    ) -> (DelaBellaEngine, HashMap<u32, u32>) {
+    ) -> (DelaBellaEngine, HashMap<u32, u32>, usize) {
         let mut fresh = DelaBellaEngine::new();
         dela_triangulate(&mut fresh, verts, orig);
 
@@ -250,16 +258,20 @@ impl NativeCdt {
             orig_to_fresh.insert(v.orig_idx, fi as u32);
         }
 
-        // Apply constraints with remapped indices
+        let mut failures = 0usize;
         for (va, vb) in constraints {
             let oa = orig[*va as usize];
             let ob = orig[*vb as usize];
             if let (Some(&fa), Some(&fb)) = (orig_to_fresh.get(&oa), orig_to_fresh.get(&ob)) {
-                dela_constrain_edge(&mut fresh, fa, fb);
+                if !dela_constrain_edge(&mut fresh, fa, fb) {
+                    failures += 1;
+                }
+            } else {
+                failures += 1;
             }
         }
 
-        (fresh, orig_to_fresh)
+        (fresh, orig_to_fresh, failures)
     }
 
     pub fn retriangulate(&mut self) {
@@ -274,7 +286,7 @@ impl NativeCdt {
     pub fn finalize(&mut self) {
         match &mut self.inner {
             CdtInner::BowyerWatson(delaunay) => {
-                delaunay.finalize_constraints();
+                self.constraint_failures = delaunay.finalize_constraints();
             }
             CdtInner::DelaBella(_) => {
                 self.rebuild_dela_bella_inner(true);
@@ -304,7 +316,11 @@ impl NativeCdt {
             self.dela_pending_constraints.clone()
         };
 
-        let (fresh, orig_to_fresh) = Self::rebuild_dela_bella(&points, &orig, &constraints);
+        let (fresh, orig_to_fresh, failures) =
+            Self::rebuild_dela_bella(&points, &orig, &constraints);
+        if take_constraints {
+            self.constraint_failures = failures;
+        }
 
         for ha in 0..self.handles.len() {
             let gi = self.handle_gi[ha] as u32;

@@ -222,12 +222,26 @@ fn build_xde_labels(
             continue;
         };
         for &child_idx in &node.children {
-            if let Some(child_label) = node_labels[child_idx] {
-                if let Some(parent_label) = doc.labels.labels.get_mut(label_id) {
-                    parent_label.children.push(child_label);
-                }
+            let Some(child_label) = node_labels[child_idx] else {
+                continue;
+            };
+            let needs_mirror = doc
+                .labels
+                .labels
+                .get(child_label)
+                .and_then(|c| c.parent)
+                .is_some_and(|existing| existing != label_id);
+            let link_label = if needs_mirror {
+                mirror_label_for_parent(doc, child_label, label_id)
+            } else {
                 if let Some(child) = doc.labels.labels.get_mut(child_label) {
                     child.parent = Some(label_id);
+                }
+                child_label
+            };
+            if let Some(parent_label) = doc.labels.labels.get_mut(label_id) {
+                if !parent_label.children.contains(&link_label) {
+                    parent_label.children.push(link_label);
                 }
             }
         }
@@ -311,6 +325,29 @@ fn build_xde_labels(
     }
 
     Ok(())
+}
+
+fn mirror_label_for_parent(
+    doc: &mut ShapeDocument,
+    src_label: LabelId,
+    parent_label: LabelId,
+) -> LabelId {
+    let Some(src) = doc.labels.labels.get(src_label).cloned() else {
+        return src_label;
+    };
+    let mirror = doc.labels.add_label(XdeLabel {
+        parent: Some(parent_label),
+        children: vec![],
+        attrs: src.attrs,
+        shape: None,
+    });
+    log::debug!(
+        "[CAF] multi-parent label mirror: {:?} under {:?} (source {:?})",
+        mirror,
+        parent_label,
+        src_label,
+    );
+    mirror
 }
 
 fn attach_shape_to_label(

@@ -2,23 +2,29 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::super::geom::{robust_orient2d, Point2d};
+use super::super::geom::Point2d;
 use super::super::half_edge::VertIdx;
 use super::super::polygon_mesh::{
     boundary_adjacency, earcut_polygon, mesh_left_polygon_loop, order_boundary_loop,
 };
 use super::{
-    edge_key, opposite_vertex, segment_crosses_triangle, segments_cross, segments_cross_proper,
-    Delaunay2d, EPS,
+    adaptive_orient2d, edge_key, opposite_vertex, segment_crosses_triangle, segments_cross_fast,
+    Delaunay2d,
 };
 
 impl Delaunay2d {
-    pub(super) fn process_constraints(&mut self) {
-        let list = self.constraints.clone();
+    /// Enforce queued constraints. Returns the number that could not be recovered.
+    pub(super) fn process_constraints(&mut self) -> usize {
+        let list: Vec<_> = self.constraints.drain(..).collect();
+        let mut failed = 0usize;
         for (a, b) in list {
-            let _ = self.enforce_constraint_full(a, b);
+            if !self.enforce_constraint_full(a, b) {
+                failed += 1;
+            }
         }
         self.frontier_adjust();
+        self.last_constraint_failures = failed;
+        failed
     }
 
     pub(super) fn enforce_constraint_full(&mut self, a: VertIdx, b: VertIdx) -> bool {
@@ -26,7 +32,6 @@ impl Delaunay2d {
             self.mark_constrained(a, b);
             return true;
         }
-        // Most constraints resolve in < 30 flips; 128 is a generous safety bound.
         for _ in 0..128 {
             if self.has_mesh_edge(a, b) {
                 self.mark_constrained(a, b);
@@ -43,7 +48,8 @@ impl Delaunay2d {
             self.mark_constrained(a, b);
             return true;
         }
-        if self.recover_constraint_cavity(a, b) {
+        let recovered = self.recover_constraint_cavity(a, b);
+        if recovered {
             self.mark_constrained(a, b);
             return true;
         }
@@ -80,7 +86,7 @@ impl Delaunay2d {
             let tri = self.tris[ti as usize];
             let opp = opposite_vertex(tri, a, b);
             let po = self.points[opp as usize];
-            if robust_orient2d(pa, pb, po) > EPS {
+            if adaptive_orient2d(pa, pb, po) > 0.0 {
                 return true;
             }
         }
@@ -116,7 +122,7 @@ impl Delaunay2d {
             }
 
             for tri in earcut_polygon(&self.points, &poly) {
-                self.add_triangle(tri);
+                self.add_triangle_no_circle(tri);
             }
             any_progress = true;
 
@@ -148,8 +154,8 @@ impl Delaunay2d {
             let tri = self.tris[ti as usize];
             let opp = opposite_vertex(tri, a, b);
             let po = self.points[opp as usize];
-            let side = robust_orient2d(pa, pb, po);
-            if side < -EPS {
+            let side = adaptive_orient2d(pa, pb, po);
+            if side < 0.0 {
                 self.kill_triangle(ti);
             }
         }
@@ -220,7 +226,7 @@ impl Delaunay2d {
 
     fn mesh_polygon(&mut self, verts: &[VertIdx]) {
         for tri in earcut_polygon(&self.points, verts) {
-            self.add_triangle(tri);
+            self.add_triangle_no_circle(tri);
         }
     }
 
@@ -232,7 +238,12 @@ impl Delaunay2d {
         let pa = self.points[a as usize];
         let pb = self.points[b as usize];
         let adj = self.edge_adjacency();
-        // Use the cached alive-triangle list instead of scanning all (including dead).
+
+        let s_min_x = pa.x.min(pb.x);
+        let s_max_x = pa.x.max(pb.x);
+        let s_min_y = pa.y.min(pb.y);
+        let s_max_y = pa.y.max(pb.y);
+
         for &ti in &self.alive_tris {
             let tri = self.tris[ti as usize];
             for k in 0..3 {
@@ -243,7 +254,12 @@ impl Delaunay2d {
                 }
                 let p0 = self.points[e0 as usize];
                 let p1 = self.points[e1 as usize];
-                if segments_cross_proper(pa, pb, p0, p1) {
+                if p0.x.max(p1.x) < s_min_x || p0.x.min(p1.x) > s_max_x ||
+                    p0.y.max(p1.y) < s_min_y || p0.y.min(p1.y) > s_max_y
+                {
+                    continue;
+                }
+                if segments_cross_fast(pa, pb, p0, p1) {
                     let key = edge_key(e0, e1);
                     let tris = adj.get(&key)?;
                     if tris.len() != 2 {
@@ -276,18 +292,19 @@ impl Delaunay2d {
         let pc = self.points[e0 as usize];
         let pd = self.points[e1 as usize];
 
-        if !segments_cross(pa, pb, pc, pd) {
+        let o1 = adaptive_orient2d(pa, pb, pc);
+        let o2 = adaptive_orient2d(pa, pb, pd);
+        if !segments_cross_fast(pa, pb, pc, pd) {
             return false;
         }
-
-        if robust_orient2d(pa, pb, pc) == 0.0 || robust_orient2d(pa, pb, pd) == 0.0 {
+        if o1 == 0.0 || o2 == 0.0 {
             return false;
         }
 
         self.kill_triangle(tri0);
         self.kill_triangle(tri1);
-        self.add_triangle([opp0, opp1, e0]);
-        self.add_triangle([opp0, e1, opp1]);
+        self.add_triangle_no_circle([opp0, opp1, e0]);
+        self.add_triangle_no_circle([opp0, e1, opp1]);
         true
     }
 }

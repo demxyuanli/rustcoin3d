@@ -5,6 +5,7 @@
 pub mod bspline;
 pub mod graph;
 pub mod hash;
+pub mod spatial;
 pub mod math;
 pub mod ring;
 pub mod sort;

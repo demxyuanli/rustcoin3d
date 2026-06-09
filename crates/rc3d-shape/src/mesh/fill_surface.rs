@@ -1,9 +1,11 @@
 //! Surface fill when PCURVEs are unavailable (project boundary to surface).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use rc3d_core::math::Vec3;
-use rc3d_core::utils::hash::f32x3_quantized_bits;
+use super::boundary::{
+    register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
+};
 
 use super::delaunay2d::{CdtVertHandle, NativeCdt};
 use super::face_cdt::triangulate_uv_cdt_with_steiner;
@@ -115,6 +117,7 @@ pub(crate) fn fill_mixed_boundary_segmented(
         tri_count: emitted,
         boundary_global,
         max_chord_error: 0.0,
+        cdt_constraint_failures: 0,
     }
 }
 
@@ -165,8 +168,9 @@ pub fn surface_fill_3d(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) -> FaceMeshRange {
     let first_tri = all_indices.len() / 4;
     let boundary_set: HashSet<usize> = boundary_global.iter().copied().collect();
@@ -178,6 +182,7 @@ pub fn surface_fill_3d(
             tri_count: 0,
             boundary_global: boundary_set,
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
 
@@ -279,8 +284,16 @@ pub fn surface_fill_3d(
                     face_key
                 );
             } else {
-                let (tris_flat, max_chord_error) = triangulate_uv_cdt_with_steiner(
-                    &loops, face, Some(face_key), global_vertices, global_normals, pos_to_idx, config, None,
+                let (tris_flat, max_chord_error, cdt_report) = triangulate_uv_cdt_with_steiner(
+                    &loops,
+                    face,
+                    Some(face_key),
+                    global_vertices,
+                    global_normals,
+                    pos_to_idx,
+                    config,
+                    None,
+                    shared_boundary,
                 );
 
                 if !tris_flat.is_empty() {
@@ -310,6 +323,7 @@ pub fn surface_fill_3d(
                         tri_count,
                         boundary_global: boundary_set,
                         max_chord_error,
+                        cdt_constraint_failures: cdt_report.failed,
                     };
                 }
                 log::debug!(
@@ -332,6 +346,7 @@ pub fn surface_fill_3d(
         config,
         first_tri,
         boundary_set,
+        shared_boundary,
     )
 }
 
@@ -344,10 +359,11 @@ pub(crate) fn surface_fill_3d_planar(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
     first_tri: usize,
     boundary_set: HashSet<usize>,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) -> FaceMeshRange {
     log::debug!(
         "[BRep mesh] face {:?}: planar CDT + surface-projected Steiner ({} boundary verts)",
@@ -376,6 +392,7 @@ pub(crate) fn surface_fill_3d_planar(
             tri_count: 0,
             boundary_global: boundary_set,
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     normal = normal.normalize();
@@ -424,6 +441,7 @@ pub(crate) fn surface_fill_3d_planar(
                 tri_count: 0,
                 boundary_global: boundary_set,
                 max_chord_error: 0.0,
+                cdt_constraint_failures: 0,
             };
         };
         handles.push(h);
@@ -504,17 +522,20 @@ pub(crate) fn surface_fill_3d_planar(
                     continue;
                 };
                 let pt_3d = face.surface.d0_native(su, sv);
-                let hash = f32x3_quantized_bits([pt_3d.x, pt_3d.y, pt_3d.z]);
-                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                    let i = global_vertices.len();
-                    global_vertices.push(pt_3d);
-                    let mut n = face.surface.normal_native(su, sv);
-                    if !face.same_sense {
-                        n = -n;
-                    }
-                    global_normals.push(n);
-                    i
-                });
+                let gi = register_boundary_point_with_normal_indexed_shared(
+                    pt_3d,
+                    global_vertices,
+                    global_normals,
+                    pos_to_idx,
+                    shared_boundary,
+                    || {
+                        let mut n = face.surface.normal_native(su, sv);
+                        if !face.same_sense {
+                            n = -n;
+                        }
+                        n
+                    },
+                );
 
                 if cdt.insert(pu, pv, gi).is_some() {
                     // Steiner vertex registered in NativeCdt global-index map.
@@ -552,6 +573,7 @@ pub(crate) fn surface_fill_3d_planar(
             tri_count: 0,
             boundary_global: boundary_set,
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
 
@@ -585,5 +607,6 @@ pub(crate) fn surface_fill_3d_planar(
         tri_count,
         boundary_global: boundary_set,
         max_chord_error: max_chord,
+        cdt_constraint_failures: 0,
     }
 }

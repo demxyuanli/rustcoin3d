@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
-use rc3d_core::utils::hash::f32x3_quantized_bits;
+use super::boundary::{
+    register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
+};
 use crate::geom::SurfaceGeom;
 use crate::topo::{BRepFace, EdgeKey, FaceKey, Orientation};
 use super::edge_disc::EdgePolygon;
@@ -30,7 +32,8 @@ pub struct RuledMeshBuffers<'a> {
     pub global_vertices: &'a mut Vec<Vec3>,
     pub global_normals: &'a mut Vec<Vec3>,
     pub all_indices: &'a mut Vec<i32>,
-    pub pos_to_idx: &'a mut HashMap<[u32; 3], usize>,
+    pub pos_to_idx: &'a mut BoundaryPosIndex,
+    pub shared_boundary: Option<&'a SharedBoundaryPool>,
 }
 
 /// Ruled quad strip between exactly two boundary wires (no untrimmed native UV sheet).
@@ -90,6 +93,7 @@ fn try_ruled_two_wire_mesh_adaptive(
         tri_count: 0,
         boundary_global: HashSet::new(),
         max_chord_error: 0.0,
+        cdt_constraint_failures: 0,
     };
 
     for pass in 0..MAX_ADAPTIVE_RULED_PASSES {
@@ -107,6 +111,7 @@ fn try_ruled_two_wire_mesh_adaptive(
                 global_normals: buffers.global_normals,
                 all_indices: buffers.all_indices,
                 pos_to_idx: buffers.pos_to_idx,
+                shared_boundary: buffers.shared_boundary,
             },
             fill_config,
             Some((segs_u, segs_v)),
@@ -178,6 +183,7 @@ fn ruled_two_wire_once(
         global_normals,
         all_indices,
         pos_to_idx,
+        shared_boundary,
     } = buffers;
     let first_tri = all_indices.len() / 4;
     if wire_edges.len() != 2 {
@@ -187,6 +193,7 @@ fn ruled_two_wire_once(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
 
@@ -207,6 +214,7 @@ fn ruled_two_wire_once(
             pos_to_idx,
             segs_u,
             segs_v,
+            shared_boundary,
         );
     }
 
@@ -241,6 +249,7 @@ fn ruled_two_wire_once(
             pos_to_idx,
             segs_u,
             segs_v,
+            shared_boundary,
         )
     }
 }
@@ -345,9 +354,10 @@ pub fn mesh_ruled_two_wire_edges(
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     segs_u: u32,
     segs_v: u32,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) -> FaceMeshRange {
     let first_tri = all_indices.len() / 4;
     let mut boundary_global = HashSet::new();
@@ -358,6 +368,7 @@ pub fn mesh_ruled_two_wire_edges(
             tri_count: 0,
             boundary_global,
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
 
@@ -379,6 +390,7 @@ pub fn mesh_ruled_two_wire_edges(
             tri_count: 0,
             boundary_global,
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
 
@@ -462,13 +474,14 @@ pub fn mesh_ruled_two_wire_edges(
                     global_normals.push(n);
                     idx
                 } else {
-                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-                    *pos_to_idx.entry(hash).or_insert_with(|| {
-                        let idx = global_vertices.len();
-                        global_vertices.push(pt);
-                        global_normals.push(n);
-                        idx
-                    })
+                    register_boundary_point_with_normal_indexed_shared(
+                        pt,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                        shared_boundary,
+                        || n,
+                    )
                 };
                 grid[i][j] = gi;
             }
@@ -506,6 +519,7 @@ pub fn mesh_ruled_two_wire_edges(
         tri_count,
         boundary_global,
         max_chord_error: 0.0,
+        cdt_constraint_failures: 0,
     }
 }
 
@@ -529,6 +543,7 @@ pub fn mesh_ruled_wire_polygons_3d(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
@@ -540,6 +555,7 @@ pub fn mesh_ruled_wire_polygons_3d(
                 tri_count: 0,
                 boundary_global: HashSet::new(),
                 max_chord_error: 0.0,
+                cdt_constraint_failures: 0,
             };
         };
         for &pi in pis {
@@ -562,6 +578,7 @@ pub fn mesh_ruled_wire_polygons_3d(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     let sample_curve = |c: &[Vec3], t: f32| -> Vec3 {
@@ -591,6 +608,7 @@ pub fn mesh_ruled_wire_polygons_3d(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     let nu = segs_u.max(2) as usize;
@@ -680,6 +698,7 @@ pub fn mesh_ruled_wire_polygons_3d(
         tri_count,
         boundary_global: HashSet::new(),
         max_chord_error: 0.0,
+        cdt_constraint_failures: 0,
     };
     if tri_count > 0 {
         range.max_chord_error =

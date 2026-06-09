@@ -639,7 +639,11 @@ impl SurfaceGeom {
             }
             SurfaceGeom::Offset { basis, distance } => {
                 let (u_native, v_native) = basis.project(point)?;
+                if matches!(basis.as_ref(), SurfaceGeom::Plane { .. }) {
+                    return Some((u_native, v_native));
+                }
                 let (mut u, mut v) = basis.native_uv_to_d0(u_native, v_native);
+                let pr = basis.param_range();
                 let mut best_d2 = {
                     let p = basis.d0(u, v) + basis.normal(u, v) * *distance;
                     (p - point).length_squared()
@@ -647,8 +651,8 @@ impl SurfaceGeom {
                 let mut step = 0.05f32;
                 for _ in 0..8 {
                     for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
-                        let nu = (u + du).clamp(0.0, 1.0);
-                        let nv = (v + dv).clamp(0.0, 1.0);
+                        let nu = (u + du).clamp(pr.u_min, pr.u_max);
+                        let nv = (v + dv).clamp(pr.v_min, pr.v_max);
                         let p = basis.d0(nu, nv) + basis.normal(nu, nv) * *distance;
                         let d2 = (p - point).length_squared();
                         if d2 < best_d2 { best_d2 = d2; u = nu; v = nv; }

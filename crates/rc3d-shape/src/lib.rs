@@ -12,6 +12,7 @@ pub mod mesh_split;
 pub mod nurbs;
 pub mod shape;
 pub mod store;
+pub mod tolerance;
 pub mod tessellation;
 pub mod topo;
 pub mod topo_iter;
@@ -26,6 +27,9 @@ pub use error::ShapeError;
 pub use mesh_result::MeshResult;
 pub use shape::{Shape, ShapeId, ShapeKind, ShapeNode, ShapeType};
 pub use store::{BRepStore, PCurveEdit};
+pub use tolerance::{
+    ToleranceContext, DEFAULT_MODEL_TOLERANCE, MAX_MODEL_TOLERANCE, TOLERANCE_FLOOR,
+};
 pub use mesh_split::{extract_mesh_tri_ranges, face_material_draw_batches, FaceDrawBatch, FaceTriRange};
 pub use tessellation::{TessEntry, TessKey, TessellationCache};
 pub use topo::*;

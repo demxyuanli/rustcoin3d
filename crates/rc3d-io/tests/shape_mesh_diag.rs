@@ -10,8 +10,13 @@ use rc3d_io::step::parser;
 use std::path::Path;
 
 fn test_data(name: &str) -> std::path::PathBuf {
+    let test_data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_data");
+    let candidate = test_data.join(name);
+    if candidate.exists() {
+        return candidate;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test_data")
+        .join("../../steps")
         .join(name)
 }
 
@@ -121,7 +126,14 @@ fn run_file(step_file: &str) {
 
 #[test]
 fn shape_mesh_quality_report() {
-    for f in ["Shape.step", "Shape-2.step", "Shape-1.step"] {
+    for f in [
+        "Shape.step",
+        "Shape-2.step",
+        "Shape-1.step",
+        "Cube.step",
+        "cs.step",
+        "OffsetPlaneHoleEdge.step",
+    ] {
         run_file(f);
     }
 }

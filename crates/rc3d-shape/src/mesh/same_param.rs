@@ -95,6 +95,8 @@ mod tests {
                 direction: Vec3::new(5.0, 0.0, 0.0),
             },
             tolerance: 1e-4,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::new(),
         });
 

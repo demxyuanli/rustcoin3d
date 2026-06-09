@@ -190,14 +190,13 @@ pub fn build_brep_with_options(
     entities: &EntityIndex,
     options: &BRepBuildOptions,
 ) -> Result<BRepBuildResult, StepError> {
-    let mut reg = BRepStore::new();
-
     let solid_models = topology::collect_solid_models(entities);
     if solid_models.is_empty() {
         return Err(StepError::NoGeometry);
     }
 
     let tol = topology::global_tolerance(entities);
+    let mut reg = BRepStore::with_tolerance(rc3d_shape::ToleranceContext::from_model(tol));
     let face_colors = topology::collect_face_colors(entities);
     let mut skipped_faces = 0usize;
     let mut skipped_edges = 0usize;

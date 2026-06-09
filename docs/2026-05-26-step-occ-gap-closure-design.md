@@ -1,7 +1,7 @@
 # STEP B-Rep OCC Algorithm Gap Closure — Complete Technical Specification
 
 **Date**: 2026-05-26
-**Status**: Draft
+**Status**: Superseded by `docs/superpowers/specs/2026-06-08-step-universal-pipeline-design.md`
 **Scope**: 4-phase implementation plan to close gaps between rc3d STEP pipeline and OCC reference
 
 ---

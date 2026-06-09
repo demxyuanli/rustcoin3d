@@ -267,6 +267,8 @@ pub fn create_sub_face(
             tolerance: original.tolerance,
             v_low: vk0,
             v_high: vk1,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: std::collections::HashMap::new(),
         });
         edges.push((ek, crate::topo::Orientation::Forward));

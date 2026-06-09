@@ -386,6 +386,7 @@ pub fn mesh_revolution_native_grid(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     // Avoid ring-only mesh when native U is degenerate but V spans (use ruled path instead).
@@ -396,6 +397,7 @@ pub fn mesh_revolution_native_grid(
             tri_count: 0,
             boundary_global: HashSet::new(),
             max_chord_error: 0.0,
+            cdt_constraint_failures: 0,
         };
     }
     let nu = segs_u.max(2) as usize;
@@ -448,5 +450,6 @@ pub fn mesh_revolution_native_grid(
         tri_count: all_indices.len() / 4 - first_tri,
         boundary_global: HashSet::new(),
         max_chord_error: 0.0,
+        cdt_constraint_failures: 0,
     }
 }

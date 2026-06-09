@@ -2,9 +2,11 @@
 
 use rc3d_scene::SceneGraph;
 use rc3d_shape::ShapeDocument;
+use rc3d_shape::mesh::config::TessellationTier;
 
 use crate::step::adapter::{AdapterMode, AdapterOptions};
 use crate::step::brep::heal::HealLevel;
+use crate::step::brep::topo::FaceKey;
 use crate::step::parser::EntityIndex;
 
 /// How strictly STEP import treats parse/build/heal issues.
@@ -44,6 +46,9 @@ pub struct StepImportOptions {
     pub strict_voids: bool,
     /// Enable fast-export mesh mode: skips post-refine, optimization, chord checks.
     pub fast_export: bool,
+    /// Tessellation quality tier — drives heal level, mesh config, and fallback policy.
+    /// When set, overrides `heal_level` and `fast_export` with tier-appropriate values.
+    pub tessellation_tier: Option<TessellationTier>,
 }
 
 /// Full STEP import output (scene + shape document + assembly metadata).
@@ -66,6 +71,7 @@ impl StepImportOptions {
             skip_visualization: false,
             strict_voids: false,
             fast_export: false,
+            tessellation_tier: Some(TessellationTier::Precision),
         }
     }
 
@@ -80,7 +86,40 @@ impl StepImportOptions {
             skip_visualization: false,
             strict_voids: false,
             fast_export: false,
+            tessellation_tier: Some(TessellationTier::Preview),
         }
+    }
+
+    /// Create options for a specific tessellation tier.
+    pub fn for_tier(tier: TessellationTier) -> Self {
+        let mode = match tier {
+            TessellationTier::Precision => StepImportMode::Strict,
+            _ => StepImportMode::Preview,
+        };
+        let heal_level = match tier {
+            TessellationTier::Preview => HealLevel::Basic,
+            _ => HealLevel::Standard,
+        };
+        Self {
+            mode,
+            heal_level,
+            mesh_relative_deflection: 0.0,
+            strict_schema: tier == TessellationTier::Precision,
+            adapter_mode: AdapterMode::CompatMerge,
+            assembly_preview_explode: 0.0,
+            skip_visualization: false,
+            strict_voids: tier == TessellationTier::Precision,
+            fast_export: tier == TessellationTier::Preview,
+            tessellation_tier: Some(tier),
+        }
+    }
+
+    /// Resolve the effective tessellation tier (explicit or derived from mode).
+    pub fn effective_tier(&self) -> TessellationTier {
+        self.tessellation_tier.unwrap_or(match self.mode {
+            StepImportMode::Strict => TessellationTier::Precision,
+            StepImportMode::Preview => TessellationTier::Preview,
+        })
     }
 
     pub fn adapter_options(&self) -> AdapterOptions {
@@ -132,6 +171,12 @@ pub struct StepImportReport {
     pub ap_schema: Option<String>,
     /// Product nodes in assembly tree with at least one shell.
     pub assembly_node_count: usize,
+    /// NAUO children referenced from more than one parent (DAG, not tree).
+    pub assembly_multi_parent_pd_count: usize,
+    /// NAUO edges ignored by legacy single-parent transform chain.
+    pub assembly_dropped_parent_link_count: usize,
+    /// Distinct (shell, transform) placements emitted for rendering/export.
+    pub assembly_shell_instance_count: usize,
     /// Part21 DATA section count (when fidelity reader used).
     pub data_section_count: usize,
     /// Complex entities using external mapping (Part21 reader).
@@ -143,4 +188,6 @@ pub struct StepImportReport {
     pub oriented_reversed_faces: usize,
     /// Number of void faces successfully punched as inner wires (strict_voids mode).
     pub void_shells_subtracted: usize,
+    /// Faces skipped by the heal pipeline (passed to mesh tessellation).
+    pub heal_skip_face_keys: Vec<FaceKey>,
 }

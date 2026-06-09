@@ -10,7 +10,7 @@ mod insertion;
 use std::collections::{HashMap, HashSet};
 
 use super::circle_index::CircleIndex;
-use super::geom::{circumcircle, robust_in_circle, robust_orient2d, Point2d};
+use super::geom::{adaptive_in_circle, circumcircle, robust_orient2d, Point2d};
 use super::half_edge::VertIdx;
 
 pub(crate) const EPS: f64 = 1e-12;
@@ -66,6 +66,8 @@ pub struct Delaunay2d {
     pub(super) tri_alive_slot: Vec<Option<usize>>,
     /// Incrementally-maintained edge→triangle adjacency (avoids O(T) rebuild per query).
     pub(super) edge_adj_cache: HashMap<(VertIdx, VertIdx), Vec<u32>>,
+    /// Count from the most recent `process_constraints` / `finalize_constraints` call.
+    pub(super) last_constraint_failures: usize,
 }
 
 impl Default for Delaunay2d {
@@ -93,7 +95,13 @@ impl Delaunay2d {
             alive_tris: Vec::new(),
             tri_alive_slot: Vec::new(),
             edge_adj_cache: HashMap::new(),
+            last_constraint_failures: 0,
         }
+    }
+
+    /// Constraint edges that failed enforcement in the last finalize/build pass.
+    pub fn constraint_failure_count(&self) -> usize {
+        self.last_constraint_failures
     }
 
     pub fn with_capacity(n: usize, config: DelaunayConfig) -> Self {
@@ -186,9 +194,15 @@ impl Delaunay2d {
         self.has_mesh_edge(a, b)
     }
 
-    /// Run frontier cleanup after incremental constraint insertion.
-    pub fn finalize_constraints(&mut self) {
-        self.frontier_adjust();
+    /// Enforce queued constraints and run frontier cleanup.
+    pub fn finalize_constraints(&mut self) -> usize {
+        if self.live && !self.constraints.is_empty() {
+            self.process_constraints()
+        } else {
+            self.frontier_adjust();
+            self.last_constraint_failures = 0;
+            0
+        }
     }
 
     /// Run triangulation on all pending vertices.
@@ -232,7 +246,7 @@ impl Delaunay2d {
 
         self.remove_super_triangles();
 
-        self.process_constraints();
+        let _ = self.process_constraints();
 
         if self.config.optimize {
             for _ in 0..self.config.max_optimize_passes {
@@ -288,21 +302,14 @@ impl Delaunay2d {
 
     // ── Triangle storage (shared by insertion + constraints) ──
 
-    pub(super) fn add_triangle(&mut self, verts: [VertIdx; 3]) -> u32 {
+    /// Core triangle bookkeeping: storage + alive-list + edge adjacency.
+    /// CircleIndex registration is handled separately by `add_triangle`.
+    fn add_triangle_inner(&mut self, verts: [VertIdx; 3]) -> u32 {
         let ti = self.tris.len() as u32;
         self.tris.push(verts);
         self.tri_alive.push(true);
         self.tri_circle_slot.push(None);
 
-        let a = self.points[verts[0] as usize];
-        let b = self.points[verts[1] as usize];
-        let c = self.points[verts[2] as usize];
-        if let Some((cc, r_sq)) = circumcircle(a, b, c) {
-            let slot = self.circles.insert(ti, cc, r_sq);
-            self.tri_circle_slot[ti as usize] = Some(slot);
-        }
-
-        // Maintain incremental caches
         let slot = self.alive_tris.len();
         self.alive_tris.push(ti);
         if ti as usize >= self.tri_alive_slot.len() {
@@ -313,8 +320,27 @@ impl Delaunay2d {
             let ek = edge_key(verts[k], verts[(k + 1) % 3]);
             self.edge_adj_cache.entry(ek).or_default().push(ti);
         }
+        ti
+    }
+
+    pub(super) fn add_triangle(&mut self, verts: [VertIdx; 3]) -> u32 {
+        let ti = self.add_triangle_inner(verts);
+
+        let a = self.points[verts[0] as usize];
+        let b = self.points[verts[1] as usize];
+        let c = self.points[verts[2] as usize];
+        if let Some((cc, r_sq)) = circumcircle(a, b, c) {
+            let slot = self.circles.insert(ti, cc, r_sq);
+            self.tri_circle_slot[ti as usize] = Some(slot);
+        }
 
         ti
+    }
+
+    /// Add triangle without updating CircleIndex (for constraint flips).
+    /// CircleIndex is only needed for Delaunay vertex insertion queries.
+    pub(super) fn add_triangle_no_circle(&mut self, verts: [VertIdx; 3]) -> u32 {
+        self.add_triangle_inner(verts)
     }
 
     pub(super) fn kill_triangle(&mut self, ti: u32) {
@@ -362,7 +388,7 @@ impl Delaunay2d {
         let a = self.points[v[0] as usize];
         let b = self.points[v[1] as usize];
         let c = self.points[v[2] as usize];
-        robust_in_circle(a, b, c, p) > EPS
+        adaptive_in_circle(a, b, c, p) > EPS
     }
 
     pub(super) fn neighbor_triangles(&self, ti: u32) -> Vec<u32> {
@@ -447,17 +473,60 @@ pub(super) fn bbox_of_vertices(points: &[Point2d]) -> (f64, f64, f64, f64) {
     (min_x, min_y, max_x, max_y)
 }
 
+/// Fast f64-only orient2d for preliminary filtering (no exact arithmetic fallback).
+/// Returns the 2D cross product (b-a)×(c-a). Not robust for near-degenerate cases.
+#[inline]
+pub(super) fn fast_orient2d(a: Point2d, b: Point2d, c: Point2d) -> f64 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+/// Adaptive orient2d: fast f64 when safe, robust exact when UV span is large or ambiguous.
+#[inline]
+pub(super) fn adaptive_orient2d(a: Point2d, b: Point2d, c: Point2d) -> f64 {
+    let min_x = a.x.min(b.x).min(c.x);
+    let max_x = a.x.max(b.x).max(c.x);
+    let min_y = a.y.min(b.y).min(c.y);
+    let max_y = a.y.max(b.y).max(c.y);
+    let span = (max_x - min_x).max(max_y - min_y);
+    if span > 1e4 {
+        return robust_orient2d(a, b, c);
+    }
+    let fast = fast_orient2d(a, b, c);
+    let safety = (span * span * 1e-15).max(1e-12);
+    if fast.abs() > safety {
+        fast
+    } else {
+        robust_orient2d(a, b, c)
+    }
+}
+
+/// Orient test with coordinates relative to `origin` (stable for large UV values).
+/// Equivalent to `fast_orient2d(origin, a, b)`.
+#[inline]
+pub(super) fn orient_rel(origin: Point2d, a: Point2d, b: Point2d) -> f64 {
+    fast_orient2d(origin, a, b)
+}
+
+/// Fast segment-segment proper intersection test (f64 orient only).
+/// Returns true when segments (a,b) and (c,d) cross properly (endpoints excluded).
+#[inline]
+pub(super) fn segments_cross_fast(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> bool {
+    let o1 = adaptive_orient2d(a, b, c);
+    let o2 = adaptive_orient2d(a, b, d);
+    let o3 = adaptive_orient2d(c, d, a);
+    let o4 = adaptive_orient2d(c, d, b);
+    o1 * o2 < 0.0 && o3 * o4 < 0.0
+}
+
 pub(super) fn point_in_triangle(p: Point2d, a: Point2d, b: Point2d, c: Point2d) -> bool {
-    let o1 = robust_orient2d(a, b, p);
-    let o2 = robust_orient2d(b, c, p);
-    let o3 = robust_orient2d(c, a, p);
+    // Use adaptive orient for correctness on near-boundary points (e.g., sphere poles).
+    // Argument order: orient(a,b,p) = (b-a)×(p-a), so orientation is relative to triangle.
+    let o1 = adaptive_orient2d(a, b, p);
+    let o2 = adaptive_orient2d(b, c, p);
+    let o3 = adaptive_orient2d(c, a, p);
     let has_neg = o1 < -EPS || o2 < -EPS || o3 < -EPS;
     let has_pos = o1 > EPS || o2 > EPS || o3 > EPS;
     !has_neg || !has_pos
-}
-
-pub(super) fn segments_cross(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> bool {
-    segments_cross_proper(a, b, c, d)
 }
 
 pub(super) fn segments_cross_proper(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> bool {
@@ -488,7 +557,8 @@ pub(super) fn segment_crosses_triangle(
         }
         let p0 = mesh.points[e0 as usize];
         let p1 = mesh.points[e1 as usize];
-        if segments_cross_proper(pa, pb, p0, p1) {
+        // Use fast orient for constraint recovery — avoids expensive expansion arithmetic
+        if segments_cross_fast(pa, pb, p0, p1) {
             return true;
         }
     }

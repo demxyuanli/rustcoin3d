@@ -87,6 +87,46 @@ pub fn robust_in_circle(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> f64 {
     super::delabella::adaptive_incircle(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y)
 }
 
+/// UV bounding span of four points (max axis extent).
+#[inline]
+fn uv_span4(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> f64 {
+    let min_x = a.x.min(b.x).min(c.x).min(d.x);
+    let max_x = a.x.max(b.x).max(c.x).max(d.x);
+    let min_y = a.y.min(b.y).min(c.y).min(d.y);
+    let max_y = a.y.max(b.y).max(c.y).max(d.y);
+    (max_x - min_x).max(max_y - min_y)
+}
+
+/// Fast in-circle test using f64 determinant (sufficient for incremental CDT).
+#[inline]
+pub fn fast_in_circle(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> f64 {
+    let ax = a.x - d.x;
+    let ay = a.y - d.y;
+    let bx = b.x - d.x;
+    let by = b.y - d.y;
+    let cx = c.x - d.x;
+    let cy = c.y - d.y;
+    (ax * ax + ay * ay) * (bx * cy - cx * by)
+        - (bx * bx + by * by) * (ax * cy - cx * ay)
+        + (cx * cx + cy * cy) * (ax * by - bx * ay)
+}
+
+/// Adaptive in-circle: fast f64 when safe, robust exact when UV span is large or ambiguous.
+#[inline]
+pub fn adaptive_in_circle(a: Point2d, b: Point2d, c: Point2d, d: Point2d) -> f64 {
+    let span = uv_span4(a, b, c, d);
+    if span > 1e4 {
+        return robust_in_circle(a, b, c, d);
+    }
+    let fast = fast_in_circle(a, b, c, d);
+    let safety = (span * span * 1e-15).max(1e-12);
+    if fast.abs() > safety {
+        fast
+    } else {
+        robust_in_circle(a, b, c, d)
+    }
+}
+
 /// Compute circumcenter and squared radius of triangle (a, b, c).
 /// Returns None if the three points are collinear.
 pub fn circumcircle(a: Point2d, b: Point2d, c: Point2d) -> Option<(Point2d, f64)> {

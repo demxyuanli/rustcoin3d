@@ -12,6 +12,7 @@ new_key_type! { pub struct WireKey; }
 new_key_type! { pub struct FaceKey; }
 new_key_type! { pub struct ShellKey; }
 new_key_type! { pub struct SolidKey; }
+new_key_type! { pub struct CompoundKey; }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orientation { Forward, Reversed, Internal, External }
@@ -27,6 +28,10 @@ pub struct BRepEdge {
     pub v_low: VertexKey,
     /// Canonical high vertex (max SlotMap key) — mesh t=1
     pub v_high: VertexKey,
+    /// Parameter interval on the 3D curve: always t_min < t_max.
+    /// Reverse traversal expressed by Orientation at wire level.
+    pub t_min: f32,
+    pub t_max: f32,
     /// PCurves: 2D curves in UV space of each referencing face.
     /// OCC alignment: BRep_CurveOnSurface (Geom2d_Curve per face).
     pub pcurves: HashMap<FaceKey, Curve2d>,
@@ -55,3 +60,7 @@ pub struct BRepShell { pub faces: Vec<(FaceKey, Orientation)>, pub closed: bool,
 
 #[derive(Debug, Clone)]
 pub struct BRepSolid { pub outer_shell: ShellKey, pub void_shells: Vec<ShellKey> }
+
+/// OCC TopoDS_Compound — a collection of solids (non-topological grouping).
+#[derive(Debug, Clone)]
+pub struct BRepCompound { pub solids: Vec<SolidKey> }

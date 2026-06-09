@@ -773,10 +773,10 @@ mod tests {
         let (lo23, hi23) = if v2 < v3 { (v2, v3) } else { (v3, v2) };
         let (lo30, hi30) = if v3 < v0 { (v3, v0) } else { (v0, v3) };
 
-        let e01 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, -1.0, 0.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo01, v_high: hi01, pcurves: HashMap::new() });
-        let e12 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, -1.0, 0.0), direction: Vec3::new(0.0, 2.0, 0.0) }, tolerance: 1e-4, v_low: lo12, v_high: hi12, pcurves: HashMap::new() });
-        let e23 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo23, v_high: hi23, pcurves: HashMap::new() });
-        let e30 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 1.0, 0.0), direction: Vec3::new(0.0, -2.0, 0.0) }, tolerance: 1e-4, v_low: lo30, v_high: hi30, pcurves: HashMap::new() });
+        let e01 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, -1.0, 0.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo01, v_high: hi01, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e12 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, -1.0, 0.0), direction: Vec3::new(0.0, 2.0, 0.0) }, tolerance: 1e-4, v_low: lo12, v_high: hi12, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e23 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo23, v_high: hi23, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e30 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 1.0, 0.0), direction: Vec3::new(0.0, -2.0, 0.0) }, tolerance: 1e-4, v_low: lo30, v_high: hi30, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
 
         let w_a = reg.wires.insert(BRepWire { edges: vec![(e01, Orientation::Forward), (e12, Orientation::Forward), (e23, Orientation::Forward), (e30, Orientation::Forward)] });
         let f_a = reg.faces.insert(BRepFace {
@@ -796,10 +796,10 @@ mod tests {
         let (lo67, hi67) = if v6 < v7 { (v6, v7) } else { (v7, v6) };
         let (lo74, hi74) = if v7 < v4 { (v7, v4) } else { (v4, v7) };
 
-        let e45 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, -1.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo45, v_high: hi45, pcurves: HashMap::new() });
-        let e56 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, -1.0), direction: Vec3::new(0.0, 0.0, 2.0) }, tolerance: 1e-4, v_low: lo56, v_high: hi56, pcurves: HashMap::new() });
-        let e67 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 1.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo67, v_high: hi67, pcurves: HashMap::new() });
-        let e74 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, 1.0), direction: Vec3::new(0.0, 0.0, -2.0) }, tolerance: 1e-4, v_low: lo74, v_high: hi74, pcurves: HashMap::new() });
+        let e45 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, -1.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo45, v_high: hi45, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e56 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, -1.0), direction: Vec3::new(0.0, 0.0, 2.0) }, tolerance: 1e-4, v_low: lo56, v_high: hi56, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e67 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 1.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo67, v_high: hi67, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e74 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, 1.0), direction: Vec3::new(0.0, 0.0, -2.0) }, tolerance: 1e-4, v_low: lo74, v_high: hi74, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
 
         let w_b = reg.wires.insert(BRepWire { edges: vec![(e45, Orientation::Forward), (e56, Orientation::Forward), (e67, Orientation::Forward), (e74, Orientation::Forward)] });
         let f_b = reg.faces.insert(BRepFace {

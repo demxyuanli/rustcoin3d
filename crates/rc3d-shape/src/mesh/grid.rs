@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-
 use rc3d_core::math::Vec3;
-use rc3d_core::utils::hash::f32x3_quantized_bits;
+use super::boundary::{
+    register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
+};
 use crate::geom::{SurfaceGeom, SurfaceParamRange};
 use super::config::MESH_CLOSED_SURFACE_SEGS;
 use super::face_fill::{fix_tri_winding, FaceFillConfig};
@@ -57,7 +57,7 @@ pub fn mesh_uv_bbox_grid(
     fill_config: Option<&FaceFillConfig>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
 ) {
     mesh_parametric_grid(
@@ -68,6 +68,7 @@ pub fn mesh_uv_bbox_grid(
         global_normals,
         pos_to_idx,
         all_indices,
+        None,
     );
 }
 
@@ -179,8 +180,9 @@ pub fn mesh_trimmed_uv_grid(
     grid_segs: Option<u32>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) {
     let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
     if outer_uv.len() < 3 {
@@ -226,13 +228,14 @@ pub fn mesh_trimmed_uv_grid(
                     if !face.same_sense {
                         n = -n;
                     }
-                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                        let i = global_vertices.len();
-                        global_vertices.push(pt);
-                        global_normals.push(n);
-                        i
-                    });
+                    let gi = register_boundary_point_with_normal_indexed_shared(
+                        pt,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                        shared_boundary,
+                        || n,
+                    );
                     idx[k] = gi as i32;
                 }
                 for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
@@ -283,13 +286,14 @@ pub fn mesh_trimmed_uv_grid(
                     if !face.same_sense {
                         n = -n;
                     }
-                    let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-                    let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                        let i = global_vertices.len();
-                        global_vertices.push(pt);
-                        global_normals.push(n);
-                        i
-                    });
+                    let gi = register_boundary_point_with_normal_indexed_shared(
+                        pt,
+                        global_vertices,
+                        global_normals,
+                        pos_to_idx,
+                        shared_boundary,
+                        || n,
+                    );
                     tri_idx.push(gi as i32);
                 }
                 for k in 1..tri_idx.len().saturating_sub(1) {
@@ -321,8 +325,9 @@ pub fn mesh_parametric_grid(
     fill_config: Option<&FaceFillConfig>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) {
     let segs = fill_config
         .map(|c| parametric_grid_segs(face, c))
@@ -355,13 +360,14 @@ pub fn mesh_parametric_grid(
                 if !face.same_sense {
                     n = -n;
                 }
-                let hash = f32x3_quantized_bits([pt.x, pt.y, pt.z]);
-                let gi = *pos_to_idx.entry(hash).or_insert_with(|| {
-                    let i = global_vertices.len();
-                    global_vertices.push(pt);
-                    global_normals.push(n);
-                    i
-                });
+                let gi = register_boundary_point_with_normal_indexed_shared(
+                    pt,
+                    global_vertices,
+                    global_normals,
+                    pos_to_idx,
+                    shared_boundary,
+                    || n,
+                );
                 idx[k] = gi as i32;
             }
             for (mut i0, mut i1, mut i2) in [(idx[0], idx[1], idx[2]), (idx[0], idx[2], idx[3])] {
@@ -398,8 +404,9 @@ pub fn mesh_closed_surface(
     fill_config: &FaceFillConfig,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
+    shared_boundary: Option<&SharedBoundaryPool>,
 ) {
     mesh_parametric_grid(
         face,
@@ -409,5 +416,6 @@ pub fn mesh_closed_surface(
         global_normals,
         pos_to_idx,
         all_indices,
+        shared_boundary,
     );
 }

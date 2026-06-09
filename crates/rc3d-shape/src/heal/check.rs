@@ -939,6 +939,8 @@ mod tests {
             v_high: v1,
             curve: curve.clone(),
             tolerance: 1e-4,
+            t_min: 0.0,
+            t_max: 1.0,
             pcurves: HashMap::new(),
         });
         // Create 3 faces sharing the same edge

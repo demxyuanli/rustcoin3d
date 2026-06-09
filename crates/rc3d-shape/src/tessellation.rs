@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::mesh::report::ShellMeshReport;
 use crate::mesh_result::MeshResult;
 use crate::mesh_split::FaceTriRange;
 use crate::topo::{FaceKey, Orientation, SolidKey};
@@ -13,6 +14,7 @@ pub struct TessEntry {
     pub face_tri_ranges: HashMap<FaceKey, FaceTriRange>,
     /// False when void subtraction invalidated per-face triangle ranges.
     pub face_split_viable: bool,
+    pub report: ShellMeshReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +82,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
         cache.insert(
@@ -92,6 +95,7 @@ mod tests {
                 mesh: MeshResult::default(),
                 face_tri_ranges: HashMap::new(),
                 face_split_viable: true,
+                report: ShellMeshReport::default(),
             },
         );
         assert_eq!(cache.entries.len(), 2);

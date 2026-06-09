@@ -362,6 +362,14 @@ fn ear_contains_vertex_marked(
             continue;
         }
         let p = points[verts[k] as usize];
+        // Zero-width bridge vertices (duplicate coordinates from hole merging)
+        // lie on the ear boundary, not inside it.
+        if ((p.x - a.x).abs() < EPS && (p.y - a.y).abs() < EPS)
+            || ((p.x - b.x).abs() < EPS && (p.y - b.y).abs() < EPS)
+            || ((p.x - c.x).abs() < EPS && (p.y - c.y).abs() < EPS)
+        {
+            continue;
+        }
         if point_in_triangle(p, a, b, c) {
             return true;
         }

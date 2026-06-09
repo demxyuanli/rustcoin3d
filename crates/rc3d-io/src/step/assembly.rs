@@ -220,6 +220,17 @@ impl AssemblyTransform {
 pub type ShellTransformMap = HashMap<u64, AssemblyTransform>;
 pub type ShellInstanceList = Vec<(u64, AssemblyTransform)>;
 
+/// Observability for assembly DAG shape (multi-parent NAUO links).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AssemblyDiagnostics {
+    /// Product-definition nodes referenced as NAUO child from more than one parent.
+    pub multi_parent_pd_count: usize,
+    /// Parent-child NAUO edges dropped by the legacy single-parent reverse index.
+    pub dropped_parent_link_count: usize,
+    /// Shell placement rows emitted (after dedup by shell + transform).
+    pub shell_instance_count: usize,
+}
+
 /// Cached NAUO / PDS / SRR assembly links (build once per import).
 pub struct AssemblyContext {
     graph: AssemblyGraph,
@@ -235,18 +246,26 @@ impl AssemblyContext {
     pub fn shell_instances(&self, entities: &EntityIndex) -> ShellInstanceList {
         let mut instances = ShellInstanceList::new();
         let mut seen: HashSet<(u64, [u32; 16])> = HashSet::new();
-        for (&pd_id, shape_ids) in &self.graph.shapes {
-            let xform = self.graph.accumulate(pd_id);
-            for &sid in shape_ids {
-                for shell_id in find_shells_in_representation(sid, entities) {
-                    let key = (shell_id, xform.matrix.to_cols_array().map(f32::to_bits));
-                    if seen.insert(key) {
-                        instances.push((shell_id, xform.clone()));
-                    }
-                }
-            }
+        let mut visiting = HashSet::new();
+        for root_pd in self.graph.find_pd_roots() {
+            self.graph.collect_shell_instances_dfs(
+                root_pd,
+                AssemblyTransform::default(),
+                entities,
+                &mut instances,
+                &mut seen,
+                &mut visiting,
+            );
         }
         instances
+    }
+
+    pub fn diagnostics(&self) -> AssemblyDiagnostics {
+        AssemblyDiagnostics {
+            multi_parent_pd_count: self.graph.multi_parent_pd_count(),
+            dropped_parent_link_count: self.graph.dropped_parent_link_count(),
+            shell_instance_count: 0,
+        }
     }
 
     pub fn assembly_tree(&self, entities: &EntityIndex) -> super::tree::AssemblyTree {
@@ -383,6 +402,91 @@ impl AssemblyGraph {
         }
 
         graph
+    }
+
+    fn multi_parent_pd_count(&self) -> usize {
+        let mut parent_hits: HashMap<u64, usize> = HashMap::new();
+        for children in self.parent_child.values() {
+            for (child, _) in children {
+                *parent_hits.entry(*child).or_default() += 1;
+            }
+        }
+        parent_hits.values().filter(|&&n| n > 1).count()
+    }
+
+    fn dropped_parent_link_count(&self) -> usize {
+        let mut edges = 0usize;
+        let mut unique_children = HashSet::new();
+        for children in self.parent_child.values() {
+            for (child, _) in children {
+                edges += 1;
+                unique_children.insert(*child);
+            }
+        }
+        edges.saturating_sub(unique_children.len())
+    }
+
+    fn find_pd_roots(&self) -> Vec<u64> {
+        let mut is_child = HashSet::new();
+        for children in self.parent_child.values() {
+            for (child, _) in children {
+                is_child.insert(*child);
+            }
+        }
+        let mut roots = HashSet::new();
+        for &parent in self.parent_child.keys() {
+            if !is_child.contains(&parent) {
+                roots.insert(parent);
+            }
+        }
+        for &pd in self.shapes.keys() {
+            if !is_child.contains(&pd) {
+                roots.insert(pd);
+            }
+        }
+        roots.into_iter().collect()
+    }
+
+    fn collect_shell_instances_dfs(
+        &self,
+        pd_id: u64,
+        world: AssemblyTransform,
+        entities: &EntityIndex,
+        out: &mut ShellInstanceList,
+        seen: &mut HashSet<(u64, [u32; 16])>,
+        visiting: &mut HashSet<u64>,
+    ) {
+        if !visiting.insert(pd_id) {
+            log::warn!("[assembly] cycle at product-definition #{pd_id}, skipping branch");
+            return;
+        }
+
+        if let Some(shape_reprs) = self.shapes.get(&pd_id) {
+            for &sid in shape_reprs {
+                for shell_id in find_shells_in_representation(sid, entities) {
+                    let key = (shell_id, world.matrix.to_cols_array().map(f32::to_bits));
+                    if seen.insert(key) {
+                        out.push((shell_id, world.clone()));
+                    }
+                }
+            }
+        }
+
+        if let Some(children) = self.parent_child.get(&pd_id) {
+            for (child_pd, local) in children {
+                let child_world = world.compose(local);
+                self.collect_shell_instances_dfs(
+                    *child_pd,
+                    child_world,
+                    entities,
+                    out,
+                    seen,
+                    visiting,
+                );
+            }
+        }
+
+        visiting.remove(&pd_id);
     }
 
     fn accumulate(&self, pd_id: u64) -> AssemblyTransform {
@@ -761,6 +865,39 @@ mod tests {
         let graph = AssemblyGraph::default();
         let result = graph.accumulate(1);
         assert!((result.matrix - Mat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
+    }
+
+    #[test]
+    fn test_multi_parent_pd_detection_and_dropped_links() {
+        let mut graph = AssemblyGraph::default();
+        graph
+            .parent_child
+            .insert(100, vec![(1, make_xform(5.0, 0.0, 0.0))]);
+        graph
+            .parent_child
+            .insert(200, vec![(1, make_xform(10.0, 0.0, 0.0))]);
+        graph.build_reverse_index();
+        assert_eq!(graph.multi_parent_pd_count(), 1);
+        assert_eq!(graph.dropped_parent_link_count(), 1);
+        let acc = graph.accumulate(1);
+        let (_, _, trans) = acc.matrix.to_scale_rotation_translation();
+        assert!(
+            (trans.x - 10.0).abs() < 1e-6,
+            "legacy single-parent chain keeps last NAUO link only, got {}",
+            trans.x
+        );
+    }
+
+    #[test]
+    fn test_find_pd_roots_includes_multi_parent_sources() {
+        let mut graph = AssemblyGraph::default();
+        graph.parent_child.insert(100, vec![(1, make_xform(1.0, 0.0, 0.0))]);
+        graph.parent_child.insert(200, vec![(1, make_xform(2.0, 0.0, 0.0))]);
+        graph.shapes.insert(1, vec![999]);
+        let roots: HashSet<_> = graph.find_pd_roots().into_iter().collect();
+        assert!(roots.contains(&100));
+        assert!(roots.contains(&200));
+        assert!(!roots.contains(&1));
     }
 
     #[test]

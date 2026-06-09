@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::super::geom::{robust_in_circle, Point2d};
+use super::super::geom::{adaptive_in_circle, Point2d};
 use super::super::half_edge::VertIdx;
 use super::{bbox_of_vertices, edge_key, point_in_triangle, Delaunay2d, EPS};
 
@@ -70,13 +70,8 @@ impl Delaunay2d {
 
         let mut cavity = HashSet::new();
         let mut queue = VecDeque::new();
-        if self.tri_cc_contains(seed, p) {
-            cavity.insert(seed);
-            queue.push_back(seed);
-        } else {
-            cavity.insert(seed);
-            queue.push_back(seed);
-        }
+        cavity.insert(seed);
+        queue.push_back(seed);
 
         while let Some(ti) = queue.pop_front() {
             for nbr in self.neighbor_triangles(ti) {
@@ -115,13 +110,21 @@ impl Delaunay2d {
     }
 
     pub(super) fn find_seed_triangle(&self, p: Point2d) -> Option<u32> {
+        use super::orient_rel;
+
         // Try the spatial index (CircleIndex) first — O(1) lookup in the common case.
         if let Some(ti) = self.circles.query_containing(p).into_iter().next() {
             if self.tri_alive[ti as usize] {
-                return Some(ti);
+                let tri = self.tris[ti as usize];
+                let a = self.points[tri[0] as usize];
+                let b = self.points[tri[1] as usize];
+                let c = self.points[tri[2] as usize];
+                if point_in_triangle(p, a, b, c) {
+                    return Some(ti);
+                }
             }
         }
-        // Fallback: linear scan over alive triangles.
+        // Linear scan over alive triangles.
         for &ti in &self.alive_tris {
             let tri = self.tris[ti as usize];
             let a = self.points[tri[0] as usize];
@@ -131,23 +134,67 @@ impl Delaunay2d {
                 return Some(ti);
             }
         }
+        // Walk across adjacent triangles toward p (handles CircleIndex gaps).
+        let mut ti = *self.alive_tris.first()?;
+        let adj = self.edge_adjacency();
+        let max_steps = self.alive_tris.len().saturating_mul(4).max(16);
+        for _ in 0..max_steps {
+            let tri = self.tris[ti as usize];
+            let verts = [tri[0], tri[1], tri[2]];
+            let pts = [
+                self.points[verts[0] as usize],
+                self.points[verts[1] as usize],
+                self.points[verts[2] as usize],
+            ];
+            if point_in_triangle(p, pts[0], pts[1], pts[2]) {
+                return Some(ti);
+            }
+            let mut moved = false;
+            for k in 0..3 {
+                if orient_rel(p, pts[k], pts[(k + 1) % 3]) < 0.0 {
+                    let key = edge_key(verts[k], verts[(k + 1) % 3]);
+                    if let Some(nbrs) = adj.get(&key) {
+                        for &nbr in nbrs {
+                            if nbr != ti && self.tri_alive[nbr as usize] {
+                                ti = nbr;
+                                moved = true;
+                                break;
+                            }
+                        }
+                    }
+                    if moved {
+                        break;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
         None
     }
 
     pub(super) fn lawson_flip_pass(&mut self) -> usize {
         use super::opposite_vertex;
 
-        // Clone the cached adjacency so we can mutate self during the flip loop.
-        let map = self.edge_adjacency().clone();
+        // Collect edge keys only — avoids cloning every Vec<(u32,u32)>→Vec<u32> entry.
+        let keys: Vec<_> = self.edge_adj_cache.keys().copied().collect();
         let mut flipped = 0usize;
         let mut done: HashSet<(VertIdx, VertIdx)> = HashSet::new();
 
-        for (key, tris) in map.iter() {
-            if tris.len() != 2 || done.contains(key) {
+        for key in keys {
+            if done.contains(&key) {
                 continue;
             }
+            let tris = match self.edge_adj_cache.get(&key) {
+                Some(t) if t.len() == 2 => t,
+                _ => continue,
+            };
             let tri0 = tris[0];
             let tri1 = tris[1];
+            if !self.tri_alive[tri0 as usize] || !self.tri_alive[tri1 as usize] {
+                continue;
+            }
             let t0 = self.tris[tri0 as usize];
             let e0 = key.0;
             let e1 = key.1;
@@ -160,10 +207,10 @@ impl Delaunay2d {
             let pc = self.points[e0 as usize];
             let pd = self.points[e1 as usize];
 
-            if robust_in_circle(pa, pb, pc, pd) > EPS || robust_in_circle(pa, pb, pd, pc) > EPS {
+            if adaptive_in_circle(pa, pb, pc, pd) > EPS || adaptive_in_circle(pa, pb, pd, pc) > EPS {
                 if self.try_flip_quad(tri0, tri1, e0, e1, opp0, opp1) {
                     flipped += 1;
-                    done.insert(*key);
+                    done.insert(key);
                 }
             }
         }

@@ -18,7 +18,7 @@ use super::edge_disc::{eval_pcurve_on_surface, EdgePolygon};
 /// Boundary vertex index keyed by (face, edge, sample) — OCC BRepAdaptor_Curve(E, F).
 pub type FaceEdgeBoundaryIdx = HashMap<(FaceKey, EdgeKey, usize), usize>;
 
-use super::boundary::register_boundary_point;
+use super::boundary::{register_boundary_point_indexed, BoundaryPosIndex};
 
 /// True when two edges between the same vertices describe the same 3D curve (STEP duplicate),
 /// not a distinct curve on an adjacent offset/revolution face (wall thickness apart).
@@ -224,7 +224,7 @@ pub fn build_edge_boundary_pool(
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
     vertex_mesh_idx: &HashMap<VertexKey, usize>,
 ) -> HashMap<(EdgeKey, usize), usize> {
     let mut edge_boundary_idx: HashMap<(EdgeKey, usize), usize> = HashMap::new();
@@ -280,7 +280,7 @@ pub fn build_edge_boundary_pool(
                     if let Some(&existing) = topo_sample_idx.get(&key) {
                         return existing;
                     }
-                    let created = register_boundary_point(
+                    let created = register_boundary_point_indexed(
                         pt,
                         global_vertices,
                         global_normals,
@@ -289,7 +289,7 @@ pub fn build_edge_boundary_pool(
                     topo_sample_idx.insert(key, created);
                     created
                 } else {
-                    register_boundary_point(
+                    register_boundary_point_indexed(
                         pt,
                         global_vertices,
                         global_normals,
@@ -312,8 +312,8 @@ pub fn build_face_boundary_pool(
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
-    pos_to_idx: &mut HashMap<[u32; 3], usize>,
-    _vertex_mesh_idx: &HashMap<VertexKey, usize>,
+    pos_to_idx: &mut BoundaryPosIndex,
+    vertex_mesh_idx: &HashMap<VertexKey, usize>,
 ) -> FaceEdgeBoundaryIdx {
     let mut out: FaceEdgeBoundaryIdx = HashMap::new();
     let shell = match reg.shells.get(shell_key) {
@@ -358,12 +358,25 @@ pub fn build_face_boundary_pool(
                         poly,
                         reg,
                     );
-                    let gi = register_boundary_point(
-                        pt,
-                        global_vertices,
-                        global_normals,
-                        pos_to_idx,
-                    );
+                    let gi = if edge.v_low != edge.v_high {
+                        if pi == 0 {
+                            vertex_mesh_idx.get(&edge.v_low).copied()
+                        } else if pi + 1 == n {
+                            vertex_mesh_idx.get(&edge.v_high).copied()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let gi = gi.unwrap_or_else(|| {
+                        register_boundary_point_indexed(
+                            pt,
+                            global_vertices,
+                            global_normals,
+                            pos_to_idx,
+                        )
+                    });
                     out.insert((face_key, ek, pi), gi);
                 }
             }
@@ -483,10 +496,11 @@ pub fn measure_equivalent_edge_weld_gap(
     let edge_polygons = super::edge_disc::discretize_all_edges(reg, config);
     let mut global_vertices: Vec<Vec3> = Vec::new();
     let mut global_normals: Vec<Vec3> = Vec::new();
-    let mut pos_to_idx: HashMap<[u32; 3], usize> = HashMap::new();
+    let mut pos_to_idx =
+        BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
     let mut vertex_mesh_idx: HashMap<VertexKey, usize> = HashMap::new();
     for (vk, v) in reg.vertices.iter() {
-        let idx = register_boundary_point(
+        let idx = register_boundary_point_indexed(
             v.position,
             &mut global_vertices,
             &mut global_normals,
@@ -592,10 +606,11 @@ mod tests {
         let polys = super::super::edge_disc::discretize_all_edges(&reg, &super::super::edge_disc::EdgeDiscConfig::default());
         let mut verts = Vec::new();
         let mut norms = Vec::new();
-        let mut pos_to_idx = HashMap::new();
+        let mut pos_to_idx =
+            BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         let mut vertex_mesh_idx = HashMap::new();
         for (vk, v) in reg.vertices.iter() {
-            let idx = register_boundary_point(v.position, &mut verts, &mut norms, &mut pos_to_idx);
+            let idx = register_boundary_point_indexed(v.position, &mut verts, &mut norms, &mut pos_to_idx);
             vertex_mesh_idx.insert(vk, idx);
         }
         let bidx = build_edge_boundary_pool(
