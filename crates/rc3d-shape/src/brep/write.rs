@@ -94,9 +94,9 @@ impl<'a> BrepWriter<'a> {
             if let ShapeEntry::Edge(ek) = entry {
                 if let Some(edge) = store.edges.get(*ek) {
                     for (fk, (pc, same_sense)) in &edge.pcurves {
-                        // Only include PCurves for non-planar faces
+                        // Only include PCurves for non-planar faces (expand Offset to check)
                         let is_non_planar = store.faces.get(*fk)
-                            .map(|f| !matches!(f.surface, crate::geom::SurfaceGeom::Plane { .. }))
+                            .map(|f| !is_planar_surface(&f.surface))
                             .unwrap_or(false);
                         if is_non_planar {
                             let face_pos = shapes.iter()
@@ -918,6 +918,14 @@ fn write_revolution_as_bspline(
     }
     writeln!(output)?;
     Ok(())
+}
+
+fn is_planar_surface(surface: &SurfaceGeom) -> bool {
+    match surface {
+        SurfaceGeom::Plane { .. } => true,
+        SurfaceGeom::Offset { basis, .. } => is_planar_surface(basis),
+        _ => false,
+    }
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
