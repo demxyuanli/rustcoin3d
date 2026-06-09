@@ -27,10 +27,9 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
 
 struct BrepWriter<'a> {
     store: &'a BRepStore,
-    /// Ordered list of all TShapes for index calculation.
     shapes: Vec<ShapeEntry>,
-    /// Total TShape count (used for reverse-index references).
     total_shapes: usize,
+    needs_default_compound: bool,
 }
 
 /// Compact representation of each TShape for ordering.
@@ -72,12 +71,16 @@ impl<'a> BrepWriter<'a> {
         for (sk, _) in &store.solids {
             shapes.push(ShapeEntry::Solid(sk));
         }
+        let has_compounds = store.compounds.len() > 0;
         for (ck, _) in &store.compounds {
             shapes.push(ShapeEntry::Compound(ck));
         }
+        // If no compounds exist but we have solids, create a single default compound
+        // referencing all solids (matching OCC convention).
+        let needs_default_compound = !has_compounds && store.solids.len() > 0;
 
-        let total = shapes.len();
-        Self { store, shapes, total_shapes: total }
+        let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
+        Self { store, shapes, total_shapes: total, needs_default_compound }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -371,8 +374,18 @@ impl<'a> BrepWriter<'a> {
                 ShapeEntry::Face(fk) => self.write_fa(output, *fk)?,
                 ShapeEntry::Shell(sk) => self.write_sh(output, *sk)?,
                 ShapeEntry::Solid(sk) => self.write_so(output, *sk)?,
-                ShapeEntry::Compound(ck) => self.write_co(output, *ck)?,
+                ShapeEntry::Compound(ck) => {
+                    let compound = self.store.compounds.get(*ck);
+                    let solid_keys: Vec<SolidKey> = compound.map(|c| c.solids.clone()).unwrap_or_default();
+                    self.write_co(output, &solid_keys)?;
+                }
             }
+        }
+
+        // Write default compound if none existed (wraps all solids)
+        if self.needs_default_compound {
+            let solid_keys: Vec<SolidKey> = self.store.solids.keys().collect();
+            self.write_co(output, &solid_keys)?;
         }
 
         // Final references line: +1 0
@@ -382,7 +395,7 @@ impl<'a> BrepWriter<'a> {
     }
 
     fn write_ve(&self, output: &mut impl Write, vk: VertexKey) -> io::Result<()> {
-        let v = self.store.vertices.get(vk).map(|v| (v.position, v.tolerance))
+        let v = self.store.vertices.get(vk).map(|v| (v.position, v.tolerance.max(1e-7)))
             .unwrap_or((Vec3::ZERO, 1e-7));
         writeln!(output, "Ve")?;
         writeln!(output, "{}", v.1)?;
@@ -417,9 +430,11 @@ impl<'a> BrepWriter<'a> {
         let rv1 = self.rev_idx(v1_pos);
         let rv2 = self.rev_idx(v2_pos);
 
+        let tol = edge.tolerance.max(1e-7);
         writeln!(output, "Ed")?;
-        writeln!(output, " {} {} 1 0", edge.tolerance, 1)?;
-        writeln!(output, "{}  {} {} 0 {}", curve_idx, v1_pos, v2_pos, param_range)?;
+        writeln!(output, " {} {} 1 0", tol, 1)?;
+        // Line: curve_type(1=Line) curve_idx 0 0 param_range
+        writeln!(output, "1  {} 0 0 {}", curve_idx, param_range)?;
         writeln!(output, "0")?;
         writeln!(output)?;
         writeln!(output, "0101000")?;
@@ -478,7 +493,8 @@ impl<'a> BrepWriter<'a> {
             .map(|p| p + 1).unwrap_or(0);
 
         writeln!(output, "Fa")?;
-        writeln!(output, "{}  {} 1 0", surf_idx, face.tolerance)?;
+        // Face format: location_index  tolerance  surface_index(1-based)  orientation
+        writeln!(output, "0  {}  {} 1", face.tolerance, surf_idx)?;
         writeln!(output)?;
         writeln!(output, "0101000")?;
         // Wire reference (reverse-indexed)
@@ -537,20 +553,9 @@ impl<'a> BrepWriter<'a> {
         Ok(())
     }
 
-    fn write_co(&self, output: &mut impl Write, ck: CompoundKey) -> io::Result<()> {
-        let compound = match self.store.compounds.get(ck) {
-            Some(c) => c,
-            None => {
-                writeln!(output, "Co")?;
-                writeln!(output)?;
-                writeln!(output, "1100000")?;
-                writeln!(output, "*")?;
-                return Ok(());
-            }
-        };
-
+    fn write_co(&self, output: &mut impl Write, solid_keys: &[SolidKey]) -> io::Result<()> {
         let mut refs = Vec::new();
-        for sk in &compound.solids {
+        for sk in solid_keys {
             let sp = self.solid_pos(*sk);
             refs.push(self.rev_idx(sp));
         }
