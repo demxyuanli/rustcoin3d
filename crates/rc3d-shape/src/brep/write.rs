@@ -122,7 +122,14 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        let pcurve_count = pcurve_entries.len();
+        // Only write PCurves if ALL surfaces are planar (no approximation needed).
+        // When surfaces are approximated as planes, OCC auto-computes PCurves.
+        let all_planar = shapes.iter().filter(|s| matches!(s, ShapeEntry::Face(_))).all(|s| {
+            if let ShapeEntry::Face(fk) = s {
+                store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
+            } else { true }
+        });
+        let pcurve_count = if all_planar { pcurve_entries.len() } else { 0 };
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -377,7 +384,20 @@ impl<'a> BrepWriter<'a> {
 
         for surface in &surfaces {
             if !is_planar_surface(surface) {
-                // Write actual surface — PCurves are now generated via 3D→UV projection
+                let origin = match surface {
+                    SurfaceGeom::Cylinder { origin, .. } => *origin,
+                    SurfaceGeom::Cone { apex, .. } => *apex,
+                    SurfaceGeom::Sphere { center, .. } => *center,
+                    SurfaceGeom::Torus { center, .. } => *center,
+                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
+                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
+                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
+                    _ => Vec3::ZERO,
+                };
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
+                    origin.x, origin.y, origin.z)?;
+                continue;
             }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
