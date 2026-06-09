@@ -322,15 +322,26 @@ impl<'a> BrepWriter<'a> {
                         y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::BSpline(ns) => {
+                    let rational = nurbs_is_rational(&ns.weights);
                     writeln!(output, "8 {} {} {} {} {} {} {} {} {}",
                         ns.degree_u, ns.degree_v,
                         ns.u_count(), ns.v_count(),
                         ns.knots_u.len(), ns.knots_v.len(),
-                        if nurbs_is_rational(&ns.weights) { 1 } else { 0 },
+                        if rational { 1 } else { 0 },
                         0, 0)?;
-                    for row in &ns.control_points {
-                        for cp in row {
-                            writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
+                    // Control points: include weight inline if rational
+                    if rational {
+                        for (i, row) in ns.control_points.iter().enumerate() {
+                            for (j, cp) in row.iter().enumerate() {
+                                let w = ns.weights.get(i).and_then(|rw| rw.get(j)).copied().unwrap_or(1.0);
+                                writeln!(output, "{} {} {} {}", cp.x, cp.y, cp.z, w)?;
+                            }
+                        }
+                    } else {
+                        for row in &ns.control_points {
+                            for cp in row {
+                                writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
+                            }
                         }
                     }
                     for k in &ns.knots_u { write!(output, " {}", k)?; }
