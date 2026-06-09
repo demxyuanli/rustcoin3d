@@ -266,54 +266,61 @@ impl<'a> BrepWriter<'a> {
                         origin.x, origin.y, origin.z,
                         dir.x, dir.y, dir.z)?;
                 }
-                CurveGeom::Circle { center, axis, radius, .. } => {
-                    writeln!(output, "2 {} {} {}  {} {} {}  {}",
+                CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
+                    writeln!(output, "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
-                        axis.x, axis.y, axis.z, radius)?;
+                        axis.x, axis.y, axis.z, radius,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
-                CurveGeom::Ellipse { center, axis, semi_major, semi_minor, .. } => {
-                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}",
+                CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
+                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor)?;
+                        semi_major, semi_minor,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
-                CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, .. } => {
-                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}",
+                CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
+                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor)?;
+                        semi_major, semi_minor,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
-                CurveGeom::Parabola { center, axis, focal_dist, .. } => {
-                    writeln!(output, "5 {} {} {}  {} {} {}  {}",
+                CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir } => {
+                    writeln!(output, "5 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        focal_dist)?;
+                        focal_dist,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 CurveGeom::BezierCurve { degree, control_points, weights } => {
-                    writeln!(output, "6 {}  {}  {}",
+                    write!(output, "6 {}  {}  {}",
                         degree, control_points.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
+                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
                     if let Some(w) = weights {
-                        for wt in w { write!(output, "{} ", wt)?; }
-                        writeln!(output)?;
+                        for wt in w { write!(output, " {}", wt)?; }
                     }
+                    writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
-                    writeln!(output, "7 {}  {}  {}  {}",
+                    write!(output, "7 {}  {}  {}  {}",
                         degree, control_points.len(), knots.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
+                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots { write!(output, "{} ", k)?; }
-                    writeln!(output)?;
+                    for k in knots { write!(output, " {}", k)?; }
                     if let Some(w) = weights {
-                        for wt in w { write!(output, "{} ", wt)?; }
-                        writeln!(output)?;
+                        for wt in w { write!(output, " {}", wt)?; }
                     }
+                    writeln!(output)?;
                 }
                 CurveGeom::Polyline { points } => {
                     // Write as BSpline degree 1
@@ -934,14 +941,12 @@ fn write_polyline_as_bspline(output: &mut impl Write, points: &[Vec3]) -> io::Re
     }
     let n = points.len();
     let knot_len = n + 2;
-    writeln!(output, "7 1  {}  {}  0", n, knot_len)?;
+    write!(output, "7 1  {}  {}  0", n, knot_len)?;
     for p in points {
-        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
+        write!(output, "  {} {} {}", p.x, p.y, p.z)?;
     }
-    write!(output, "0 0 ")?;
-    for i in 1..n-1 {
-        write!(output, "{} ", i)?;
-    }
-    writeln!(output, "{} {}", n-1, n-1)?;
+    write!(output, " 0 0")?;
+    for i in 1..n-1 { write!(output, " {}", i)?; }
+    writeln!(output, " {} {}", n-1, n-1)?;
     Ok(())
 }
