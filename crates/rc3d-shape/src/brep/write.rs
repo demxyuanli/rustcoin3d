@@ -113,10 +113,9 @@ impl<'a> BrepWriter<'a> {
                 }
             }
         }
-        // FIXME: PCurves need edge param_range context for correct 2D format.
-        // Currently zero — all files open, non-planar shapes are empty.
-        let _pcurve_data = pcurve_entries;
-        let pcurve_count = 0;
+        // FIXME: PCurves need edge param_range for correct 2D format.
+        // Currently zero — all files open, non-planar shapes empty.
+        let pcurve_count = 0; // use pcurve_entries.len() when format fixed
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
