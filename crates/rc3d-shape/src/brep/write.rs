@@ -498,9 +498,18 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "0  {}  {} 1", face.tolerance, surf_idx)?;
         writeln!(output)?;
         writeln!(output, "0101000")?;
-        // Wire reference (reverse-indexed)
+        // Outer wire reference (reverse-indexed, forward orientation)
         let rwp = self.rev_idx(wp);
-        writeln!(output, "+{} 0 *", rwp)?;
+        write!(output, "+{} 0 ", rwp)?;
+        // Inner wire references (reverse-indexed, reversed orientation)
+        for iw in &face.inner_wires {
+            let iwp = self.wire_pos(*iw);
+            if iwp > 0 {
+                let riwp = self.rev_idx(iwp);
+                write!(output, "-{} 0 ", riwp)?;
+            }
+        }
+        writeln!(output, "*")?;
         Ok(())
     }
 
