@@ -25,11 +25,20 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
     w.write_all(output)
 }
 
+struct PCurveEntry {
+    edge_abs_pos: usize,  // 1-based edge position in TShapes
+    face_abs_pos: usize,  // 1-based face position in TShapes
+    curve: Curve2d,
+    same_sense: bool,
+}
+
 struct BrepWriter<'a> {
     store: &'a BRepStore,
     shapes: Vec<ShapeEntry>,
     total_shapes: usize,
     needs_default_compound: bool,
+    pcurve_entries: Vec<PCurveEntry>,
+    pcurve_count: usize,
 }
 
 /// Compact representation of each TShape for ordering.
@@ -79,8 +88,29 @@ impl<'a> BrepWriter<'a> {
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && store.solids.len() > 0;
 
+        // Pre-collect PCurve entries (edge_abs_pos, face_abs_pos, curve, same_sense)
+        let mut pcurve_entries = Vec::new();
+        for (i, entry) in shapes.iter().enumerate() {
+            if let ShapeEntry::Edge(ek) = entry {
+                if let Some(edge) = store.edges.get(*ek) {
+                    for (fk, (pc, same_sense)) in &edge.pcurves {
+                        let face_pos = shapes.iter()
+                            .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
+                            .map(|p| p + 1).unwrap_or(0);
+                        pcurve_entries.push(PCurveEntry {
+                            edge_abs_pos: i + 1,
+                            face_abs_pos: face_pos,
+                            curve: pc.clone(),
+                            same_sense: *same_sense,
+                        });
+                    }
+                }
+            }
+        }
+        let pcurve_count = pcurve_entries.len();
+
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound }
+        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -148,11 +178,44 @@ impl<'a> BrepWriter<'a> {
         Ok(())
     }
 
-    /// Curve2ds — always 0 in classic format (PCurves stored on edges inline).
-    fn write_curve2ds(&self, _output: &mut impl Write) -> io::Result<()> {
-        // Classic format embeds PCurves in edge data, so we write 0 here.
-        // We'll re-visit this when PCurve support is complete.
-        writeln!(_output, "Curve2ds 0")?;
+    /// Write PCurves section with actual 2D curve data.
+    fn write_curve2ds(&self, output: &mut impl Write) -> io::Result<()> {
+        writeln!(output, "Curve2ds {}", self.pcurve_count)?;
+        for entry in &self.pcurve_entries {
+            let ori = if entry.same_sense { 1 } else { 0 };
+            write!(output, "{} {} {} ", entry.edge_abs_pos, entry.face_abs_pos, ori)?;
+            match &entry.curve {
+                Curve2d::Line { origin, direction } => {
+                    writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
+                }
+                Curve2d::Circle { center, radius } => {
+                    writeln!(output, "2 {} {} {}", center.0, center.1, radius)?;
+                }
+                Curve2d::Ellipse { center, semi_major, semi_minor } => {
+                    writeln!(output, "3 {} {} {} {}", center.0, center.1, semi_major, semi_minor)?;
+                }
+                Curve2d::BSpline { degree, control_points, knots, weights } => {
+                    write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
+                        if weights.is_some() { 1 } else { 0 })?;
+                    for cp in control_points { write!(output, " {} {}", cp.0, cp.1)?; }
+                    for k in knots { write!(output, " {}", k)?; }
+                    if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
+                    writeln!(output)?;
+                }
+                Curve2d::Trimmed { basis, t_min, t_max } => {
+                    match basis.as_ref() {
+                        Curve2d::Line { origin, direction } => {
+                            writeln!(output, "1 {} {} {} {}", origin.0, origin.1, direction.0, direction.1)?;
+                        }
+                        Curve2d::Circle { center, radius } => {
+                            writeln!(output, "2 {} {} {}", center.0, center.1, radius)?;
+                        }
+                        _ => writeln!(output, "1 0 0 1 0")?,
+                    }
+                }
+                _ => writeln!(output, "1 0 0 1 0")?,
+            }
+        }
         Ok(())
     }
 
@@ -356,15 +419,13 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
+                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
                     let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
-                    let base_pt = generatrix.d0(0.0);
-                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
                         axis_origin.x, axis_origin.y, axis_origin.z,
                         axis_dir.x, axis_dir.y, axis_dir.z,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z,
-                        base_pt.x, base_pt.y, base_pt.z)?;
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
@@ -453,7 +514,28 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, " {} {} 1 0", tol, 1)?;
         // curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
-        writeln!(output, "0")?;
+
+        // PCurve references for this edge
+        let edge_abs = self.edge_pos(ek);
+        if self.pcurve_count == 0 {
+            writeln!(output, "0")?;
+        } else {
+            let mut pc_indices: Vec<usize> = Vec::new();
+            for (idx, entry) in self.pcurve_entries.iter().enumerate() {
+                if entry.edge_abs_pos == edge_abs {
+                    pc_indices.push(idx + 1); // 1-based
+                }
+            }
+            if pc_indices.is_empty() {
+                writeln!(output, "0")?;
+            } else {
+                write!(output, "{} C0", pc_indices.len())?;
+                for pi in &pc_indices {
+                    write!(output, " {} 0", pi)?;
+                }
+                writeln!(output)?;
+            }
+        }
         writeln!(output)?;
         writeln!(output, "0101000")?;
         writeln!(output, "+{} 0 -{} 0 *", rv1, rv2)?;
