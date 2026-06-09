@@ -251,6 +251,43 @@ fn bspline_d012(
     (safe(d0), safe(d1), safe(d2))
 }
 
+/// De Casteljau evaluation of Bezier curve at parameter t ∈ [0, 1].
+fn de_casteljau_d0(points: &[Vec3], weights: Option<&[f32]>, t: f32) -> Vec3 {
+    let n = points.len();
+    if n == 0 { return Vec3::ZERO; }
+    if n == 1 { return points[0]; }
+    if let Some(w) = weights {
+        let mut p: Vec<(f32, Vec3)> = points.iter().zip(w.iter())
+            .map(|(&pt, &wt)| (wt, pt * wt))
+            .collect();
+        for r in 1..n {
+            for i in 0..(n - r) {
+                let w_new = p[i].0 * (1.0 - t) + p[i + 1].0 * t;
+                let v_new = p[i].1 * (1.0 - t) + p[i + 1].1 * t;
+                p[i] = (w_new, v_new);
+            }
+        }
+        p[0].1 / p[0].0
+    } else {
+        let mut p = points.to_vec();
+        for r in 1..n {
+            for i in 0..(n - r) {
+                p[i] = p[i] * (1.0 - t) + p[i + 1] * t;
+            }
+        }
+        p[0]
+    }
+}
+
+/// First derivative via De Casteljau (hodograph).
+fn de_casteljau_d1(points: &[Vec3], _weights: Option<&[f32]>, t: f32) -> Vec3 {
+    let n = points.len();
+    if n <= 1 { return Vec3::ZERO; }
+    let degree = (n - 1) as f32;
+    let diff: Vec<Vec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
+    de_casteljau_d0(&diff, None, t)
+}
+
 /// Approximate arc length of a curve by chordal sum with fixed sampling.
 /// Avoids calling `arc_length` / `sample_adaptive` to break circular dependency
 /// with `Composite` segment selection.
@@ -331,6 +368,14 @@ pub enum CurveGeom {
     Hyperbola { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
     Parabola { center: Vec3, axis: Vec3, focal_dist: f32, x_dir: Vec3, y_dir: Vec3 },
     BSpline { degree: usize, control_points: Vec<Vec3>, knots: Vec<f32>, weights: Option<Vec<f32>> },
+    /// Bezier curve of arbitrary degree with optional rational weights.
+    /// Equivalent to BSpline with knot vector [0ⁿ⁺¹, 1ⁿ⁺¹] but evaluated
+    /// via De Casteljau for better performance and OCC type-6 compatibility.
+    BezierCurve {
+        degree: usize,
+        control_points: Vec<Vec3>,
+        weights: Option<Vec<f32>>,
+    },
     Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
     Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
     Polyline { points: Vec<Vec3> },
@@ -364,6 +409,13 @@ impl CurveGeom {
     pub fn parabola(center: Vec3, axis: Vec3, focal_dist: f32) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir }
+    }
+
+    /// Construct a Bezier curve from control points and optional rational weights.
+    /// The degree is inferred from the number of control points (degree = len - 1).
+    pub fn bezier(control_points: Vec<Vec3>, weights: Option<Vec<f32>>) -> Self {
+        let degree = control_points.len().saturating_sub(1);
+        CurveGeom::BezierCurve { degree, control_points, weights }
     }
 }
 
@@ -423,6 +475,10 @@ impl CurveGeom {
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t).0
+            }
+
+            CurveGeom::BezierCurve { control_points, weights, .. } => {
+                de_casteljau_d0(control_points, weights.as_deref(), t)
             }
 
             CurveGeom::Trimmed { basis, t_min, t_max } => {
@@ -499,6 +555,10 @@ impl CurveGeom {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t).1
             }
 
+            CurveGeom::BezierCurve { control_points, weights, .. } => {
+                de_casteljau_d1(control_points, weights.as_deref(), t)
+            }
+
             CurveGeom::Trimmed { basis, t_min, t_max } => {
                 let (t_eval, dt_dedge) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
                 basis.d1(t_eval) * dt_dedge
@@ -567,6 +627,11 @@ impl CurveGeom {
 
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t).2
+            }
+
+            CurveGeom::BezierCurve { .. } => {
+                let eps = 1e-4;
+                (self.d1(t + eps) - self.d1(t - eps)) / (2.0 * eps)
             }
 
             CurveGeom::Trimmed { basis, t_min, t_max } => {
@@ -706,6 +771,15 @@ impl CurveGeom {
         match self {
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t)
+            }
+            CurveGeom::BezierCurve { control_points, weights, .. } => {
+                let p = de_casteljau_d0(control_points, weights.as_deref(), t);
+                let d1 = de_casteljau_d1(control_points, weights.as_deref(), t);
+                let eps = 1e-4;
+                let d1_plus = de_casteljau_d1(control_points, weights.as_deref(), (t + eps).min(1.0));
+                let d1_minus = de_casteljau_d1(control_points, weights.as_deref(), (t - eps).max(0.0));
+                let d2 = (d1_plus - d1_minus) / (2.0 * eps);
+                (p, d1, d2)
             }
             CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
                 let theta = t * std::f32::consts::TAU;

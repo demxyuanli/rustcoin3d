@@ -136,6 +136,10 @@ fn inspect_shape_topology() {
                 println!("  {:?}: Polyline", ek);
                 continue;
             }
+            rc3d_io::step::brep::geom::CurveGeom::BezierCurve { degree, control_points, .. } => {
+                println!("  {:?}: Bezier deg={} cp#{}", ek, degree, control_points.len());
+                continue;
+            }
             rc3d_io::step::brep::geom::CurveGeom::Offset { basis, offset_dir, distance } => {
                 println!("  {:?}: Offset dist={} dir={:?}", ek, distance, offset_dir);
                 continue;

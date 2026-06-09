@@ -316,6 +316,16 @@ impl Curve2d {
                 }).collect();
                 Curve2d::Polyline { points: pts }
             }
+            CurveGeom::BezierCurve { .. } => {
+                // Sample the Bezier curve as a polyline
+                let n = 32;
+                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let p = curve.d0(t);
+                    (p.x, p.y)
+                }).collect();
+                Curve2d::Polyline { points: pts }
+            }
             CurveGeom::Offset { basis: _, offset_dir: _, distance: _ } => {
                 // Sample the offset curve as a polyline
                 let n = 64;
