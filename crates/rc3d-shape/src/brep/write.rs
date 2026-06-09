@@ -267,35 +267,34 @@ impl<'a> BrepWriter<'a> {
                         dir.x, dir.y, dir.z)?;
                 }
                 CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
-                    writeln!(output, "2 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                    writeln!(output, "2 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {}",
                         center.x, center.y, center.z,
-                        axis.x, axis.y, axis.z, radius,
+                        axis.x, axis.y, axis.z,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z, radius)?;
                 }
                 CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(output, "3 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "3 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z,
+                        semi_major, semi_minor)?;
                 }
                 CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
-                    writeln!(output, "4 {} {} {}  {} {} {}  {} {}  {} {} {}  {} {} {}",
+                    writeln!(output, "4 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        semi_major, semi_minor,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z,
+                        semi_major, semi_minor)?;
                 }
                 CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir } => {
-                    writeln!(output, "5 {} {} {}  {} {} {}  {}  {} {} {}  {} {} {}",
+                    writeln!(output, "5 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        focal_dist,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z, focal_dist)?;
                 }
                 CurveGeom::BezierCurve { degree, control_points, weights } => {
                     write!(output, "6 {}  {}  {}",
@@ -388,17 +387,16 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         origin.x, origin.y, origin.z,
                         axis.x, axis.y, axis.z,
-                        radius,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z, radius)?;
                 }
                 SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
                     writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         apex.x, apex.y, apex.z,
                         axis.x, axis.y, axis.z,
-                        semi_angle, radius_at_apex,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z,
+                        semi_angle, radius_at_apex)?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
                     writeln!(output, "4 {} {} {}  {}", center.x, center.y, center.z, radius)?;
@@ -407,9 +405,9 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "5 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         center.x, center.y, center.z,
                         axis.x, axis.y, axis.z,
-                        major_r, minor_r,
                         x_dir.x, x_dir.y, x_dir.z,
-                        y_dir.x, y_dir.y, y_dir.z)?;
+                        y_dir.x, y_dir.y, y_dir.z,
+                        major_r, minor_r)?;
                 }
                 SurfaceGeom::BSpline(ns) => {
                     let rational = nurbs_is_rational(&ns.weights);
