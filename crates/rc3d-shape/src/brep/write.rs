@@ -129,7 +129,7 @@ impl<'a> BrepWriter<'a> {
                 store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
             } else { true }
         });
-        let pcurve_count = pcurve_entries.len();
+        let pcurve_count = 0; // Always 0 — let OCC auto-compute PCurves
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
         Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
@@ -228,14 +228,13 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
                         center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
-                Curve2d::BSpline { control_points, .. } => {
-                    // OCC Curve2ds may not support BSpline; write chord Line
-                    if let (Some(f), Some(l)) = (control_points.first(), control_points.last()) {
-                        let dx = l.0 - f.0; let dy = l.1 - f.1;
-                        let len = (dx*dx + dy*dy).sqrt().max(0.01);
-                        let (nx, ny) = if len > 0.01 { (dx/len, dy/len) } else { (1.0, 0.0) };
-                        writeln!(output, "1 0 {} {} {}", len, nx, ny)?;
-                    } else { writeln!(output, "1 0 1 1 0")?; }
+                Curve2d::BSpline { degree, control_points, knots, weights } => {
+                    write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
+                        if weights.is_some() { 1 } else { 0 })?;
+                    for cp in control_points { write!(output, " {} {}", cp.0, cp.1)?; }
+                    for k in knots { write!(output, " {}", k)?; }
+                    if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
+                    writeln!(output)?;
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
@@ -330,18 +329,18 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
-                    writeln!(output, "7 {}  {}  {}  {}",
+                    // OCC classic: ALL data on ONE line (matching steps/shape.brep)
+                    write!(output, "7 {}  {}  {}  {}",
                         degree, control_points.len(), knots.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
-                        writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
+                        write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots { write!(output, "{} ", k)?; }
-                    writeln!(output)?;
+                    for k in knots { write!(output, " {}", k)?; }
                     if let Some(w) = weights {
-                        for wt in w { write!(output, "{} ", wt)?; }
-                        writeln!(output)?;
+                        for wt in w { write!(output, " {}", wt)?; }
                     }
+                    writeln!(output)?;
                 }
                 CurveGeom::Polyline { points } => {
                     // Write as BSpline degree 1
@@ -384,6 +383,22 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Surfaces {}", surfaces.len())?;
 
         for surface in &surfaces {
+            if !is_planar_surface(surface) {
+                let origin = match surface {
+                    SurfaceGeom::Cylinder { origin, .. } => *origin,
+                    SurfaceGeom::Cone { apex, .. } => *apex,
+                    SurfaceGeom::Sphere { center, .. } => *center,
+                    SurfaceGeom::Torus { center, .. } => *center,
+                    SurfaceGeom::BSpline(ns) => ns.control_points.first()
+                        .and_then(|r| r.first()).copied().unwrap_or(Vec3::ZERO),
+                    SurfaceGeom::Revolution { axis_origin, .. } => *axis_origin,
+                    SurfaceGeom::Extrusion { generatrix, .. } => generatrix.d0(0.5),
+                    _ => Vec3::ZERO,
+                };
+                writeln!(output, "1 {} {} {} 0 0 1 1 0 0 0 1 0",
+                    origin.x, origin.y, origin.z)?;
+                continue;
+            }
             match surface {
                 SurfaceGeom::Plane { origin, normal, u_dir } => {
                     let n = if normal.length_squared() > 1e-12 {
@@ -398,11 +413,13 @@ impl<'a> BrepWriter<'a> {
                     };
                     let v = n.cross(u);
                     // OCC Plane: 1 ox oy oz nx ny nz ux uy uz vx vy vz (13 numbers)
+                    // Avoid -0.0 (IEEE 754) — OCC parser may reject it
+                    let z = |x: f32| if x == 0.0 { 0.0 } else { x };
                     writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        origin.x, origin.y, origin.z,
-                        n.x, n.y, n.z,
-                        u.x, u.y, u.z,
-                        v.x, v.y, v.z)?;
+                        z(origin.x), z(origin.y), z(origin.z),
+                        z(n.x), z(n.y), z(n.z),
+                        z(u.x), z(u.y), z(u.z),
+                        z(v.x), z(v.y), z(v.z))?;
                 }
                 SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir } => {
                     writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
@@ -433,21 +450,29 @@ impl<'a> BrepWriter<'a> {
                 }
                 SurfaceGeom::BSpline(ns) => {
                     let rational = nurbs_is_rational(&ns.weights);
-                    // OCC classic: ALL data on ONE line
-                    write!(output, "8 {} {} {} {} {} {} {} {} {}",
+                    writeln!(output, "8 {} {} {} {} {} {} {} {} {}",
                         ns.degree_u, ns.degree_v,
                         ns.u_count(), ns.v_count(),
                         ns.knots_u.len(), ns.knots_v.len(),
-                        if rational { 1 } else { 0 }, 0, 0)?;
-                    for row in &ns.control_points {
-                        for cp in row {
-                            write!(output, " {} {} {}", cp.x, cp.y, cp.z)?;
-                            if rational {
-                                write!(output, " 1")?;
+                        if rational { 1 } else { 0 },
+                        0, 0)?;
+                    // Control points: include weight inline if rational
+                    if rational {
+                        for (i, row) in ns.control_points.iter().enumerate() {
+                            for (j, cp) in row.iter().enumerate() {
+                                let w = ns.weights.get(i).and_then(|rw| rw.get(j)).copied().unwrap_or(1.0);
+                                writeln!(output, "{} {} {} {}", cp.x, cp.y, cp.z, w)?;
+                            }
+                        }
+                    } else {
+                        for row in &ns.control_points {
+                            for cp in row {
+                                writeln!(output, "{} {} {}", cp.x, cp.y, cp.z)?;
                             }
                         }
                     }
                     for k in &ns.knots_u { write!(output, " {}", k)?; }
+                    writeln!(output)?;
                     for k in &ns.knots_v { write!(output, " {}", k)?; }
                     writeln!(output)?;
                 }
@@ -458,19 +483,13 @@ impl<'a> BrepWriter<'a> {
                         direction.x, direction.y, direction.z,
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
-                SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                    // OCC classic: type=7, origin, axis on line 1
-                    writeln!(output, "7 {} {} {} {} {} {}",
+                SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
+                    let (x_dir, y_dir) = crate::geom::build_ortho_axes(*axis_dir);
+                    writeln!(output, "7 {} {} {} {} {} {} {} {} {} {} {} {}",
                         axis_origin.x, axis_origin.y, axis_origin.z,
-                        axis_dir.x, axis_dir.y, axis_dir.z)?;
-                    // Line 2: generatrix as BSpline (7 deg cp_count knot_count cps... no rational, no knots)
-                    let gen_pts: Vec<Vec3> = (0..=16).map(|i| generatrix.d0(i as f32 / 16.0)).collect();
-                    let n = gen_pts.len();
-                    write!(output, "7 0 0  1 {} {}", n, n + 2)?;
-                    for p in &gen_pts { write!(output, "  {} {} {}", p.x, p.y, p.z)?; }
-                    writeln!(output)?;
-                    // Line 3: knot-multiplicity pairs: 0 {n_knots} 1 {n_knots}
-                    writeln!(output, " 0 {} 1 {}", n + 1, n + 1)?;
+                        axis_dir.x, axis_dir.y, axis_dir.z,
+                        x_dir.x, x_dir.y, x_dir.z,
+                        y_dir.x, y_dir.y, y_dir.z)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
