@@ -27,7 +27,7 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
 
 struct PCurveEntry {
     edge_abs_pos: usize,  // 1-based edge position in TShapes
-    face_abs_pos: usize,  // 1-based face position in TShapes
+    face_order: usize,  // 1-based face index among faces
     curve: Curve2d,
     same_sense: bool,
 }
@@ -100,8 +100,10 @@ impl<'a> BrepWriter<'a> {
                             .unwrap_or(false);
                         // Skip PCurves with unhandled types (Polyline/Composite)
                         if is_non_planar {
-                            let face_pos = shapes.iter()
-                                .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
+                            // face_order = 1-based index among faces (not TShape position)
+                            let face_order = shapes.iter()
+                                .filter(|s| matches!(s, ShapeEntry::Face(_)))
+                                .position(|s| matches!(s, ShapeEntry::Face(k) if *k == *fk))
                                 .map(|p| p + 1).unwrap_or(0);
                             // Generate projected PCurve from 3D edge points
                             let projected = if let (Some(edge), Some(face)) =
@@ -113,7 +115,7 @@ impl<'a> BrepWriter<'a> {
                             };
                             pcurve_entries.push(PCurveEntry {
                                 edge_abs_pos: i + 1,
-                                face_abs_pos: face_pos,
+                                face_order,
                                 curve: projected,
                                 same_sense: *same_sense,
                             });
@@ -583,10 +585,10 @@ impl<'a> BrepWriter<'a> {
             writeln!(output, "0")?;
         } else {
             let edge_abs = self.edge_pos(ek);
-            let mut pc_lines: Vec<(usize, usize, f32)> = Vec::new(); // (curve2d_idx, face_abs_pos, param)
+            let mut pc_lines: Vec<(usize, usize, f32)> = Vec::new(); // (curve2d_idx, face_order, param)
             for (idx, entry) in self.pcurve_entries.iter().enumerate() {
                 if entry.edge_abs_pos == edge_abs {
-                    pc_lines.push((idx + 1, entry.face_abs_pos, param_range));
+                    pc_lines.push((idx + 1, entry.face_order, param_range));
                 }
             }
             if pc_lines.is_empty() {
