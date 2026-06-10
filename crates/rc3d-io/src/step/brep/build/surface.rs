@@ -1,6 +1,21 @@
 use super::*;
 use crate::step::brep::geom::nurbs_build::build_nurbs_surface;
 
+/// Extract the rectangular trim range if this is a RECTANGULAR_TRIMMED_SURFACE.
+/// Returns (u_min, u_max, v_min, v_max) or None.
+pub fn build_surface_trim_range(surface_id: u64, entities: &EntityIndex) -> Option<(f32, f32, f32, f32)> {
+    let record = entities.get(&surface_id)?;
+    if record.name == "RECTANGULAR_TRIMMED_SURFACE" {
+        let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
+        let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
+        let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as f32;
+        let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as f32;
+        Some((u1.min(u2), u1.max(u2), v1.min(v2), v1.max(v2)))
+    } else {
+        None
+    }
+}
+
 pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceGeom> {
     let record = entities.get(&surface_id)?;
     match record.name.as_str() {

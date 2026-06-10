@@ -455,11 +455,16 @@ pub(crate) fn mesh_faces_in_chunk(
             &loops
         };
 
+        let inner_boundaries: Vec<Vec<usize>> = fill_loops.inners.iter()
+            .map(|inner| inner.boundary.iter().map(|v| v.global_idx).collect())
+            .collect();
+
         let mut range = match algo {
             FaceMeshAlgo::SurfaceFill3d | FaceMeshAlgo::ClosedParametric if mixed_boundary => {
         surface_fill_3d(
             info_face_key,
             &boundary_ordered,
+            &inner_boundaries,
             face,
             &mut global_vertices,
             &mut global_normals,
@@ -472,6 +477,7 @@ pub(crate) fn mesh_faces_in_chunk(
             FaceMeshAlgo::SurfaceFill3d => surface_fill_3d(
         info_face_key,
         &boundary_ordered,
+        &inner_boundaries,
         face,
         &mut global_vertices,
         &mut global_normals,
@@ -483,6 +489,7 @@ pub(crate) fn mesh_faces_in_chunk(
             FaceMeshAlgo::TrimmedCdt if mixed_boundary => surface_fill_3d(
         info_face_key,
         &boundary_ordered,
+        &inner_boundaries,
         face,
         &mut global_vertices,
         &mut global_normals,
@@ -627,6 +634,7 @@ pub(crate) fn mesh_faces_in_chunk(
             range = surface_fill_3d(
         info_face_key,
         &boundary_ordered,
+        &inner_boundaries,
         face,
         &mut global_vertices,
         &mut global_normals,
@@ -742,6 +750,7 @@ pub(crate) fn mesh_faces_in_chunk(
         let sf = surface_fill_3d(
             info_face_key,
             &boundary_ordered,
+            &inner_boundaries,
             face,
             &mut global_vertices,
             &mut global_normals,
@@ -773,6 +782,7 @@ pub(crate) fn mesh_faces_in_chunk(
         let sf = surface_fill_3d(
             info_face_key,
             &boundary_ordered,
+            &inner_boundaries,
             face,
             &mut global_vertices,
             &mut global_normals,
@@ -1008,6 +1018,7 @@ pub(crate) fn mesh_faces_in_chunk(
             let sf = surface_fill_3d(
         info_face_key,
         &boundary_ordered,
+        &inner_boundaries,
         face,
         &mut global_vertices,
         &mut global_normals,

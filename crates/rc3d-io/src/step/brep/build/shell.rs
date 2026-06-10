@@ -4,11 +4,12 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
     let mut face_keys = Vec::new();
 
     for face_data in &shell.faces {
-        let surface = resolve_face_surface(
+        let (surface, trim_range) = resolve_face_surface(
             face_data,
             ctx.entities,
             ctx.options,
             ctx.skipped_faces,
+            ctx.geometry_fallback_count,
         )?;
         let surface_id = face_data.surface_id;
 
@@ -24,12 +25,12 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
             degenerated_edges: vec![],
         });
 
-        let mut wire_keys = Vec::new();
+        let mut wire_keys: Vec<(WireKey, bool)> = Vec::new();
 
         for bloop in &face_data.bounds {
             if let Some(anchor) = bloop.vertex_loop_point {
                 let wk = build_vertex_loop_wire(anchor, &surface, face_key, ctx);
-                wire_keys.push(wk);
+                wire_keys.push((wk, true));
                 continue;
             }
 
@@ -41,6 +42,7 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
                     ctx.entities,
                     ctx.options,
                     ctx.skipped_edges,
+                    ctx.geometry_fallback_count,
                 ) {
                     Some(c) => c,
                     None => continue,
@@ -82,7 +84,7 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
 
             if !loop_edges.is_empty() {
                 let wk = ctx.reg.wires.insert(BRepWire { edges: loop_edges });
-                wire_keys.push(wk);
+                wire_keys.push((wk, bloop.bound_forward));
             }
         }
 
@@ -91,11 +93,15 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
             continue;
         }
 
+        // Sort: FACE_OUTER_BOUND (bound_forward==true) first, FACE_BOUND inner loops after
+        wire_keys.sort_by(|a, b| b.1.cmp(&a.1));
+        let sorted_wires: Vec<WireKey> = wire_keys.into_iter().map(|(wk, _)| wk).collect();
+
         if let Some(face) = ctx.reg.faces.get_mut(face_key) {
-            if let Some(&outer) = wire_keys.first() {
+            if let Some(&outer) = sorted_wires.first() {
                 face.outer_wire = outer;
-                face.inner_wires = if wire_keys.len() > 1 {
-                    wire_keys[1..].to_vec()
+                face.inner_wires = if sorted_wires.len() > 1 {
+                    sorted_wires[1..].to_vec()
                 } else {
                     vec![]
                 };
@@ -105,6 +111,11 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
                     face.color = Some(rgb);
                 }
             }
+        }
+
+        // Store RECTANGULAR_TRIMMED_SURFACE trim range for mesh-time UV clamping
+        if let Some(trim) = trim_range {
+            ctx.reg.trim_ranges.insert(face_key, trim);
         }
 
         let face_orient = if face_data.oriented_forward {
@@ -123,7 +134,7 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
 
     Some(ctx.reg.shells.insert(BRepShell {
         faces: face_keys,
-        closed: shell.faces.len() >= 4,
+        closed: shell.closed,
         step_id: Some(shell.id),
     }))
 }

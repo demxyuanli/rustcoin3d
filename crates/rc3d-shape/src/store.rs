@@ -34,6 +34,9 @@ pub struct BRepStore {
     pub vertex_to_edges: HashMap<VertexKey, Vec<EdgeKey>>,
     /// Model/heal/mesh distance tolerances for this shape document.
     pub tolerance: ToleranceContext,
+    /// Per-face UV trim ranges from RECTANGULAR_TRIMMED_SURFACE / CURVE_BOUNDED_SURFACE.
+    /// Keyed by FaceKey; (u_min, u_max, v_min, v_max). When absent, full domain is used.
+    pub trim_ranges: HashMap<FaceKey, (f32, f32, f32, f32)>,
 }
 
 impl BRepStore {
@@ -56,6 +59,7 @@ impl BRepStore {
             edge_to_faces: HashMap::new(),
             vertex_to_edges: HashMap::new(),
             tolerance,
+            trim_ranges: HashMap::new(),
         }
     }
 
@@ -98,21 +102,27 @@ impl BRepStore {
         let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance);
 
         // Check existing edges between same vertices — only reuse if curves match.
-        let mid_new = curve.d0(0.5);
+        // Sample at 3 points (quarter, mid, three-quarter) to reduce false-positive
+        // merges for curves that share endpoints but are geometrically different.
         let chord_len = (p_hi - p_lo).length().max(tolerance);
         if let Some(existing) = self.edge_hash_index.get(&(v_lo, v_hi)) {
-            for &ek in existing {
-                let edge_mid = self.edges.get(ek).map(|e| e.curve.d0(0.5)).unwrap_or(Vec3::ZERO);
-                let mid_dist = (mid_new - edge_mid).length();
-                // Curves match if midpoints are close relative to chord length
-                if mid_dist <= chord_len * 0.01 + tolerance * 10.0 {
-                    if let Some(edge) = self.edges.get_mut(ek) {
-                        edge.pcurves.insert(face, pcurve);
+            'edge_check: for &ek in existing {
+                for &t in &[0.25, 0.5, 0.75] {
+                    let p_new = curve.d0(t);
+                    let p_existing = self.edges.get(ek).map(|e| e.curve.d0(t)).unwrap_or(Vec3::ZERO);
+                    let dist = (p_new - p_existing).length();
+                    if dist > chord_len * 0.02 + tolerance * 5.0 {
+                        continue 'edge_check;
                     }
-                    // Auto-maintain edge_to_faces index
-                    self.edge_to_faces.entry(ek).or_default().push(face);
-                    return ek;
                 }
+                // All sample points match — reuse existing edge
+                if let Some(edge) = self.edges.get_mut(ek) {
+                    edge.pcurves.insert(face, pcurve);
+                }
+                // Auto-maintain edge_to_faces index (dedup)
+                let v = self.edge_to_faces.entry(ek).or_default();
+                if !v.contains(&face) { v.push(face); }
+                return ek;
             }
         }
         // No matching curve — create a new edge
@@ -130,8 +140,8 @@ impl BRepStore {
             },
         });
         self.edge_hash_index.entry((v_lo, v_hi)).or_default().push(ek);
-        // Auto-maintain edge_to_faces and vertex_to_edges indices
-        self.edge_to_faces.entry(ek).or_default().push(face);
+        // Auto-maintain edge_to_faces and vertex_to_edges indices (dedup)
+        { let v = self.edge_to_faces.entry(ek).or_default(); if !v.contains(&face) { v.push(face); } }
         self.vertex_to_edges.entry(v_lo).or_default().push(ek);
         self.vertex_to_edges.entry(v_hi).or_default().push(ek);
         ek
@@ -172,8 +182,8 @@ impl BRepStore {
                 m
             },
         });
-        // Auto-maintain edge_to_faces and vertex_to_edges indices
-        self.edge_to_faces.entry(ek).or_default().push(face);
+        // Auto-maintain edge_to_faces and vertex_to_edges indices (dedup)
+        { let v = self.edge_to_faces.entry(ek).or_default(); if !v.contains(&face) { v.push(face); } }
         self.vertex_to_edges.entry(v_lo).or_default().push(ek);
         if v_lo != v_hi {
             self.vertex_to_edges.entry(v_hi).or_default().push(ek);

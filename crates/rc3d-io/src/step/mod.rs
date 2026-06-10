@@ -232,6 +232,7 @@ fn exchange_to_import_result(
     import_report.void_shells_subtracted = transfer.build_report.void_shells_subtracted;
     import_report.oriented_forward_faces = transfer.build_report.oriented_forward_faces;
     import_report.oriented_reversed_faces = transfer.build_report.oriented_reversed_faces;
+    import_report.geometry_fallback_count = transfer.build_report.geometry_fallback_count;
 
     if !options.allow_void_shells_unmeshed() && transfer.build_report.void_shell_count > 0 {
         return Err(StepError::ImportQuality(format!(
@@ -254,19 +255,17 @@ fn exchange_to_import_result(
                 keys
             })
             .unwrap_or_default();
-        if !options.skip_visualization {
-            let mut total_same_param = 0usize;
-            for shell_key in shell_keys {
-                total_same_param +=
-                    brep::same_parameter::same_parameter_shell(&mut document.store, shell_key, g0_tol);
-            }
-            if total_same_param > 0 {
-                log::debug!(
-                    "[STEP] SameParameter: {} edge(s) on solid {:?}",
-                    total_same_param,
-                    sk
-                );
-            }
+        let mut total_same_param = 0usize;
+        for shell_key in shell_keys {
+            total_same_param +=
+                brep::same_parameter::same_parameter_shell(&mut document.store, shell_key, g0_tol);
+        }
+        if total_same_param > 0 {
+            log::debug!(
+                "[STEP] SameParameter: {} edge(s) on solid {:?}",
+                total_same_param,
+                sk
+            );
         }
     }
 

@@ -112,13 +112,23 @@ pub(crate) fn tess_config_hash(config: &BRepMeshConfig) -> u64 {
 
 fn config_hash(config: &BRepMeshConfig) -> u64 {
     use std::hash::{Hash, Hasher};
+    use std::mem::discriminant;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     config.relative_deflection.to_bits().hash(&mut h);
     config.same_parameter_tol.to_bits().hash(&mut h);
     config.edge.deflection.to_bits().hash(&mut h);
     config.edge.angle_deflection.to_bits().hash(&mut h);
+    config.edge.max_points.hash(&mut h);
+    config.edge.min_points.hash(&mut h);
     config.face.deflection_interior.to_bits().hash(&mut h);
     config.face.min_size.to_bits().hash(&mut h);
+    config.face.enable_interior.hash(&mut h);
+    config.face.angular_deflection.to_bits().hash(&mut h);
+    config.face.max_adapt_iterations.hash(&mut h);
+    config.face.max_cdt_vertices.hash(&mut h);
+    discriminant(&config.face.delaunay_backend).hash(&mut h);
+    config.face.skip_interior_edge_split.hash(&mut h);
+    config.fast_export.hash(&mut h);
     h.finish()
 }
 

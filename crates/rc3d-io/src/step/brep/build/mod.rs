@@ -43,6 +43,8 @@ pub struct BRepBuildReport {
     pub void_shells_subtracted: usize,
     pub oriented_forward_faces: usize,
     pub oriented_reversed_faces: usize,
+    /// Unknown surfaces/curves substituted with plane/line (Preview fallback).
+    pub geometry_fallback_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +87,7 @@ struct ShellBuildCtx<'a> {
     skipped_edges: &'a mut usize,
     oriented_forward_faces: &'a mut usize,
     oriented_reversed_faces: &'a mut usize,
+    geometry_fallback_count: &'a mut usize,
 }
 
 fn resolve_face_surface(
@@ -92,10 +95,12 @@ fn resolve_face_surface(
     entities: &EntityIndex,
     options: &BRepBuildOptions,
     skipped_faces: &mut usize,
-) -> Option<SurfaceGeom> {
+    geometry_fallback_count: &mut usize,
+) -> Option<(SurfaceGeom, Option<(f32, f32, f32, f32)>)> {
     if let Some(sid) = face_data.surface_id {
         if let Some(surface) = build_surface(sid, entities) {
-            return Some(surface);
+            let trim = surface::build_surface_trim_range(sid, entities);
+            return Some((surface, trim));
         }
         if options.allow_geometry_fallback {
             let surf_name = entities.get(&sid).map(|r| r.name.as_str()).unwrap_or("?");
@@ -103,7 +108,8 @@ fn resolve_face_surface(
                 "[BRep] build_surface failed for #{} ({}), falling back to Plane from face edges",
                 sid, surf_name
             );
-            Some(fallback_plane_from_face(face_data))
+            *geometry_fallback_count += 1;
+            Some((fallback_plane_from_face(face_data), None))
         } else {
             *skipped_faces += 1;
             None
@@ -111,7 +117,8 @@ fn resolve_face_surface(
     } else if options.allow_geometry_fallback {
         log::warn!("[BRep] face #{:?} has no surface reference, falling back to Plane from face edges",
             face_data.face_id);
-        Some(fallback_plane_from_face(face_data))
+        *geometry_fallback_count += 1;
+        Some((fallback_plane_from_face(face_data), None))
     } else {
         *skipped_faces += 1;
         None
@@ -169,11 +176,13 @@ fn resolve_edge_curve(
     entities: &EntityIndex,
     options: &BRepBuildOptions,
     skipped_edges: &mut usize,
+    geometry_fallback_count: &mut usize,
 ) -> Option<CurveGeom> {
     if let Some(curve) = build_curve(edge_data.curve_id, entities) {
         return Some(curve);
     }
     if options.allow_geometry_fallback {
+        *geometry_fallback_count += 1;
         let dir = edge_data.end - edge_data.start;
         let d = if dir.length() > 1e-10 { dir } else { Vec3::X };
         Some(CurveGeom::Line {
@@ -202,6 +211,7 @@ pub fn build_brep_with_options(
     let mut skipped_edges = 0usize;
     let mut oriented_forward_faces = 0usize;
     let mut oriented_reversed_faces = 0usize;
+    let mut geometry_fallback_count = 0usize;
     let mut root_solids = Vec::new();
 
     for model in &solid_models {
@@ -215,6 +225,7 @@ pub fn build_brep_with_options(
             skipped_edges: &mut skipped_edges,
             oriented_forward_faces: &mut oriented_forward_faces,
             oriented_reversed_faces: &mut oriented_reversed_faces,
+            geometry_fallback_count: &mut geometry_fallback_count,
         };
 
         let outer_shell = match shell::build_shell_from_step(&model.outer, &mut ctx) {
@@ -266,6 +277,7 @@ pub fn build_brep_with_options(
             void_shells_subtracted,
             oriented_forward_faces,
             oriented_reversed_faces,
+            geometry_fallback_count,
         },
     })
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::geom::signed_area_2d;
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey, WireKey};
+use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, VertexKey, WireKey};
 use crate::topo_iter;
 use super::geom2d::collect_wire_uv_polygon;
 use std::collections::HashSet;
@@ -652,14 +652,23 @@ pub fn check_wire_closed(wire_key: WireKey, reg: &BRepStore) -> Option<f32> {
         return None;
     }
     let n = wire.edges.len();
-    let (first_ek, _first_orient) = wire.edges[0];
-    let (last_ek, _last_orient) = wire.edges[n - 1];
+    let (first_ek, first_orient) = wire.edges[0];
+    let (last_ek, last_orient) = wire.edges[n - 1];
 
     let first_edge = reg.edges.get(first_ek)?;
     let last_edge = reg.edges.get(last_ek)?;
 
-    let first_start = reg.vertices.get(first_edge.v_low)?.position;
-    let last_end = reg.vertices.get(last_edge.v_high)?.position;
+    // Edge orientation determines which endpoint is the start/end
+    let first_start = if first_orient == Orientation::Forward {
+        reg.vertices.get(first_edge.v_low)?.position
+    } else {
+        reg.vertices.get(first_edge.v_high)?.position
+    };
+    let last_end = if last_orient == Orientation::Forward {
+        reg.vertices.get(last_edge.v_high)?.position
+    } else {
+        reg.vertices.get(last_edge.v_low)?.position
+    };
 
     let gap = (last_end - first_start).length();
     Some(gap)

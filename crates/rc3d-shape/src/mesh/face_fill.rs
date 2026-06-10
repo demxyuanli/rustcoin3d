@@ -1235,24 +1235,18 @@ pub(crate) fn fix_tri_winding(
     if tri_n.length() <= 1e-10 {
         return;
     }
-    // For freeform surfaces (BSpline/Offset), surface.project() is expensive
-    // (Newton-Raphson multi-start). Use the triangle's own vertex normals
-    // (pre-computed from the surface) as a cheap proxy. For analytic surfaces
-    // (Plane, Cylinder, etc.), project() is O(1) trigonometric.
-    let face_n = if matches!(surface, SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. }) {
-        // Skip per-triangle project() — the CDT already produces consistently-
-        // oriented triangles for parametric surfaces. Only flip if the triangle
-        // normal is grossly misaligned with same_sense.
-        if !same_sense { -tri_n } else { tri_n }
-    } else {
-        let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
-        match surface.project(centroid) {
-            Some((uc, vc)) => {
-                let mut n = surface.normal_native(uc, vc);
-                if !same_sense { n = -n; }
-                n
-            }
-            None => return,
+    // Always use the surface normal at the triangle centroid for correct winding.
+    // OCC: BRepMesh_FastDiscretFace — evaluates surface normal at face barycenter.
+    let centroid = (p0 + p1 + p2) * (1.0 / 3.0);
+    let face_n = match surface.project(centroid) {
+        Some((uc, vc)) => {
+            let mut n = surface.normal_native(uc, vc);
+            if !same_sense { n = -n; }
+            n
+        }
+        None => {
+            // Fallback for project() failure: use triangle normal with same_sense
+            if !same_sense { -tri_n } else { tri_n }
         }
     };
     if tri_n.dot(face_n) < 0.0 {

@@ -68,12 +68,13 @@ fn update_edge_tolerance(reg: &mut BRepStore, ek: EdgeKey, base_tol: f32) -> boo
     for i in 0..=SAMPLE_COUNT {
         let t = i as f32 / SAMPLE_COUNT as f32;
         let p3d = edge.curve.d0(t);
-        for (&face_key, (pcurve, _same_sense)) in &edge.pcurves {
+        for (&face_key, (pcurve, same_sense)) in &edge.pcurves {
             let face = match reg.faces.get(face_key) {
                 Some(f) => f,
                 None => continue,
             };
-            let uv = pcurve.d0(t);
+            let pc_t = if *same_sense { t } else { 1.0 - t };
+            let uv = pcurve.d0(pc_t);
             let on_surf = face.surface.d0_native(uv.0, uv.1);
             max_dev = max_dev.max((on_surf - p3d).length());
         }

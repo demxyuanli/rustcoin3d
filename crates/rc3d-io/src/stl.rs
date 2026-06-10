@@ -49,16 +49,37 @@ fn mesh_to_stl_triangles(vertices: &[Vec3], indices: &[i32]) -> Vec<StlTriangle>
         let i1 = chunk[1] as usize;
         let i2 = chunk[2] as usize;
         if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            log::error!(
+                "[STL] OOB index in triangle [{i0},{i1},{i2}] ({} vertices), skipping",
+                vertices.len()
+            );
             continue;
         }
         let v0 = vertices[i0];
         let v1 = vertices[i1];
         let v2 = vertices[i2];
-        let n = (v1 - v0).cross(v2 - v0);
+        let edge1 = v1 - v0;
+        let edge2 = v2 - v0;
+        let n = edge1.cross(edge2);
         let normal = if n.length_squared() > 1e-20 {
             n.normalize()
         } else {
-            Vec3::Z
+            // Degenerate triangle: try per-edge normals, fall back to estimated plane normal
+            let e1n = edge1.normalize_or_zero();
+            let e2n = edge2.normalize_or_zero();
+            let fallback = if e1n.length_squared() > 1e-10 && e2n.length_squared() > 1e-10 {
+                e1n.cross(e2n).normalize_or_zero()
+            } else {
+                Vec3::Z
+            };
+            if fallback.length_squared() < 1e-10 {
+                log::warn!(
+                    "[STL] degenerate triangle [{i0},{i1},{i2}], normal set to Z"
+                );
+                Vec3::Z
+            } else {
+                fallback
+            }
         };
         tris.push(StlTriangle {
             normal: [normal.x, normal.y, normal.z],

@@ -22,6 +22,8 @@ pub struct StepLoop {
     pub edges: Vec<StepEdge>,
     /// Set for STEP `VERTEX_LOOP`: anchor point (OCC degenerated-edge wire).
     pub vertex_loop_point: Option<Vec3>,
+    /// FACE_BOUND / FACE_OUTER_BOUND orientation (.T. = same direction as face).
+    pub bound_forward: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,8 @@ pub struct StepEdge {
 pub struct StepShell {
     pub id: u64,
     pub faces: Vec<StepFace>,
+    /// True for CLOSED_SHELL entries, false for OPEN_SHELL.
+    pub closed: bool,
 }
 
 /// Solid model: outer shell plus optional void shells from `BREP_WITH_VOIDS`.
@@ -83,7 +87,7 @@ pub fn collect_solid_models(entities: &EntityIndex) -> Vec<StepSolidModel> {
                                         if vf.is_empty() {
                                             None
                                         } else {
-                                            Some(StepShell { id: void_id, faces: vf })
+                                            Some(StepShell { id: void_id, faces: vf, closed: false })
                                         }
                                     } else {
                                         None
@@ -94,7 +98,7 @@ pub fn collect_solid_models(entities: &EntityIndex) -> Vec<StepSolidModel> {
                             Vec::new()
                         };
                         models.push(StepSolidModel {
-                            outer: StepShell { id: outer_id, faces },
+                            outer: StepShell { id: outer_id, faces, closed: true },
                             voids,
                         });
                     }
@@ -106,14 +110,45 @@ pub fn collect_solid_models(entities: &EntityIndex) -> Vec<StepSolidModel> {
 
     for (&id, record) in entities.iter() {
         match record.name.as_str() {
-            "CLOSED_SHELL" | "OPEN_SHELL" | "SHELL" => {
+            "CLOSED_SHELL" => {
                 if seen.insert(id) {
                     let faces = extract_shell_faces(id, entities);
                     if !faces.is_empty() {
                         models.push(StepSolidModel {
-                            outer: StepShell { id, faces },
+                            outer: StepShell { id, faces, closed: true },
                             voids: Vec::new(),
                         });
+                    }
+                }
+            }
+            "OPEN_SHELL" | "SHELL" => {
+                if seen.insert(id) {
+                    let faces = extract_shell_faces(id, entities);
+                    if !faces.is_empty() {
+                        models.push(StepSolidModel {
+                            outer: StepShell { id, faces, closed: false },
+                            voids: Vec::new(),
+                        });
+                    }
+                }
+            }
+            "ORIENTED_SHELL" => {
+                // ORIENTED_SHELL(name, orientation_bool, shell_id) — unwrap to referenced shell.
+                // Closed state depends on the referenced shell type.
+                if seen.insert(id) {
+                    if let Some(shell_id) = crate::step::entity_geom::nth_ref(&record.params, 2) {
+                        if !seen.contains(&shell_id) {
+                            seen.insert(shell_id);
+                            let ref_record = entities.get(&shell_id);
+                            let is_closed = ref_record.map(|r| r.name.as_str() == "CLOSED_SHELL").unwrap_or(false);
+                            let faces = extract_shell_faces(shell_id, entities);
+                            if !faces.is_empty() {
+                                models.push(StepSolidModel {
+                                    outer: StepShell { id, faces, closed: is_closed },
+                                    voids: Vec::new(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -140,6 +175,33 @@ pub fn global_tolerance(entities: &EntityIndex) -> f32 {
         }
     }
     rc3d_shape::ToleranceContext::default().model
+}
+
+/// Extract length unit scale factor from STEP header SI_UNIT / LENGTH_UNIT entities.
+/// Returns the multiplier to convert file coordinates to meters.
+/// Common prefixes: .MILLI.=0.001, .CENTI.=0.01, .MICRO.=1e-6, .NANO.=1e-9, .KILO.=1000.
+pub fn length_unit_scale(entities: &EntityIndex) -> f32 {
+    for (_id, record) in entities.iter() {
+        if record.name == "SI_UNIT" {
+            // SI_UNIT($, prefix_enum, .METRE.) — position 1 = prefix
+            if let Some(prefix) = nth_enum(&record.params, 1) {
+                return match prefix.as_str() {
+                    ".MILLI." | ".MILLI" => 0.001,
+                    ".CENTI." | ".CENTI" => 0.01,
+                    ".DECI." | ".DECI" => 0.1,
+                    ".MICRO." | ".MICRO" => 1e-6,
+                    ".NANO." | ".NANO" => 1e-9,
+                    ".KILO." | ".KILO" => 1000.0,
+                    _ => 1.0,
+                };
+            }
+        }
+        if record.name == "LENGTH_UNIT" {
+            // LENGTH_UNIT() — default to meter
+            return 1.0;
+        }
+    }
+    1.0 // Default: meter
 }
 
 /// Collect all Shell entities and extract their faces, keeping shells separate.
@@ -237,11 +299,17 @@ fn resolve_bound(bound_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
     let record = entities.get(&bound_id)?;
     match record.name.as_str() {
         "FACE_OUTER_BOUND" | "FACE_BOUND" => {
-            // FaceBound args: (name, #loop, orientation)
+            // FaceBound args: (name, #loop, orientation_boolean)
             let loop_id = nth_ref(&record.params, 1)?;
-            // Orientation (.T./.F.) describes loop direction vs face normal; edge
-            // connectivity is already encoded by ORIENTED_EDGE in the EDGE_LOOP.
-            resolve_loop(loop_id, entities)
+            // Orientation .T. = loop direction matches face normal (OCC: Forward)
+            let bound_forward = match nth_enum(&record.params, 2) {
+                Some(s) => s == ".T.",
+                None => record.name == "FACE_OUTER_BOUND",
+            };
+            resolve_loop(loop_id, entities).map(|mut lp| {
+                lp.bound_forward = bound_forward;
+                lp
+            })
         }
         _ => None,
     }
@@ -281,6 +349,7 @@ fn resolve_edge_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
         Some(StepLoop {
             edges,
             vertex_loop_point: None,
+            bound_forward: true,
         })
     }
 }
@@ -296,6 +365,7 @@ fn resolve_vertex_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop>
     Some(StepLoop {
         edges: vec![],
         vertex_loop_point: Some(anchor),
+        bound_forward: true,
     })
 }
 
@@ -325,6 +395,7 @@ fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
     Some(StepLoop {
         edges,
         vertex_loop_point: None,
+        bound_forward: true,
     })
 }
 
@@ -350,6 +421,11 @@ fn resolve_edge_curve(edge_id: u64, entities: &EntityIndex, reversed: bool) -> O
     let start_id = nth_ref(&record.params, 1)?;
     let end_id = nth_ref(&record.params, 2)?;
     let curve_id = nth_ref(&record.params, 3)?;
+    // same_sense: .T. = curve direction matches edge direction (start→end)
+    let curve_same_sense = match nth_enum(&record.params, 4) {
+        Some(s) => s == ".T.",
+        None => true,
+    };
 
     let start_raw = resolve_point(start_id, entities)?;
     let end_raw = resolve_point(end_id, entities)?;
@@ -358,7 +434,9 @@ fn resolve_edge_curve(edge_id: u64, entities: &EntityIndex, reversed: bool) -> O
         .map(|r| r.name.clone())
         .unwrap_or_else(|| "LINE".into());
 
-    let (start, end) = if reversed { (end_raw, start_raw) } else { (start_raw, end_raw) };
+    // ORIENTED_EDGE reversal XOR EDGE_CURVE same_sense reversal
+    let effective_reversed = reversed ^ !curve_same_sense;
+    let (start, end) = if effective_reversed { (end_raw, start_raw) } else { (start_raw, end_raw) };
 
     Some(StepEdge { start, end, curve_id, curve_type, reversed: false, tolerance: tol })
 }

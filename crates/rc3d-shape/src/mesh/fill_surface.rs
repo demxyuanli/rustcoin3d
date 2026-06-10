@@ -164,6 +164,7 @@ pub(crate) fn polyline_surface_uv(surface: &SurfaceGeom, indices: &[usize], vert
 pub fn surface_fill_3d(
     face_key: FaceKey,
     boundary_global: &[usize],
+    inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
@@ -187,10 +188,15 @@ pub fn surface_fill_3d(
     }
 
     log::debug!(
-        "[BRep mesh] face {:?}: surface fill 3D ({} boundary verts)",
+        "[BRep mesh] face {:?}: surface fill 3D ({} boundary verts, {} inner loops)",
         face_key,
-        boundary_global.len()
+        boundary_global.len(),
+        inner_boundaries.len()
     );
+
+    let inners: Vec<UvLoop> = inner_boundaries.iter().map(|ib| UvLoop {
+        boundary: ib.iter().map(|&gi| UvVertex { global_idx: gi, uv: (0.0, 0.0) }).collect(),
+    }).collect();
 
     let pseudo_loops = FaceUvLoops {
         outer: UvLoop {
@@ -202,7 +208,7 @@ pub fn surface_fill_3d(
                 })
                 .collect(),
         },
-        inners: vec![],
+        inners,
         uv_source: UvSource::SurfaceFill,
     };
     if face_boundary_is_mixed(&pseudo_loops, global_vertices) {
@@ -338,6 +344,7 @@ pub fn surface_fill_3d(
     surface_fill_3d_planar(
         face_key,
         boundary_global,
+        inner_boundaries,
         face,
         global_vertices,
         global_normals,
@@ -355,6 +362,7 @@ pub fn surface_fill_3d(
 pub(crate) fn surface_fill_3d_planar(
     face_key: FaceKey,
     boundary_global: &[usize],
+    inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
@@ -452,6 +460,28 @@ pub(crate) fn surface_fill_3d_planar(
         let a = handles[i];
         let b = handles[(i + 1) % n];
         let _ = cdt.try_add_constraint(a, b);
+    }
+
+    // Insert inner boundary loops as hole constraints
+    for inner_bdy in inner_boundaries {
+        if inner_bdy.len() < 3 {
+            continue;
+        }
+        let inner_pts: Vec<Vec3> = inner_bdy.iter().map(|&gi| global_vertices[gi]).collect();
+        let mut inner_handles: Vec<CdtVertHandle> = Vec::new();
+        for pt in &inner_pts {
+            let rel = *pt - origin;
+            let pu = rel.dot(u_axis) as f64;
+            let pv = rel.dot(v_axis) as f64;
+            let Some(h) = cdt.insert(pu, pv, 0) else { continue; };
+            inner_handles.push(h);
+        }
+        let m = inner_handles.len();
+        for i in 0..m {
+            let a = inner_handles[i];
+            let b = inner_handles[(i + 1) % m];
+            let _ = cdt.try_add_constraint(a, b);
+        }
     }
 
     // Helper: compute 3D point on fitted plane from 2D coords
@@ -577,6 +607,9 @@ pub(crate) fn surface_fill_3d_planar(
         };
     }
 
+    let inners_loops: Vec<UvLoop> = inner_boundaries.iter().map(|ib| UvLoop {
+        boundary: ib.iter().map(|&gi| UvVertex { global_idx: gi, uv: (0.0, 0.0) }).collect(),
+    }).collect();
     let pseudo_loops = FaceUvLoops {
         outer: UvLoop {
             boundary: boundary_global
@@ -587,7 +620,7 @@ pub(crate) fn surface_fill_3d_planar(
                 })
                 .collect(),
         },
-        inners: vec![],
+        inners: inners_loops,
         uv_source: UvSource::SurfaceFill,
     };
     let max_edge = max_allowed_triangle_edge(&pseudo_loops, global_vertices);

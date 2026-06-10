@@ -82,9 +82,12 @@ pub fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world:
         let p = world * v.extend(1.0);
         dst.vertices.push(Vec3::new(p.x, p.y, p.z));
     }
+    // Normal transform: use inverse-transpose for correct handling of non-uniform scaling.
+    // OCC: gp_Trsf — applies rotation + scale correctly via inv-transpose 3x3.
+    let normal_mat = world.inverse().transpose();
     for &n in &src.normals {
-        let t = world * n.extend(0.0);
-        dst.normals.push(Vec3::new(t.x, t.y, t.z).normalize_or_zero());
+        let t = (normal_mat * n.extend(0.0)).truncate();
+        dst.normals.push(t.normalize_or_zero());
     }
     for &idx in &src.indices {
         if idx == -1 {

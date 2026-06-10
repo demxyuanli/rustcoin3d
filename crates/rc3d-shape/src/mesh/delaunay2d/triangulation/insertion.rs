@@ -64,9 +64,13 @@ impl Delaunay2d {
     pub(super) fn insert_vertex_internal(&mut self, v: VertIdx) {
         let p = self.points[v as usize];
 
-        let seed = self
-            .find_seed_triangle(p)
-            .expect("Delaunay2d: no seed triangle");
+        let seed = match self.find_seed_triangle(p) {
+            Some(s) => s,
+            None => {
+                log::debug!("Delaunay2d: no seed triangle for vertex {}, degenerate input", v);
+                return;
+            }
+        };
 
         let mut cavity = HashSet::new();
         let mut queue = VecDeque::new();

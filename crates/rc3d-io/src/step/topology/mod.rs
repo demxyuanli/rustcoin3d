@@ -7,6 +7,7 @@ mod helpers;
 
 pub use collect::{
     collect_solid_models, collect_shells, collect_shell_faces, global_tolerance,
+    length_unit_scale,
 };
 pub use placement::{
     resolve_point, resolve_axis1_placement, resolve_sweep_axis, resolve_placement,

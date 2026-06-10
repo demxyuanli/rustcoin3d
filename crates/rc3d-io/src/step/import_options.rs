@@ -190,4 +190,6 @@ pub struct StepImportReport {
     pub void_shells_subtracted: usize,
     /// Faces skipped by the heal pipeline (passed to mesh tessellation).
     pub heal_skip_face_keys: Vec<FaceKey>,
+    /// Unknown surfaces/curves replaced with plane/line fallback (Preview mode).
+    pub geometry_fallback_count: usize,
 }
