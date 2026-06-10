@@ -201,7 +201,16 @@ pub fn build_brep_with_options(
 ) -> Result<BRepBuildResult, StepError> {
     let solid_models = topology::collect_solid_models(entities);
     if solid_models.is_empty() {
-        return Err(StepError::NoGeometry);
+        // Fallback: try tessellated geometry (AP242 TESSELLATED_SHELL)
+        let tess_shells = tessellated::collect_tessellated_shells(entities);
+        if tess_shells.is_empty() {
+            return Err(StepError::NoGeometry);
+        }
+        log::info!(
+            "[STEP] No B-Rep shells found, using {} tessellated shell(s) as fallback",
+            tess_shells.len()
+        );
+        return build_tessellated_fallback(entities, &tess_shells);
     }
 
     let tol = topology::global_tolerance(entities);
@@ -375,4 +384,61 @@ fn punch_hole(outer_fk: FaceKey, void_fk: FaceKey, reg: &mut BRepStore) -> bool 
         return true;
     }
     false
+}
+
+/// Fallback: build a minimal B-Rep from tessellated shells (AP242 pure-tessellation files).
+/// Each tessellated shell becomes a single solid with one face per mesh.
+fn build_tessellated_fallback(
+    entities: &EntityIndex,
+    tess_shells: &std::collections::HashMap<u64, Vec<tessellated::TessellatedMesh>>,
+) -> Result<BRepBuildResult, StepError> {
+    let tol = topology::global_tolerance(entities);
+    let mut reg = BRepStore::with_tolerance(rc3d_shape::ToleranceContext::from_model(tol));
+    let mut root_solids = Vec::new();
+
+    for (&_shell_id, meshes) in tess_shells {
+        let mut face_keys = Vec::new();
+        for mesh in meshes {
+            // Create a placeholder face with plane surface and empty wire.
+            // The actual triangle data is stored in the mesh pipeline separately.
+            let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
+            let face_key = reg.faces.insert(BRepFace {
+                surface: SurfaceGeom::Plane {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    u_dir: Vec3::X,
+                },
+                outer_wire: wire_key,
+                inner_wires: vec![],
+                same_sense: true,
+                tolerance: tol,
+                seam_edges: vec![],
+                color: mesh.color,
+                degenerated_edges: vec![],
+            });
+            face_keys.push((face_key, Orientation::Forward));
+        }
+        if !face_keys.is_empty() {
+            let shell_key = reg.shells.insert(BRepShell {
+                faces: face_keys,
+                closed: false,
+                step_id: None,
+            });
+            let solid_key = reg.solids.insert(BRepSolid {
+                outer_shell: shell_key,
+                void_shells: vec![],
+            });
+            root_solids.push(solid_key);
+        }
+    }
+
+    if root_solids.is_empty() {
+        return Err(StepError::NoGeometry);
+    }
+
+    Ok(BRepBuildResult {
+        registry: reg,
+        root_solids,
+        build_report: BRepBuildReport::default(),
+    })
 }

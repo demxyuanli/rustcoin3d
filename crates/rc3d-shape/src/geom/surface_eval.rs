@@ -551,7 +551,13 @@ impl SurfaceGeom {
             SurfaceGeom::BSpline(nurbs) => nurbs.evaluate(u, v),
             SurfaceGeom::Offset { basis, distance } => {
                 let (un, vn) = basis.native_uv_to_d0(u, v);
-                basis.d0(un, vn) + basis.normal(un, vn) * *distance
+                let p = basis.d0(un, vn);
+                let n = basis.normal(un, vn);
+                if p.is_nan() || n.is_nan() {
+                    log::warn!("Offset d0_at_native: NaN at ({u},{v})→({un},{vn}), returning basis point");
+                    return p;
+                }
+                p + n * *distance
             }
             _ => self.d0_native(u, v),
         }
