@@ -249,7 +249,7 @@ pub(crate) fn revolution_ruled_grid_from_uv(
     if std::env::var("SHAPE_FACE_DIAG").is_ok() {
         let (du0, dv0) = wire_native_uv_spans(uv0);
         let (du1, dv1) = wire_native_uv_spans(uv1);
-        eprintln!(
+        log::debug!(
             "[rev ruled] du={:.4} dv={:.4} profile={} uv0 du/dv={:.4}/{:.4} uv1 du/dv={:.4}/{:.4}",
             du, dv, profile_sweep, du0, dv0, du1, dv1
         );

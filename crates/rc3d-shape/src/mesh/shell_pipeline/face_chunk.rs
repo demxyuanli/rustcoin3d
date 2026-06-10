@@ -73,7 +73,7 @@ pub(crate) fn mesh_faces_in_chunk(
         // Two-edge revolution/sphere pole patches are valid (ruled strip / trimmed CDT).
         // Closed parametric meshes (sphere, torus, revolution pole) may have 0-1 edges.
         if info_wire_edges.len() == 1 && !uses_closed_parametric_mesh(reg, face) {
-            eprintln!("[mesh face] {:?} SKIP (degenerate: {} edges)", info_face_key, info_wire_edges.len());
+            log::debug!("[mesh face] {:?} SKIP (degenerate: {} edges)", info_face_key, info_wire_edges.len());
             continue;
         }
 

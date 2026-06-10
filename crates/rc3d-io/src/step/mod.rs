@@ -54,8 +54,6 @@ pub enum StepError {
     ImportQuality(String),
 }
 
-const LARGE_STEP_BYTES: usize = 32 * 1024 * 1024;
-
 /// Decode STEP file bytes (UTF-8 or ISO-8859-1 / Latin-1 per ISO 10303-21).
 pub fn decode_step_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
@@ -111,16 +109,19 @@ pub fn import_step_file_with_options(
             schema_violations: Vec::new(),
         };
         exchange_to_import_result(exchange, options)
-    } else if file_len > LARGE_STEP_BYTES {
-        let exchange = parser::parse_step_from_file_with_options(path, options)
-            .map_err(StepError::Parse)?;
-        exchange_to_import_result(exchange, options)
     } else {
-        let _t_io = std::time::Instant::now();
-        let bytes = std::fs::read(path)?;
-        let text = decode_step_bytes(&bytes);
-        log::debug!("[STEP timing] file IO: {:.1}s", _t_io.elapsed().as_secs_f32());
-        import_step_with_options(&text, options)
+        // Always use streaming parse to avoid double memory (file text + parsed entities).
+        // For files under 64KB, read-to-string is fine; otherwise, stream from file.
+        if file_len <= 65536 {
+            let bytes = std::fs::read(path)?;
+            let text = decode_step_bytes(&bytes);
+            import_step_with_options(&text, options)
+        } else {
+            log::debug!("[STEP] streaming parse: {} ({} bytes)", path.display(), file_len);
+            let exchange = parser::parse_step_from_file_with_options(path, options)
+                .map_err(StepError::Parse)?;
+            exchange_to_import_result(exchange, options)
+        }
     }
 }
 
@@ -206,9 +207,11 @@ fn exchange_to_import_result(
     }
 
     let report = validate::validate(&exchange.entities);
+    let entity_mem_mb = exchange.entities.len().saturating_mul(512) / (1024 * 1024);
     log::info!(
-        "[STEP] {} entities, {} shells, {} faces",
+        "[STEP] {} entities (~{} MB), {} shells, {} faces",
         exchange.entities.len(),
+        entity_mem_mb,
         report.topology_info.shells,
         report.topology_info.faces,
     );

@@ -272,7 +272,7 @@ fn heal_wire_passes(
         let cr = fix_connected_wire(wire_key, reg, config.gap_tolerance);
         report.merged_vertices += cr.merged_vertices;
         let t = _t.elapsed().as_secs_f32();
-        if t > 0.1 { eprintln!("[heal timer]    fix_connected: {:.1}s", t); }
+        if t > 0.1 { log::debug!("[heal timer]    fix_connected: {:.1}s", t); }
     }
 
     if config.fix_small_edges {
@@ -306,7 +306,7 @@ fn heal_wire_passes(
         let closed = wire_is_closed(wire_key, reg);
         let gaps = close_wire_gaps(wire_key, reg, config.gap_tolerance, closed);
         let t = _t.elapsed().as_secs_f32();
-        if t > 0.1 { eprintln!("[heal timer]    fix_gaps_3d: {:.1}s", t); }
+        if t > 0.1 { log::debug!("[heal timer]    fix_gaps_3d: {:.1}s", t); }
         if gaps > 0 { report.closed_gaps += gaps; }
     }
 
@@ -321,7 +321,7 @@ fn heal_wire_passes(
         let _t = std::time::Instant::now();
         let fixed = fix_same_parameter_wire(wire_key, face_key, reg, config.gap_tolerance);
         let t = _t.elapsed().as_secs_f32();
-        if t > 0.1 { eprintln!("[heal timer]    fix_same_param: {:.1}s ({} edges fixed)", t, fixed); }
+        if t > 0.1 { log::debug!("[heal timer]    fix_same_param: {:.1}s ({} edges fixed)", t, fixed); }
         report.same_param_fixed += fixed;
     }
 
@@ -334,7 +334,7 @@ fn heal_wire_passes(
         let _t = std::time::Instant::now();
         let adjusted = fix_edge_curves_wire(wire_key, face_key, reg, config.gap_tolerance);
         let t = _t.elapsed().as_secs_f32();
-        if t > 0.1 { eprintln!("[heal timer]    fix_edge_curves: {:.1}s", t); }
+        if t > 0.1 { log::debug!("[heal timer]    fix_edge_curves: {:.1}s", t); }
         report.adjusted_edge_curves += adjusted;
     }
 
@@ -588,7 +588,7 @@ pub fn heal_shell(
     for w in &check_report.warnings {
         log::debug!("[BRep check] {}", w);
     }
-    eprintln!("[heal timer] check_shell: {:.1}s  total heal_shell: {:.1}s",
+    log::debug!("[heal timer] check_shell: {:.1}s  total heal_shell: {:.1}s",
         _t_total.elapsed().as_secs_f32(), _t_total.elapsed().as_secs_f32());
 
     report
