@@ -60,15 +60,85 @@ pub fn classify_point_solid(
     }
 
     if confident_votes.is_empty() {
-        return PointClassification::OnBoundary;
+        // OCC BRepClass3d_SolidClassifier: points within tolerance of boundary
+        // are considered Inside (PonU classification).
+        return PointClassification::Inside;
     }
 
     let inside_count = confident_votes.iter().filter(|&&v| v).count();
-    if inside_count > confident_votes.len() / 2 {
+    let outside_count = confident_votes.len() - inside_count;
+
+    // When vote is close (ambiguous), use winding number as tiebreaker.
+    // OCC: BRepClass3d_SClassifier uses solid angle for degenerate cases.
+    if inside_count.abs_diff(outside_count) <= 1 && !confident_votes.is_empty() {
+        let wn = winding_number_approximate(point, shell_key, reg, tolerance);
+        if wn > 0.5 {
+            return PointClassification::Inside;
+        } else if wn < -0.5 {
+            return PointClassification::Outside;
+        }
+        // Winding number ambiguous too — fall through to majority vote
+    }
+
+    if inside_count > outside_count {
         PointClassification::Inside
     } else {
         PointClassification::Outside
     }
+}
+
+/// Approximate winding number via solid angle subtended by shell faces.
+/// OCC: BRepClass3d_SClassifier — solid angle integral over visible faces.
+fn winding_number_approximate(
+    point: Vec3, shell_key: ShellKey, reg: &BRepStore, _tolerance: f32,
+) -> f32 {
+    let shell = match reg.shells.get(shell_key) {
+        Some(s) => s,
+        None => return 0.0,
+    };
+    let mut wn = 0.0f32;
+    for &(face_key, _orient) in &shell.faces {
+        let face = match reg.faces.get(face_key) {
+            Some(f) => f,
+            None => continue,
+        };
+        // Use face center + normal as proxy for solid angle contribution
+        let pts = match face_vertex_positions(face_key, face, reg) {
+            Some(p) => p,
+            None => continue,
+        };
+        if pts.len() < 3 { continue; }
+        // Solid angle of triangle fan from point
+        for i in 1..pts.len() - 1 {
+            let a = pts[0] - point;
+            let b = pts[i] - point;
+            let c = pts[i + 1] - point;
+            let la = a.length();
+            let lb = b.length();
+            let lc = c.length();
+            if la < 1e-10 || lb < 1e-10 || lc < 1e-10 { continue; }
+            let triple = a.dot(b.cross(c));
+            let denom = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
+            if denom.abs() < 1e-10 { continue; }
+            wn += 2.0 * triple.atan2(denom);
+        }
+    }
+    wn / (4.0 * std::f32::consts::PI)
+}
+
+fn face_vertex_positions(
+    _face_key: FaceKey, face: &BRepFace, reg: &BRepStore,
+) -> Option<Vec<Vec3>> {
+    let wire = reg.wires.get(face.outer_wire)?;
+    let mut pts = Vec::new();
+    for &(ek, _) in &wire.edges {
+        let edge = reg.edges.get(ek)?;
+        let v = reg.vertices.get(edge.v_low)?;
+        if pts.last().map(|p: &Vec3| (*p - v.position).length() > 1e-10).unwrap_or(true) {
+            pts.push(v.position);
+        }
+    }
+    if pts.len() < 3 { None } else { Some(pts) }
 }
 
 #[derive(Debug, Clone, Copy)]
