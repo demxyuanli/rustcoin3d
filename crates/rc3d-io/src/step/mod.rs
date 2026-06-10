@@ -234,10 +234,14 @@ fn exchange_to_import_result(
     import_report.oriented_reversed_faces = transfer.build_report.oriented_reversed_faces;
     import_report.geometry_fallback_count = transfer.build_report.geometry_fallback_count;
 
-    if !options.allow_void_shells_unmeshed() && transfer.build_report.void_shell_count > 0 {
+    let unprocessed_voids = transfer.build_report.void_shell_count
+        .saturating_sub(transfer.build_report.void_shells_subtracted);
+    if !options.allow_void_shells_unmeshed() && unprocessed_voids > 0 {
         return Err(StepError::ImportQuality(format!(
-            "BREP_WITH_VOIDS: {} void shell(s) present; strict import does not mesh voids",
-            transfer.build_report.void_shell_count
+            "BREP_WITH_VOIDS: {} void shell(s) could not be subtracted ({} processed, {} remaining)",
+            transfer.build_report.void_shell_count,
+            transfer.build_report.void_shells_subtracted,
+            unprocessed_voids
         )));
     }
 

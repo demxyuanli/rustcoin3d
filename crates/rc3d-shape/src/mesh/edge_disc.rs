@@ -25,7 +25,7 @@ impl Default for EdgeDiscConfig {
             deflection: 0.01,
             angle_deflection: 0.15,
             min_points: 2,
-            max_points: 128,
+            max_points: 512,
             relative_deflection: false,
         }
     }

@@ -45,7 +45,10 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
                     ctx.geometry_fallback_count,
                 ) {
                     Some(c) => c,
-                    None => continue,
+                    None => {
+                        log::warn!("[BRep] shell {:?}: skipping edge (unresolved curve)", shell.id);
+                        continue;
+                    }
                 };
 
                 let v_start = ctx.reg.find_or_add_vertex(edge_data.start, ctx.tol);

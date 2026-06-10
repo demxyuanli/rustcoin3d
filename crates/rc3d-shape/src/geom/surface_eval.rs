@@ -362,7 +362,13 @@ impl SurfaceGeom {
                 rotate_around_axis(generatrix.d0(u), *axis_origin, axis, angle)
             }
             SurfaceGeom::Offset { basis, distance } => {
-                basis.d0(u, v) + basis.normal(u, v) * *distance
+                let p = basis.d0(u, v);
+                let n = basis.normal(u, v);
+                if p.is_nan() || n.is_nan() {
+                    log::warn!("Offset d0: NaN at ({u},{v}), returning basis point");
+                    return p;
+                }
+                p + n * *distance
             }
         }
     }

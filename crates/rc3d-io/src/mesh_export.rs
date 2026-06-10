@@ -199,19 +199,29 @@ pub fn export_file_to_ascii_stl(
 
     match ext.as_str() {
         "step" | "stp" => {
-            let meshed = mesh_step_file(input, options)?;
+            // Single import + mesh, reused for both combined and per-face export
+            let (document, plan) = build_export_emit_plan(input, options)?;
+            let (combined, report) = merge_emit_plan_meshes(&plan);
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            write_ascii_stl(output, &meshed.mesh.vertices, &meshed.mesh.indices)?;
+            write_ascii_stl(output, &combined.vertices, &combined.indices)?;
 
             let mut summary = summary_from_mesh(
-                input, output, &meshed.mesh, &meshed.report, 0,
+                input, output, &combined, &report, 0,
             );
 
             if let Some(dir) = per_face_dir {
-                let face_summary = export_step_per_face_ascii_stl(input, dir, options)?;
-                summary.per_face_files = face_summary.per_face_files;
+                std::fs::create_dir_all(dir)?;
+                let mut file_count = 0usize;
+                for cached in plan.mesh_table.values() {
+                    let out = ShellMeshOutput {
+                        mesh: cached.mesh.clone(),
+                        report: cached.report.clone(),
+                    };
+                    write_per_face_stl(&out, &document.store, dir, &mut file_count)?;
+                }
+                summary.per_face_files = file_count;
             }
 
             Ok(summary)

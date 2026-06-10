@@ -69,7 +69,7 @@ impl StepImportOptions {
             adapter_mode: AdapterMode::CompatMerge,
             assembly_preview_explode: 0.0,
             skip_visualization: false,
-            strict_voids: false,
+            strict_voids: true,
             fast_export: false,
             tessellation_tier: Some(TessellationTier::Precision),
         }
