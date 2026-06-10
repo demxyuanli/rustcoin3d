@@ -22,7 +22,6 @@ pub mod topology;
 pub mod curve;
 pub mod mesh_result;
 pub mod import_options;
-pub mod pipeline;
 mod import_pipeline;
 mod caf_transfer;
 mod scene_emit;
@@ -120,7 +119,7 @@ pub fn import_step_file_with_options(
         let _t_io = std::time::Instant::now();
         let bytes = std::fs::read(path)?;
         let text = decode_step_bytes(&bytes);
-        eprintln!("[STEP timing] file IO: {:.1}s", _t_io.elapsed().as_secs_f32());
+        log::debug!("[STEP timing] file IO: {:.1}s", _t_io.elapsed().as_secs_f32());
         import_step_with_options(&text, options)
     }
 }
@@ -154,7 +153,7 @@ pub fn import_step_with_options(
     } else {
         let _tp = std::time::Instant::now();
         let ex = parser::parse_exchange_with_options(trimmed, options).map_err(StepError::Parse)?;
-        eprintln!("[STEP timing] parse: {:.1}s  entities: {}", _tp.elapsed().as_secs_f32(), ex.entities.len());
+        log::debug!("[STEP timing] parse: {:.1}s  entities: {}", _tp.elapsed().as_secs_f32(), ex.entities.len());
         ex
     };
     exchange_to_import_result(exchange, options)
@@ -225,7 +224,7 @@ fn exchange_to_import_result(
     let t_caf = std::time::Instant::now();
     let transfer = StepCafTransfer::transfer(&exchange.entities, &build_options)?;
     let mut document = transfer.document;
-    eprintln!("[STEP timing] B-Rep build: {:.1}s", t_caf.elapsed().as_secs_f32());
+    log::debug!("[STEP timing] B-Rep build: {:.1}s", t_caf.elapsed().as_secs_f32());
     import_report.skipped_faces = transfer.build_report.skipped_faces;
     import_report.skipped_edges = transfer.build_report.skipped_edges;
     import_report.void_shell_count = transfer.build_report.void_shell_count;
@@ -352,7 +351,7 @@ fn exchange_to_import_result(
         .map_err(|e| StepError::ImportQuality(e.to_string()))?;
     let t_mesh_elapsed = t_mesh_start.elapsed().as_secs_f32();
     let t_total = _total.elapsed().as_secs_f32();
-    eprintln!("[STEP timing] B-Rep build: {:.1}s  heal: {:.1}s  mesh+plan: {:.1}s  total: {:.1}s",
+    log::debug!("[STEP timing] B-Rep build: {:.1}s  heal: {:.1}s  mesh+plan: {:.1}s  total: {:.1}s",
         t_heal.elapsed().as_secs_f32(),
         (t_mesh_start - t_heal).as_secs_f32(),
         t_mesh_elapsed,
