@@ -81,7 +81,7 @@ pub fn fix_self_intersecting_wire(
             let (_, b0, b1) = segments[j];
             if let Some((t, u)) = segment_intersection_2d(a0, a1, b0, b1) {
                 // Discard endpoint intersections
-                if t < 1e-6 || t > 1.0 - 1e-6 || u < 1e-6 || u > 1.0 - 1e-6 {
+                if !(1e-6..=1.0 - 1e-6).contains(&t) || !(1e-6..=1.0 - 1e-6).contains(&u) {
                     continue;
                 }
                 let uv_x = a0.0 + t * (a1.0 - a0.0);

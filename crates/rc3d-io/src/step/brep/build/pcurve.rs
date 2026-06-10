@@ -207,10 +207,10 @@ fn pcurve_master_list_index(sc_rec: &EntityRecord) -> usize {
     }
 }
 
-fn surface_curve_record<'a>(
+fn surface_curve_record(
     edge_curve_id: u64,
-    entities: &'a EntityIndex,
-) -> Option<&'a EntityRecord> {
+    entities: &EntityIndex,
+) -> Option<&EntityRecord> {
     let edge_rec = entities.get(&edge_curve_id)?;
     let sc_id = if edge_rec.name == "EDGE_CURVE" {
         geom::nth_ref(&edge_rec.params, 3)?

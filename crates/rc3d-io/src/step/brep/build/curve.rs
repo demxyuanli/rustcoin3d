@@ -165,7 +165,7 @@ fn build_bspline_3d(
         Vec::new()
     };
 
-    let knots = if knots.len() >= cp_count + degree + 1 {
+    let knots = if knots.len() > cp_count + degree {
         knots
     } else {
         // Build uniform knot vector
@@ -241,7 +241,7 @@ pub(crate) fn build_bspline_2d(
         Vec::new()
     };
 
-    let knots = if knots.len() >= cp_count + degree + 1 {
+    let knots = if knots.len() > cp_count + degree {
         knots
     } else {
         let mut k = Vec::with_capacity(cp_count + degree + 1);

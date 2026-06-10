@@ -3,6 +3,17 @@
 use std::collections::{HashMap, HashSet};
 use rc3d_core::math::Vec3;
 
+/// Convert MeshResult (i32 indices with -1 sentinel) to TriangleMesh (u32 contiguous).
+impl From<&MeshResult> for rc3d_mesh::TriangleMesh {
+    fn from(mesh: &MeshResult) -> Self {
+        let tri_indices: Vec<u32> = mesh.indices.iter()
+            .filter(|&&i| i >= 0)
+            .map(|&i| i as u32)
+            .collect();
+        rc3d_mesh::TriangleMesh::from_indexed(&mesh.vertices, &tri_indices)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct MeshResult {
     pub vertices: Vec<Vec3>,
@@ -24,9 +35,9 @@ impl MeshResult {
                 continue;
             }
             let n = (self.vertices[i1] - self.vertices[i0]).cross(self.vertices[i2] - self.vertices[i0]);
-            normals_acc[i0] = normals_acc[i0] + n;
-            normals_acc[i1] = normals_acc[i1] + n;
-            normals_acc[i2] = normals_acc[i2] + n;
+            normals_acc[i0] += n;
+            normals_acc[i1] += n;
+            normals_acc[i2] += n;
         }
         self.normals = normals_acc.into_iter()
             .map(|n| if n.length() > 1e-10 { n * (1.0 / n.length()) } else { Vec3::Z })
@@ -121,13 +132,13 @@ impl MeshResult {
         let mut new_vertices = Vec::with_capacity(root_to_group.len());
         let mut new_normals = Vec::with_capacity(root_to_group.len());
         let mut remap: Vec<usize> = vec![0; n];
-        for (_root, members) in &root_to_group {
+        for members in root_to_group.values() {
             let new_idx = new_vertices.len();
             let mut sum_pos = Vec3::ZERO;
             let mut sum_norm = Vec3::ZERO;
             for &i in members {
-                sum_pos = sum_pos + self.vertices[i];
-                if i < self.normals.len() { sum_norm = sum_norm + self.normals[i]; }
+                sum_pos += self.vertices[i];
+                if i < self.normals.len() { sum_norm += self.normals[i]; }
             }
             let count = members.len();
             new_vertices.push(sum_pos * (1.0 / count as f32));
@@ -227,7 +238,7 @@ impl MeshResult {
         let mut new_normals = Vec::with_capacity(root_to_group.len());
         let mut remap: Vec<usize> = vec![0; n];
 
-        for (_root, members) in &root_to_group {
+        for members in root_to_group.values() {
             let new_idx = new_vertices.len();
 
             // Find the protected member in this cluster (if any) to use as anchor
@@ -246,9 +257,9 @@ impl MeshResult {
                 let mut sum_pos = Vec3::ZERO;
                 let mut sum_norm = Vec3::ZERO;
                 for &i in members {
-                    sum_pos = sum_pos + self.vertices[i];
+                    sum_pos += self.vertices[i];
                     if i < self.normals.len() {
-                        sum_norm = sum_norm + self.normals[i];
+                        sum_norm += self.normals[i];
                     }
                 }
                 let count = members.len();
@@ -295,9 +306,9 @@ impl MeshResult {
             let i2 = chunk[2] as usize;
             if i0 >= self.vertices.len() || i1 >= self.vertices.len() || i2 >= self.vertices.len() { continue; }
             let n = (self.vertices[i1] - self.vertices[i0]).cross(self.vertices[i2] - self.vertices[i0]);
-            face_normals[i0] = face_normals[i0] + n;
-            face_normals[i1] = face_normals[i1] + n;
-            face_normals[i2] = face_normals[i2] + n;
+            face_normals[i0] += n;
+            face_normals[i1] += n;
+            face_normals[i2] += n;
         }
         for i in 0..self.vertices.len() {
             let ana = self.normals[i];

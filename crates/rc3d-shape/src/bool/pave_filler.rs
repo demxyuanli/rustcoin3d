@@ -172,7 +172,7 @@ fn build_pave_blocks_from_interfs(
 
 /// Build common blocks by grouping pave blocks on the same edge.
 fn build_common_blocks(ds: &mut BopDS, report: &mut PaveFillerReport) {
-    for (_ek, blocks) in &ds.pave_blocks {
+    for blocks in ds.pave_blocks.values() {
         if blocks.len() >= 2 {
             // All pave blocks on the same edge with overlapping parameter
             // ranges form a common block (they share the same geometric section)

@@ -96,10 +96,10 @@ impl Delaunay2d {
                 let a = tri[k];
                 let b = tri[(k + 1) % 3];
                 let key = edge_key(a, b);
-                if edge_count.contains_key(&key) {
-                    edge_count.remove(&key);
+                if let std::collections::hash_map::Entry::Vacant(e) = edge_count.entry(key) {
+                    e.insert((a, b));
                 } else {
-                    edge_count.insert(key, (a, b));
+                    edge_count.remove(&key);
                 }
             }
         }
@@ -211,12 +211,11 @@ impl Delaunay2d {
             let pc = self.points[e0 as usize];
             let pd = self.points[e1 as usize];
 
-            if adaptive_in_circle(pa, pb, pc, pd) > EPS || adaptive_in_circle(pa, pb, pd, pc) > EPS {
-                if self.try_flip_quad(tri0, tri1, e0, e1, opp0, opp1) {
+            if (adaptive_in_circle(pa, pb, pc, pd) > EPS || adaptive_in_circle(pa, pb, pd, pc) > EPS)
+                && self.try_flip_quad(tri0, tri1, e0, e1, opp0, opp1) {
                     flipped += 1;
                     done.insert(key);
                 }
-            }
         }
         flipped
     }

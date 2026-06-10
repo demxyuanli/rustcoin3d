@@ -355,8 +355,7 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
 
     let control_points: Vec<(f32, f32)> = cp_u
         .into_iter()
-        .zip(cp_v.into_iter())
-        .map(|(u, v)| (u, v))
+        .zip(cp_v)
         .collect();
 
     Curve2d::BSpline {

@@ -42,12 +42,12 @@ pub fn recompute_normals_from_tris_preserving(
             // Ensure preserved normals are unit length
             let len = n.length();
             if len > 1e-10 {
-                *n = *n * (1.0 / len);
+                *n *= (1.0 / len);
             }
         } else {
             let len = n.length();
             if len > 1e-10 {
-                *n = *n * (1.0 / len);
+                *n *= (1.0 / len);
             } else {
                 *n = Vec3::Z; // zero → downstream should handle
             }

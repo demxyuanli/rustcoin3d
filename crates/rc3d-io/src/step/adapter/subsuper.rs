@@ -134,7 +134,7 @@ fn select_primary_record_structured(
             let has_struct = params
                 .as_list()
                 .and_then(|l| l.first())
-                .map_or(false, |v| {
+                .is_some_and(|v| {
                     matches!(v, StepValue::Integer(_) | StepValue::Ref(_))
                 });
             if has_struct {

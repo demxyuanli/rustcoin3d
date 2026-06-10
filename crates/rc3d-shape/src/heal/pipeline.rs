@@ -101,20 +101,17 @@ impl Default for HealPolicy {
 // ── Heal level ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum HealLevel {
     /// FixConnected + FixSmall + GapClose3d + FixOrientation only
     Basic,
     /// Basic + FixGaps2d + FixShifted + FixEdgeCurves + FixMissingSeams
+    #[default]
     Standard,
     /// Standard + FixSelfIntersection + FixDegenerated + FixIntersectingWires + FixPeriodic
     Advanced,
 }
 
-impl Default for HealLevel {
-    fn default() -> Self {
-        HealLevel::Standard
-    }
-}
 
 /// Run iterative auto-heal with adaptive fix selection.
 /// Each iteration uses a fresh `check_shell` result to drive `select_fixes`.

@@ -187,7 +187,7 @@ impl NurbsSurface {
                 let w = self.weights[i][j];
                 let cp = self.control_points[i][j];
                 let coeff = nu * nv * w;
-                point = point + cp * coeff;
+                point += cp * coeff;
                 weight_sum += coeff;
             }
         }
@@ -228,16 +228,16 @@ impl NurbsSurface {
                 let cp = self.control_points[i][j];
                 let coeff = nu * nv * wgt;
                 w_sum += coeff;
-                p = p + cp * coeff;
+                p += cp * coeff;
                 // ∂/∂u
                 let c_u = dn_du * nv * wgt;
                 w_u += c_u;
-                p_u = p_u + cp * c_u;
+                p_u += cp * c_u;
                 // ∂/∂v
                 let dn_dv = lookup_basis_value(&dv_basis, j);
                 let c_v = nu * dn_dv * wgt;
                 w_v += c_v;
-                p_v = p_v + cp * c_v;
+                p_v += cp * c_v;
             }
         }
 
@@ -296,32 +296,32 @@ impl NurbsSurface {
                 // Position: nu * nv * wgt
                 let c0 = nu * nv * wgt;
                 w_sum += c0;
-                p = p + cp * c0;
+                p += cp * c0;
 
                 // ∂/∂u: dn_du * nv * wgt
                 let c_u = dn_du * nv * wgt;
                 w_u += c_u;
-                p_u = p_u + cp * c_u;
+                p_u += cp * c_u;
 
                 // ∂/∂v: nu * dn_dv * wgt
                 let c_v = nu * dn_dv * wgt;
                 w_v += c_v;
-                p_v = p_v + cp * c_v;
+                p_v += cp * c_v;
 
                 // ∂²/∂u²: d2n_du * nv * wgt
                 let c_uu = d2n_du * nv * wgt;
                 w_uu += c_uu;
-                p_uu = p_uu + cp * c_uu;
+                p_uu += cp * c_uu;
 
                 // ∂²/∂u∂v: dn_du * dn_dv * wgt
                 let c_uv = dn_du * dn_dv * wgt;
                 w_uv += c_uv;
-                p_uv = p_uv + cp * c_uv;
+                p_uv += cp * c_uv;
 
                 // ∂²/∂v²: nu * d2n_dv * wgt
                 let c_vv = nu * d2n_dv * wgt;
                 w_vv += c_vv;
-                p_vv = p_vv + cp * c_vv;
+                p_vv += cp * c_vv;
             }
         }
 
@@ -934,7 +934,7 @@ impl NurbsSurface {
                 let cj = span_v.saturating_sub(self.degree_v) + iv;
                 if cj >= ws[ci].len() { continue; }
                 let w = ws[ci][cj] * nu * nv;
-                p = p + cps[ci][cj] * w;
+                p += cps[ci][cj] * w;
                 w_sum += w;
             }
         }
@@ -991,14 +991,14 @@ fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32
 
     for i in i_start..=i_end {
         // N_{i, p-1}(t): nonzero only if i is in [span-(p-1), span] = [span-p+1, span]
-        let n_i = if i >= span - degree + 1 {
+        let n_i = if i > span - degree {
             lookup_basis_value(&lower_bases, i)
         } else {
             0.0
         };
 
         // N_{i+1, p-1}(t): nonzero only if i+1 is in [span-p+1, span]
-        let n_ip1 = if i + 1 <= span {
+        let n_ip1 = if i < span {
             lookup_basis_value(&lower_bases, i + 1)
         } else {
             0.0
@@ -1055,7 +1055,7 @@ fn analytical_basis_second_derivatives(span: usize, degree: usize, t: f32, knots
         };
 
         // N'_{i+1, p-1}(t): nonzero only if i+1 in [span-(p-1), span]
-        let d1_ip1 = if i + 1 <= span {
+        let d1_ip1 = if i < span {
             lookup_basis_value(&d1_lower, i + 1)
         } else {
             0.0

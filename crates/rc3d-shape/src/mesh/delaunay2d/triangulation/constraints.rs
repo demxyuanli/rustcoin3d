@@ -115,7 +115,7 @@ impl Delaunay2d {
             }
             skipped.insert(key);
 
-            let adj = boundary_adjacency(&self.edge_adjacency(), &self.tri_alive);
+            let adj = boundary_adjacency(self.edge_adjacency(), &self.tri_alive);
             let poly = mesh_left_polygon_loop(&self.points, va, vb, &adj, skipped);
             if poly.len() < 3 {
                 continue;
@@ -177,10 +177,10 @@ impl Delaunay2d {
                 let v0 = tri[k];
                 let v1 = tri[(k + 1) % 3];
                 let ek = edge_key(v0, v1);
-                if boundary.contains_key(&ek) {
-                    boundary.remove(&ek);
+                if let std::collections::hash_map::Entry::Vacant(e) = boundary.entry(ek) {
+                    e.insert((v0, v1));
                 } else {
-                    boundary.insert(ek, (v0, v1));
+                    boundary.remove(&ek);
                 }
             }
             self.kill_triangle(ti);

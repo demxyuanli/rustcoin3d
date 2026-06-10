@@ -16,17 +16,11 @@ use rc3d_shape::{
 use crate::step::StepError;
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SceneEmitOptions {
     pub default_material: MaterialDesc,
 }
 
-impl Default for SceneEmitOptions {
-    fn default() -> Self {
-        Self {
-            default_material: MaterialDesc::default(),
-        }
-    }
-}
 
 pub fn apply_plan(
     graph: &mut SceneGraph,

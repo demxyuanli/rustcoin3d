@@ -244,8 +244,8 @@ pub(crate) fn revolution_ruled_grid_from_uv(
         .fold(f32::MIN, f32::max);
     let du = u_max - u_min;
     let dv = v_max - v_min;
-    let profile_sweep = revolution_wire_is_generatrix_profile(&uv0)
-        && revolution_wire_is_generatrix_profile(&uv1);
+    let profile_sweep = revolution_wire_is_generatrix_profile(uv0)
+        && revolution_wire_is_generatrix_profile(uv1);
     if std::env::var("SHAPE_FACE_DIAG").is_ok() {
         let (du0, dv0) = wire_native_uv_spans(uv0);
         let (du1, dv1) = wire_native_uv_spans(uv1);
@@ -257,7 +257,7 @@ pub(crate) fn revolution_ruled_grid_from_uv(
     let mut grid = vec![vec![(Vec3::ZERO, Vec3::Y); nv + 1]; nu + 1];
     // Same-edge seam (F+R): wires share UV so dv=0. Fill native (u,v) rectangle, not wire-to-wire blend.
     if dv < 1e-4 && du > 1e-6 {
-        let r0 = resample_uv_polyline(&uv0, nu);
+        let r0 = resample_uv_polyline(uv0, nu);
         let (v_lo, v_hi) = seam_face_v_bounds(face, uv0, uv1, profile_sweep);
         if std::env::var("SHAPE_FACE_DIAG").is_ok() {
             eprintln!(
@@ -284,8 +284,8 @@ pub(crate) fn revolution_ruled_grid_from_uv(
     }
     // Collapsed U: interpolate between the two wire polylines in UV.
     if du < 1e-6 {
-        let r0 = resample_uv_polyline(&uv0, nu);
-        let r1 = resample_uv_polyline(&uv1, nu);
+        let r0 = resample_uv_polyline(uv0, nu);
+        let r1 = resample_uv_polyline(uv1, nu);
         for i in 0..=nu {
             for j in 0..=nv {
                 let s = j as f32 / nv as f32;
@@ -310,8 +310,8 @@ pub(crate) fn revolution_ruled_grid_from_uv(
         // Two generatrix/profile wires: sweep V between wires at each native U.
         for i in 0..=nu {
             let u = u_min + du * i as f32 / nu as f32;
-            let v0 = v_at_u_on_wire(&uv0, u);
-            let v1 = v_at_u_on_wire(&uv1, u);
+            let v0 = v_at_u_on_wire(uv0, u);
+            let v1 = v_at_u_on_wire(uv1, u);
             for j in 0..=nv {
                 let s = j as f32 / nv as f32;
                 let v = v0 * (1.0 - s) + v1 * s;
@@ -327,8 +327,8 @@ pub(crate) fn revolution_ruled_grid_from_uv(
         // Two circular wires: sweep U between wires at each native V.
         for j in 0..=nv {
             let v = v_min + dv * j as f32 / nv as f32;
-            let u0 = u_at_v_on_wire(&uv0, v);
-            let u1 = u_at_v_on_wire(&uv1, v);
+            let u0 = u_at_v_on_wire(uv0, v);
+            let u1 = u_at_v_on_wire(uv1, v);
             for i in 0..=nu {
                 let t = i as f32 / nu as f32;
                 let u = u0 * (1.0 - t) + u1 * t;

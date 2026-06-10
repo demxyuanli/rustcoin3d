@@ -314,36 +314,33 @@ fn collect_mesh_data(
         None => return,
     };
 
-    match &entry.data {
-        NodeData::Coordinate3(coord) => {
-            let base_idx = vertices.len();
-            for pt in &coord.point {
-                vertices.push(*pt);
-            }
-            // Look for sibling IndexedFaceSet
-            for &child in &entry.children {
-                if let Some(child_entry) = graph.get(child) {
-                    if let NodeData::IndexedFaceSet(ifs) = &child_entry.data {
-                        // Parse indices: triples separated by -1
-                        let mut i = 0;
-                        while i + 2 < ifs.coord_index.len() {
-                            let a = ifs.coord_index[i] as usize;
-                            let b = ifs.coord_index[i + 1] as usize;
-                            let c = ifs.coord_index[i + 2] as usize;
-                            if a < coord.point.len() && b < coord.point.len() && c < coord.point.len() {
-                                triangles.push([base_idx + a, base_idx + b, base_idx + c]);
-                            }
-                            i += 3;
-                            // Skip sentinel
-                            while i < ifs.coord_index.len() && ifs.coord_index[i] == -1 {
-                                i += 1;
-                            }
+    if let NodeData::Coordinate3(coord) = &entry.data {
+        let base_idx = vertices.len();
+        for pt in &coord.point {
+            vertices.push(*pt);
+        }
+        // Look for sibling IndexedFaceSet
+        for &child in &entry.children {
+            if let Some(child_entry) = graph.get(child) {
+                if let NodeData::IndexedFaceSet(ifs) = &child_entry.data {
+                    // Parse indices: triples separated by -1
+                    let mut i = 0;
+                    while i + 2 < ifs.coord_index.len() {
+                        let a = ifs.coord_index[i] as usize;
+                        let b = ifs.coord_index[i + 1] as usize;
+                        let c = ifs.coord_index[i + 2] as usize;
+                        if a < coord.point.len() && b < coord.point.len() && c < coord.point.len() {
+                            triangles.push([base_idx + a, base_idx + b, base_idx + c]);
+                        }
+                        i += 3;
+                        // Skip sentinel
+                        while i < ifs.coord_index.len() && ifs.coord_index[i] == -1 {
+                            i += 1;
                         }
                     }
                 }
             }
         }
-        _ => {}
     }
 
     // Recurse into children

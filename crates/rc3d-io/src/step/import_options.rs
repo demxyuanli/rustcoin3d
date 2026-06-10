@@ -11,18 +11,15 @@ use crate::step::parser::EntityIndex;
 
 /// How strictly STEP import treats parse/build/heal issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum StepImportMode {
     /// Fail on skipped entities, geometry substitution, validation/heal errors, void shells.
     Strict,
     /// Best-effort preview: recover parse errors and substitute missing geometry.
+    #[default]
     Preview,
 }
 
-impl Default for StepImportMode {
-    fn default() -> Self {
-        Self::Preview
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct StepImportOptions {

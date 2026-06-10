@@ -74,26 +74,26 @@ pub(crate) fn fix_shifted_pcurves(
 
         if period_u > 0.0 {
             let dist_u = (mu - uv_center.0).abs();
-            if dist_u > period_u as f64 * 0.4 {
-                let shifted_up = mu - period_u as f64;
-                let shifted_down = mu + period_u as f64;
+            if dist_u > period_u * 0.4 {
+                let shifted_up = mu - period_u;
+                let shifted_down = mu + period_u;
                 if (shifted_up - uv_center.0).abs() < dist_u * 0.5 {
-                    shift_u = -period_u as f64;
+                    shift_u = -period_u;
                 } else if (shifted_down - uv_center.0).abs() < dist_u * 0.5 {
-                    shift_u = period_u as f64;
+                    shift_u = period_u;
                 }
             }
         }
 
         if period_v > 0.0 {
             let dist_v = (mv - uv_center.1).abs();
-            if dist_v > period_v as f64 * 0.4 {
-                let shifted_up = mv - period_v as f64;
-                let shifted_down = mv + period_v as f64;
+            if dist_v > period_v * 0.4 {
+                let shifted_up = mv - period_v;
+                let shifted_down = mv + period_v;
                 if (shifted_up - uv_center.1).abs() < dist_v * 0.5 {
-                    shift_v = -period_v as f64;
+                    shift_v = -period_v;
                 } else if (shifted_down - uv_center.1).abs() < dist_v * 0.5 {
-                    shift_v = period_v as f64;
+                    shift_v = period_v;
                 }
             }
         }
@@ -301,7 +301,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             for (i, cp) in new_cp.iter_mut().enumerate() {
                 let t = i as f32 / (n - 1) as f32;
                 let delta = delta_start * (1.0 - t) + delta_end * t;
-                *cp = *cp + delta;
+                *cp += delta;
             }
             CurveGeom::BSpline {
                 degree: *degree,

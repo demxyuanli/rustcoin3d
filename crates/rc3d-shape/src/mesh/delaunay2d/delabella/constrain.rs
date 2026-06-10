@@ -345,11 +345,10 @@ fn lawson_restore(della: &mut DelaBella, affected: &[u32]) {
                 p0.0, p0.1, p1.0, p1.1, p2.0, p2.1, p_opp.0, p_opp.1,
             );
 
-            if inc > 0.0 {
-                if flip_edge(della, fi, slot) {
+            if inc > 0.0
+                && flip_edge(della, fi, slot) {
                     flipped += 1;
                 }
-            }
         }
 
         if flipped == 0 {

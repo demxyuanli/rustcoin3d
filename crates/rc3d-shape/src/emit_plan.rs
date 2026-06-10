@@ -86,6 +86,7 @@ pub struct SceneEmitPlan {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct EmitPlanOptions {
     pub mesh_config: BRepMeshConfig,
     pub heal_skip_faces: Vec<FaceKey>,
@@ -94,16 +95,6 @@ pub struct EmitPlanOptions {
     pub explode_offsets: HashMap<SolidKey, Vec3>,
 }
 
-impl Default for EmitPlanOptions {
-    fn default() -> Self {
-        Self {
-            mesh_config: BRepMeshConfig::default(),
-            heal_skip_faces: Vec::new(),
-            default_material: MaterialDesc::default(),
-            explode_offsets: HashMap::new(),
-        }
-    }
-}
 
 #[cfg(test)]
 pub(crate) fn tess_config_hash(config: &BRepMeshConfig) -> u64 {
@@ -209,7 +200,7 @@ impl ShapeDocument {
                 )?;
                 let slot = ensure_mesh_slot(
                     &mut plan,
-                    &mut self.tessellation,
+                    &self.tessellation,
                     &mut tess_keys_seen,
                     &mut slot_counter,
                     sk,

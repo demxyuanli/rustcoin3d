@@ -119,7 +119,7 @@ fn line_segment_intersection(
     }
     let t = ((p3.0 - p1.0) * dy2 - (p3.1 - p1.1) * dx2) / denom;
     let s = ((p3.0 - p1.0) * dy1 - (p3.1 - p1.1) * dx1) / denom;
-    if t >= -1e-6 && t <= 1.0 + 1e-6 && s >= -1e-6 && s <= 1.0 + 1e-6 {
+    if (-1e-6..=1.0 + 1e-6).contains(&t) && (-1e-6..=1.0 + 1e-6).contains(&s) {
         Some((p1.0 + t * dx1, p1.1 + t * dy1))
     } else {
         None
@@ -389,9 +389,9 @@ pub fn mesh_parametric_grid(
                 let tri_n = (p1 - p0).cross(p2 - p0);
                 if tri_n.length() > 1e-10 {
                     let n = tri_n.normalize();
-                    global_normals[i0 as usize] = global_normals[i0 as usize] + n;
-                    global_normals[i1 as usize] = global_normals[i1 as usize] + n;
-                    global_normals[i2 as usize] = global_normals[i2 as usize] + n;
+                    global_normals[i0 as usize] += n;
+                    global_normals[i1 as usize] += n;
+                    global_normals[i2 as usize] += n;
                 }
             }
         }

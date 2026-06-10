@@ -52,6 +52,7 @@ pub enum FaceSkipReason {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct HealReport {
     pub reordered_wires: usize,
     pub closed_gaps: usize,
@@ -83,40 +84,6 @@ pub struct HealReport {
     skip_faces_seen: HashSet<FaceKey>,
 }
 
-impl Default for HealReport {
-    fn default() -> Self {
-        Self {
-            reordered_wires: 0,
-            closed_gaps: 0,
-            closed_uv_gaps: 0,
-            flipped_faces: 0,
-            added_seams: 0,
-            merged_vertices: 0,
-            removed_small_edges: 0,
-            shifted_pcurves: 0,
-            same_param_fixed: 0,
-            adjusted_edge_curves: 0,
-            skip_face_keys: Vec::new(),
-            face_skip_reasons: Vec::new(),
-            lacking_tolerance_fixes: 0,
-            degenerate_edges_created: 0,
-            periodic_degen_created: 0,
-            self_intersections_fixed: 0,
-            inner_wires_fixed: 0,
-            vertex_positions_fixed: 0,
-            split_faces_created: 0,
-            natural_bounds_added: 0,
-            reversed_2d_fixed: 0,
-            free_bounds_closed: 0,
-            free_bounds_open_found: 0,
-            shells_composed: 0,
-            face_folds_repaired: 0,
-            check_errors: 0,
-            check_warnings: 0,
-            skip_faces_seen: HashSet::new(),
-        }
-    }
-}
 
 impl HealReport {
     pub fn merge(&mut self, other: HealReport) {
@@ -421,17 +388,15 @@ fn heal_face_passes(
         report.inner_wires_fixed += total_fixes;
     }
 
-    if config.fix_natural_bound {
-        if fix_add_natural_bound(reg, face_key) {
+    if config.fix_natural_bound
+        && fix_add_natural_bound(reg, face_key) {
             report.natural_bounds_added += 1;
         }
-    }
 
-    if config.fix_reversed_2d {
-        if fix_reversed_2d(reg, face_key) {
+    if config.fix_reversed_2d
+        && fix_reversed_2d(reg, face_key) {
             report.reversed_2d_fixed += 1;
         }
-    }
 
     if config.fix_missing_seams {
         report.added_seams += fix_missing_seams(reg, face_key);

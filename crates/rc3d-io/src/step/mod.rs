@@ -67,7 +67,7 @@ pub fn decode_step_bytes(bytes: &[u8]) -> String {
 /// Write a SceneGraph to a STEP file (Part 21 ASCII).
 pub fn write_step_file(path: &Path, graph: &SceneGraph) -> Result<(), StepError> {
     let text = write::write_step_from_graph(graph)
-        .map_err(|e| StepError::Validation(e))?;
+        .map_err(StepError::Validation)?;
     std::fs::write(path, &text)?;
     Ok(())
 }

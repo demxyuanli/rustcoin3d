@@ -211,7 +211,7 @@ impl Delaunay2d {
             self.built = true;
             return;
         }
-        if self.pending.len() < 1 {
+        if self.pending.is_empty() {
             self.built = true;
             return;
         }

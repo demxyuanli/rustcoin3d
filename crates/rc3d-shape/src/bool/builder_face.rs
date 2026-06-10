@@ -71,7 +71,7 @@ pub fn build_faces_from_split(
             Some(f) => f,
             None => return result,
         };
-        let has_edges = topo_iter::iter_edges_of_face(face_key, reg).len() > 0;
+        let has_edges = !topo_iter::iter_edges_of_face(face_key, reg).is_empty();
         (face.surface.clone(), face.tolerance, has_edges)
     };
 

@@ -86,10 +86,10 @@ pub fn discretize_all_edges(
 ) -> HashMap<EdgeKey, EdgePolygon> {
     let mut result = HashMap::new();
     for (ek, _edge) in reg.edges.iter() {
-        if !result.contains_key(&ek) {
+        result.entry(ek).or_insert_with(|| {
             let poly = discretize_edge(ek, reg, config);
-            result.insert(ek, poly);
-        }
+            poly
+        });
     }
     result
 }

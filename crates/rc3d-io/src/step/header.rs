@@ -60,13 +60,13 @@ pub fn parse_header(input: &str) -> Option<(HeaderInfo, &str)> {
 
         match keyword.as_str() {
             "FILE_DESCRIPTION" => {
-                info.file_description = parse_string_list(&args_str);
+                info.file_description = parse_string_list(args_str);
             }
             "FILE_NAME" => {
-                info.file_name = parse_file_name(&args_str);
+                info.file_name = parse_file_name(args_str);
             }
             "FILE_SCHEMA" => {
-                info.file_schema = parse_string_list(&args_str);
+                info.file_schema = parse_string_list(args_str);
                 // Detect AP schema from first schema identifier
                 info.ap_schema = info.file_schema.first()
                     .and_then(|s| extract_ap_schema(s));
@@ -138,7 +138,7 @@ fn parse_single_quoted_string(input: &str) -> Option<(String, &str)> {
     loop {
         match chars.next() {
             Some((_, '\'')) => {
-                if chars.clone().next().map_or(false, |(_, c)| c == '\'') {
+                if chars.clone().next().is_some_and(|(_, c)| c == '\'') {
                     chars.next();
                     s.push('\'');
                 } else {

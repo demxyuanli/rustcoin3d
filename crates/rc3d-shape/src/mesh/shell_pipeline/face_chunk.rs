@@ -121,7 +121,7 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         &loops,
         &we_orient,
-        &edge_boundary_idx,
+        edge_boundary_idx,
         &global_vertices,
             ));
         }
@@ -191,8 +191,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         RuledMeshBuffers {
             global_vertices: &mut global_vertices,
             global_normals: &mut global_normals,
@@ -233,8 +233,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         RuledMeshBuffers {
             global_vertices: &mut global_vertices,
             global_normals: &mut global_normals,
@@ -321,8 +321,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         &global_vertices,
             ) {
         if !uv_loop_is_degenerate(&s) {
@@ -335,8 +335,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         &global_vertices,
             ) {
         if !uv_loop_is_degenerate(&s) {
@@ -352,8 +352,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         &global_vertices,
             ) {
         if !uv_loop_is_degenerate(&s) {
@@ -810,9 +810,9 @@ pub(crate) fn mesh_faces_in_chunk(
             range = try_ruled_two_wire_mesh(
         info_face_key,
         face,
-        &info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        info_wire_edges,
+        edge_polygons,
+        edge_boundary_idx,
         RuledMeshBuffers {
             global_vertices: &mut global_vertices,
             global_normals: &mut global_normals,
@@ -1045,8 +1045,8 @@ pub(crate) fn mesh_faces_in_chunk(
         info_face_key,
         face,
         info_wire_edges,
-        &edge_polygons,
-        &edge_boundary_idx,
+        edge_polygons,
+        edge_boundary_idx,
         RuledMeshBuffers {
             global_vertices: &mut global_vertices,
             global_normals: &mut global_normals,

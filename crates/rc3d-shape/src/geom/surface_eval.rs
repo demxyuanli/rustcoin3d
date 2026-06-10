@@ -527,7 +527,7 @@ impl SurfaceGeom {
         let mut best = Vec3::Z;
         let mut best_len = 0.0f32;
         for (up, vp) in probes {
-            if up < 0.0 || up > 1.0 || vp < 0.0 || vp > 1.0 {
+            if !(0.0..=1.0).contains(&up) || !(0.0..=1.0).contains(&vp) {
                 continue;
             }
             let (du2, dv2) = self.d1(up, vp);

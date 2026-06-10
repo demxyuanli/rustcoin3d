@@ -188,9 +188,8 @@ fn ray_torus_intersect(
         let dist = to_pt.length();
         if dist <= minor_r + tolerance {
             let surf_pt = tube_center + to_pt.normalize() * minor_r;
-            if (surf_pt - pt).length() < tolerance * 2.0 {
-                if point_in_face_uv(surf_pt, face, face_key, reg) { return RayHit::Hit; }
-            }
+            if (surf_pt - pt).length() < tolerance * 2.0
+                && point_in_face_uv(surf_pt, face, face_key, reg) { return RayHit::Hit; }
         }
         t += step;
     }

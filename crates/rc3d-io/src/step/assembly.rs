@@ -282,7 +282,6 @@ pub fn extract_shell_instances(entities: &EntityIndex) -> ShellInstanceList {
 pub fn extract_shell_transforms(entities: &EntityIndex) -> ShellTransformMap {
     extract_shell_instances(entities)
         .into_iter()
-        .map(|(id, xform)| (id, xform))
         .collect()
 }
 

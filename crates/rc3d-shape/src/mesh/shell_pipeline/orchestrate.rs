@@ -69,7 +69,7 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
 
     let _tp2 = std::time::Instant::now();
     let num_threads = rayon::current_num_threads().max(1);
-    let chunk_size = (face_loop_data.len() + num_threads - 1) / num_threads;
+    let chunk_size = face_loop_data.len().div_ceil(num_threads);
 
     let chunk_outputs: Vec<ChunkOutput> = if face_loop_data.is_empty() {
         Vec::new()

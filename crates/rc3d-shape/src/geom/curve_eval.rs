@@ -438,7 +438,7 @@ impl CurveGeom {
             CurveGeom::Trimmed { t_min, t_max, .. } => (*t_min, *t_max),
             CurveGeom::BSpline { degree, control_points, knots, .. } => {
                 let n = control_points.len();
-                if knots.len() >= n + degree + 1 {
+                if knots.len() > n + degree {
                     (knots[*degree], knots[n])
                 } else {
                     (0.0, 1.0)

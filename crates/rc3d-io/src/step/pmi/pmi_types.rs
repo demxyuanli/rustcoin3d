@@ -19,6 +19,7 @@ pub struct PmiSurfaceFinish {
 
 /// Surface finish symbol type per ISO 1302.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum FinishSymbol {
     /// Basic machining symbol (√).
     Basic,
@@ -27,14 +28,10 @@ pub enum FinishSymbol {
     /// No material removal allowed (⊿ with circle).
     NoRemoval,
     /// Any process acceptable (no restriction).
+    #[default]
     Any,
 }
 
-impl Default for FinishSymbol {
-    fn default() -> Self {
-        Self::Any
-    }
-}
 
 /// Extended PMI data set including surface finishes.
 /// This wraps the existing `PmiData` fields and adds surface finish data.

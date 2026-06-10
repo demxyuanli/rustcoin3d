@@ -181,7 +181,7 @@ pub fn intersect_edge_edge(
             if dist_sq > tol_sq {
                 continue;
             }
-            if t_b < -1e-6 || t_b > 1.0 + 1e-6 {
+            if !(-1e-6..=1.0 + 1e-6).contains(&t_b) {
                 continue;
             }
             let t_b_clamped = t_b.clamp(0.0, 1.0);

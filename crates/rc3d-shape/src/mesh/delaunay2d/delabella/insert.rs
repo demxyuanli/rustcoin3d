@@ -146,11 +146,10 @@ fn flood_visible(della: &DelaBella, seed: u32, px: f64, py: f64) -> Vec<u32> {
         // Check all 3 neighbors
         for slot in 0..3 {
             let ni = della.faces[fi as usize].f[slot];
-            if ni != INVALID && !visited[ni as usize] && !della.faces[ni as usize].is_dead() {
-                if is_face_visible(della, ni, px, py) {
+            if ni != INVALID && !visited[ni as usize] && !della.faces[ni as usize].is_dead()
+                && is_face_visible(della, ni, px, py) {
                     stack.push(ni);
                 }
-            }
         }
     }
 

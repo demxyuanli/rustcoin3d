@@ -80,20 +80,20 @@ impl<'a> BrepWriter<'a> {
         for (sk, _) in &store.solids {
             shapes.push(ShapeEntry::Solid(sk));
         }
-        let has_compounds = store.compounds.len() > 0;
+        let has_compounds = !store.compounds.is_empty();
         for (ck, _) in &store.compounds {
             shapes.push(ShapeEntry::Compound(ck));
         }
         // If no compounds exist but we have solids, create a single default compound
         // referencing all solids (matching OCC convention).
-        let needs_default_compound = !has_compounds && store.solids.len() > 0;
+        let needs_default_compound = !has_compounds && !store.solids.is_empty();
 
         // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
         let mut pcurve_entries = Vec::new();
         for (i, entry) in shapes.iter().enumerate() {
             if let ShapeEntry::Edge(ek) = entry {
                 if let Some(edge) = store.edges.get(*ek) {
-                    for (fk, (pc, same_sense)) in &edge.pcurves {
+                    for (fk, (_pc, same_sense)) in &edge.pcurves {
                         // Only include PCurves for non-planar faces (expand Offset to check)
                         let is_non_planar = store.faces.get(*fk)
                             .map(|f| !is_planar_surface(&f.surface))
@@ -124,7 +124,7 @@ impl<'a> BrepWriter<'a> {
         }
         // Write PCurves only for shapes with exclusively planar surfaces.
         // For non-planar shapes, write Curve2ds 0 and let OCC auto-compute.
-        let all_planar = shapes.iter().filter(|s| matches!(s, ShapeEntry::Face(_))).all(|s| {
+        let _all_planar = shapes.iter().filter(|s| matches!(s, ShapeEntry::Face(_))).all(|s| {
             if let ShapeEntry::Face(fk) = s {
                 store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
             } else { true }
@@ -539,9 +539,9 @@ impl<'a> BrepWriter<'a> {
             }
         };
 
-        let param_range = curve_param_range(&expand_curve(&edge.curve), edge.t_min, edge.t_max);
+        let param_range = curve_param_range(expand_curve(&edge.curve), edge.t_min, edge.t_max);
 
-        let curve_type = occ_curve_type(&expand_curve(&edge.curve));
+        let curve_type = occ_curve_type(expand_curve(&edge.curve));
         let v1_pos = self.vertex_pos(edge.v_low);
         let v2_pos = self.vertex_pos(edge.v_high);
         let rv1 = self.rev_idx(v1_pos);
@@ -949,7 +949,7 @@ fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)>
             let v = n.cross(u);
             Some((rel.dot(u), rel.dot(v)))
         }
-        SurfaceGeom::Cylinder { origin, axis, radius: _, x_dir, y_dir } => {
+        SurfaceGeom::Cylinder { origin, axis, radius: _, x_dir: _, y_dir: _ } => {
             let rel = point - *origin;
             let ax = axis.normalize();
             let v = rel.dot(ax); // height along axis

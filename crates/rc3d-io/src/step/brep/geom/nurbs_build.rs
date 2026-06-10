@@ -172,7 +172,7 @@ pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Opt
         if let StepValue::List(inner) = val {
             if inner.len() == rows
                 && inner.iter().all(|v| {
-                    v.as_list().map_or(false, |l| {
+                    v.as_list().is_some_and(|l| {
                         l.len() == cols && l.iter().all(|r| matches!(r, StepValue::Real(_)))
                     })
                 })

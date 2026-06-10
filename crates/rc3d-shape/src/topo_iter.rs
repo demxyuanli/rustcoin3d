@@ -40,7 +40,7 @@ pub fn iter_edge_orientations_of_outer_wire(
     };
     reg.wires
         .get(face.outer_wire)
-        .map(|w| w.edges.iter().copied().collect())
+        .map(|w| w.edges.to_vec())
         .unwrap_or_default()
 }
 

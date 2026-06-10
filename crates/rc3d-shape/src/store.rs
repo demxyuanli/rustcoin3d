@@ -39,6 +39,12 @@ pub struct BRepStore {
     pub trim_ranges: HashMap<FaceKey, (f32, f32, f32, f32)>,
 }
 
+impl Default for BRepStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BRepStore {
     pub fn new() -> Self {
         Self::with_tolerance(ToleranceContext::default())

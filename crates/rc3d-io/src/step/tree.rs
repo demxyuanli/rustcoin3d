@@ -97,9 +97,7 @@ impl AssemblyTree {
         // If parent had a style and a shell doesn't have its own, inherit
         if let Some(ref style) = effective {
             for &sid in &node.shells {
-                if !inherited.contains_key(&sid) {
-                    inherited.insert(sid, style.clone());
-                }
+                inherited.entry(sid).or_insert_with(|| style.clone());
             }
         }
 

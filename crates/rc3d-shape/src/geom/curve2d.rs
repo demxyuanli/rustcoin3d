@@ -195,7 +195,7 @@ impl Curve2d {
             Curve2d::Circle { center, radius } => {
                 // Approximate full circle with 4 cubic Bézier arcs (90° each).
                 // Magic constant K = 4/3 * tan(π/8) ≈ 0.5522847498
-                const K: f32 = 0.5522847498;
+                const K: f32 = 0.552_284_8;
                 let r = *radius;
                 let cx = center.0;
                 let cy = center.1;
@@ -219,7 +219,7 @@ impl Curve2d {
             }
             Curve2d::Ellipse { center, semi_major, semi_minor } => {
                 // Approximate ellipse with 4 cubic Bézier arcs (90° each)
-                const K: f32 = 0.5522847498;
+                const K: f32 = 0.552_284_8;
                 let cx = center.0;
                 let cy = center.1;
                 let a = *semi_major;

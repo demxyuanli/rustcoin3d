@@ -201,7 +201,7 @@ fn ray_triangle_intersect(origin: &Vec3, dir: &Vec3, tri: &[Vec3; 3]) -> bool {
     let inv_det = 1.0 / det;
     let tvec = *origin - tri[0];
     let u = tvec.dot(pvec) * inv_det;
-    if u < 0.0 || u > 1.0 {
+    if !(0.0..=1.0).contains(&u) {
         return false;
     }
 

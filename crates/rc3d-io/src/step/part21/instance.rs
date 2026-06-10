@@ -7,12 +7,12 @@ use super::params::parse_param_list_at;
 use super::token::Span;
 
 /// Parse one entity instance; returns remaining text after `;` if present.
-pub fn parse_instance<'a>(input: &'a str) -> ParseResult<(StepInstance, &'a str)> {
+pub fn parse_instance(input: &str) -> ParseResult<(StepInstance, &str)> {
     parse_instance_at(input, Span { line: 1, col: 1 })
 }
 
 /// Parse one entity with errors anchored at `at` (file-absolute line/col).
-pub fn parse_instance_at<'a>(input: &'a str, at: Span) -> ParseResult<(StepInstance, &'a str)> {
+pub fn parse_instance_at(input: &str, at: Span) -> ParseResult<(StepInstance, &str)> {
     let rest = input.trim_start();
     if !rest.starts_with('#') {
         let snippet: String = rest.chars().take(20).collect();
@@ -35,7 +35,7 @@ pub fn parse_instance_at<'a>(input: &'a str, at: Span) -> ParseResult<(StepInsta
         let after_starts_keyword = after
             .chars()
             .next()
-            .map_or(false, |c| c.is_ascii_alphanumeric() || c == '_');
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
         if !after_starts_keyword {
             return parse_subsuper_internal(id, inner, after, at);
         }
@@ -46,11 +46,11 @@ pub fn parse_instance_at<'a>(input: &'a str, at: Span) -> ParseResult<(StepInsta
     parse_simple_instance(id, rest, at)
 }
 
-fn parse_simple_instance<'a>(
+fn parse_simple_instance(
     id: u64,
-    rest: &'a str,
+    rest: &str,
     at: Span,
-) -> ParseResult<(StepInstance, &'a str)> {
+) -> ParseResult<(StepInstance, &str)> {
     let (keyword, rest) = parse_keyword_at(rest, at)?;
     let rest = rest.trim_start();
     if !rest.starts_with('(') {

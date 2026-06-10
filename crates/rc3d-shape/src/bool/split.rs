@@ -228,7 +228,7 @@ fn split_face_single_curve(
 
     vec![
         SubFaceRegion {
-            uv_boundary: vec![params.iter().copied().collect()],
+            uv_boundary: vec![params.to_vec()],
             interior_point: side_a_uv,
             interior_point_3d: face.surface.d0(un_a, vn_a),
             original_face: face_key,

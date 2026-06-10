@@ -1171,7 +1171,8 @@ fn surface_point_deviation_cached(
         };
     }
     // Fast path: project() alone is sufficient for most surface types.
-    let result = if let Some((u, v)) = surface.project(p) {
+    
+    if let Some((u, v)) = surface.project(p) {
         let dev = (p - surface.d0_at_native_uv(u, v)).length();
         // Sub-micron accuracy is good enough — skip grid-search fallback.
         if dev < 1e-6 {
@@ -1191,8 +1192,7 @@ fn surface_point_deviation_cached(
             cache.insert(key, None);
             0.0
         }
-    };
-    result
+    }
 }
 
 fn tri_max_chord_error(
@@ -1267,9 +1267,9 @@ pub(crate) fn accumulate_normals(
     let tri_n = (p1 - p0).cross(p2 - p0);
     if tri_n.length() > 1e-10 {
         let n = tri_n.normalize();
-        global_normals[i0 as usize] = global_normals[i0 as usize] + n;
-        global_normals[i1 as usize] = global_normals[i1 as usize] + n;
-        global_normals[i2 as usize] = global_normals[i2 as usize] + n;
+        global_normals[i0 as usize] += n;
+        global_normals[i1 as usize] += n;
+        global_normals[i2 as usize] += n;
     }
 }
 

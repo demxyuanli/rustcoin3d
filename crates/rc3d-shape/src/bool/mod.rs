@@ -224,10 +224,10 @@ fn handle_no_intersection(
 
     // Check containment: is A inside B or B inside A?
     // Use a sample point from each shell
-    let a_inside_b = shells_a.first().map_or(false, |&sk| {
+    let a_inside_b = shells_a.first().is_some_and(|&sk| {
         shell_contains_point(sk, shells_b, reg)
     });
-    let b_inside_a = shells_b.first().map_or(false, |&sk| {
+    let b_inside_a = shells_b.first().is_some_and(|&sk| {
         shell_contains_point(sk, shells_a, reg)
     });
 

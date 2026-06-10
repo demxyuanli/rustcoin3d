@@ -29,7 +29,7 @@ pub fn read_exchange_with_recovery(
     Ok((exchange, skipped))
 }
 
-fn span_at<'a>(file: &str, suffix: &'a str) -> Span {
+fn span_at(file: &str, suffix: &str) -> Span {
     let offset = file.len().saturating_sub(suffix.len());
     line_col_at_offset(file, offset, 1)
 }
