@@ -459,18 +459,18 @@ impl<'a> BrepWriter<'a> {
                         base_pt.x, base_pt.y, base_pt.z)?;
                 }
                 SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir, .. } => {
-                    // OCC classic Revolution: 2 lines + flags
+                    // OCC classic: type=7, origin, axis on line 1
                     writeln!(output, "7 {} {} {} {} {} {}",
                         axis_origin.x, axis_origin.y, axis_origin.z,
                         axis_dir.x, axis_dir.y, axis_dir.z)?;
-                    // Write generatrix as BSpline degree 1 (sampled points)
+                    // Line 2: generatrix as BSpline (7 deg cp_count knot_count cps... no rational, no knots)
                     let gen_pts: Vec<Vec3> = (0..=16).map(|i| generatrix.d0(i as f32 / 16.0)).collect();
-                    write!(output, "7 0 0  1 {} {}  0", gen_pts.len(), gen_pts.len() + 2)?;
+                    let n = gen_pts.len();
+                    write!(output, "7 0 0  1 {} {}", n, n + 2)?;
                     for p in &gen_pts { write!(output, "  {} {} {}", p.x, p.y, p.z)?; }
-                    write!(output, " 0 0")?;
-                    for i in 1..gen_pts.len()-1 { write!(output, " {}", i)?; }
-                    writeln!(output, " {} {}", gen_pts.len()-1, gen_pts.len()-1)?;
-                    writeln!(output, " 0 4 1 4")?;
+                    writeln!(output)?;
+                    // Line 3: knot-multiplicity pairs: 0 {n_knots} 1 {n_knots}
+                    writeln!(output, " 0 {} 1 {}", n + 1, n + 1)?;
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
