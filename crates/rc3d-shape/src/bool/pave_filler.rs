@@ -16,7 +16,7 @@
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use crate::topo_iter;
-use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, PaveBlock};
+use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, InterfPoint, PaveBlock};
 use super::face_intersector;
 use rc3d_core::math::Vec3;
 
@@ -95,6 +95,38 @@ pub fn fill_paves(
         for &(fka, _) in &bboxes_a { test_pair(fka, fkb); }
     }
 
+    // Phase 1b: Edge-face interference — edges of one shell pierce faces of the other.
+    // OCC: BOPAlgo_PaveFiller processes edge-face interferences alongside face-face.
+    // Each edge-face hit becomes a single InterfPoint in a minimal FaceFaceInterf.
+    for &sk_a in shells_a {
+        for fk_a in topo_iter::iter_faces_of_shell(sk_a, reg) {
+            for ek in topo_iter::iter_edges_of_face(fk_a, reg) {
+                let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
+                for &(fkb, ref bbox_b) in &bboxes_b {
+                    if !edge_bbox_touches(edge, bbox_b, tolerance, reg) { continue; }
+                    let face_b = match reg.faces.get(fkb) { Some(f) => f, None => continue };
+                    let hits = super::intersect_edge::intersect_edge_face(
+                        &edge.curve, &face_b.surface, tolerance,
+                    );
+                    for hit in &hits {
+                        ds.face_face_interfs.push(FaceFaceInterf {
+                            face_a: fk_a, face_b: fkb,
+                            curves_3d: vec![],
+                            pcurves_a: vec![],
+                            pcurves_b: vec![],
+                            points: vec![InterfPoint {
+                                point_3d: hit.point,
+                                uv_a: hit.uv_face,
+                                uv_b: hit.uv_face, // same face hit from edge perspective
+                            }],
+                        });
+                        report.intersections_found += 1;
+                    }
+                }
+            }
+        }
+    }
+
     // Build pave blocks from the intersection data
     build_pave_blocks_from_interfs(&mut ds, reg, &mut report);
 
@@ -102,6 +134,21 @@ pub fn fill_paves(
     build_common_blocks(&mut ds, &mut report);
 
     (ds, report)
+}
+
+/// Quick AABB check: does the edge's bounding box intersect the face bbox?
+fn edge_bbox_touches(
+    edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: f32, reg: &BRepStore,
+) -> bool {
+    use super::aabb::AABB;
+    let p0 = edge.curve.d0(0.0);
+    let p1 = edge.curve.d0(1.0);
+    let mut edge_bb = AABB::empty();
+    edge_bb.expand(p0);
+    edge_bb.expand(p1);
+    edge_bb.expand(Vec3::new(p0.x + tol, p0.y + tol, p0.z + tol));
+    edge_bb.expand(Vec3::new(p1.x + tol, p1.y + tol, p1.z + tol));
+    edge_bb.overlaps(face_bbox)
 }
 
 /// Compute intersection for a single face pair.
