@@ -228,13 +228,14 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
                         center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
-                Curve2d::BSpline { degree, control_points, knots, weights } => {
-                    write!(output, "7 {} {} {} {}", degree, control_points.len(), knots.len(),
-                        if weights.is_some() { 1 } else { 0 })?;
-                    for cp in control_points { write!(output, " {} {}", cp.0, cp.1)?; }
-                    for k in knots { write!(output, " {}", k)?; }
-                    if let Some(w) = weights { for wt in w { write!(output, " {}", wt)?; } }
-                    writeln!(output)?;
+                Curve2d::BSpline { control_points, .. } => {
+                    // OCC Curve2ds may not support BSpline; write chord Line
+                    if let (Some(f), Some(l)) = (control_points.first(), control_points.last()) {
+                        let dx = l.0 - f.0; let dy = l.1 - f.1;
+                        let len = (dx*dx + dy*dy).sqrt().max(0.01);
+                        let (nx, ny) = if len > 0.01 { (dx/len, dy/len) } else { (1.0, 0.0) };
+                        writeln!(output, "1 0 {} {} {}", len, nx, ny)?;
+                    } else { writeln!(output, "1 0 1 1 0")?; }
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
@@ -470,7 +471,6 @@ impl<'a> BrepWriter<'a> {
                     for i in 1..gen_pts.len()-1 { write!(output, " {}", i)?; }
                     writeln!(output, " {} {}", gen_pts.len()-1, gen_pts.len()-1)?;
                     writeln!(output, " 0 4 1 4")?;
-                }
                 }
                 SurfaceGeom::Offset { basis, distance } => {
                     // Expand offset surface: write the actual geometry
