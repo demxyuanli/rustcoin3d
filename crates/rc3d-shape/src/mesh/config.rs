@@ -161,6 +161,8 @@ impl TessellationPolicy {
         if let DeflectionPolicy::Relative(r) = self.deflection {
             cfg.relative_deflection = r;
         }
+        // Propagate tier-specific fallback policy
+        cfg.fallback = self.fallback.clone();
         cfg
     }
 }
@@ -202,6 +204,9 @@ pub struct BRepMeshConfig {
     pub fast_export: bool,
     /// Tolerance for vertex welding after void shell merge. Prevents visible seams.
     pub weld_tolerance: f32,
+    /// Which fallback strategies are allowed when primary algorithm fails.
+    /// Default disables plane_center_fan and surface_fill_3d (他們不尊重边界约束).
+    pub fallback: FallbackAllowlist,
 }
 
 impl Default for BRepMeshConfig {
@@ -215,6 +220,7 @@ impl Default for BRepMeshConfig {
             same_parameter_tol: 1e-4,
             fast_export: false,
             weld_tolerance: 1e-6,
+            fallback: FallbackAllowlist::default(),
         }
     }
 }

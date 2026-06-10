@@ -142,6 +142,11 @@ pub(crate) fn mesh_faces_in_chunk(
         | SurfaceGeom::Torus { .. }
         );
         let mut algo = algo_from_plan(mesh_plan).unwrap_or(FaceMeshAlgo::SurfaceFill3d);
+        // Respect FallbackAllowlist: skip face when surface_fill_3d is disallowed
+        if algo == FaceMeshAlgo::SurfaceFill3d && !scaled_config.fallback.surface_fill_3d {
+            log::debug!("[BRep mesh] face {:?}: surface_fill_3d disallowed by FallbackAllowlist, skip", info_face_key);
+            continue;
+        }
         if info_wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
             algo = FaceMeshAlgo::TrimmedCdt;
         }
