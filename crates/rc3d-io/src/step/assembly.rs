@@ -448,44 +448,77 @@ impl AssemblyGraph {
 
     fn collect_shell_instances_dfs(
         &self,
-        pd_id: u64,
+        root_pd: u64,
         world: AssemblyTransform,
         entities: &EntityIndex,
         out: &mut ShellInstanceList,
         seen: &mut HashSet<(u64, [u32; 16])>,
         visiting: &mut HashSet<u64>,
     ) {
-        if !visiting.insert(pd_id) {
-            log::warn!("[assembly] cycle at product-definition #{pd_id}, skipping branch");
-            return;
+        // Iterative stack-based DFS — avoids stack overflow on deeply nested assemblies.
+        struct StackFrame {
+            pd_id: u64,
+            world: AssemblyTransform,
+            child_idx: usize,
+            emitted: bool,
         }
+        let mut stack: Vec<StackFrame> = Vec::new();
+        let mut stack_len: usize = 0;
+        let mut max_depth: usize = 0;
+        stack.push(StackFrame { pd_id: root_pd, world, child_idx: 0, emitted: false });
+        stack_len = 1;
 
-        if let Some(shape_reprs) = self.shapes.get(&pd_id) {
-            for &sid in shape_reprs {
-                for shell_id in find_shells_in_representation(sid, entities) {
-                    let key = (shell_id, world.matrix.to_cols_array().map(f32::to_bits));
-                    if seen.insert(key) {
-                        out.push((shell_id, world.clone()));
+        let empty_children = Vec::new();
+
+        // Pop → process → push-back pattern avoids borrowing stack while mutating it.
+        while let Some(mut frame) = stack.pop() {
+            stack_len -= 1;
+            let pd_id = frame.pd_id;
+
+            if !frame.emitted {
+                if !visiting.insert(pd_id) {
+                    log::warn!("[assembly] cycle at product-definition #{pd_id}, skipping branch");
+                    continue;
+                }
+                if stack_len + 1 > max_depth {
+                    max_depth = stack_len + 1;
+                    if max_depth > 16 {
+                        log::debug!("[assembly] deep assembly nesting: {} levels at PD #{}", max_depth, pd_id);
+                    }
+                }
+                frame.emitted = true;
+
+                if let Some(shape_reprs) = self.shapes.get(&pd_id) {
+                    for &sid in shape_reprs {
+                        for shell_id in find_shells_in_representation(sid, entities) {
+                            let key = (shell_id, frame.world.matrix.to_cols_array().map(f32::to_bits));
+                            if seen.insert(key) {
+                                out.push((shell_id, frame.world.clone()));
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        if let Some(children) = self.parent_child.get(&pd_id) {
-            for (child_pd, local) in children {
-                let child_world = world.compose(local);
-                self.collect_shell_instances_dfs(
-                    *child_pd,
-                    child_world,
-                    entities,
-                    out,
-                    seen,
-                    visiting,
-                );
+            let children = self.parent_child.get(&pd_id).unwrap_or(&empty_children);
+            if frame.child_idx < children.len() {
+                let (child_pd, local) = &children[frame.child_idx];
+                frame.child_idx += 1;
+                let child_world = frame.world.compose(local);
+                // Push back parent frame (with updated child_idx), then child
+                stack.push(frame);
+                stack_len += 1;
+                stack.push(StackFrame { pd_id: *child_pd, world: child_world, child_idx: 0, emitted: false });
+                stack_len += 1;
+            } else {
+                // All children processed — remove from visiting set
+                visiting.remove(&pd_id);
             }
         }
 
-        visiting.remove(&pd_id);
+        if max_depth > 16 {
+            log::info!("[assembly] max nesting depth: {} levels, {} total shell instances", max_depth, out.len());
+        }
     }
 
     fn accumulate(&self, pd_id: u64) -> AssemblyTransform {
