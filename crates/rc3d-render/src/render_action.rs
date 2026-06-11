@@ -879,81 +879,47 @@ impl RenderCollector {
                 if coord.points.is_empty() {
                     return;
                 }
-                let points_sig = if coord.points.len() >= 2 {
-                    let first = coord.points[0].to_array();
-                    let last = coord.points[coord.points.len() - 1].to_array();
-                    [
-                        first[0].to_bits(),
-                        first[1].to_bits(),
-                        first[2].to_bits(),
-                        last[0].to_bits(),
-                        last[1].to_bits(),
-                        last[2].to_bits(),
-                    ]
-                } else {
-                    let p = coord.points[0].to_array();
-                    [
-                        p[0].to_bits(),
-                        p[1].to_bits(),
-                        p[2].to_bits(),
-                        p[0].to_bits(),
-                        p[1].to_bits(),
-                        p[2].to_bits(),
-                    ]
-                };
-                let index_sig = if ifs.coord_index.len() >= 2 {
-                    [ifs.coord_index[0], ifs.coord_index[ifs.coord_index.len() - 1]]
-                } else if ifs.coord_index.len() == 1 {
-                    [ifs.coord_index[0], ifs.coord_index[0]]
-                } else {
-                    [0, 0]
-                };
+                // Full-content hash: any data change invalidates the shape cache.
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                coord.points.len().hash(&mut hasher);
+                for p in &coord.points {
+                    p.x.to_bits().hash(&mut hasher);
+                    p.y.to_bits().hash(&mut hasher);
+                    p.z.to_bits().hash(&mut hasher);
+                }
+                ifs.coord_index.len().hash(&mut hasher);
+                for &idx in &ifs.coord_index {
+                    idx.hash(&mut hasher);
+                }
                 let tex_el = self.state.texture_coordinate2();
-                let (tex_len, tex_sig) = if tex_el.coords.is_empty() {
-                    (0u32, [0u32; 4])
-                } else {
-                    let first = tex_el.coords[0];
-                    let last = tex_el.coords[tex_el.coords.len() - 1];
-                    (
-                        tex_el.coords.len() as u32,
-                        [
-                            first[0].to_bits(),
-                            first[1].to_bits(),
-                            last[0].to_bits(),
-                            last[1].to_bits(),
-                        ],
-                    )
-                };
+                let tex_len = tex_el.coords.len() as u32;
+                tex_len.hash(&mut hasher);
+                for tc in &tex_el.coords {
+                    tc[0].to_bits().hash(&mut hasher);
+                    tc[1].to_bits().hash(&mut hasher);
+                }
                 let norm_el = self.state.normal();
-                let (normal_len, normal_sig) =
-                    if norm_el.vectors.len() == coord.points.len() && !norm_el.vectors.is_empty()
-                    {
-                        let first = norm_el.vectors[0].to_array();
-                        let last = norm_el.vectors[norm_el.vectors.len() - 1].to_array();
-                        (
-                            norm_el.vectors.len() as u32,
-                            [
-                                first[0].to_bits(),
-                                first[1].to_bits(),
-                                first[2].to_bits(),
-                                last[0].to_bits(),
-                                last[1].to_bits(),
-                                last[2].to_bits(),
-                            ],
-                        )
-                    } else {
-                        (0u32, [0u32; 6])
-                    };
+                let normal_len = if norm_el.vectors.len() == coord.points.len() && !norm_el.vectors.is_empty() {
+                    norm_el.vectors.len() as u32
+                } else {
+                    0u32
+                };
+                normal_len.hash(&mut hasher);
+                for nv in &norm_el.vectors {
+                    nv.x.to_bits().hash(&mut hasher);
+                    nv.y.to_bits().hash(&mut hasher);
+                    nv.z.to_bits().hash(&mut hasher);
+                }
+                let content_hash = hasher.finish();
+
                 let key = ShapeKey::IndexedFaceSet {
                     node: node.data().as_ffi(),
                     coord_len: coord.points.len() as u32,
                     coord_index_len: ifs.coord_index.len() as u32,
-                    points_sig,
-                    index_sig,
+                    content_hash,
                     tex_len,
-                    tex_sig,
                     normal_len,
-                    normal_sig,
                 };
                 let cached: Option<CachedShapeData> = match self.mesh_cache.entry(key) {
                     Entry::Occupied(occupied) => Some(occupied.get().clone()),

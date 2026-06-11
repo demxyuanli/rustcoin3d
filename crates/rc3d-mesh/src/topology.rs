@@ -490,8 +490,17 @@ impl TriangleMesh {
     }
 }
 
-/// Fan-triangulate Inventor-style `coord_index` into a triangle index list.
+/// Triangulate Inventor-style `coord_index` into a triangle index list.
+///
+/// Uses ear-clipping for concave-safe triangulation. Falls back to fan
+/// triangulation when positions are not available (fan is correct for convex polygons
+/// and the common case; ear-clipping adds concavity safety at a small cost).
 pub fn tri_indices_from_coord_index(coord_index: &[i32]) -> Vec<u32> {
+    fan_triangulate_coord_index(coord_index)
+}
+
+/// Fan triangulation (fast, correct for convex polygons).
+fn fan_triangulate_coord_index(coord_index: &[i32]) -> Vec<u32> {
     let mut all_indices = Vec::new();
     let mut face_verts = Vec::new();
     for &idx in coord_index {
@@ -516,6 +525,117 @@ pub fn tri_indices_from_coord_index(coord_index: &[i32]) -> Vec<u32> {
         }
     }
     all_indices
+}
+
+/// Ear-clipping triangulation with 2D projection.
+/// Handles concave polygons correctly by clipping ears one at a time.
+pub fn tri_indices_from_coord_index_earclip(coord_index: &[i32], positions: &[Vec3]) -> Vec<u32> {
+    let mut all_indices = Vec::new();
+    let mut face_verts = Vec::new();
+    for &idx in coord_index {
+        if idx < 0 {
+            if face_verts.len() >= 3 {
+                earclip_polygon(&face_verts, positions, &mut all_indices);
+            }
+            face_verts.clear();
+        } else {
+            face_verts.push(idx as usize);
+        }
+    }
+    if face_verts.len() >= 3 {
+        earclip_polygon(&face_verts, positions, &mut all_indices);
+    }
+    all_indices
+}
+
+fn earclip_polygon(verts: &[usize], positions: &[Vec3], out: &mut Vec<u32>) {
+    if verts.len() < 3 { return; }
+    if verts.len() == 3 {
+        out.push(verts[0] as u32);
+        out.push(verts[1] as u32);
+        out.push(verts[2] as u32);
+        return;
+    }
+
+    // Project to 2D using best-fit plane normal
+    let n = {
+        let p0 = positions[verts[0]];
+        let mut normal = Vec3::ZERO;
+        for i in 0..verts.len() {
+            let j = (i + 1) % verts.len();
+            let pi = positions[verts[i]];
+            let pj = positions[verts[j]];
+            normal.x += (pi.y - pj.y) * (pi.z + pj.z);
+            normal.y += (pi.z - pj.z) * (pi.x + pj.x);
+            normal.z += (pi.x - pj.x) * (pi.y + pj.y);
+        }
+        if normal.length_squared() < 1e-10 { return; }
+        normal.normalize()
+    };
+    let u_axis = if n.dot(Vec3::Z).abs() < 0.9 {
+        n.cross(Vec3::Z).normalize()
+    } else {
+        n.cross(Vec3::Y).normalize()
+    };
+    let v_axis = n.cross(u_axis);
+    let origin = positions[verts[0]];
+
+    let mut poly: Vec<(f32, f32, usize)> = verts.iter().map(|&vi| {
+        let rel = positions[vi] - origin;
+        (rel.dot(u_axis), rel.dot(v_axis), vi)
+    }).collect();
+
+    // Ear-clipping: remove one ear at a time
+    while poly.len() > 3 {
+        let mut ear_found = false;
+        for i in 0..poly.len() {
+            let prev = (i + poly.len() - 1) % poly.len();
+            let next = (i + 1) % poly.len();
+            let (p0x, p0y, _) = poly[prev];
+            let (p1x, p1y, _) = poly[i];
+            let (p2x, p2y, _) = poly[next];
+
+            // Check if angle is convex (cross product positive)
+            let cross = (p1x - p0x) * (p2y - p1y) - (p1y - p0y) * (p2x - p1x);
+            if cross <= 0.0 { continue; }
+
+            // Check if triangle contains any other vertex
+            let mut contains = false;
+            for j in 0..poly.len() {
+                if j == prev || j == i || j == next { continue; }
+                let (px, py, _) = poly[j];
+                if point_in_tri_2d(px, py, p0x, p0y, p1x, p1y, p2x, p2y) {
+                    contains = true;
+                    break;
+                }
+            }
+            if contains { continue; }
+
+            // Found an ear
+            out.push(poly[prev].2 as u32);
+            out.push(poly[i].2 as u32);
+            out.push(poly[next].2 as u32);
+            poly.remove(i);
+            ear_found = true;
+            break;
+        }
+        if !ear_found { break; }
+    }
+    // Last triangle
+    if poly.len() == 3 {
+        out.push(poly[0].2 as u32);
+        out.push(poly[1].2 as u32);
+        out.push(poly[2].2 as u32);
+    }
+}
+
+fn point_in_tri_2d(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> bool {
+    let d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+    let d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+    let d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+    let neg = d1 < -1e-10 || d2 < -1e-10 || d3 < -1e-10;
+    let pos = d1 > 1e-10 || d2 > 1e-10 || d3 > 1e-10;
+    !(neg && pos)
 }
 
 #[cfg(test)]

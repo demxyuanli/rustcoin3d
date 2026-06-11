@@ -42,13 +42,11 @@ pub enum ShapeKey {
         node: u64,
         coord_len: u32,
         coord_index_len: u32,
-        points_sig: [u32; 6],
-        index_sig: [i32; 2],
+        /// Full-content hash of coord points + indices + texcoords + normals.
+        /// Replaces sampled first/last signatures — any data change invalidates cache.
+        content_hash: u64,
         tex_len: u32,
-        tex_sig: [u32; 4],
-        /// Explicit normals from `NormalNode` (len must match coord when used); 0 = use computed only.
         normal_len: u32,
-        normal_sig: [u32; 6],
     },
 }
 
@@ -67,7 +65,25 @@ pub type CachedShapeData = (
 pub const MAX_EDGE_POSITIONS: usize = 50_000_000;
 
 /// Triangle count threshold above which meshlet generation is skipped.
+/// Default 500K. For GPUs with >8GB VRAM, this can be raised at runtime.
 pub const MESHLET_TRIANGLE_THRESHOLD: usize = 500_000;
+
+/// Runtime-configurable meshlet triangle threshold (0 = use default).
+#[allow(clippy::incompatible_msrv)]
+static MESHLET_THRESHOLD_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Get the effective meshlet triangle threshold.
+pub fn meshlet_triangle_threshold() -> usize {
+    let ov = MESHLET_THRESHOLD_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst);
+    if ov > 0 { ov } else { MESHLET_TRIANGLE_THRESHOLD }
+}
+
+/// Set a runtime override for the meshlet triangle threshold.
+/// Set to 0 to restore the default.
+pub fn set_meshlet_triangle_threshold(max_tris: usize) {
+    MESHLET_THRESHOLD_OVERRIDE.store(max_tris, std::sync::atomic::Ordering::SeqCst);
+}
 
 /// Runtime-configurable feature edge crease angle (degrees).
 /// Default 12°. Set via `set_feature_crease_angle`.
