@@ -23,9 +23,9 @@ fn pmi_style() -> AnnotationStyle {
     }
 }
 
-/// Helper: PVec3 to [Real; 3].
-fn to_arr(v: &rc3d_core::math::PVec3) -> [Real; 3] {
-    [v.x, v.y, v.z]
+/// Helper: PVec3 to [f32; 3] for annotation rendering boundary.
+fn to_arr(v: &rc3d_core::math::PVec3) -> [f32; 3] {
+    [v.x as f32, v.y as f32, v.z as f32]
 }
 
 /// Convert a PmiDimension to an AnnotationElement.
@@ -63,7 +63,7 @@ fn tolerance_to_element(tol: &PmiToleranceFrame) -> Option<AnnotationElement> {
     };
     Some(AnnotationElement::GdtFeatureControlFrame {
         symbol,
-        tolerance: tol.value,
+        tolerance: tol.value as f32,
         diameter: tol.diameter,
         datum_primary: tol.datum_primary.clone(),
         datum_secondary: tol.datum_secondary.clone(),
@@ -149,7 +149,7 @@ pub fn attach_pmi_full_to_scene(
 fn surface_finish_to_element(finish: &super::pmi_types::PmiSurfaceFinish) -> AnnotationElement {
     let ra = finish.ra_value.unwrap_or(0.0);
     AnnotationElement::SurfaceFinish {
-        ra_value: ra,
+        ra_value: ra as f32,
         note: finish.note.clone(),
         position: AnnotationPoint::local(to_arr(&finish.anchor_point)),
         direction: [0.0, 1.0, 0.0],

@@ -85,7 +85,7 @@ pub fn write_scene(graph: &SceneGraph) -> Result<String, String> {
 
     // Unique vertices → CARTESIAN_POINT
     let mut vert_ids: Vec<u64> = Vec::with_capacity(all_verts.len());
-    let mut vert_map: HashMap<[u32; 3], u64> = HashMap::new();
+    let mut vert_map: HashMap<[u64; 3], u64> = HashMap::new();
     for v in &all_verts {
         let key = rc3d_core::utils::hash::f64x3_quantized_bits([v.x, v.y, v.z]);
         if let Some(&id) = vert_map.get(&key) {

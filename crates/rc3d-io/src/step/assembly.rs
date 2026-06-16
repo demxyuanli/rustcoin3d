@@ -246,7 +246,7 @@ impl AssemblyContext {
 
     pub fn shell_instances(&self, entities: &EntityIndex) -> ShellInstanceList {
         let mut instances = ShellInstanceList::new();
-        let mut seen: HashSet<(u64, [u32; 16])> = HashSet::new();
+        let mut seen: HashSet<(u64, [u64; 16])> = HashSet::new();
         let mut visiting = HashSet::new();
         for root_pd in self.graph.find_pd_roots() {
             self.graph.collect_shell_instances_dfs(
@@ -453,7 +453,7 @@ impl AssemblyGraph {
         world: AssemblyTransform,
         entities: &EntityIndex,
         out: &mut ShellInstanceList,
-        seen: &mut HashSet<(u64, [u32; 16])>,
+        seen: &mut HashSet<(u64, [u64; 16])>,
         visiting: &mut HashSet<u64>,
     ) {
         // Iterative stack-based DFS — avoids stack overflow on deeply nested assemblies.
