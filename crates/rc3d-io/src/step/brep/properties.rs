@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn test_unit_sphere_properties() {
         // Approximate sphere with octahedron subdivision
-        let r = 1.0f32;
+        let r = 1.0_f64;
         let mut verts = Vec::new();
         let mut idx = Vec::new();
         // Simple octahedron approximating a sphere

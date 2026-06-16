@@ -1,7 +1,7 @@
 //! SceneEmitPlan -> SceneGraph adapter (transform instancing, no vertex bake).
 
 use rc3d_core::math::Real;
-use rc3d_core::math::{PMat4, PVec3};
+use rc3d_core::math::{Mat4, PMat4, PVec3, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::annotation::AnnotationPoint;
 use rc3d_scene::node_data::{
@@ -275,8 +275,8 @@ fn pmi_style() -> rc3d_scene::annotation::AnnotationStyle {
 
 fn material_node_from_rgb(color: [Real; 3]) -> MaterialNode {
     MaterialNode {
-        diffuse_color: PVec3::new(color[0], color[1], color[2]),
-        base_color: PVec3::new(color[0], color[1], color[2]),
+        diffuse_color: Vec3::new(color[0] as f32, color[1] as f32, color[2] as f32),
+        base_color: Vec3::new(color[0] as f32, color[1] as f32, color[2] as f32),
         roughness: 0.35,
         opacity: 1.0,
         ..Default::default()
@@ -284,16 +284,20 @@ fn material_node_from_rgb(color: [Real; 3]) -> MaterialNode {
 }
 
 fn material_with_opacity(mut node: MaterialNode, opacity: Real) -> MaterialNode {
-    node.opacity = opacity;
+    node.opacity = opacity as f32;
     node
 }
 
 fn transform_node_from_mat4(m: PMat4) -> TransformNode {
+    let m_f32 = Mat4::from_cols(
+        m.x_axis.as_vec4(), m.y_axis.as_vec4(),
+        m.z_axis.as_vec4(), m.w_axis.as_vec4(),
+    );
     TransformNode {
-        translation: PVec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z),
-        rotation: m,
-        scale: PVec3::ONE,
-        center: PVec3::ZERO,
+        translation: Vec3::new(m.w_axis.x as f32, m.w_axis.y as f32, m.w_axis.z as f32),
+        rotation: m_f32,
+        scale: Vec3::ONE,
+        center: Vec3::ZERO,
     }
 }
 
@@ -301,16 +305,21 @@ fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: rc3d_shape::MeshRe
     let vert_count = mesh.vertices.len();
     let normal_count = mesh.normals.len();
     let tri_count = mesh.indices.len() / 4;
+    // Convert f64→f32 at the scene graph rendering boundary
+    let f32_verts: Vec<Vec3> = mesh.vertices.iter()
+        .map(|v| Vec3::new(v.x as f32, v.y as f32, v.z as f32)).collect();
+    let f32_normals: Vec<Vec3> = mesh.normals.iter()
+        .map(|n| Vec3::new(n.x as f32, n.y as f32, n.z as f32)).collect();
     graph.add_child(
         comp,
         NodeData::Coordinate3(Coordinate3Node {
-            point: mesh.vertices,
+            point: f32_verts,
         }),
     );
     if !mesh.normals.is_empty() {
         graph.add_child(
             comp,
-            NodeData::Normal(NormalNode::from_vectors(mesh.normals)),
+            NodeData::Normal(NormalNode::from_vectors(f32_normals)),
         );
     }
     graph.add_child(

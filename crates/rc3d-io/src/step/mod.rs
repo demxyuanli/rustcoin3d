@@ -35,7 +35,7 @@ pub use scene_emit::{apply_plan, emit_plan_options_from_step, SceneEmitOptions};
 pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::{Real, PVec3, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{MaterialNode, SeparatorNode};
@@ -375,8 +375,8 @@ fn exchange_to_import_result(
     graph.add_child(
         root,
         NodeData::Material(MaterialNode {
-            diffuse_color: PVec3::new(default_color[0], default_color[1], default_color[2]),
-            base_color: PVec3::new(default_color[0], default_color[1], default_color[2]),
+            diffuse_color: Vec3::new(default_color[0] as f32, default_color[1] as f32, default_color[2] as f32),
+            base_color: Vec3::new(default_color[0] as f32, default_color[1] as f32, default_color[2] as f32),
             roughness: 0.35,
             opacity: 1.0,
             ..Default::default()

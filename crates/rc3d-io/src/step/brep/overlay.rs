@@ -3,7 +3,7 @@
 use rc3d_core::math::Real;
 use std::collections::HashSet;
 
-use rc3d_core::math::PVec3;
+use rc3d_core::math::{PVec3, Vec3};
 use rc3d_shape::geom::curve2d::Curve2d;
 use rc3d_scene::SceneGraph;
 use rc3d_scene::node_data::{
