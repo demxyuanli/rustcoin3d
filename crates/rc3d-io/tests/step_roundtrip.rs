@@ -1,7 +1,7 @@
 //! Test STEP roundtrip: parse → export → re-parse → compare
 //! Run: cargo test -p rc3d-io --test step_roundtrip --release -- --nocapture
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
@@ -40,9 +40,9 @@ fn mesh_step_file(step_path: &Path) -> MeshResult {
     mesh
 }
 
-fn bbox(verts: &[Vec3]) -> (Vec3, Vec3) {
-    let mut mn = Vec3::splat(f32::MAX);
-    let mut mx = Vec3::splat(f32::MIN);
+fn bbox(verts: &[PVec3]) -> (PVec3, PVec3) {
+    let mut mn = PVec3::splat(f64::MAX);
+    let mut mx = PVec3::splat(f64::MIN);
     for v in verts { mn = mn.min(*v); mx = mx.max(*v); }
     (mn, mx)
 }
@@ -96,9 +96,9 @@ fn step_roundtrip_shape() {
         let mut ref_mesh = MeshResult::default();
         for tri in tris {
             let base = ref_mesh.vertices.len() as i32;
-            ref_mesh.vertices.push(Vec3::from(tri.vertices[0]));
-            ref_mesh.vertices.push(Vec3::from(tri.vertices[1]));
-            ref_mesh.vertices.push(Vec3::from(tri.vertices[2]));
+            ref_mesh.vertices.push(PVec3::from(tri.vertices[0]));
+            ref_mesh.vertices.push(PVec3::from(tri.vertices[1]));
+            ref_mesh.vertices.push(PVec3::from(tri.vertices[2]));
             ref_mesh.indices.extend_from_slice(&[base, base + 1, base + 2, -1]);
         }
         let h_ref = hausdorff_meshes(&reimported, &ref_mesh, 512);

@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 use super::*;
 use super::curve::{build_bspline_2d, parse_trim_bound, resolve_cartesian_2d};
 
@@ -14,7 +15,7 @@ pub fn resolve_edge_pcurve(
     edge_curve_id: u64,
     surface_id: Option<u64>,
     entities: &EntityIndex,
-    tol: f32,
+    tol: Real,
 ) -> CurveGeom {
     let step_pcs = surface_id
         .map(|sid| collect_pcurves_for_face(edge_curve_id, sid, entities))
@@ -66,7 +67,7 @@ pub fn resolve_edge_pcurve(
     fb
 }
 
-fn pcurve_match_tol(curve: &CurveGeom, tol: f32) -> f32 {
+fn pcurve_match_tol(curve: &CurveGeom, tol: Real) -> Real {
     let edge_len = (curve.d0(0.0) - curve.d0(1.0)).length();
     (tol.max(1e-4) * 10.0).max(edge_len * 0.05).max(1e-3)
 }
@@ -76,12 +77,12 @@ fn validate_pcurve_on_surface(
     curve: &CurveGeom,
     pcurve: &CurveGeom,
     surface: &SurfaceGeom,
-    match_tol: f32,
+    match_tol: Real,
     reversed: bool,
 ) -> bool {
     const SAMPLES: usize = 8;
     for i in 0..=SAMPLES {
-        let t = i as f32 / SAMPLES as f32;
+        let t = i as Real / SAMPLES as Real;
         let p3 = curve.d0(t);
         let t_pc = if reversed { 1.0 - t } else { t };
         let uv = pcurve.d0(t_pc);
@@ -92,10 +93,10 @@ fn validate_pcurve_on_surface(
     true
 }
 
-fn pcurve_uv_native_candidates(surface: &SurfaceGeom, u: f32, v: f32) -> Vec<(f32, f32)> {
+fn pcurve_uv_native_candidates(surface: &SurfaceGeom, u: Real, v: Real) -> Vec<(Real, Real)> {
     let mut out = vec![(u, v)];
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
-        const TAU: f32 = std::f32::consts::TAU;
+        const TAU: Real = std::f64::consts::TAU;
         if u <= 1.0 + 1e-4 {
             out.push((u * TAU, v));
         }
@@ -113,21 +114,21 @@ fn pcurve_uv_matches_3d(
     surface: &SurfaceGeom,
     p3: Vec3,
     uv: Vec3,
-    match_tol: f32,
+    match_tol: Real,
 ) -> bool {
     for (u, v) in pcurve_uv_native_candidates(surface, uv.x, uv.y) {
         if (p3 - surface.d0_native(u, v)).length() <= match_tol {
             return true;
         }
         if let Some(period_u) = surface.native_u_period() {
-            for shift in [-1.0f32, 1.0] {
+            for shift in [-1.0_f64, 1.0] {
                 if (p3 - surface.d0_native(u + shift * period_u, v)).length() <= match_tol {
                     return true;
                 }
             }
         }
         if let Some(period_v) = surface.native_v_period() {
-            for shift in [-1.0f32, 1.0] {
+            for shift in [-1.0_f64, 1.0] {
                 if (p3 - surface.d0_native(u, v + shift * period_v)).length() <= match_tol {
                     return true;
                 }
@@ -138,7 +139,7 @@ fn pcurve_uv_matches_3d(
 }
 
 /// Map a 3D edge sample to native surface UV (Revolution uses analytic inverse).
-fn sample_3d_to_native_uv(surface: &SurfaceGeom, p3: Vec3, inv_tol: f32) -> (f32, f32) {
+fn sample_3d_to_native_uv(surface: &SurfaceGeom, p3: Vec3, inv_tol: Real) -> (Real, Real) {
     if let SurfaceGeom::Revolution { .. } = surface {
         if let Some(uv) = surface.revolution_native_uv_at(p3) {
             return uv;
@@ -154,7 +155,7 @@ fn reverse_pcurve(pcurve: &CurveGeom) -> CurveGeom {
     let n = PCURVE_POLYLINE_SAMPLES;
     let mut points = Vec::with_capacity(n as usize + 1);
     for i in 0..=n {
-        let t = 1.0 - i as f32 / n as f32;
+        let t = 1.0 - i as Real / n as Real;
         points.push(pcurve.d0(t));
     }
     CurveGeom::Polyline { points }
@@ -165,7 +166,7 @@ fn pcurve_uv_is_degenerate(pcurve: &CurveGeom) -> bool {
     let p0 = pcurve.d0(0.0);
     pcurve.d0(1.0);
     for i in 1..=SAMPLES {
-        let t = i as f32 / SAMPLES as f32;
+        let t = i as Real / SAMPLES as Real;
         if (pcurve.d0(t) - p0).length_squared() > 1e-12 {
             return false;
         }
@@ -177,13 +178,13 @@ fn pcurve_uv_is_degenerate(pcurve: &CurveGeom) -> bool {
 fn build_parametric_fallback_pcurve(
     curve: &CurveGeom,
     surface: &SurfaceGeom,
-    match_tol: f32,
+    match_tol: Real,
 ) -> CurveGeom {
     let inv_tol = (match_tol * 5.0).max(0.5);
     let n = PCURVE_POLYLINE_SAMPLES;
     let mut uv_points = Vec::with_capacity(n as usize + 1);
     for i in 0..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let p3 = curve.d0(t);
         let (u, v) = sample_3d_to_native_uv(surface, p3, inv_tol);
         uv_points.push(Vec3::new(u, v, 0.0));
@@ -302,14 +303,14 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
         }
         "CIRCLE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let center = resolve_placement_2d(placement_id, entities)?;
             Some(CurveGeom::circle(Vec3::new(center.0, center.1, 0.0), Vec3::Z, radius))
         }
         "ELLIPSE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
-            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
+            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
+            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let center = resolve_placement_2d(placement_id, entities)?;
             Some(CurveGeom::ellipse(Vec3::new(center.0, center.1, 0.0), Vec3::Z, semi_major, semi_minor))
         }
@@ -373,16 +374,16 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
 // ── 2D point/vector helpers ───────────────────────────────────────
 
 /// Resolve a DIRECTION or VECTOR to a (du, dv) pair.
-fn resolve_vector_2d(vec_id: u64, entities: &EntityIndex) -> Option<(f32, f32)> {
+fn resolve_vector_2d(vec_id: u64, entities: &EntityIndex) -> Option<(Real, Real)> {
     let record = entities.get(&vec_id)?;
     if record.name != "DIRECTION" && record.name != "VECTOR" { return None; }
     let coords = nth_list_f64(&record.params, 1)?;
     if coords.len() < 2 { return None; }
-    Some((coords[0] as f32, coords[1] as f32))
+    Some((coords[0] as Real, coords[1] as Real))
 }
 
 /// Resolve an AXIS2_PLACEMENT_2D to its origin (u, v).
-fn resolve_placement_2d(place_id: u64, entities: &EntityIndex) -> Option<(f32, f32)> {
+fn resolve_placement_2d(place_id: u64, entities: &EntityIndex) -> Option<(Real, Real)> {
     let record = entities.get(&place_id)?;
     if record.name != "AXIS2_PLACEMENT_2D" && record.name != "AXIS2_PLACEMENT_3D" {
         return None;
@@ -402,7 +403,7 @@ fn nth_list_f64(params: &StepValue, index: usize) -> Option<Vec<f64>> {
 fn build_synthetic_pcurve(
     curve: &CurveGeom,
     surface: &SurfaceGeom,
-    match_tol: f32,
+    match_tol: Real,
 ) -> Option<CurveGeom> {
     let n = PCURVE_POLYLINE_SAMPLES;
     let inv_tol = (match_tol * 5.0).max(0.5);
@@ -420,7 +421,7 @@ fn build_synthetic_pcurve(
             if du * du + dv * dv > 1e-12 {
                 let mut uv_points = Vec::with_capacity(n as usize + 1);
                 for i in 0..=n {
-                    let t = i as f32 / n as f32;
+                    let t = i as Real / n as Real;
                     let u = uv0.0 + du * t;
                     let v = uv0.1 + dv * t;
                     uv_points.push(Vec3::new(u, v, 0.0));
@@ -437,7 +438,7 @@ fn build_synthetic_pcurve(
                     let v1 = uv1.1;
                     let mut uv_points = Vec::with_capacity(n as usize + 1);
                     for i in 0..=n {
-                        let t = i as f32 / n as f32;
+                        let t = i as Real / n as Real;
                         let p3 = curve.d0(t);
                         let u = u0 + du_g * t;
                         let v = surface
@@ -454,7 +455,7 @@ fn build_synthetic_pcurve(
         let mut all_same = true;
         let mut first: Option<Vec3> = None;
         for i in 0..=n {
-            let t = i as f32 / n as f32;
+            let t = i as Real / n as Real;
             let p3 = curve.d0(t);
             let u = surface.revolution_generatrix_u_at(p3).unwrap_or(t);
             let v = surface
@@ -486,7 +487,7 @@ fn build_synthetic_pcurve(
                 .unwrap_or(v0);
             let mut uv_points = Vec::with_capacity(n as usize + 1);
             for i in 0..=n {
-                let t = i as f32 / n as f32;
+                let t = i as Real / n as Real;
                 uv_points.push(Vec3::new(t, v0 + (v1 - v0) * t, 0.0));
             }
             return Some(CurveGeom::Polyline { points: uv_points });
@@ -496,7 +497,7 @@ fn build_synthetic_pcurve(
     let mut uv_points = Vec::with_capacity(n as usize + 1);
     let mut map_failures = 0usize;
     for i in 0..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let p3 = curve.d0(t);
         let mapped = surface.revolution_native_uv_at(p3)
             .or_else(|| surface.inverse_native_uv_build(p3, inv_tol))
@@ -850,7 +851,7 @@ mod tests {
                 // Native (u,v): u = generatrix parameter, v = axis angle in radians.
                 let p0 = surface.d0_native(0.0, 0.0);
                 assert!((p0 - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-3);
-                let p90 = surface.d0_native(0.0, std::f32::consts::FRAC_PI_2);
+                let p90 = surface.d0_native(0.0, std::f64::consts::FRAC_PI_2);
                 assert!((p90 - Vec3::new(0.0, 5.0, 0.0)).length() < 1e-2);
             }
             _ => panic!("expected Revolution"),

@@ -11,7 +11,7 @@
 //! 4. Create new BRepFace entities from wire loops + original surface
 
 use std::collections::HashMap;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::*;
@@ -23,11 +23,11 @@ struct EdgeSplitPoint {
     /// The edge being split.
     edge: EdgeKey,
     /// Parameter t on the edge where the split occurs.
-    t: f32,
+    t: Real,
     /// 3D position of the split point.
-    position: Vec3,
+    position: PVec3,
     /// UV coordinate on the face surface.
-    uv: (f32, f32),
+    uv: (Real, Real),
     /// The new vertex created at this split (populated after vertex creation).
     vertex: Option<VertexKey>,
 }
@@ -119,7 +119,7 @@ fn detect_edge_split_points(
             if let Some(pave_blocks) = bopds.pave_blocks.get(&ek) {
                 for pb in pave_blocks {
                     if pb.face_refs.contains(&face_key) {
-                        let uv_at = |t: f32| -> (f32, f32) {
+                        let uv_at = |t: Real| -> (Real, Real) {
                             reg.edges.get(ek)
                                 .and_then(|e| e.pcurves.get(&face_key))
                                 .map(|pc| pc.d0(t))
@@ -203,8 +203,8 @@ fn split_edges_at_points(
     face_key: FaceKey,
     split_vertices: &[EdgeSplitPoint],
     reg: &mut BRepStore,
-) -> HashMap<EdgeKey, Vec<(EdgeKey, f32, f32)>> {
-    let mut edge_splits: HashMap<EdgeKey, Vec<(f32, VertexKey)>> = HashMap::new();
+) -> HashMap<EdgeKey, Vec<(EdgeKey, Real, Real)>> {
+    let mut edge_splits: HashMap<EdgeKey, Vec<(Real, VertexKey)>> = HashMap::new();
 
     for sp in split_vertices {
         if let Some(vk) = sp.vertex {
@@ -212,7 +212,7 @@ fn split_edges_at_points(
         }
     }
 
-    let mut result: HashMap<EdgeKey, Vec<(EdgeKey, f32, f32)>> = HashMap::new();
+    let mut result: HashMap<EdgeKey, Vec<(EdgeKey, Real, Real)>> = HashMap::new();
 
     for (ek, mut splits) in edge_splits {
         splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -235,7 +235,7 @@ fn split_edges_at_points(
         };
 
         let mut segments = Vec::new();
-        let mut t_prev = 0.0f32;
+        let mut t_prev = 0.0_f64;
         let mut v_prev = edge_v_low;
 
         for &(t, vk) in &splits {
@@ -271,8 +271,8 @@ fn create_edge_segment(
     _original_ek: EdgeKey,
     v_start: VertexKey,
     v_end: VertexKey,
-    t_start: f32,
-    t_end: f32,
+    t_start: Real,
+    t_end: Real,
     curve_3d: &CurveGeom,
     pcurve: &Curve2d,
     face_key: FaceKey,
@@ -317,7 +317,7 @@ fn build_face_from_region(
     _original_face: FaceKey,
     region: &super::split::SubFaceRegion,
     surface: &SurfaceGeom,
-    _edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, f32, f32)>>,
+    _edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, Real, Real)>>,
     reg: &mut BRepStore,
 ) -> Option<FaceKey> {
     // Create a new face with the same surface
@@ -402,13 +402,13 @@ fn build_face_from_region(
 }
 
 /// Find the parameter t on an edge closest to a 3D point.
-fn point_on_edge_param(pt: Vec3, ek: EdgeKey, reg: &BRepStore, tol: f32) -> Option<f32> {
+fn point_on_edge_param(pt: PVec3, ek: EdgeKey, reg: &BRepStore, tol: Real) -> Option<Real> {
     let edge = reg.edges.get(ek)?;
     let n = 16;
-    let mut best_t = 0.0f32;
-    let mut best_d2 = f32::MAX;
+    let mut best_t = 0.0_f64;
+    let mut best_d2 = f64::MAX;
     for i in 0..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let d2 = (edge.curve.d0(t) - pt).length_squared();
         if d2 < best_d2 {
             best_d2 = d2;
@@ -441,17 +441,17 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepWire, FaceKey, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_edge_split_detection() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let edge_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(2.0, 0.0, 0.0) };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let edge_3d = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(2.0, 0.0, 0.0) };
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface: surface.clone(),
@@ -468,7 +468,7 @@ mod tests {
 
         // Create an intersection curve with endpoint at (1, 0, 0) — on the edge
         let curve = super::super::split::BRepIntersectionCurve {
-            points_3d: vec![Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0)],
+            points_3d: vec![PVec3::new(1.0, 0.0, 0.0), PVec3::new(1.0, 1.0, 0.0)],
             params_a: vec![(1.0, 0.0), (1.0, 1.0)],
             params_b: vec![(0.0, 0.0), (0.0, 1.0)],
             face_a: fk,
@@ -485,14 +485,14 @@ mod tests {
     fn test_build_face_from_region() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let region = super::super::split::SubFaceRegion {
             uv_boundary: vec![vec![
                 (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0),
             ]],
             interior_point: (0.5, 0.5),
-            interior_point_3d: Vec3::new(0.5, 0.5, 0.0),
+            interior_point_3d: PVec3::new(0.5, 0.5, 0.0),
             original_face: FaceKey::default(),
         };
 

@@ -1,18 +1,19 @@
 //! PMI annotation geometry extraction from AP242 STEP entities.
 
+use rc3d_core::math::Real;
 use super::super::entity_types::EntityType;
 use super::super::parser::EntityIndex;
 use super::pmi_types::{FinishSymbol, PmiDataSet, PmiSurfaceFinish};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_scene::node_data::{GdtMaterialCondition, GdtSymbol};
 
 /// Linear dimension with start/end points and offset direction.
 #[derive(Debug, Clone)]
 pub struct PmiDimension {
     pub entity_id: u64,
-    pub start: Vec3,
-    pub end: Vec3,
-    pub offset_dir: Vec3,
+    pub start: PVec3,
+    pub end: PVec3,
+    pub offset_dir: PVec3,
     pub text: String,
 }
 
@@ -20,19 +21,19 @@ pub struct PmiDimension {
 #[derive(Debug, Clone)]
 pub struct PmiDatum {
     pub entity_id: u64,
-    pub origin: Vec3,
-    pub normal: Vec3,
+    pub origin: PVec3,
+    pub normal: PVec3,
     pub label: String,
 }
 
 /// Geometric tolerance frame with GD&T typed fields.
 #[derive(Debug, Clone)]
 pub struct PmiToleranceFrame {
-    pub origin: Vec3,
-    pub leader_points: Vec<Vec3>,
+    pub origin: PVec3,
+    pub leader_points: Vec<PVec3>,
     pub text: String,
     pub symbol: Option<GdtSymbol>,
-    pub value: f32,
+    pub value: Real,
     pub diameter: bool,
     pub datum_primary: Option<String>,
     pub datum_secondary: Option<String>,
@@ -74,9 +75,9 @@ fn extract_surface_finishes(entities: &EntityIndex) -> Vec<PmiSurfaceFinish> {
             continue;
         }
         // Try to extract Ra/Rz values from params
-        let mut ra_value: Option<f32> = None;
-        let mut rz_value: Option<f32> = None;
-        let mut anchor = Vec3::ZERO;
+        let mut ra_value: Option<Real> = None;
+        let mut rz_value: Option<Real> = None;
+        let mut anchor = PVec3::ZERO;
         let mut note: Option<String> = None;
 
         // Param 0: name / description
@@ -88,17 +89,17 @@ fn extract_surface_finishes(entities: &EntityIndex) -> Vec<PmiSurfaceFinish> {
         // Param 1: Ra value (or reference to a value entity)
         if let Some(v) = record.params.nth_param(1) {
             if let Some(f) = v.as_real() {
-                ra_value = Some(f as f32);
+                ra_value = Some(f as Real);
             } else if let Some(id) = v.as_ref_id() {
                 if let Some(rec) = entities.get(&id) {
-                    ra_value = rec.params.nth_param(0).and_then(|v| v.as_real()).map(|f| f as f32);
+                    ra_value = rec.params.nth_param(0).and_then(|v| v.as_real()).map(|f| f as Real);
                 }
             }
         }
         // Param 2: Rz value
         if let Some(v) = record.params.nth_param(2) {
             if let Some(f) = v.as_real() {
-                rz_value = Some(f as f32);
+                rz_value = Some(f as Real);
             }
         }
 
@@ -220,8 +221,8 @@ fn extract_dimension(
         }
     }
     // Resolve ANNOTATION_OCCURRENCE to get reference points
-    let mut start = Vec3::ZERO;
-    let mut end = Vec3::new(1.0, 0.0, 0.0);
+    let mut start = PVec3::ZERO;
+    let mut end = PVec3::new(1.0, 0.0, 0.0);
 
     for (_, anno_rec) in entities.iter() {
         if anno_rec.entity_type != EntityType::AnnotationOccurrence {
@@ -246,7 +247,7 @@ fn extract_dimension(
         }
     }
 
-    let offset_dir = Vec3::Y;
+    let offset_dir = PVec3::Y;
     Some(PmiDimension {
         entity_id,
         start,
@@ -267,8 +268,8 @@ fn extract_datum(
         .map(|s| s.to_string())
         .unwrap_or_else(|| "DATUM".to_string());
 
-    let mut origin = Vec3::ZERO;
-    let mut normal = Vec3::Z;
+    let mut origin = PVec3::ZERO;
+    let mut normal = PVec3::Z;
 
     // Walk: DATUM → DATUM_FEATURE → AXIS2_PLACEMENT_3D
     // or: DATUM → AXIS2_PLACEMENT_3D directly
@@ -327,16 +328,16 @@ fn extract_tolerance(
         .map(|s| s.to_string())
         .unwrap_or_else(|| "TOL".to_string());
 
-    let mut origin = Vec3::ZERO;
+    let mut origin = PVec3::ZERO;
     let mut leader_points = vec![];
 
     // Resolve tolerance value from DIMENSIONAL_CHARACTERISTIC_REPRESENTATION
-    let mut value = 0.0f32;
+    let mut value = 0.0_f64;
     if let Some(nom_val) = params.nth_param(2) {
         if let Some(id) = nom_val.as_ref_id() {
             if let Some(rec) = entities.get(&id) {
                 if let Some(v) = rec.params.nth_param(1) {
-                    value = v.as_real().unwrap_or(0.0) as f32;
+                    value = v.as_real().unwrap_or(0.0) as Real;
                 }
             }
         }
@@ -493,23 +494,23 @@ fn gdt_symbol_for_entity(entity_type: EntityType, entity_name: &str) -> Option<G
 }
 
 /// Resolve a 3D point from a STEP entity reference (CARTESIAN_POINT or AXIS2_PLACEMENT_3D.origin).
-fn resolve_pmi_point(ref_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+fn resolve_pmi_point(ref_id: u64, entities: &EntityIndex) -> Option<PVec3> {
     let rec = entities.get(&ref_id)?;
     match rec.entity_type {
         EntityType::CartesianPoint => {
             let coords = rec.params.nth_param(1)?;
             let list = coords.as_list()?;
-            let x = list.first().and_then(|v| v.as_real())? as f32;
-            let y = list.get(1).and_then(|v| v.as_real())? as f32;
-            let z = list.get(2).and_then(|v| v.as_real())? as f32;
-            Some(Vec3::new(x, y, z))
+            let x = list.first().and_then(|v| v.as_real())? as Real;
+            let y = list.get(1).and_then(|v| v.as_real())? as Real;
+            let z = list.get(2).and_then(|v| v.as_real())? as Real;
+            Some(PVec3::new(x, y, z))
         }
         _ => None,
     }
 }
 
 /// Resolve first CARTESIAN_POINT from a list of entity references.
-fn resolve_pmi_points(ref_ids: &[u64], entities: &EntityIndex) -> Vec<Vec3> {
+fn resolve_pmi_points(ref_ids: &[u64], entities: &EntityIndex) -> Vec<PVec3> {
     ref_ids.iter().filter_map(|&id| resolve_pmi_point(id, entities)).collect()
 }
 

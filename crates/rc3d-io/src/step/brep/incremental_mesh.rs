@@ -86,7 +86,7 @@ pub fn remesh_modified_faces(
 }
 
 /// Check whether a shell has any degenerate (zero-area) triangles.
-pub fn count_degenerate_tris(indices: &[i32], vertices: &[rc3d_core::math::Vec3]) -> usize {
+pub fn count_degenerate_tris(indices: &[i32], vertices: &[rc3d_core::math::PVec3]) -> usize {
     let mut count = 0;
     for chunk in indices.chunks(4) {
         if chunk.len() < 4 || chunk[3] != -1 {
@@ -111,7 +111,7 @@ pub fn count_degenerate_tris(indices: &[i32], vertices: &[rc3d_core::math::Vec3]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_remesh_empty_modified_is_noop() {
@@ -131,9 +131,9 @@ mod tests {
     #[test]
     fn test_count_degenerate_tris_none() {
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
         ];
         let indices = vec![0i32, 1, 2, -1];
         assert_eq!(count_degenerate_tris(&indices, &verts), 0);
@@ -142,9 +142,9 @@ mod tests {
     #[test]
     fn test_count_degenerate_tris_collinear() {
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0), // collinear
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(2.0, 0.0, 0.0), // collinear
         ];
         let indices = vec![0i32, 1, 2, -1];
         assert_eq!(count_degenerate_tris(&indices, &verts), 1);

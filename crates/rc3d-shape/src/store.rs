@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 use slotmap::SlotMap;
-use rc3d_core::math::Vec3;
-use rc3d_core::utils::spatial::SpatialIndex;
+use rc3d_core::math::{Real, PVec3};
+use rc3d_core::utils::spatial::SpatialIndexF64;
 use crate::topo::*;
 use crate::tolerance::ToleranceContext;
 use crate::geom::CurveGeom;
@@ -23,7 +23,7 @@ pub struct BRepStore {
     pub solids: SlotMap<SolidKey, BRepSolid>,
     pub compounds: SlotMap<CompoundKey, BRepCompound>,
     /// Spatial grid → VertexKey for tolerance-aware vertex deduplication.
-    pub vertex_spatial_index: SpatialIndex<VertexKey>,
+    pub vertex_spatial_index: SpatialIndexF64<VertexKey>,
     /// Ordered endpoint pair → EdgeKey for O(1) edge deduplication.
     pub edge_hash_index: HashMap<(VertexKey, VertexKey), Vec<EdgeKey>>,
     /// Inverted index: edge → faces that reference this edge.
@@ -38,7 +38,7 @@ pub struct BRepStore {
     pub tolerance: ToleranceContext,
     /// Per-face UV trim ranges from RECTANGULAR_TRIMMED_SURFACE / CURVE_BOUNDED_SURFACE.
     /// Keyed by FaceKey; (u_min, u_max, v_min, v_max). When absent, full domain is used.
-    pub trim_ranges: HashMap<FaceKey, (f32, f32, f32, f32)>,
+    pub trim_ranges: HashMap<FaceKey, (Real, Real, Real, Real)>,
 }
 
 impl Default for BRepStore {
@@ -62,7 +62,7 @@ impl BRepStore {
             shells: SlotMap::with_key(),
             solids: SlotMap::with_key(),
             compounds: SlotMap::with_key(),
-            vertex_spatial_index: SpatialIndex::with_cell_size(cell),
+            vertex_spatial_index: SpatialIndexF64::with_cell_size(cell),
             edge_hash_index: HashMap::new(),
             edge_to_faces: HashMap::new(),
             vertex_to_edges: HashMap::new(),
@@ -72,7 +72,7 @@ impl BRepStore {
     }
 
     /// Insert or find an existing vertex at the given position within tolerance.
-    pub fn find_or_add_vertex(&mut self, position: Vec3, tolerance: f32) -> VertexKey {
+    pub fn find_or_add_vertex(&mut self, position: PVec3, tolerance: Real) -> VertexKey {
         let p = [position.x, position.y, position.z];
         if let Some(key) = self.vertex_spatial_index.find_near(p, tolerance, |k| {
             self.vertices
@@ -104,14 +104,14 @@ impl BRepStore {
         v_start: VertexKey,
         v_end: VertexKey,
         curve: CurveGeom,
-        tolerance: f32,
+        tolerance: Real,
         face: FaceKey,
         pcurve: Curve2d,
         same_sense: bool,
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
-        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
-        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(PVec3::ZERO);
+        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(PVec3::ZERO);
         let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance);
         // Normalize: store PCurve always in the forward (3D curve) direction.
         let pcurve = if same_sense { pcurve } else { pcurve.reversed() };
@@ -124,7 +124,7 @@ impl BRepStore {
             'edge_check: for &ek in existing {
                 for &t in &[0.038, 0.146, 0.309, 0.5, 0.691, 0.854, 0.962] {
                     let p_new = curve.d0(t);
-                    let p_existing = self.edges.get(ek).map(|e| e.curve.d0(t)).unwrap_or(Vec3::ZERO);
+                    let p_existing = self.edges.get(ek).map(|e| e.curve.d0(t)).unwrap_or(PVec3::ZERO);
                     let dist = (p_new - p_existing).length();
                     if dist > chord_len * 0.005 + tolerance * 2.0 {
                         continue 'edge_check;
@@ -168,7 +168,7 @@ impl BRepStore {
         v_start: VertexKey,
         v_end: VertexKey,
         curve: CurveGeom,
-        tolerance: f32,
+        tolerance: Real,
         face: FaceKey,
         pcurve: Curve2d,
         same_sense: bool,
@@ -178,8 +178,8 @@ impl BRepStore {
         } else {
             (v_end, v_start)
         };
-        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
-        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
+        let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(PVec3::ZERO);
+        let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(PVec3::ZERO);
         let curve = if v_lo == v_hi {
             curve
         } else {
@@ -213,7 +213,7 @@ impl BRepStore {
     pub fn add_face(
         &mut self,
         surface: crate::geom::SurfaceGeom,
-        tolerance: f32,
+        tolerance: Real,
     ) -> FaceKey {
         self.faces.insert(BRepFace {
             surface,
@@ -312,7 +312,7 @@ impl BRepStore {
 impl BRepStore {
     /// Denormalize [0,1]^2 UV coordinates to the face's trim range (native STEP space).
     /// When no trim range is stored for this face, returns (u, v) unchanged.
-    pub fn face_native_uv(&self, face_key: FaceKey, u: f32, v: f32) -> (f32, f32) {
+    pub fn face_native_uv(&self, face_key: FaceKey, u: Real, v: Real) -> (Real, Real) {
         if let Some(&(u_min, u_max, v_min, v_max)) = self.trim_ranges.get(&face_key) {
             let du = (u_max - u_min).max(1e-12);
             let dv = (v_max - v_min).max(1e-12);
@@ -364,7 +364,7 @@ impl BRepStore {
         &mut self,
         ek: EdgeKey,
         fk: FaceKey,
-        tolerance: f32,
+        tolerance: Real,
         max_iterations: usize,
     ) -> Option<SameParamResult> {
         let curve_3d = self.edges.get(ek)?.curve.clone();
@@ -454,8 +454,8 @@ impl BRepStore {
 /// Result of ensuring PCurve-on-surface alignment with 3D curve.
 #[derive(Debug, Clone)]
 pub struct SameParamResult {
-    pub deviation_before: f32,
-    pub deviation_after: f32,
+    pub deviation_before: Real,
+    pub deviation_after: Real,
     pub converged: bool,
     pub iterations: usize,
     pub tolerance_updated: bool,
@@ -464,9 +464,9 @@ pub struct SameParamResult {
 // ── SameParameter helpers (shared) ─────────────────────────────────
 
 struct PcDevSample {
-    #[allow(dead_code)] t: f32,
-    pt_3d: rc3d_core::math::Vec3,
-    dev: f32,
+    #[allow(dead_code)] t: Real,
+    pt_3d: rc3d_core::math::PVec3,
+    dev: Real,
 }
 
 fn sample_pcurve_deviations(
@@ -474,7 +474,7 @@ fn sample_pcurve_deviations(
 ) -> Vec<PcDevSample> {
     use crate::geom::SurfaceGeom;
     (0..=n).map(|i| {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let pt_3d = curve_3d.d0(t);
         let uv = pcurve.d0(t);
         let on_surf = surface.d0_native(uv.0, uv.1);
@@ -484,9 +484,9 @@ fn sample_pcurve_deviations(
 
 fn max_pcurve_deviation(
     curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize,
-) -> f32 {
+) -> Real {
     sample_pcurve_deviations(curve_3d, pcurve, surface, n)
-        .iter().map(|s| s.dev).fold(0.0f32, f32::max)
+        .iter().map(|s| s.dev).fold(0.0_f64, Real::max)
 }
 
 fn adjust_pcurve_from_samples(
@@ -506,7 +506,7 @@ fn adjust_pcurve_from_samples(
         Curve2d::Polyline { points } => {
             if points.len() < 2 || samples.is_empty() { return None; }
             let step = (samples.len().saturating_sub(1) / points.len().saturating_sub(1)).max(1);
-            let new_pts: Vec<(f32, f32)> = points.iter().enumerate().map(|(idx, &orig)| {
+            let new_pts: Vec<(Real, Real)> = points.iter().enumerate().map(|(idx, &orig)| {
                 let si = (idx * step).min(samples.len() - 1);
                 surface.project(samples[si].pt_3d).unwrap_or(orig)
             }).collect();
@@ -537,9 +537,9 @@ fn adjust_pcurve_from_samples(
         // Circle/Ellipse/Trimmed/Composite → polyline approximation
         _ => {
             let n_samples = 16usize;
-            let pts: Vec<(f32, f32)> = (0..=n_samples).filter_map(|i| {
-                let t = i as f32 / n_samples as f32;
-                let si = (t * (samples.len() - 1) as f32) as usize;
+            let pts: Vec<(Real, Real)> = (0..=n_samples).filter_map(|i| {
+                let t = i as Real / n_samples as Real;
+                let si = (t * (samples.len() - 1) as Real) as usize;
                 surface.project(samples[si.min(samples.len() - 1)].pt_3d)
             }).collect();
             if pts.len() < 2 { return None; }
@@ -551,12 +551,12 @@ fn adjust_pcurve_from_samples(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use crate::geom::SurfaceGeom;
 
     fn make_plane_face(reg: &mut BRepStore) -> FaceKey {
         reg.add_face(
-            SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X },
             1e-4,
         )
     }
@@ -564,8 +564,8 @@ mod tests {
     #[test]
     fn test_find_or_add_vertex_dedup() {
         let mut reg = BRepStore::new();
-        let a = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-4);
-        let b = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-4);
+        let a = reg.find_or_add_vertex(PVec3::new(1.0, 2.0, 3.0), 1e-4);
+        let b = reg.find_or_add_vertex(PVec3::new(1.0, 2.0, 3.0), 1e-4);
         assert_eq!(a, b);
         assert_eq!(reg.vertices.len(), 1);
     }
@@ -573,8 +573,8 @@ mod tests {
     #[test]
     fn test_find_or_add_vertex_near_duplicate_within_tolerance() {
         let mut reg = BRepStore::new();
-        let a = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 3.0), 1e-3);
-        let b = reg.find_or_add_vertex(Vec3::new(1.0 + 5e-4, 2.0, 3.0), 1e-3);
+        let a = reg.find_or_add_vertex(PVec3::new(1.0, 2.0, 3.0), 1e-3);
+        let b = reg.find_or_add_vertex(PVec3::new(1.0 + 5e-4, 2.0, 3.0), 1e-3);
         assert_eq!(a, b);
         assert_eq!(reg.vertices.len(), 1);
     }
@@ -582,8 +582,8 @@ mod tests {
     #[test]
     fn test_find_or_add_vertex_distinct_beyond_tolerance() {
         let mut reg = BRepStore::new();
-        let a = reg.find_or_add_vertex(Vec3::ZERO, 1e-5);
-        let b = reg.find_or_add_vertex(Vec3::new(1e-4, 0.0, 0.0), 1e-5);
+        let a = reg.find_or_add_vertex(PVec3::ZERO, 1e-5);
+        let b = reg.find_or_add_vertex(PVec3::new(1e-4, 0.0, 0.0), 1e-5);
         assert_ne!(a, b);
         assert_eq!(reg.vertices.len(), 2);
     }
@@ -591,12 +591,12 @@ mod tests {
     #[test]
     fn test_add_edge_with_pcurve_dedup() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
         let f1 = make_plane_face(&mut reg);
 
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone(), true);
@@ -610,13 +610,13 @@ mod tests {
     #[test]
     fn test_find_shared_edges() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
         let f1 = make_plane_face(&mut reg);
         let f2 = make_plane_face(&mut reg);
 
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
         reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone(), true);
@@ -630,10 +630,10 @@ mod tests {
     #[test]
     fn test_set_pcurve_replace() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
@@ -654,10 +654,10 @@ mod tests {
     #[test]
     fn test_pcurve_mut() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
@@ -680,11 +680,11 @@ mod tests {
     #[test]
     fn test_set_pcurve_new_face() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
         let f1 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
@@ -699,12 +699,12 @@ mod tests {
     #[test]
     fn test_vertex_to_edges_index() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::Y, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::Y, 1e-4);
         let f0 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let line2 = CurveGeom::Line { origin: Vec3::X, direction: Vec3::Y - Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
+        let line2 = CurveGeom::Line { origin: PVec3::X, direction: PVec3::Y - PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (-1.0, 1.0) };
 
@@ -722,11 +722,11 @@ mod tests {
     #[test]
     fn test_dual_index_consistency() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let f0 = make_plane_face(&mut reg);
         let f1 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
@@ -747,9 +747,9 @@ mod tests {
     #[test]
     fn test_seam_edge_indices() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
         let f0 = make_plane_face(&mut reg);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
         let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, pc, true);

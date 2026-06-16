@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, VertexKey};
 use crate::mesh::boundary::{register_boundary_point, BoundaryPosIndex};
@@ -13,10 +13,10 @@ pub(crate) fn build_shell_boundary_pool(
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     skip_face_keys: &[FaceKey],
-    dedup_tolerance: f32,
+    dedup_tolerance: Real,
 ) -> BoundaryPoolResult {
-    let mut global_vertices: Vec<Vec3> = Vec::new();
-    let mut global_normals: Vec<Vec3> = Vec::new();
+    let mut global_vertices: Vec<PVec3> = Vec::new();
+    let mut global_normals: Vec<PVec3> = Vec::new();
     let mut pos_to_idx = BoundaryPosIndex::with_cell_size(dedup_tolerance);
     let mut vertex_mesh_idx: HashMap<VertexKey, usize> = HashMap::new();
 
@@ -115,8 +115,8 @@ pub(crate) fn build_shell_boundary_pool(
         }
     }
 
-    let boundary_vertices: Vec<Vec3> = global_vertices.clone();
-    let boundary_normals: Vec<Vec3> = global_normals.clone();
+    let boundary_vertices: Vec<PVec3> = global_vertices.clone();
+    let boundary_normals: Vec<PVec3> = global_normals.clone();
     let boundary_pos_to_idx = pos_to_idx.clone();
     let boundary_vertex_count = boundary_vertices.len();
 

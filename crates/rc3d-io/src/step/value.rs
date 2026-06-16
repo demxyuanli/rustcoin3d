@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepValue {
     Integer(i64),

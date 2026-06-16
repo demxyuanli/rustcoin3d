@@ -1,7 +1,7 @@
 //! Assembly tree and hierarchical SceneGraph import (cs.step: Cube + Sphere).
 //! Run: cargo test -p rc3d-io --test step_assembly_tree --release -- --nocapture
 
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{PMat4, PVec3};
 use rc3d_core::NodeId;
 use rc3d_io::step::assembly;
 use rc3d_io::step::brep::build_brep;
@@ -42,11 +42,11 @@ fn count_mesh_part_children(graph: &SceneGraph, parent: NodeId) -> usize {
         .unwrap_or(0)
 }
 
-fn bbox_from_subtree(graph: &SceneGraph, id: NodeId) -> Option<(Vec3, Vec3)> {
-    let mut mn = Vec3::splat(f32::MAX);
-    let mut mx = Vec3::splat(f32::MIN);
+fn bbox_from_subtree(graph: &SceneGraph, id: NodeId) -> Option<(PVec3, PVec3)> {
+    let mut mn = PVec3::splat(f64::MAX);
+    let mut mx = PVec3::splat(f64::MIN);
     let mut any = false;
-    fn walk(graph: &SceneGraph, id: NodeId, mn: &mut Vec3, mx: &mut Vec3, any: &mut bool) {
+    fn walk(graph: &SceneGraph, id: NodeId, mn: &mut PVec3, mx: &mut PVec3, any: &mut bool) {
         let Some(entry) = graph.get(id) else {
             return;
         };
@@ -213,15 +213,15 @@ fn import_result_exposes_assembly_tree_with_product_ids() {
     assert!(!result.entities.is_empty());
 }
 
-fn subtree_transforms(graph: &SceneGraph, id: NodeId) -> Vec<Mat4> {
+fn subtree_transforms(graph: &SceneGraph, id: NodeId) -> Vec<PMat4> {
     let mut out = Vec::new();
-    fn walk(graph: &SceneGraph, id: NodeId, parent: Mat4, out: &mut Vec<Mat4>) {
+    fn walk(graph: &SceneGraph, id: NodeId, parent: PMat4, out: &mut Vec<PMat4>) {
         let Some(entry) = graph.get(id) else {
             return;
         };
         let local = match &entry.data {
             NodeData::Transform(TransformNode { rotation, .. }) => *rotation,
-            _ => Mat4::IDENTITY,
+            _ => PMat4::IDENTITY,
         };
         let world = parent * local;
         if matches!(entry.data, NodeData::Transform(_)) {
@@ -231,7 +231,7 @@ fn subtree_transforms(graph: &SceneGraph, id: NodeId) -> Vec<Mat4> {
             walk(graph, c, world, out);
         }
     }
-    walk(graph, id, Mat4::IDENTITY, &mut out);
+    walk(graph, id, PMat4::IDENTITY, &mut out);
     out
 }
 

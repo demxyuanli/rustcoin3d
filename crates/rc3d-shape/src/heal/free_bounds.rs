@@ -9,7 +9,7 @@
 use crate::geom::curve2d::Curve2d;
 use crate::store::BRepStore;
 use crate::topo::*;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Result of free bounds analysis and repair.
 #[derive(Debug, Clone, Default)]
@@ -58,7 +58,7 @@ pub fn find_open_edges(shell_key: ShellKey, reg: &BRepStore) -> Vec<EdgeKey> {
 pub fn close_free_bounds(
     shell_key: ShellKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> FreeBoundsReport {
     let open_edges = find_open_edges(shell_key, reg);
     let open_count = open_edges.len();
@@ -75,7 +75,7 @@ pub fn close_free_bounds(
     };
 
     // Collect endpoint positions for matching
-    let endpoints: Vec<(Vec3, Vec3)> = open_edges
+    let endpoints: Vec<(PVec3, PVec3)> = open_edges
         .iter()
         .filter_map(|&ek| {
             let edge = reg.edges.get(ek)?;
@@ -288,20 +288,20 @@ mod tests {
     /// Build two adjacent square faces sharing one edge, leaving other edges open.
     fn make_two_adjacent_faces(reg: &mut BRepStore) -> (ShellKey, Vec<EdgeKey>) {
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
 
         // Face A: square (0,0)-(1,1)
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
 
         // Face B: square (1,0)-(2,1)
-        let v4 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(2.0, 1.0, 0.0), 1e-4);
 
         let wka = reg.wires.insert(BRepWire { edges: vec![] });
         let fka = reg.faces.insert(BRepFace {
@@ -328,33 +328,33 @@ mod tests {
         });
 
         // Face A edges
-        let make_line = |a: Vec3, b: Vec3| CurveGeom::Line { origin: a, direction: b - a };
-        let make_pc = |a: Vec3, b: Vec3| Curve2d::Line {
+        let make_line = |a: PVec3, b: PVec3| CurveGeom::Line { origin: a, direction: b - a };
+        let make_pc = |a: PVec3, b: PVec3| Curve2d::Line {
             origin: (a.x, a.y),
             direction: (b.x - a.x, b.y - a.y),
         };
 
-        let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true);
-        let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true);
-        let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true);
-        let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true);
+        let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.)), true);
+        let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)), true);
+        let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(PVec3::new(1.,1.,0.), PVec3::new(0.,1.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(1.,1.,0.), PVec3::new(0.,1.,0.)), true);
+        let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(PVec3::new(0.,1.,0.), PVec3::new(0.,0.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(0.,1.,0.), PVec3::new(0.,0.,0.)), true);
 
         // Face B edges (e1 is shared with face A — v1→v2)
-        let e4 = reg.add_edge_with_pcurve(v1, v4, make_line(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), true);
+        let e4 = reg.add_edge_with_pcurve(v1, v4, make_line(PVec3::new(1.,0.,0.), PVec3::new(2.,0.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(1.,0.,0.), PVec3::new(2.,0.,0.)), true);
         // Shared edge — add fkb's pcurve to e1
         if let Some(edge) = reg.edges.get_mut(e1) {
-            edge.pcurves.insert(fkb, make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
+            edge.pcurves.insert(fkb, make_pc(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)));
         }
         reg.edge_to_faces.entry(e1).or_default().push(fkb);
-        let e5 = reg.add_edge_with_pcurve(v4, v5, make_line(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), true);
-        let e6 = reg.add_edge_with_pcurve(v5, v2, make_line(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), true);
+        let e5 = reg.add_edge_with_pcurve(v4, v5, make_line(PVec3::new(2.,0.,0.), PVec3::new(2.,1.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(2.,0.,0.), PVec3::new(2.,1.,0.)), true);
+        let e6 = reg.add_edge_with_pcurve(v5, v2, make_line(PVec3::new(2.,1.,0.), PVec3::new(1.,1.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(2.,1.,0.), PVec3::new(1.,1.,0.)), true);
 
         reg.wires.get_mut(wka).unwrap().edges = vec![
             (e0, Orientation::Forward), (e1, Orientation::Forward),
@@ -388,17 +388,17 @@ mod tests {
         // A single face has all edges open (no second face)
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![],
             color: None, degenerated_edges: vec![],
         });
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];

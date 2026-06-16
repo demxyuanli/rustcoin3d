@@ -6,6 +6,7 @@
 //!
 //! OCC alignment: BRepCheck_Face + ShapeFix_Face surface fold repair path.
 
+use rc3d_core::math::Real;
 use crate::store::BRepStore;
 use crate::topo::FaceKey;
 use crate::geom::SurfaceGeom;
@@ -50,8 +51,8 @@ pub fn fix_face_folds(
 
     for i in 0..n_u {
         for j in 0..n_v {
-            let u = i as f32 / (n_u - 1).max(1) as f32;
-            let v = j as f32 / (n_v - 1).max(1) as f32;
+            let u = i as Real / (n_u - 1).max(1) as Real;
+            let v = j as Real / (n_v - 1).max(1) as Real;
             let s = SurfaceGeom::BSpline(surface.clone());
             let (un, vn) = s.native_uv_to_d0(u, v);
             normals.push(s.normal_native(un, vn));
@@ -92,13 +93,13 @@ mod tests {
     use super::*;
     use crate::geom::SurfaceGeom;
     use crate::store::BRepStore;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_fix_face_folds_plane_no_op() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let fk = reg.add_face(surface, 1e-4);
         let report = fix_face_folds(fk, &mut reg);
@@ -110,8 +111,8 @@ mod tests {
     fn test_fix_face_folds_cylinder_no_op() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO, axis: Vec3::Z, radius: 1.0,
-            x_dir: Vec3::X, y_dir: Vec3::Y,
+            origin: PVec3::ZERO, axis: PVec3::Z, radius: 1.0,
+            x_dir: PVec3::X, y_dir: PVec3::Y,
         };
         let fk = reg.add_face(surface, 1e-4);
         let report = fix_face_folds(fk, &mut reg);

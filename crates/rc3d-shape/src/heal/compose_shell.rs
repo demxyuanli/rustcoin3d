@@ -124,20 +124,20 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::geom::curve2d::Curve2d;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_compose_shells_disjoint_groups() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
 
         // Create 2 faces with no shared edges
         let mut face_keys = Vec::new();
-        for offset in [0.0f32, 10.0] {
-            let v0 = reg.find_or_add_vertex(Vec3::new(offset, 0.0, 0.0), 1e-4);
-            let v1 = reg.find_or_add_vertex(Vec3::new(offset + 1.0, 0.0, 0.0), 1e-4);
+        for offset in [0.0_f64, 10.0_f64] {
+            let v0 = reg.find_or_add_vertex(PVec3::new(offset, 0.0, 0.0), 1e-4);
+            let v1 = reg.find_or_add_vertex(PVec3::new(offset + 1.0, 0.0, 0.0), 1e-4);
             let wk = reg.wires.insert(BRepWire { edges: vec![] });
             let fk = reg.faces.insert(BRepFace {
                 surface: surface.clone(), outer_wire: wk, inner_wires: vec![],
@@ -145,8 +145,8 @@ mod tests {
                 color: None, degenerated_edges: vec![],
             });
             let line = CurveGeom::Line {
-                origin: Vec3::new(offset, 0.0, 0.0),
-                direction: Vec3::X,
+                origin: PVec3::new(offset, 0.0, 0.0),
+                direction: PVec3::X,
             };
             let pc = Curve2d::Line { origin: (offset, 0.0), direction: (1.0, 0.0) };
             let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
@@ -162,19 +162,19 @@ mod tests {
     fn test_compose_shells_connected() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
 
         // Create 2 faces sharing one edge
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
-        let v4 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(2.0, 1.0, 0.0), 1e-4);
 
-        let make_line = |a: Vec3, b: Vec3| CurveGeom::Line { origin: a, direction: b - a };
-        let make_pc = |a: Vec3, b: Vec3| Curve2d::Line {
+        let make_line = |a: PVec3, b: PVec3| CurveGeom::Line { origin: a, direction: b - a };
+        let make_pc = |a: PVec3, b: PVec3| Curve2d::Line {
             origin: (a.x, a.y), direction: (b.x - a.x, b.y - a.y),
         };
 
@@ -185,14 +185,14 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![],
             color: None, degenerated_edges: vec![],
         });
-        let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true);
-        let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true);
-        let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true);
-        let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), 1e-4, fka,
-            make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true);
+        let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.)), true);
+        let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)), true);
+        let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(PVec3::new(1.,1.,0.), PVec3::new(0.,1.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(1.,1.,0.), PVec3::new(0.,1.,0.)), true);
+        let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(PVec3::new(0.,1.,0.), PVec3::new(0.,0.,0.)), 1e-4, fka,
+            make_pc(PVec3::new(0.,1.,0.), PVec3::new(0.,0.,0.)), true);
         reg.wires.get_mut(wka).unwrap().edges = vec![
             (e0, Orientation::Forward), (e1, Orientation::Forward),
             (e2, Orientation::Forward), (e3, Orientation::Forward),
@@ -207,15 +207,15 @@ mod tests {
         });
         // Shared edge e1: add fkb's pcurve
         if let Some(edge) = reg.edges.get_mut(e1) {
-            edge.pcurves.insert(fkb, make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
+            edge.pcurves.insert(fkb, make_pc(PVec3::new(1.,0.,0.), PVec3::new(1.,1.,0.)));
         }
         reg.edge_to_faces.entry(e1).or_default().push(fkb);
-        let e4 = reg.add_edge_with_pcurve(v2, v5, make_line(Vec3::new(1.,1.,0.), Vec3::new(2.,1.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(1.,1.,0.), Vec3::new(2.,1.,0.)), true);
-        let e5 = reg.add_edge_with_pcurve(v5, v4, make_line(Vec3::new(2.,1.,0.), Vec3::new(2.,0.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,1.,0.), Vec3::new(2.,0.,0.)), true);
-        let e6 = reg.add_edge_with_pcurve(v4, v1, make_line(Vec3::new(2.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fkb,
-            make_pc(Vec3::new(2.,0.,0.), Vec3::new(1.,0.,0.)), true);
+        let e4 = reg.add_edge_with_pcurve(v2, v5, make_line(PVec3::new(1.,1.,0.), PVec3::new(2.,1.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(1.,1.,0.), PVec3::new(2.,1.,0.)), true);
+        let e5 = reg.add_edge_with_pcurve(v5, v4, make_line(PVec3::new(2.,1.,0.), PVec3::new(2.,0.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(2.,1.,0.), PVec3::new(2.,0.,0.)), true);
+        let e6 = reg.add_edge_with_pcurve(v4, v1, make_line(PVec3::new(2.,0.,0.), PVec3::new(1.,0.,0.)), 1e-4, fkb,
+            make_pc(PVec3::new(2.,0.,0.), PVec3::new(1.,0.,0.)), true);
         reg.wires.get_mut(wkb).unwrap().edges = vec![
             (e1, Orientation::Forward), (e4, Orientation::Forward),
             (e5, Orientation::Forward), (e6, Orientation::Forward),
@@ -230,17 +230,17 @@ mod tests {
     fn test_compose_shells_into_store() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![],
             color: None, degenerated_edges: vec![],
         });
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];

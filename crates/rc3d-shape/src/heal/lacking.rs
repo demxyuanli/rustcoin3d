@@ -1,6 +1,7 @@
 //! Missing 2D edge detection (OCC ShapeFix_Wire::FixLacking).
 //! Detects edges connected in 3D but disconnected in UV space.
 
+use rc3d_core::math::Real;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
 
@@ -16,8 +17,8 @@ pub fn fix_lacking_edges(
     wire_key: WireKey,
     face_key: FaceKey,
     reg: &mut BRepStore,
-    tol_3d: f32,
-    tol_uv: f32,
+    tol_3d: Real,
+    tol_uv: Real,
 ) -> LackingReport {
     let mut report = LackingReport::default();
 
@@ -93,7 +94,7 @@ pub fn fix_lacking_edges(
     report
 }
 
-fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepStore) -> Option<rc3d_core::math::Vec3> {
+fn get_endpoint_3d(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepStore) -> Option<rc3d_core::math::PVec3> {
     let edge = reg.edges.get(ek)?;
     let vk = match (orient, is_start) {
         (Orientation::Forward, true) | (Orientation::Reversed, false) => edge.v_low,
@@ -111,7 +112,7 @@ fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRe
     }
 }
 
-fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepStore) -> Option<(f32, f32)> {
+fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepStore) -> Option<(Real, Real)> {
     let edge = reg.edges.get(ek)?;
     let pc = edge.pcurves.get(&face_key)?;
     let t = if (orient == Orientation::Forward) == is_start { 0.0 } else { 1.0 };
@@ -124,10 +125,10 @@ mod tests {
     use super::*;
     use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
-    fn make_wire_with_uv_gap(reg: &mut BRepStore, uv_gap: f32) -> (WireKey, FaceKey) {
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+    fn make_wire_with_uv_gap(reg: &mut BRepStore, uv_gap: Real) -> (WireKey, FaceKey) {
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
             outer_wire: WireKey::default(),
@@ -136,10 +137,10 @@ mod tests {
             seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         // Edge 1: UV (0,0)->(1,0), 3D (0,0,0)->(1,0,0)
         let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1, true);

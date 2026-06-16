@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{Real, PMat4, PVec3};
 
 use crate::document::ShapeDocument;
 use crate::error::ShapeError;
@@ -19,8 +19,8 @@ pub type MeshSlotId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaterialDesc {
-    pub diffuse: [f32; 3],
-    pub opacity: f32,
+    pub diffuse: [Real; 3],
+    pub opacity: Real,
 }
 
 impl Default for MaterialDesc {
@@ -35,7 +35,7 @@ impl Default for MaterialDesc {
 #[derive(Debug, Clone)]
 pub struct FaceMaterialGroup {
     pub face_keys: Vec<FaceKey>,
-    pub color: [f32; 3],
+    pub color: [Real; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ pub struct CachedMesh {
 #[derive(Debug, Clone)]
 pub struct EmitInstance {
     pub mesh_slot: MeshSlotId,
-    pub world_transform: Mat4,
+    pub world_transform: PMat4,
     pub label_material: MaterialDesc,
     pub label_id: LabelId,
     pub shape_id: ShapeId,
@@ -69,7 +69,7 @@ pub struct EmitNode {
 pub struct PmiPlacement {
     pub pmi_id: u32,
     pub label_id: LabelId,
-    pub world_pose: Option<Mat4>,
+    pub world_pose: Option<PMat4>,
 }
 
 #[derive(Debug, Default)]
@@ -92,7 +92,7 @@ pub struct EmitPlanOptions {
     pub heal_skip_faces: Vec<FaceKey>,
     pub default_material: MaterialDesc,
     /// Per-solid explode translation applied to instance world transforms (not vertex bake).
-    pub explode_offsets: HashMap<SolidKey, Vec3>,
+    pub explode_offsets: HashMap<SolidKey, PVec3>,
 }
 
 
@@ -261,10 +261,10 @@ fn finalize_plan_stats(plan: &mut SceneEmitPlan) {
 }
 
 fn apply_explode_offset(
-    mut world: Mat4,
+    mut world: PMat4,
     solid_key: SolidKey,
-    offsets: &HashMap<SolidKey, Vec3>,
-) -> Mat4 {
+    offsets: &HashMap<SolidKey, PVec3>,
+) -> PMat4 {
     if let Some(offset) = offsets.get(&solid_key) {
         world.w_axis.x += offset.x;
         world.w_axis.y += offset.y;
@@ -281,18 +281,18 @@ fn default_pmi_label(doc: &ShapeDocument) -> LabelId {
         .unwrap_or(LabelId::default())
 }
 
-fn nearest_shaped_label(doc: &mut ShapeDocument, origin: [f32; 3]) -> LabelId {
-    let target = Vec3::from(origin);
+fn nearest_shaped_label(doc: &mut ShapeDocument, origin: [Real; 3]) -> LabelId {
+    let target = PVec3::from(origin);
     let shaped: Vec<(LabelId, ShapeId)> = doc
         .labels
         .labels
         .iter()
         .filter_map(|(label_id, label)| label.shape.map(|shape_id| (label_id, shape_id)))
         .collect();
-    let mut best: Option<(LabelId, f32)> = None;
+    let mut best: Option<(LabelId, Real)> = None;
     for (label_id, shape_id) in shaped {
         let world = doc.world_transform(shape_id);
-        let anchor = Vec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z);
+        let anchor = PVec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z);
         let dist = (anchor - target).length_squared();
         if best.is_none_or(|(_, best_dist)| dist < best_dist) {
             best = Some((label_id, dist));
@@ -306,7 +306,7 @@ fn populate_pmi_refs(doc: &mut ShapeDocument, plan: &mut SceneEmitPlan) {
     if doc.pmi_pool.entries.is_empty() {
         return;
     }
-    let bindings: Vec<(u32, Option<u64>, [f32; 3])> = doc
+    let bindings: Vec<(u32, Option<u64>, [Real; 3])> = doc
         .pmi_pool
         .entries
         .iter()
@@ -475,7 +475,7 @@ fn collect_face_materials(
     let Some(shell) = store.shells.get(solid.outer_shell) else {
         return;
     };
-    let mut color_to_faces: HashMap<[u32; 3], Vec<FaceKey>> = HashMap::new();
+    let mut color_to_faces: HashMap<[u64; 3], Vec<FaceKey>> = HashMap::new();
     for &(fk, _) in &shell.faces {
         let Some(face) = store.faces.get(fk) else {
             continue;
@@ -497,9 +497,9 @@ fn collect_face_materials(
         .map(|(bits, face_keys)| FaceMaterialGroup {
             face_keys,
             color: [
-                f32::from_bits(bits[0]),
-                f32::from_bits(bits[1]),
-                f32::from_bits(bits[2]),
+                Real::from_bits(bits[0]),
+                Real::from_bits(bits[1]),
+                Real::from_bits(bits[2]),
             ],
         })
         .collect();
@@ -638,7 +638,7 @@ mod tests {
         for i in 0..3 {
             let shape_id = doc.add_solid_instance(
                 sk,
-                Mat4::from_translation([i as f32, 0.0, 0.0].into()),
+                PMat4::from_translation([i as Real, 0.0, 0.0].into()),
                 None,
             );
             let label_id = doc.labels.add_label(XdeLabel {
@@ -693,10 +693,10 @@ mod tests {
             },
         );
 
-        let left_shape = doc.add_solid_instance(sk, Mat4::IDENTITY, None);
+        let left_shape = doc.add_solid_instance(sk, PMat4::IDENTITY, None);
         let right_shape = doc.add_solid_instance(
             sk,
-            Mat4::from_translation([100.0, 0.0, 0.0].into()),
+            PMat4::from_translation([100.0, 0.0, 0.0].into()),
             None,
         );
         let left_label = doc.labels.add_label(XdeLabel {

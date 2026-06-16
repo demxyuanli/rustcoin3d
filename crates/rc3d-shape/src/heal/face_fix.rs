@@ -1,5 +1,6 @@
 //! Face-level fixes: natural boundary + reversed 2d.
 
+use rc3d_core::math::Real;
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, WireKey};
@@ -97,7 +98,7 @@ pub(crate) fn fix_reversed_2d(reg: &mut BRepStore, face_key: FaceKey) -> bool {
     true
 }
 
-fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) -> f32 {
+fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) -> Real {
     if reg.faces.get(face_key).is_none() {
         return 0.0;
     }
@@ -105,7 +106,7 @@ fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) ->
         Some(w) => w,
         None => return 0.0,
     };
-    let mut poly: Vec<(f32, f32)> = Vec::new();
+    let mut poly: Vec<(Real, Real)> = Vec::new();
     for &(ek, orient) in &wire.edges {
         let edge = match reg.edges.get(ek) {
             Some(e) => e,
@@ -116,9 +117,9 @@ fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) ->
             None => continue,
         };
         let n = 8usize;
-        let mut pts: Vec<(f32, f32)> = Vec::with_capacity(n + 1);
+        let mut pts: Vec<(Real, Real)> = Vec::with_capacity(n + 1);
         for i in 0..=n {
-            let t = i as f32 / n as f32;
+            let t = i as Real / n as Real;
             let uv = pcurve.d0(t);
             pts.push((uv.0, uv.1));
         }
@@ -137,7 +138,7 @@ fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) ->
     if poly.len() < 3 {
         return 0.0;
     }
-    let mut area = 0.0f32;
+    let mut area = 0.0_f64;
     for i in 0..poly.len() {
         let (x0, y0) = poly[i];
         let (x1, y1) = poly[(i + 1) % poly.len()];

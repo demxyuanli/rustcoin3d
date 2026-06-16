@@ -3,16 +3,16 @@
 //! OCC alignment: IntPatch_TheIWalking — tangent marching with Gauss-Newton
 //! correction at each step to keep the traced point on both surfaces.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
 use super::ssi_newton::{newton_refine_ssi, ssi_tangent};
 
 /// A seed point for curve tracing: 3D point + UV params on both surfaces.
 #[derive(Debug, Clone)]
 pub struct SeedPoint {
-    pub point: Vec3,
-    pub uv_a: (f32, f32),
-    pub uv_b: (f32, f32),
+    pub point: PVec3,
+    pub uv_a: (Real, Real),
+    pub uv_b: (Real, Real),
 }
 
 /// Find seed points by grid-sampling both surfaces.
@@ -21,15 +21,15 @@ pub fn find_seeds(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
     grid_res: usize,
-    proximity_tol: f32,
+    proximity_tol: Real,
 ) -> Vec<SeedPoint> {
     let range_a = surf_a.param_range();
     let mut seeds = Vec::new();
 
     for i in 0..=grid_res {
-        let u = range_a.u_min + (range_a.u_max - range_a.u_min) * i as f32 / grid_res as f32;
+        let u = range_a.u_min + (range_a.u_max - range_a.u_min) * i as Real / grid_res as Real;
         for j in 0..=grid_res {
-            let v = range_a.v_min + (range_a.v_max - range_a.v_min) * j as f32 / grid_res as f32;
+            let v = range_a.v_min + (range_a.v_max - range_a.v_min) * j as Real / grid_res as Real;
             let (un, vn) = surf_a.native_uv_to_d0(u, v);
             let pt = surf_a.d0(un, vn);
             if let Some(uv_b) = surf_b.project(pt) {
@@ -50,10 +50,10 @@ pub fn trace_curve(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
     seed: SeedPoint,
-    step_size: f32,
+    step_size: Real,
     max_steps: usize,
-    tolerance: f32,
-) -> Option<Vec<Vec3>> {
+    tolerance: Real,
+) -> Option<Vec<PVec3>> {
     let range_a = surf_a.param_range();
     let mut points = vec![seed.point];
     let mut current_uv_a = seed.uv_a;
@@ -97,10 +97,10 @@ pub fn trace_curve_bidirectional(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
     seed: &SeedPoint,
-    step_size: f32,
+    step_size: Real,
     max_steps: usize,
-    tolerance: f32,
-) -> Option<Vec<Vec3>> {
+    tolerance: Real,
+) -> Option<Vec<PVec3>> {
     // Trace forward
     let forward = trace_curve_in_dir(surf_a, surf_b, seed, step_size, max_steps, tolerance, true);
     // Trace backward
@@ -109,14 +109,14 @@ pub fn trace_curve_bidirectional(
     match (forward, backward) {
         (Some(fwd), Some(bwd)) => {
             // Combine: reverse backward, skip duplicate seed point, append forward
-            let mut result: Vec<Vec3> = bwd.into_iter().rev().collect();
+            let mut result: Vec<PVec3> = bwd.into_iter().rev().collect();
             result.pop(); // remove duplicate seed point
             result.extend(fwd);
             Some(result)
         }
         (Some(fwd), None) => Some(fwd),
         (None, Some(bwd)) => {
-            let result: Vec<Vec3> = bwd.into_iter().rev().collect();
+            let result: Vec<PVec3> = bwd.into_iter().rev().collect();
             Some(result)
         }
         (None, None) => None,
@@ -135,14 +135,14 @@ fn trace_curve_in_dir(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
     seed: &SeedPoint,
-    step_size: f32,
+    step_size: Real,
     max_steps: usize,
-    tolerance: f32,
+    tolerance: Real,
     forward: bool,
-) -> Option<Vec<Vec3>> {
+) -> Option<Vec<PVec3>> {
     let range_a = surf_a.param_range();
     let range_b = surf_b.param_range();
-    let mut points: Vec<Vec3> = vec![seed.point];
+    let mut points: Vec<PVec3> = vec![seed.point];
     let mut current_uv_a = seed.uv_a;
     let mut current_uv_b = seed.uv_b;
     let sign = if forward { 1.0 } else { -1.0 };
@@ -199,7 +199,7 @@ fn trace_curve_in_dir(
     if points.len() >= 2 { Some(points) } else { None }
 }
 
-fn step_size_for_surfaces(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom) -> f32 {
+fn step_size_for_surfaces(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom) -> Real {
     let range_a = surf_a.param_range();
     let range_b = surf_b.param_range();
     let diag_a = ((range_a.u_max - range_a.u_min).powi(2)
@@ -211,7 +211,7 @@ fn step_size_for_surfaces(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom) -> f32 {
     diag_a.min(diag_b) * 0.01
 }
 
-fn cluster_directions(dirs: Vec<Vec3>, threshold: f32) -> Vec<Vec3> {
+fn cluster_directions(dirs: Vec<PVec3>, threshold: Real) -> Vec<PVec3> {
     let mut result = Vec::new();
     let mut used = vec![false; dirs.len()];
     for i in 0..dirs.len() {
@@ -227,7 +227,7 @@ fn cluster_directions(dirs: Vec<Vec3>, threshold: f32) -> Vec<Vec3> {
             }
         }
         if count > 0 {
-            result.push((avg / count as f32).normalize());
+            result.push((avg / count as Real).normalize());
         }
     }
     result
@@ -238,11 +238,11 @@ fn cluster_directions(dirs: Vec<Vec3>, threshold: f32) -> Vec<Vec3> {
 pub fn detect_bifurcation(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
-    point: Vec3,
-    current_tangent: Vec3,
-    uv_a: (f32, f32),
-    tolerance: f32,
-) -> Vec<Vec3> {
+    point: PVec3,
+    current_tangent: PVec3,
+    uv_a: (Real, Real),
+    tolerance: Real,
+) -> Vec<PVec3> {
     // Sample a small circle around the current point in the tangent plane
     // of surface A, project to surface B, and check for multiple valid tangents
     let (un_a, vn_a) = surf_a.native_uv_to_d0(uv_a.0, uv_a.1);
@@ -262,7 +262,7 @@ pub fn detect_bifurcation(
     let radius = step_size_for_surfaces(surf_a, surf_b) * 2.0;
 
     for i in 0..n_samples {
-        let angle = std::f32::consts::TAU * i as f32 / n_samples as f32;
+        let angle = std::f64::consts::TAU * i as Real / n_samples as Real;
         let sample_dir = perp1 * angle.cos() + perp2 * angle.sin();
         // Skip directions close to current tangent
         if sample_dir.dot(current_tangent).abs() > 0.9 { continue; }
@@ -289,16 +289,16 @@ mod tests {
 
     #[test]
     fn marching_seeds_found_for_intersecting_planes() {
-        let s1 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let s2 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X };
+        let s1 = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let s2 = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X };
         let seeds = find_seeds(&s1, &s2, 8, 0.01);
         assert!(!seeds.is_empty(), "intersecting planes should produce seeds");
     }
 
     #[test]
     fn trace_curve_produces_points() {
-        let s1 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let s2 = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X };
+        let s1 = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let s2 = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X };
         let seeds = find_seeds(&s1, &s2, 8, 0.01);
         if let Some(seed) = seeds.first() {
             let pts = trace_curve(&s1, &s2, seed.clone(), 0.05, 50, 1e-4);

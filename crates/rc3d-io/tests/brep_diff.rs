@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 //! BREP structure and geometry diff tools for OCC alignment verification.
 //!
 //! To use with OCC ground truth:
@@ -57,7 +58,7 @@ impl TopoCounts {
     }
 
     /// Diff two topology counts. Returns score 0.0–1.0 (1.0 = identical counts).
-    pub fn diff_score(&self, other: &TopoCounts) -> f32 {
+    pub fn diff_score(&self, other: &TopoCounts) -> Real {
         let fields: [(usize, usize); 8] = [
             (self.vertices, other.vertices),
             (self.edges, other.edges),
@@ -69,7 +70,7 @@ impl TopoCounts {
             (self.pcurves_total, other.pcurves_total),
         ];
         let matched = fields.iter().filter(|(a, b)| a == b).count();
-        matched as f32 / fields.len() as f32
+        matched as Real / fields.len() as Real
     }
 
     /// Format a multi-line diff report.
@@ -99,30 +100,30 @@ impl TopoCounts {
 /// Geometric properties for diff comparison.
 #[derive(Debug, Default, Clone)]
 pub struct GeomProps {
-    pub face_areas: Vec<f32>,
-    pub edge_lengths: Vec<f32>,
-    pub vertex_positions: Vec<[f32; 3]>,
+    pub face_areas: Vec<Real>,
+    pub edge_lengths: Vec<Real>,
+    pub vertex_positions: Vec<[Real; 3]>,
 }
 
 /// Result of geometry diff comparison.
 #[derive(Debug, Default, Clone)]
 pub struct GeomDiff {
-    pub face_area_score: f32,      // 0.0–1.0
-    pub edge_length_score: f32,
-    pub vertex_position_score: f32,
-    pub overall_score: f32,
+    pub face_area_score: Real,      // 0.0–1.0
+    pub edge_length_score: Real,
+    pub vertex_position_score: Real,
+    pub overall_score: Real,
 }
 
 /// Compare two lists of floats with a relative epsilon.
-fn compare_lists(a: &[f32], b: &[f32], rel_eps: f32) -> f32 {
+fn compare_lists(a: &[Real], b: &[Real], rel_eps: Real) -> Real {
     if a.is_empty() && b.is_empty() { return 1.0; }
     let max_len = a.len().max(b.len());
     if max_len == 0 { return 1.0; }
     // Sort copies for order-independent comparison
-    let mut sa: Vec<f32> = a.iter().copied().collect();
-    let mut sb: Vec<f32> = b.iter().copied().collect();
-    sa.sort_by(f32::total_cmp);
-    sb.sort_by(f32::total_cmp);
+    let mut sa: Vec<Real> = a.iter().copied().collect();
+    let mut sb: Vec<Real> = b.iter().copied().collect();
+    sa.sort_by(Real::total_cmp);
+    sb.sort_by(Real::total_cmp);
     let n = sa.len().min(sb.len());
     let mut matched = 0;
     for i in 0..n {
@@ -133,17 +134,17 @@ fn compare_lists(a: &[f32], b: &[f32], rel_eps: f32) -> f32 {
             matched += 1;
         }
     }
-    matched as f32 / max_len as f32
+    matched as Real / max_len as Real
 }
 
 /// Compare two lists of 3D positions with absolute epsilon.
-fn compare_positions(a: &[[f32; 3]], b: &[[f32; 3]], abs_eps: f32) -> f32 {
+fn compare_positions(a: &[[Real; 3]], b: &[[Real; 3]], abs_eps: Real) -> Real {
     if a.is_empty() && b.is_empty() { return 1.0; }
     let max_len = a.len().max(b.len());
     if max_len == 0 { return 1.0; }
     // Compare pairwise by proximity (simplified: sort by x, then y, then z)
-    let mut sa: Vec<[f32; 3]> = a.to_vec();
-    let mut sb: Vec<[f32; 3]> = b.to_vec();
+    let mut sa: Vec<[Real; 3]> = a.to_vec();
+    let mut sb: Vec<[Real; 3]> = b.to_vec();
     sa.sort_by(|p, q| {
         p[0].total_cmp(&q[0])
             .then(p[1].total_cmp(&q[1]))
@@ -164,7 +165,7 @@ fn compare_positions(a: &[[f32; 3]], b: &[[f32; 3]], abs_eps: f32) -> f32 {
             matched += 1;
         }
     }
-    matched as f32 / max_len as f32
+    matched as Real / max_len as Real
 }
 
 impl GeomProps {

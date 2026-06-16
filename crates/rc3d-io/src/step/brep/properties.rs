@@ -1,7 +1,7 @@
 //! Global mesh properties (OCC BRepGProp equivalent).
 //! Volume, surface area, center of mass via divergence theorem.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3;
 
 #[derive(Debug, Default, Clone)]
 pub struct MeshProperties {
@@ -13,7 +13,7 @@ pub struct MeshProperties {
 /// Compute mesh properties from triangle mesh.
 /// Uses signed tetrahedra method (divergence theorem).
 /// Assumes closed, watertight mesh with consistent orientation.
-pub fn compute_mesh_properties(vertices: &[Vec3], indices: &[i32]) -> MeshProperties {
+pub fn compute_mesh_properties(vertices: &[PVec3], indices: &[i32]) -> MeshProperties {
     let mut props = MeshProperties::default();
     if vertices.is_empty() || indices.is_empty() {
         return props;
@@ -68,7 +68,7 @@ pub fn compute_mesh_properties(vertices: &[Vec3], indices: &[i32]) -> MeshProper
     props
 }
 
-fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> f64 {
+fn triple_product(a: PVec3, b: PVec3, c: PVec3) -> f64 {
     // a · (b × c)
     let cross = b.cross(c);
     (a.x as f64 * cross.x as f64)
@@ -79,7 +79,7 @@ fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_unit_sphere_properties() {
@@ -88,12 +88,12 @@ mod tests {
         let mut verts = Vec::new();
         let mut idx = Vec::new();
         // Simple octahedron approximating a sphere
-        let top = Vec3::new(0.0, 0.0, r);
-        let bot = Vec3::new(0.0, 0.0, -r);
-        let front = Vec3::new(r, 0.0, 0.0);
-        let back = Vec3::new(-r, 0.0, 0.0);
-        let left = Vec3::new(0.0, r, 0.0);
-        let right = Vec3::new(0.0, -r, 0.0);
+        let top = PVec3::new(0.0, 0.0, r);
+        let bot = PVec3::new(0.0, 0.0, -r);
+        let front = PVec3::new(r, 0.0, 0.0);
+        let back = PVec3::new(-r, 0.0, 0.0);
+        let left = PVec3::new(0.0, r, 0.0);
+        let right = PVec3::new(0.0, -r, 0.0);
         verts.extend([top, front, left, back, right, bot]);
         // 8 triangles covering the octahedron
         idx.extend([
@@ -110,14 +110,14 @@ mod tests {
     fn test_unit_cube_properties() {
         // Unit cube: 12 triangles, 8 vertices
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            Vec3::new(1.0, 0.0, 1.0),
-            Vec3::new(1.0, 1.0, 1.0),
-            Vec3::new(0.0, 1.0, 1.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 1.0),
+            PVec3::new(1.0, 0.0, 1.0),
+            PVec3::new(1.0, 1.0, 1.0),
+            PVec3::new(0.0, 1.0, 1.0),
         ];
         // 6 faces * 2 tris each, with consistent outward orientation
         let idx: Vec<i32> = vec![

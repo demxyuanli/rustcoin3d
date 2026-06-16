@@ -11,7 +11,7 @@ use crate::topo::FaceKey;
 use super::bopds::{FaceFaceInterf, InterfPoint};
 use super::marching::{find_seeds, trace_curve_bidirectional};
 use super::ssi_newton::newton_refine_ssi;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Compute face-face intersection with full UV data for both faces.
 ///
@@ -24,7 +24,7 @@ pub fn intersect_faces(
     face_b: FaceKey,
     surface_a: &SurfaceGeom,
     surface_b: &SurfaceGeom,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Option<FaceFaceInterf> {
     // Phase 1: Find seeds
     let mut seeds_a = find_seeds(surface_a, surface_b, 16, tolerance * 100.0);
@@ -47,7 +47,7 @@ pub fn intersect_faces(
 
     // Phase 2: Trace curves from each seed
     let range_a = surface_a.param_range();
-    let u_span = (range_a.u_max - range_a.u_min).min(std::f32::consts::TAU);
+    let u_span = (range_a.u_max - range_a.u_min).min(std::f64::consts::TAU);
     let v_span = (range_a.v_max - range_a.v_min).min(10.0);
     let step = (u_span + v_span) * 0.01;
 
@@ -89,11 +89,11 @@ pub fn intersect_faces(
 
         // Sample the traced curve to produce InterfPoints with UV on both faces
         let n_samples = points_3d.len().min(64);
-        let step = (points_3d.len() - 1).max(1) as f32 / (n_samples - 1).max(1) as f32;
+        let step = (points_3d.len() - 1).max(1) as Real / (n_samples - 1).max(1) as Real;
 
         let mut interf_points = Vec::with_capacity(n_samples);
         for i in 0..n_samples {
-            let idx_f = i as f32 * step;
+            let idx_f = i as Real * step;
             let idx = (idx_f as usize).min(points_3d.len() - 1);
             let pt = points_3d[idx];
 
@@ -130,15 +130,15 @@ pub fn intersect_faces(
     // Build PCurves from per-curve InterfPoint UV data.
     // Each curve[i] gets UV points from all_points[ranges[i].0..ranges[i].1].
     let pcurves_a: Vec<CurveGeom> = curve_point_ranges.iter().map(|&(start, end)| {
-        let uv_pts: Vec<Vec3> = all_points[start..end].iter()
-            .map(|p| Vec3::new(p.uv_a.0, p.uv_a.1, 0.0))
+        let uv_pts: Vec<PVec3> = all_points[start..end].iter()
+            .map(|p| PVec3::new(p.uv_a.0, p.uv_a.1, 0.0))
             .collect();
         CurveGeom::Polyline { points: uv_pts }
     }).collect();
 
     let pcurves_b: Vec<CurveGeom> = curve_point_ranges.iter().map(|&(start, end)| {
-        let uv_pts: Vec<Vec3> = all_points[start..end].iter()
-            .map(|p| Vec3::new(p.uv_b.0, p.uv_b.1, 0.0))
+        let uv_pts: Vec<PVec3> = all_points[start..end].iter()
+            .map(|p| PVec3::new(p.uv_b.0, p.uv_b.1, 0.0))
             .collect();
         CurveGeom::Polyline { points: uv_pts }
     }).collect();
@@ -171,15 +171,15 @@ pub fn surfaces_may_intersect(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom) -> boo
 mod tests {
     use super::*;
     use crate::geom::SurfaceGeom;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_intersect_faces_plane_plane() {
         let sa = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let sb = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X,
         };
 
         let result = intersect_faces(
@@ -195,10 +195,10 @@ mod tests {
     #[test]
     fn test_intersect_faces_parallel_planes() {
         let sa = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let sb = SurfaceGeom::Plane {
-            origin: Vec3::new(0.0, 0.0, 10.0), normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::new(0.0, 0.0, 10.0), normal: PVec3::Z, u_dir: PVec3::X,
         };
 
         assert!(!surfaces_may_intersect(&sa, &sb));
@@ -207,9 +207,9 @@ mod tests {
     #[test]
     fn test_surfaces_may_intersect() {
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
         assert!(surfaces_may_intersect(&plane, &cyl));
     }
 
@@ -223,12 +223,12 @@ mod tests {
         // per-curve partition invariant: pcurves_a[i] has the same number of
         // UV points as curves_3d[i] has 3D sample points.
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::new(0.0, 0.0, 0.5),
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::new(0.0, 0.0, 0.5),
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let sphere = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 1.0,
         };
 

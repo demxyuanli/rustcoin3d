@@ -27,7 +27,7 @@ pub fn effective_sense_raw(same_sense: bool, shell_orient: Orientation) -> bool 
 /// When same_sense is false, the normal is negated.
 #[inline]
 #[allow(dead_code)]
-pub fn orient_normal(mut normal: rc3d_core::math::Vec3, sense: bool) -> rc3d_core::math::Vec3 {
+pub fn orient_normal(mut normal: rc3d_core::math::PVec3, sense: bool) -> rc3d_core::math::PVec3 {
     if !sense {
         normal = -normal;
     }
@@ -43,9 +43,9 @@ mod tests {
     fn make_face(same_sense: bool) -> BRepFace {
         BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: rc3d_core::math::Vec3::ZERO,
-                normal: rc3d_core::math::Vec3::Z,
-                u_dir: rc3d_core::math::Vec3::X,
+                origin: rc3d_core::math::PVec3::ZERO,
+                normal: rc3d_core::math::PVec3::Z,
+                u_dir: rc3d_core::math::PVec3::X,
             },
             outer_wire: crate::topo::WireKey::default(),
             inner_wires: vec![],
@@ -83,13 +83,13 @@ mod tests {
 
     #[test]
     fn orient_normal_preserves_when_true() {
-        let n = rc3d_core::math::Vec3::Z;
+        let n = rc3d_core::math::PVec3::Z;
         assert_eq!(orient_normal(n, true), n);
     }
 
     #[test]
     fn orient_normal_flips_when_false() {
-        let n = rc3d_core::math::Vec3::Z;
+        let n = rc3d_core::math::PVec3::Z;
         assert_eq!(orient_normal(n, false), -n);
     }
 }

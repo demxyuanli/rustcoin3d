@@ -3,7 +3,7 @@
 //! Fixes PCurves so that C(t) ≈ S(pcurve(t)) for all t, where C is the 3D edge
 //! curve, S is the surface, and pcurve is the 2D UV curve on the surface.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::project::project_point_on_surface;
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom, eval_pcurve_on_surface};
@@ -18,8 +18,8 @@ use crate::topo::{EdgeKey, FaceKey, WireKey};
 #[allow(dead_code)]
 pub(crate) struct SameParamReport {
     pub pcurves_fixed: usize,
-    pub max_deviation_before: f32,
-    pub max_deviation_after: f32,
+    pub max_deviation_before: Real,
+    pub max_deviation_after: Real,
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ pub(crate) fn fix_same_parameter_edge(
     ek: EdgeKey,
     face_key: FaceKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
     max_iterations: usize,
 ) -> SameParamReport {
     match reg.ensure_same_parameter(ek, face_key, tolerance, max_iterations) {
@@ -50,16 +50,16 @@ pub(crate) fn fix_same_parameter_edge(
 // UV projection helper
 // ---------------------------------------------------------------------------
 
-/// Project a 3D point onto the surface and return native (u, v) as Vec3(u, v, 0).
+/// Project a 3D point onto the surface and return native (u, v) as PVec3(u, v, 0).
 fn project_to_uv(
     surface: &SurfaceGeom,
-    point: Vec3,
-    _current_uv: Vec3,
-    tolerance: f32,
-) -> Option<Vec3> {
+    point: PVec3,
+    _current_uv: PVec3,
+    tolerance: Real,
+) -> Option<PVec3> {
     // First try analytical inverse
     if let Some((u, v)) = surface.inverse_native_uv(point, tolerance * 100.0) {
-        return Some(Vec3::new(u, v, 0.0));
+        return Some(PVec3::new(u, v, 0.0));
     }
     // Fallback: Newton projection
     let results = project_point_on_surface(surface, point);
@@ -70,7 +70,7 @@ fn project_to_uv(
     let (u, v, _) = results
         .into_iter()
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))?;
-    Some(Vec3::new(u, v, 0.0))
+    Some(PVec3::new(u, v, 0.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ fn project_to_uv(
 // ---------------------------------------------------------------------------
 
 /// Shift uv by +/- period to be closest to reference in UV space.
-pub(crate) fn normalize_periodic_uv(uv: Vec3, reference: Vec3, surface: &SurfaceGeom) -> Vec3 {
+pub(crate) fn normalize_periodic_uv(uv: PVec3, reference: PVec3, surface: &SurfaceGeom) -> PVec3 {
     let mut result = uv;
     if let Some(pu) = surface.native_u_period() {
         let du = result.x - reference.x;
@@ -107,13 +107,13 @@ fn sample_deviation(
     curve_3d: &CurveGeom,
     pcurve: &Curve2d,
     surface: &SurfaceGeom,
-    tolerance: f32,
-) -> (f32, Vec<(f32, Vec3, f32)>) {
+    tolerance: Real,
+) -> (Real, Vec<(Real, PVec3, Real)>) {
     // Sample at the given tolerance (not tolerance*0.1) — avoids excessive
     // sampling of complex BSpline curves. A tolerance of 1e-4 produces ~10x
     // fewer samples than 1e-5 while still catching real PCurve misalignment.
     let samples = curve_3d.sample_adaptive(0.0, 1.0, tolerance);
-    let mut max_dev = 0.0f32;
+    let mut max_dev = 0.0_f64;
     let mut results = Vec::with_capacity(samples.len());
     for (t, p3d) in &samples {
         let via_surface = eval_pcurve_on_surface(pcurve, surface, *t);
@@ -131,10 +131,10 @@ fn sample_deviation(
 // ---------------------------------------------------------------------------
 
 /// Decide between line and BSpline fit based on collinearity.
-fn fit_new_pcurve(samples: &[(f32, Vec3)], tolerance: f32) -> Curve2d {
+fn fit_new_pcurve(samples: &[(Real, PVec3)], tolerance: Real) -> Curve2d {
     if samples.len() <= 2 {
-        let start = samples.first().map(|&(_, uv)| uv).unwrap_or(Vec3::ZERO);
-        let end = samples.last().map(|&(_, uv)| uv).unwrap_or(Vec3::ZERO);
+        let start = samples.first().map(|&(_, uv)| uv).unwrap_or(PVec3::ZERO);
+        let end = samples.last().map(|&(_, uv)| uv).unwrap_or(PVec3::ZERO);
         return fit_pcurve_line(start, end);
     }
     if all_collinear_uv(samples, tolerance) {
@@ -146,7 +146,7 @@ fn fit_new_pcurve(samples: &[(f32, Vec3)], tolerance: f32) -> Curve2d {
 }
 
 /// Check if all UV points are collinear within tolerance.
-fn all_collinear_uv(samples: &[(f32, Vec3)], tolerance: f32) -> bool {
+fn all_collinear_uv(samples: &[(Real, PVec3)], tolerance: Real) -> bool {
     if samples.len() <= 2 {
         return true;
     }
@@ -174,7 +174,7 @@ fn all_collinear_uv(samples: &[(f32, Vec3)], tolerance: f32) -> bool {
 // Line fit
 // ---------------------------------------------------------------------------
 
-fn fit_pcurve_line(uv_start: Vec3, uv_end: Vec3) -> Curve2d {
+fn fit_pcurve_line(uv_start: PVec3, uv_end: PVec3) -> Curve2d {
     Curve2d::Line {
         origin: (uv_start.x, uv_start.y),
         direction: (uv_end.x - uv_start.x, uv_end.y - uv_start.y),
@@ -185,7 +185,7 @@ fn fit_pcurve_line(uv_start: Vec3, uv_end: Vec3) -> Curve2d {
 // BSpline fit (interpolation through sample points)
 // ---------------------------------------------------------------------------
 
-fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
+fn fit_pcurve_bspline(samples: &[(Real, PVec3)], degree: usize) -> Curve2d {
     let n = samples.len();
     if n <= 2 || n < degree + 1 {
         return Curve2d::Polyline {
@@ -198,14 +198,14 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
 
     // Build clamped knot vector: deg+1 copies of t[0], deg+1 copies of t[n-1],
     // interior knots by averaging consecutive deg parameter values.
-    let t_vals: Vec<f32> = samples.iter().map(|(t, _)| *t).collect();
+    let t_vals: Vec<Real> = samples.iter().map(|(t, _)| *t).collect();
     let mut knots = Vec::with_capacity(n + deg + 1);
     for _ in 0..=deg {
         knots.push(t_vals[0]);
     }
     // Interior knots: j = 1 .. n-deg-1, knot[deg+j] = avg(t[j..j+deg])
     for j in 1..n - deg {
-        let avg: f32 = t_vals[j..j + deg].iter().sum::<f32>() / deg as f32;
+        let avg: Real = t_vals[j..j + deg].iter().sum::<Real>() / deg as Real;
         knots.push(avg);
     }
     for _ in 0..=deg {
@@ -213,9 +213,9 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
     }
 
     // Build n x n basis matrix and solve for control points (u coords and v coords separately)
-    let mut mat_u = vec![vec![0.0f32; n]; n];
-    let mut rhs_u = vec![0.0f32; n];
-    let mut rhs_v = vec![0.0f32; n];
+    let mut mat_u = vec![vec![0.0_f64; n]; n];
+    let mut rhs_u = vec![0.0_f64; n];
+    let mut rhs_v = vec![0.0_f64; n];
 
     for i in 0..n {
         for j in 0..n {
@@ -242,7 +242,7 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
         }
     };
 
-    let control_points: Vec<(f32, f32)> = cp_u
+    let control_points: Vec<(Real, Real)> = cp_u
         .into_iter()
         .zip(cp_v)
         .collect();
@@ -259,9 +259,9 @@ fn fit_pcurve_bspline(samples: &[(f32, Vec3)], degree: usize) -> Curve2d {
 // Gaussian elimination
 // ---------------------------------------------------------------------------
 
-fn solve_linear_system(mat: &[Vec<f32>], rhs: &[f32], n: usize) -> Option<Vec<f32>> {
-    let mut a: Vec<Vec<f32>> = mat.to_vec();
-    let mut b: Vec<f32> = rhs.to_vec();
+fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<Real>> {
+    let mut a: Vec<Vec<Real>> = mat.to_vec();
+    let mut b: Vec<Real> = rhs.to_vec();
 
     // Forward elimination with partial pivoting
     for col in 0..n {
@@ -294,7 +294,7 @@ fn solve_linear_system(mat: &[Vec<f32>], rhs: &[f32], n: usize) -> Option<Vec<f3
     }
 
     // Back substitution
-    let mut x = vec![0.0f32; n];
+    let mut x = vec![0.0_f64; n];
     for i in (0..n).rev() {
         if a[i][i].abs() < 1e-10 {
             return None;
@@ -316,7 +316,7 @@ fn solve_linear_system(mat: &[Vec<f32>], rhs: &[f32], n: usize) -> Option<Vec<f3
 ///
 /// Implements Algorithm A2.2 from "The NURBS Book" (Piegl & Tiller).
 /// Returns a vector of n_basis values where n_basis = knots.len() - degree - 1.
-fn bspline_basis_all(degree: usize, knots: &[f32], t: f32) -> Vec<f32> {
+fn bspline_basis_all(degree: usize, knots: &[Real], t: Real) -> Vec<Real> {
     let n_knots = knots.len();
     let n_basis = n_knots.saturating_sub(degree + 1);
     if n_basis == 0 {
@@ -329,7 +329,7 @@ fn bspline_basis_all(degree: usize, knots: &[f32], t: f32) -> Vec<f32> {
 
     // Special case: degree 0
     if degree == 0 {
-        let mut result = vec![0.0f32; n_basis];
+        let mut result = vec![0.0_f64; n_basis];
         result[0] = 1.0;
         return result;
     }
@@ -345,17 +345,17 @@ fn bspline_basis_all(degree: usize, knots: &[f32], t: f32) -> Vec<f32> {
     }
 
     // Compute non-zero basis functions using the triangular table (Algorithm A2.2)
-    let mut n_table = vec![0.0f32; degree + 1];
+    let mut n_table = vec![0.0_f64; degree + 1];
     n_table[0] = 1.0;
 
-    let mut left = vec![0.0f32; degree + 1];
-    let mut right = vec![0.0f32; degree + 1];
+    let mut left = vec![0.0_f64; degree + 1];
+    let mut right = vec![0.0_f64; degree + 1];
 
     for j in 1..=degree {
         left[j] = t - knots[span + 1 - j];
         right[j] = knots[span + j] - t;
 
-        let mut saved = 0.0f32;
+        let mut saved = 0.0_f64;
         for r in 0..j {
             let denom = right[r + 1] + left[j - r];
             let temp = if denom.abs() > 1e-12 {
@@ -370,7 +370,7 @@ fn bspline_basis_all(degree: usize, knots: &[f32], t: f32) -> Vec<f32> {
     }
 
     // Map triangular table entries into the full basis vector
-    let mut result = vec![0.0f32; n_basis];
+    let mut result = vec![0.0_f64; n_basis];
     let start = span as isize - degree as isize;
     for r in 0..=degree {
         let idx = start + r as isize;
@@ -383,7 +383,7 @@ fn bspline_basis_all(degree: usize, knots: &[f32], t: f32) -> Vec<f32> {
 }
 
 /// Standard Cox-de Boor: returns the value of the i-th B-spline basis function at t.
-fn bspline_basis(degree: usize, knot_index: usize, knots: &[f32], t: f32) -> f32 {
+fn bspline_basis(degree: usize, knot_index: usize, knots: &[Real], t: Real) -> Real {
     let all = bspline_basis_all(degree, knots, t);
     if knot_index < all.len() {
         all[knot_index]
@@ -402,7 +402,7 @@ pub(crate) fn fix_same_parameter_wire(
     wire_key: WireKey,
     face_key: FaceKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> usize {
     let edge_keys: Vec<EdgeKey> = reg
         .wires
@@ -436,19 +436,19 @@ mod tests {
     ) -> (BRepStore, EdgeKey, FaceKey, WireKey) {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
         let v1 = if degenerate {
             v0 // same vertex → degenerate
         } else {
-            reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4)
+            reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4)
         };
         let curve_3d = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -522,9 +522,9 @@ mod tests {
     fn test_bspline_fitting_collinear() {
         // Collinear points → should produce a Line
         let samples = vec![
-            (0.0f32, Vec3::new(0.0, 0.0, 0.0)),
-            (0.5, Vec3::new(0.5, 0.0, 0.0)),
-            (1.0, Vec3::new(1.0, 0.0, 0.0)),
+            (0.0_f64, PVec3::new(0.0, 0.0, 0.0)),
+            (0.5, PVec3::new(0.5, 0.0, 0.0)),
+            (1.0, PVec3::new(1.0, 0.0, 0.0)),
         ];
         let curve = fit_new_pcurve(&samples, 1e-3);
         assert!(
@@ -538,11 +538,11 @@ mod tests {
     fn test_bspline_fitting_curved() {
         // Non-collinear points → should produce a BSpline
         let samples = vec![
-            (0.0f32, Vec3::new(0.0, 0.0, 0.0)),
-            (0.25, Vec3::new(0.25, 0.5, 0.0)),
-            (0.5, Vec3::new(0.5, 0.5, 0.0)),
-            (0.75, Vec3::new(0.75, 0.5, 0.0)),
-            (1.0, Vec3::new(1.0, 0.0, 0.0)),
+            (0.0_f64, PVec3::new(0.0, 0.0, 0.0)),
+            (0.25, PVec3::new(0.25, 0.5, 0.0)),
+            (0.5, PVec3::new(0.5, 0.5, 0.0)),
+            (0.75, PVec3::new(0.75, 0.5, 0.0)),
+            (1.0, PVec3::new(1.0, 0.0, 0.0)),
         ];
         let curve = fit_new_pcurve(&samples, 1e-3);
         assert!(
@@ -560,15 +560,15 @@ mod tests {
     #[test]
     fn test_periodic_uv_normalization() {
         let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
+            origin: PVec3::ZERO,
+            axis: PVec3::Z,
             radius: 1.0,
-            x_dir: Vec3::X,
-            y_dir: Vec3::Y,
+            x_dir: PVec3::X,
+            y_dir: PVec3::Y,
         };
         // UV at TAU+0.1, reference at 0.1 → should wrap to 0.1
-        let uv = Vec3::new(std::f32::consts::TAU + 0.1, 1.0, 0.0);
-        let reference = Vec3::new(0.1, 1.0, 0.0);
+        let uv = PVec3::new(std::f64::consts::TAU + 0.1, 1.0, 0.0);
+        let reference = PVec3::new(0.1, 1.0, 0.0);
         let normalized = normalize_periodic_uv(uv, reference, &surface);
         assert!(
             (normalized.x - 0.1).abs() < 1e-4,
@@ -577,11 +577,11 @@ mod tests {
         );
 
         // UV at -0.1, reference at TAU-0.1 → should wrap to TAU-0.1
-        let uv2 = Vec3::new(-0.1, 1.0, 0.0);
-        let reference2 = Vec3::new(std::f32::consts::TAU - 0.1, 1.0, 0.0);
+        let uv2 = PVec3::new(-0.1, 1.0, 0.0);
+        let reference2 = PVec3::new(std::f64::consts::TAU - 0.1, 1.0, 0.0);
         let normalized2 = normalize_periodic_uv(uv2, reference2, &surface);
         assert!(
-            (normalized2.x - (std::f32::consts::TAU - 0.1)).abs() < 1e-4,
+            (normalized2.x - (std::f64::consts::TAU - 0.1)).abs() < 1e-4,
             "expected u ~ TAU-0.1, got {}",
             normalized2.x
         );
@@ -591,22 +591,22 @@ mod tests {
     fn test_fix_cylinder_shifted_u() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
+            origin: PVec3::ZERO,
+            axis: PVec3::Z,
             radius: 1.0,
-            x_dir: Vec3::X,
-            y_dir: Vec3::Y,
+            x_dir: PVec3::X,
+            y_dir: PVec3::Y,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 1.0), 1e-4);
         // 3D curve: vertical line on cylinder at (1,0,z)
         let curve_3d = CurveGeom::Line {
-            origin: Vec3::new(1.0, 0.0, 0.0),
-            direction: Vec3::new(0.0, 0.0, 1.0),
+            origin: PVec3::new(1.0, 0.0, 0.0),
+            direction: PVec3::new(0.0, 0.0, 1.0),
         };
         // Bad pcurve: shifted U by TAU/4 (90 degrees)
         let bad_pcurve = Curve2d::Line {
-            origin: (std::f32::consts::TAU * 0.25, 0.0),
+            origin: (std::f64::consts::TAU * 0.25, 0.0),
             direction: (0.0, 1.0),
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });

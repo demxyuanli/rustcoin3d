@@ -13,7 +13,7 @@ use crate::geom::SurfaceGeom;
 use crate::nurbs::NurbsSurface;
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, ShellKey};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Report from face self-intersection detection.
 #[allow(dead_code)]
@@ -76,12 +76,12 @@ fn check_nurbs_self_intersect(nurbs: &NurbsSurface, grid_res: usize) -> usize {
     let n = grid_res + 1;
 
     // Build normal grid.
-    let mut normals: Vec<Vec<Vec3>> = Vec::with_capacity(n);
+    let mut normals: Vec<Vec<PVec3>> = Vec::with_capacity(n);
     for i in 0..n {
         let mut row = Vec::with_capacity(n);
-        let u = i as f32 / grid_res as f32;
+        let u = i as Real / grid_res as Real;
         for j in 0..n {
-            let v = j as f32 / grid_res as f32;
+            let v = j as Real / grid_res as Real;
             row.push(nurbs.normal(u, v));
         }
         normals.push(row);
@@ -129,7 +129,7 @@ pub struct FaceSelfIntersectFixReport {
 pub fn fix_face_self_intersections(
     face_key: FaceKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> FaceSelfIntersectFixReport {
     let mut report = FaceSelfIntersectFixReport { faces_checked: 1, ..Default::default() };
 
@@ -158,8 +158,8 @@ pub fn fix_face_self_intersections(
                 Some(e) => e,
                 None => continue,
             };
-            let p_lo = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
-            let p_hi = reg.vertices.get(edge.v_high).map(|v| v.position).unwrap_or(Vec3::ZERO);
+            let p_lo = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(PVec3::ZERO);
+            let p_hi = reg.vertices.get(edge.v_high).map(|v| v.position).unwrap_or(PVec3::ZERO);
             (p_hi - p_lo).length()
         };
 
@@ -189,7 +189,7 @@ mod tests {
     use crate::geom::SurfaceGeom;
     use crate::topo::{BRepFace, BRepShell, BRepWire};
     use crate::nurbs::NurbsSurface;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn make_face_with_nurbs(reg: &mut BRepStore, nurbs: NurbsSurface) -> (FaceKey, ShellKey) {
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
@@ -214,8 +214,8 @@ mod tests {
     #[test]
     fn test_flat_surface_no_self_intersect() {
         let mut reg = BRepStore::new();
-        let grid: Vec<Vec<Vec3>> = (0..3)
-            .map(|i| (0..3).map(|j| Vec3::new(i as f32, j as f32, 0.0)).collect())
+        let grid: Vec<Vec<PVec3>> = (0..3)
+            .map(|i| (0..3).map(|j| PVec3::new(i as Real, j as Real, 0.0)).collect())
             .collect();
         let nurbs = NurbsSurface::from_points_grid(&grid, 2, 2);
         let (fk, _) = make_face_with_nurbs(&mut reg, nurbs);
@@ -242,9 +242,9 @@ mod tests {
             degree_u: 1,
             degree_v: 1,
             control_points: vec![
-                vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)],  // P0
-                vec![Vec3::new(2.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 2.0)],  // P1 (peak)
-                vec![Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 0.0, 3.0)],  // P2 (back to x=0)
+                vec![PVec3::new(0.0, 0.0, 0.0), PVec3::new(0.0, 0.0, 1.0)],  // P0
+                vec![PVec3::new(2.0, 0.0, 1.0), PVec3::new(2.0, 0.0, 2.0)],  // P1 (peak)
+                vec![PVec3::new(0.0, 0.0, 2.0), PVec3::new(0.0, 0.0, 3.0)],  // P2 (back to x=0)
             ],
             weights: vec![vec![1.0, 1.0]; 3],
             knots_u: vec![0.0, 0.0, 0.5, 1.0, 1.0],
@@ -263,9 +263,9 @@ mod tests {
     fn test_analytical_surface_returns_zero() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {

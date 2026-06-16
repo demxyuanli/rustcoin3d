@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::{plane_tangent_basis, SurfaceGeom};
 use crate::topo::{BRepFace, EdgeKey, FaceKey};
@@ -14,26 +14,26 @@ use super::face_fill::{
 use super::face_uv::FaceUvLoops;
 
 /// Planar face fill: sort boundary in plane frame, center fan (reuses welded edge verts).
-pub fn project_point_to_plane(pt: Vec3, origin: Vec3, normal: Vec3) -> Vec3 {
+pub fn project_point_to_plane(pt: PVec3, origin: PVec3, normal: PVec3) -> PVec3 {
     let n = normal.normalize();
     pt - n * (pt - origin).dot(n)
 }
 
 pub fn filter_plane_ring_coplanar_cluster(
-    ring: &mut Vec<(usize, Vec3)>,
-    origin: Vec3,
-    normal: Vec3,
+    ring: &mut Vec<(usize, PVec3)>,
+    origin: PVec3,
+    normal: PVec3,
 ) {
     if ring.len() < 4 {
         return;
     }
     let n = normal.normalize();
-    let dists: Vec<f32> = ring.iter().map(|(_, p)| (p - origin).dot(n)).collect();
+    let dists: Vec<Real> = ring.iter().map(|(_, p)| (p - origin).dot(n)).collect();
     let mut best_anchor = dists[0];
     let mut best_count = 0usize;
     for &anchor in &dists {
-        let band = (dists.iter().copied().fold(0.0f32, f32::max)
-            - dists.iter().copied().fold(0.0f32, f32::min))
+        let band = (dists.iter().copied().fold(0.0_f64, Real::max)
+            - dists.iter().copied().fold(0.0_f64, Real::min))
             .max(1e-3)
             * 0.15
             + normal.length().max(1e-6) * 1e-4;
@@ -43,8 +43,8 @@ pub fn filter_plane_ring_coplanar_cluster(
             best_anchor = anchor;
         }
     }
-    let band = (dists.iter().copied().fold(0.0f32, f32::max)
-        - dists.iter().copied().fold(0.0f32, f32::min))
+    let band = (dists.iter().copied().fold(0.0_f64, Real::max)
+        - dists.iter().copied().fold(0.0_f64, Real::min))
         .max(1e-3)
         * 0.15
         + 1e-3;
@@ -54,7 +54,7 @@ pub fn filter_plane_ring_coplanar_cluster(
     }
 }
 
-fn plane_ring_position_tol(pos_to_idx: &super::boundary::BoundaryPosIndex) -> f32 {
+fn plane_ring_position_tol(pos_to_idx: &super::boundary::BoundaryPosIndex) -> Real {
     pos_to_idx.cell_size().max(1e-6)
 }
 
@@ -62,9 +62,9 @@ fn plane_ring_position_tol(pos_to_idx: &super::boundary::BoundaryPosIndex) -> f3
 pub fn prepare_plane_boundary_ring(
     face: &BRepFace,
     boundary: &[usize],
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
     pos_to_idx: &super::boundary::BoundaryPosIndex,
-) -> Option<Vec<(usize, Vec3)>> {
+) -> Option<Vec<(usize, PVec3)>> {
     let SurfaceGeom::Plane {
         origin,
         normal,
@@ -77,7 +77,7 @@ pub fn prepare_plane_boundary_ring(
     let (u_axis, v_axis) = plane_tangent_basis(n, *u_dir);
     let tol_sq = plane_ring_position_tol(pos_to_idx).powi(2);
 
-    let mut ring: Vec<(usize, Vec3)> = Vec::new();
+    let mut ring: Vec<(usize, PVec3)> = Vec::new();
     for &gi in boundary {
         let Some(&pt) = global_vertices.get(gi) else {
             continue;
@@ -101,9 +101,9 @@ pub fn prepare_plane_boundary_ring(
         return None;
     }
 
-    let centroid = ring.iter().map(|(_, p)| *p).sum::<Vec3>() / ring.len() as f32;
+    let centroid = ring.iter().map(|(_, p)| *p).sum::<PVec3>() / ring.len() as Real;
     let centroid = project_point_to_plane(centroid, *origin, n);
-    let mut radii: Vec<f32> = ring
+    let mut radii: Vec<Real> = ring
         .iter()
         .map(|(_, p)| (*p - centroid).length())
         .collect();
@@ -120,7 +120,7 @@ pub fn prepare_plane_boundary_ring(
         return None;
     }
 
-    let center = ring.iter().map(|(_, p)| *p).sum::<Vec3>() / ring.len() as f32;
+    let center = ring.iter().map(|(_, p)| *p).sum::<PVec3>() / ring.len() as Real;
     let center = project_point_to_plane(center, *origin, n);
     sort_plane_ring_by_angle(&mut ring, center, u_axis, v_axis);
     orient_plane_ring_ccw(&mut ring, u_axis, v_axis);
@@ -128,7 +128,7 @@ pub fn prepare_plane_boundary_ring(
     simplify_collinear_plane_ring(&mut ring, tol);
     if ring.len() > 4 {
         ring = convex_hull_plane_ring(&ring, u_axis, v_axis, tol);
-        let center = ring.iter().map(|(_, p)| *p).sum::<Vec3>() / ring.len() as f32;
+        let center = ring.iter().map(|(_, p)| *p).sum::<PVec3>() / ring.len() as Real;
         let center = project_point_to_plane(center, *origin, n);
         sort_plane_ring_by_angle(&mut ring, center, u_axis, v_axis);
         orient_plane_ring_ccw(&mut ring, u_axis, v_axis);
@@ -141,15 +141,15 @@ pub fn prepare_plane_boundary_ring(
 
 /// 2D convex hull in the plane frame; keeps extreme corners for rectangular faces.
 fn convex_hull_plane_ring(
-    ring: &[(usize, Vec3)],
-    u_axis: Vec3,
-    v_axis: Vec3,
-    tol: f32,
-) -> Vec<(usize, Vec3)> {
+    ring: &[(usize, PVec3)],
+    u_axis: PVec3,
+    v_axis: PVec3,
+    tol: Real,
+) -> Vec<(usize, PVec3)> {
     if ring.len() <= 4 {
         return ring.to_vec();
     }
-    let mut pts: Vec<(usize, Vec3, f32, f32)> = ring
+    let mut pts: Vec<(usize, PVec3, Real, Real)> = ring
         .iter()
         .map(|&(gi, p)| (gi, p, p.dot(u_axis), p.dot(v_axis)))
         .collect();
@@ -165,7 +165,7 @@ fn convex_hull_plane_ring(
         return pts.into_iter().map(|(gi, p, _, _)| (gi, p)).collect();
     }
 
-    let cross2 = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+    let cross2 = |o: (Real, Real), a: (Real, Real), b: (Real, Real)| {
         (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
     };
 
@@ -217,7 +217,7 @@ fn convex_hull_plane_ring(
 }
 
 /// Drop interior samples on straight boundary segments (cube face: 8 edge pts → 4 corners).
-fn simplify_collinear_plane_ring(ring: &mut Vec<(usize, Vec3)>, tol: f32) {
+fn simplify_collinear_plane_ring(ring: &mut Vec<(usize, PVec3)>, tol: Real) {
     if ring.len() <= 4 {
         return;
     }
@@ -251,7 +251,7 @@ fn simplify_collinear_plane_ring(ring: &mut Vec<(usize, Vec3)>, tol: f32) {
 }
 
 /// Fan from the first boundary vertex — (n-2) triangles, no Steiner points (quad → 2 tris).
-pub fn fan_triangulate_sorted_ring(ring: &[(usize, Vec3)]) -> Vec<(i32, i32, i32)> {
+pub fn fan_triangulate_sorted_ring(ring: &[(usize, PVec3)]) -> Vec<(i32, i32, i32)> {
     if ring.len() < 3 {
         return Vec::new();
     }
@@ -269,13 +269,13 @@ pub fn fan_triangulate_sorted_ring(ring: &[(usize, Vec3)]) -> Vec<(i32, i32, i32
 
 fn apply_plane_face_normals_to_ring(
     face: &BRepFace,
-    ring: &[(usize, Vec3)],
-    origin: Vec3,
-    normal: Vec3,
-    global_normals: &mut Vec<Vec3>,
-) -> Vec3 {
+    ring: &[(usize, PVec3)],
+    origin: PVec3,
+    normal: PVec3,
+    global_normals: &mut Vec<PVec3>,
+) -> PVec3 {
     let n = normal.normalize();
-    let center = ring.iter().map(|(_, p)| *p).sum::<Vec3>() / ring.len() as f32;
+    let center = ring.iter().map(|(_, p)| *p).sum::<PVec3>() / ring.len() as Real;
     let center = project_point_to_plane(center, origin, n);
     let mut normal_vec = n;
     if ring.len() >= 2 {
@@ -307,8 +307,8 @@ fn apply_plane_face_normals_to_ring(
 pub fn triangulate_plane_boundary_fan(
     face: &BRepFace,
     loops: &FaceUvLoops,
-    global_vertices: &[Vec3],
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &[PVec3],
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &super::boundary::BoundaryPosIndex,
 ) -> Vec<(i32, i32, i32)> {
     let boundary: Vec<usize> = loops.outer.boundary.iter().map(|v| v.global_idx).collect();
@@ -331,8 +331,8 @@ pub fn triangulate_plane_boundary_fan(
 pub fn triangulate_plane_center_fan(
     face: &BRepFace,
     loops: &FaceUvLoops,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     config: &FaceFillConfig,
     shared_boundary: Option<&super::boundary::SharedBoundaryPool>,
@@ -350,13 +350,13 @@ pub fn triangulate_plane_center_fan(
     )
 }
 
-pub fn plane_angle_at(center: Vec3, pt: Vec3, u_axis: Vec3, v_axis: Vec3) -> f32 {
+pub fn plane_angle_at(center: PVec3, pt: PVec3, u_axis: PVec3, v_axis: PVec3) -> Real {
     let d = pt - center;
-    f32::atan2(d.dot(v_axis), d.dot(u_axis))
+    Real::atan2(d.dot(v_axis), d.dot(u_axis))
 }
 
-pub fn plane_ring_circular_mean_angle(angles: &[f32]) -> f32 {
-    let (mut sin_s, mut cos_s) = (0.0f32, 0.0f32);
+pub fn plane_ring_circular_mean_angle(angles: &[Real]) -> Real {
+    let (mut sin_s, mut cos_s) = (0.0_f64, 0.0_f64);
     for &a in angles {
         sin_s += a.sin();
         cos_s += a.cos();
@@ -364,13 +364,13 @@ pub fn plane_ring_circular_mean_angle(angles: &[f32]) -> f32 {
     if sin_s * sin_s + cos_s * cos_s < 1e-16 {
         angles.first().copied().unwrap_or(0.0)
     } else {
-        f32::atan2(sin_s, cos_s)
+        Real::atan2(sin_s, cos_s)
     }
 }
 
-pub fn plane_unwrap_angle_near(a: f32, ref_angle: f32) -> f32 {
-    const PI: f32 = std::f32::consts::PI;
-    const TAU: f32 = std::f32::consts::TAU;
+pub fn plane_unwrap_angle_near(a: Real, ref_angle: Real) -> Real {
+    const PI: Real = std::f64::consts::PI;
+    const TAU: Real = std::f64::consts::TAU;
     let mut x = a;
     while x - ref_angle > PI {
         x -= TAU;
@@ -382,12 +382,12 @@ pub fn plane_unwrap_angle_near(a: f32, ref_angle: f32) -> f32 {
 }
 
 pub fn sort_plane_ring_by_angle(
-    ring: &mut Vec<(usize, Vec3)>,
-    center: Vec3,
-    u_axis: Vec3,
-    v_axis: Vec3,
+    ring: &mut Vec<(usize, PVec3)>,
+    center: PVec3,
+    u_axis: PVec3,
+    v_axis: PVec3,
 ) {
-    let raw: Vec<f32> = ring
+    let raw: Vec<Real> = ring
         .iter()
         .map(|(_, p)| plane_angle_at(center, *p, u_axis, v_axis))
         .collect();
@@ -400,11 +400,11 @@ pub fn sort_plane_ring_by_angle(
     });
 }
 
-pub fn plane_ring_signed_area(ring: &[(usize, Vec3)], u_axis: Vec3, v_axis: Vec3) -> f32 {
+pub fn plane_ring_signed_area(ring: &[(usize, PVec3)], u_axis: PVec3, v_axis: PVec3) -> Real {
     if ring.len() < 3 {
         return 0.0;
     }
-    let mut area = 0.0f32;
+    let mut area = 0.0_f64;
     for i in 0..ring.len() {
         let (_, p0) = ring[i];
         let (_, p1) = ring[(i + 1) % ring.len()];
@@ -417,7 +417,7 @@ pub fn plane_ring_signed_area(ring: &[(usize, Vec3)], u_axis: Vec3, v_axis: Vec3
     area * 0.5
 }
 
-pub fn orient_plane_ring_ccw(ring: &mut Vec<(usize, Vec3)>, u_axis: Vec3, v_axis: Vec3) {
+pub fn orient_plane_ring_ccw(ring: &mut Vec<(usize, PVec3)>, u_axis: PVec3, v_axis: PVec3) {
     if plane_ring_signed_area(ring, u_axis, v_axis) < 0.0 {
         ring.reverse();
     }
@@ -447,8 +447,8 @@ pub fn mesh_plane_fan_wire_polygons(
     face: &BRepFace,
     wire_edges: &[(EdgeKey, crate::topo::Orientation, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
 ) -> FaceMeshRange {
     let SurfaceGeom::Plane { normal, u_dir, .. } = &face.surface else {
@@ -463,7 +463,7 @@ pub fn mesh_plane_fan_wire_polygons(
     };
     let first_tri = all_indices.len() / 4;
     let n = normal.normalize();
-    let mut ring: Vec<Vec3> = Vec::new();
+    let mut ring: Vec<PVec3> = Vec::new();
     for &(ek, _orient, ref pis) in wire_edges {
         let Some(poly) = edge_polygons.get(&ek) else {
             continue;
@@ -494,14 +494,14 @@ pub fn mesh_plane_fan_wire_polygons(
             cdt_constraint_failures: 0,
         };
     }
-    let mut center = Vec3::ZERO;
+    let mut center = PVec3::ZERO;
     for p in &ring {
         center += *p;
     }
-    center /= ring.len() as f32;
+    center /= ring.len() as Real;
     let (u_axis, v_axis) = plane_tangent_basis(n, *u_dir);
     let mut order: Vec<usize> = (0..ring.len()).collect();
-    let mut ring_pairs: Vec<(usize, Vec3)> = order.iter().map(|&i| (i, ring[i])).collect();
+    let mut ring_pairs: Vec<(usize, PVec3)> = order.iter().map(|&i| (i, ring[i])).collect();
     orient_plane_ring_ccw(&mut ring_pairs, u_axis, v_axis);
     order = ring_pairs.into_iter().map(|(i, _)| i).collect();
     let mut idx_ring: Vec<usize> = Vec::new();
@@ -549,8 +549,8 @@ pub fn mesh_plane_fan_3d(
     face_key: FaceKey,
     boundary_ordered: &[usize],
     face: &BRepFace,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     config: &FaceFillConfig,
@@ -571,7 +571,7 @@ pub fn mesh_plane_fan_3d(
     let emitted = emit_filtered_triangles(
         tris,
         false,
-        f32::MAX,
+        f64::MAX,
         face,
         global_vertices,
         global_normals,
@@ -593,7 +593,7 @@ pub fn mesh_plane_fan_3d(
     range
 }
 
-pub fn plane_fan_max_edge(config: &FaceFillConfig) -> f32 {
+pub fn plane_fan_max_edge(config: &FaceFillConfig) -> Real {
     let def_floor = (config.deflection_interior * 2.0).max(1e-4);
     let mut max_edge = config.min_size.max(def_floor);
     if config.shell_min_size > 0.0 {
@@ -605,10 +605,10 @@ pub fn plane_fan_max_edge(config: &FaceFillConfig) -> f32 {
 pub fn triangulate_plane_center_fan_from_boundary(
     face: &BRepFace,
     boundary: &[usize],
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut super::boundary::BoundaryPosIndex,
-    max_edge: f32,
+    max_edge: Real,
     shared_boundary: Option<&super::boundary::SharedBoundaryPool>,
     force_single_fan: bool,
 ) -> Vec<(i32, i32, i32)> {
@@ -625,7 +625,7 @@ pub fn triangulate_plane_center_fan_from_boundary(
     };
     let n = (*normal).normalize();
     let normal_vec = apply_plane_face_normals_to_ring(face, &ring, *origin, *normal, global_normals);
-    let center = ring.iter().map(|(_, p)| *p).sum::<Vec3>() / ring.len() as f32;
+    let center = ring.iter().map(|(_, p)| *p).sum::<PVec3>() / ring.len() as Real;
     let center = project_point_to_plane(center, *origin, n);
 
     let center_gi = super::boundary::register_boundary_point_with_normal_indexed_shared(
@@ -643,7 +643,7 @@ pub fn triangulate_plane_center_fan_from_boundary(
         }
     }
 
-    let mut max_boundary_edge = 0.0f32;
+    let mut max_boundary_edge = 0.0_f64;
     for i in 0..ring.len() {
         let a = ring[i].1;
         let b = ring[(i + 1) % ring.len()].1;
@@ -671,7 +671,7 @@ pub fn triangulate_plane_center_fan_from_boundary(
     let mut levels: Vec<Vec<usize>> = Vec::with_capacity(n_rings);
     levels.push(ring.iter().map(|(gi, _)| *gi).collect());
     for k in 1..n_rings {
-        let t = k as f32 / n_rings as f32;
+        let t = k as Real / n_rings as Real;
         let mut level = Vec::with_capacity(ring.len());
         for (_, p) in &ring {
             let pt = project_point_to_plane(*p * (1.0 - t) + center * t, *origin, n);

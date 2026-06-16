@@ -2,7 +2,7 @@
 
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, Orientation, WireKey};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 // ── Edge reordering (T3.1) ─────────────────────────────────────────
 
@@ -67,7 +67,7 @@ pub(crate) fn reorder_wire_edges(
     Some(result)
 }
 
-fn quantize(p: Vec3) -> u64 {
+fn quantize(p: PVec3) -> u64 {
     let x = (p.x * 1e6) as i64;
     let y = (p.y * 1e6) as i64;
     let z = (p.z * 1e6) as i64;
@@ -86,7 +86,7 @@ pub(crate) fn remove_small_edges(
     wire_key: WireKey,
     reg: &mut BRepStore,
     protected_edges: &[EdgeKey],
-    min_length: f32,
+    min_length: Real,
 ) -> Option<Vec<(EdgeKey, Orientation)>> {
     let edges: Vec<(EdgeKey, Orientation)> = {
         let Some(wire) = reg.wires.get(wire_key) else { return None; };
@@ -145,12 +145,12 @@ pub(crate) fn remove_small_edges(
     Some(result)
 }
 
-fn edge_length_3d(edge: &crate::topo::BRepEdge, reg: &BRepStore) -> f32 {
+fn edge_length_3d(edge: &crate::topo::BRepEdge, reg: &BRepStore) -> Real {
     let p0 = reg.vertices.get(edge.v_low).map(|v| v.position);
     let p1 = reg.vertices.get(edge.v_high).map(|v| v.position);
     match (p0, p1) {
         (Some(a), Some(b)) => (a - b).length(),
-        _ => f32::MAX,
+        _ => f64::MAX,
     }
 }
 
@@ -160,13 +160,13 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, FaceKey};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn make_wire_with_edges(
         reg: &mut BRepStore,
-        edge_lengths: &[f32],
+        edge_lengths: &[Real],
     ) -> (WireKey, Vec<EdgeKey>, FaceKey) {
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let face_key = reg.faces.insert(crate::topo::BRepFace {
             surface,
             outer_wire: WireKey::default(),
@@ -178,14 +178,14 @@ mod tests {
             degenerated_edges: vec![],
         });
 
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let mut edge_keys = Vec::new();
-        let mut x = 0.0f32;
+        let mut x = 0.0_f64;
         for &len in edge_lengths {
-            let v0 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
+            let v0 = reg.find_or_add_vertex(PVec3::new(x, 0.0, 0.0), 1e-4);
             x += len;
-            let v1 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
+            let v1 = reg.find_or_add_vertex(PVec3::new(x, 0.0, 0.0), 1e-4);
             let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, pc.clone(), true);
             edge_keys.push(ek);
         }

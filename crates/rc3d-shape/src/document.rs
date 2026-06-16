@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rc3d_core::math::Mat4;
+use rc3d_core::math::{Real, PMat4};
 use slotmap::SlotMap;
 
 use crate::shape::{Shape, ShapeId, ShapeKind, ShapeNode};
@@ -27,8 +27,8 @@ pub struct PmiEntry {
     pub id: u32,
     pub label: String,
     pub step_entity_id: Option<u64>,
-    pub origin: [f32; 3],
-    pub normal: [f32; 3],
+    pub origin: [Real; 3],
+    pub normal: [Real; 3],
 }
 
 #[derive(Debug)]
@@ -40,7 +40,7 @@ pub struct ShapeDocument {
     pub pmi_pool: PmiDataSet,
     pub tessellation: TessellationCache,
     pub provenance: ProvenanceMap,
-    world_transform_cache: HashMap<ShapeId, Mat4>,
+    world_transform_cache: HashMap<ShapeId, PMat4>,
 }
 
 impl Default for ShapeDocument {
@@ -91,11 +91,11 @@ impl ShapeDocument {
         out
     }
 
-    pub fn resolved_label_color(&self, label_id: LabelId) -> Option<[f32; 3]> {
+    pub fn resolved_label_color(&self, label_id: LabelId) -> Option<[Real; 3]> {
         self.labels.resolved_color(label_id)
     }
 
-    pub fn resolved_label_opacity(&self, label_id: LabelId) -> Option<f32> {
+    pub fn resolved_label_opacity(&self, label_id: LabelId) -> Option<Real> {
         self.labels.resolved_opacity(label_id)
     }
 
@@ -116,7 +116,7 @@ impl ShapeDocument {
         self.world_transform_cache.clear();
     }
 
-    pub fn world_transform(&mut self, shape_id: ShapeId) -> Mat4 {
+    pub fn world_transform(&mut self, shape_id: ShapeId) -> PMat4 {
         if let Some(&cached) = self.world_transform_cache.get(&shape_id) {
             return cached;
         }
@@ -125,9 +125,9 @@ impl ShapeDocument {
         world
     }
 
-    fn compute_world_transform(&self, shape_id: ShapeId) -> Mat4 {
+    fn compute_world_transform(&self, shape_id: ShapeId) -> PMat4 {
         let Some(node) = self.shapes.get(shape_id) else {
-            return Mat4::IDENTITY;
+            return PMat4::IDENTITY;
         };
         let local = node.location;
         match node.parent {
@@ -142,7 +142,7 @@ impl ShapeDocument {
     pub fn add_solid_instance(
         &mut self,
         solid_key: SolidKey,
-        location: Mat4,
+        location: PMat4,
         parent: Option<ShapeId>,
     ) -> ShapeId {
         let shape_id = self.insert_shape(ShapeNode {
@@ -172,7 +172,7 @@ mod tests {
         let parent = doc.insert_shape(ShapeNode {
             kind: ShapeKind::Compound,
             orientation: Orientation::Forward,
-            location: Mat4::from_translation([10.0, 0.0, 0.0].into()),
+            location: PMat4::from_translation([10.0, 0.0, 0.0].into()),
             parent: None,
             children: Vec::new(),
         });
@@ -187,7 +187,7 @@ mod tests {
             void_shells: vec![],
         });
 
-        let child = doc.add_solid_instance(sk, Mat4::from_translation([0.0, 5.0, 0.0].into()), Some(parent));
+        let child = doc.add_solid_instance(sk, PMat4::from_translation([0.0, 5.0, 0.0].into()), Some(parent));
         let world = doc.world_transform(child);
         assert!((world.w_axis.x - 10.0).abs() < 1e-5);
         assert!((world.w_axis.y - 5.0).abs() < 1e-5);
@@ -199,7 +199,7 @@ mod tests {
         let id = doc.insert_shape(ShapeNode {
             kind: ShapeKind::Compound,
             orientation: Orientation::Forward,
-            location: Mat4::IDENTITY,
+            location: PMat4::IDENTITY,
             parent: None,
             children: Vec::new(),
         });

@@ -1,27 +1,27 @@
 //! Axis-aligned bounding box utilities for boolean operation acceleration.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::FaceKey;
 
 /// Axis-aligned bounding box.
 #[derive(Debug, Clone, Copy)]
 pub struct AABB {
-    pub min: Vec3,
-    pub max: Vec3,
+    pub min: PVec3,
+    pub max: PVec3,
 }
 
 impl AABB {
     /// Empty AABB (inverted bounds).
     pub fn empty() -> Self {
         AABB {
-            min: Vec3::splat(f32::MAX),
-            max: Vec3::splat(f32::MIN),
+            min: PVec3::splat(f64::MAX),
+            max: PVec3::splat(f64::MIN),
         }
     }
 
     /// Expand to include a point.
-    pub fn expand(&mut self, p: Vec3) {
+    pub fn expand(&mut self, p: PVec3) {
         self.min = self.min.min(p);
         self.max = self.max.max(p);
     }
@@ -64,29 +64,29 @@ mod tests {
 
     #[test]
     fn test_aabb_overlap_touching() {
-        let a = AABB { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(1.0, 1.0, 1.0) };
-        let b = AABB { min: Vec3::new(1.0, 0.0, 0.0), max: Vec3::new(2.0, 1.0, 1.0) };
+        let a = AABB { min: PVec3::new(0.0, 0.0, 0.0), max: PVec3::new(1.0, 1.0, 1.0) };
+        let b = AABB { min: PVec3::new(1.0, 0.0, 0.0), max: PVec3::new(2.0, 1.0, 1.0) };
         assert!(a.overlaps(&b), "touching faces should overlap");
     }
 
     #[test]
     fn test_aabb_no_overlap() {
-        let a = AABB { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(1.0, 1.0, 1.0) };
-        let b = AABB { min: Vec3::new(2.0, 2.0, 2.0), max: Vec3::new(3.0, 3.0, 3.0) };
+        let a = AABB { min: PVec3::new(0.0, 0.0, 0.0), max: PVec3::new(1.0, 1.0, 1.0) };
+        let b = AABB { min: PVec3::new(2.0, 2.0, 2.0), max: PVec3::new(3.0, 3.0, 3.0) };
         assert!(!a.overlaps(&b), "separated faces should not overlap");
     }
 
     #[test]
     fn test_aabb_overlap_partial() {
-        let a = AABB { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(2.0, 2.0, 2.0) };
-        let b = AABB { min: Vec3::new(1.0, 1.0, 1.0), max: Vec3::new(3.0, 3.0, 3.0) };
+        let a = AABB { min: PVec3::new(0.0, 0.0, 0.0), max: PVec3::new(2.0, 2.0, 2.0) };
+        let b = AABB { min: PVec3::new(1.0, 1.0, 1.0), max: PVec3::new(3.0, 3.0, 3.0) };
         assert!(a.overlaps(&b), "partially overlapping faces should overlap");
     }
 
     #[test]
     fn test_aabb_overlap_contained() {
-        let a = AABB { min: Vec3::new(0.0, 0.0, 0.0), max: Vec3::new(4.0, 4.0, 4.0) };
-        let b = AABB { min: Vec3::new(1.0, 1.0, 1.0), max: Vec3::new(2.0, 2.0, 2.0) };
+        let a = AABB { min: PVec3::new(0.0, 0.0, 0.0), max: PVec3::new(4.0, 4.0, 4.0) };
+        let b = AABB { min: PVec3::new(1.0, 1.0, 1.0), max: PVec3::new(2.0, 2.0, 2.0) };
         assert!(a.overlaps(&b), "contained face should overlap");
     }
 }

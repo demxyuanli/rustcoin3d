@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::edge_pool::FaceEdgeBoundaryIdx;
 use super::face_fill::FaceMeshRange;
@@ -27,15 +27,15 @@ pub fn surface_kind(surface: &SurfaceGeom) -> &'static str {
     }
 }
 
-fn fmt_v(p: Vec3) -> String {
+fn fmt_v(p: PVec3) -> String {
     format!("({:.6},{:.6},{:.6})", p.x, p.y, p.z)
 }
 
-fn tri_edges(a: Vec3, b: Vec3, c: Vec3) -> (f32, f32, f32) {
+fn tri_edges(a: PVec3, b: PVec3, c: PVec3) -> (Real, Real, Real) {
     ((b - a).length(), (c - b).length(), (a - c).length())
 }
 
-fn median(mut xs: Vec<f32>) -> f32 {
+fn median(mut xs: Vec<Real>) -> Real {
     if xs.is_empty() {
         return 0.0;
     }
@@ -56,7 +56,7 @@ pub fn format_wire_loop_lines(
     loops: &FaceUvLoops,
     wire_edges: &[(EdgeKey, crate::topo::Orientation, Vec<usize>)],
     edge_boundary_idx: &FaceEdgeBoundaryIdx,
-    vertices: &[Vec3],
+    vertices: &[PVec3],
 ) -> Vec<String> {
     let mut lines = Vec::new();
     let boundary = &loops.outer.boundary;
@@ -64,8 +64,8 @@ pub fn format_wire_loop_lines(
         return lines;
     }
 
-    let mut z_min = f32::MAX;
-    let mut z_max = f32::MIN;
+    let mut z_min = f64::MAX;
+    let mut z_max = f64::MIN;
     for v in boundary {
         if let Some(p) = vertices.get(v.global_idx) {
             z_min = z_min.min(p.z);
@@ -104,7 +104,7 @@ pub fn format_wire_loop_lines(
                 }
             }
         }
-        let seg_max = seg_lens.iter().copied().fold(0.0f32, f32::max);
+        let seg_max = seg_lens.iter().copied().fold(0.0_f64, Real::max);
         lines.push(format!(
             "[BRep mesh diag]   wire edge {ek:?} pts={} seg_max={seg_max:.6}",
             pis.len(),
@@ -163,7 +163,7 @@ impl DiagWriter {
 pub fn log_mesh_coordinates_if_requested(
     shell_key: ShellKey,
     reg: &BRepStore,
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     indices: &[i32],
     face_ranges: &[FaceMeshRange],
     report: &ShellMeshReport,
@@ -208,7 +208,7 @@ pub fn log_mesh_coordinates_if_requested(
         }
 
         let mut edge_lens = Vec::new();
-        let mut max_edge = 0.0f32;
+        let mut max_edge = 0.0_f64;
         for chunk in indices[start..end].chunks(4) {
             if chunk.len() < 4 {
                 continue;

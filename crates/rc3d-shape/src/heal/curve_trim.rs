@@ -3,10 +3,10 @@
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, VertexKey, WireKey};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Trim a 3D edge curve to parameter range [t0, t1] in edge parameter space [0, 1].
-pub fn trim_edge_curve(curve: &CurveGeom, t0: f32, t1: f32) -> CurveGeom {
+pub fn trim_edge_curve(curve: &CurveGeom, t0: Real, t1: Real) -> CurveGeom {
     if (t0 - 0.0).abs() < 1e-8 && (t1 - 1.0).abs() < 1e-8 {
         return curve.clone();
     }
@@ -38,14 +38,14 @@ pub fn trim_edge_curve(curve: &CurveGeom, t0: f32, t1: f32) -> CurveGeom {
     }
 }
 
-fn trim_polyline(points: &[Vec3], t0: f32, t1: f32) -> CurveGeom {
+fn trim_polyline(points: &[PVec3], t0: Real, t1: Real) -> CurveGeom {
     if points.len() < 2 {
         return CurveGeom::Polyline {
             points: points.to_vec(),
         };
     }
     let mut seg_lens = Vec::with_capacity(points.len() - 1);
-    let mut total = 0.0f32;
+    let mut total = 0.0_f64;
     for w in points.windows(2) {
         let l = (w[1] - w[0]).length();
         seg_lens.push(l);
@@ -56,9 +56,9 @@ fn trim_polyline(points: &[Vec3], t0: f32, t1: f32) -> CurveGeom {
             points: vec![points[0], points[0]],
         };
     }
-    let sample = |t: f32| -> Vec3 {
+    let sample = |t: Real| -> PVec3 {
         let target = t.clamp(0.0, 1.0) * total;
-        let mut acc = 0.0f32;
+        let mut acc = 0.0_f64;
         for (i, &l) in seg_lens.iter().enumerate() {
             if acc + l >= target - 1e-8 || i + 1 == seg_lens.len() {
                 let local = if l > 1e-12 {
@@ -78,7 +78,7 @@ fn trim_polyline(points: &[Vec3], t0: f32, t1: f32) -> CurveGeom {
 }
 
 /// Trim a PCurve to [t0, t1] in edge parameter space.
-pub fn trim_pcurve(pc: &Curve2d, t0: f32, t1: f32) -> Curve2d {
+pub fn trim_pcurve(pc: &Curve2d, t0: Real, t1: Real) -> Curve2d {
     if (t0 - 0.0).abs() < 1e-8 && (t1 - 1.0).abs() < 1e-8 {
         return pc.clone();
     }
@@ -94,10 +94,10 @@ pub fn split_edge_at_params(
     ek: EdgeKey,
     face_key: FaceKey,
     orient: Orientation,
-    splits: &[f32],
+    splits: &[Real],
     reg: &mut BRepStore,
 ) -> Vec<(EdgeKey, Orientation)> {
-    let mut params: Vec<f32> = splits
+    let mut params: Vec<Real> = splits
         .iter()
         .copied()
         .filter(|t| *t > 1e-6 && *t < 1.0 - 1e-6)
@@ -127,7 +127,7 @@ pub fn split_edge_at_params(
         return vec![(ek, orient)];
     };
 
-    let mut breakpoints = vec![0.0f32];
+    let mut breakpoints = vec![0.0_f64];
     breakpoints.extend(params);
     breakpoints.push(1.0);
 
@@ -183,16 +183,16 @@ pub fn replace_wire_edge_with_splits(
 /// Create a degenerated edge at a pole: v_low == v_high, UV extent preserved.
 pub fn add_degenerated_edge_at_pole(
     pole_vk: VertexKey,
-    uv_start: (f32, f32),
-    uv_end: (f32, f32),
-    pole_3d: Vec3,
-    tolerance: f32,
+    uv_start: (Real, Real),
+    uv_end: (Real, Real),
+    pole_3d: PVec3,
+    tolerance: Real,
     face_key: FaceKey,
     reg: &mut BRepStore,
 ) -> EdgeKey {
     let zero_curve = CurveGeom::Line {
         origin: pole_3d,
-        direction: Vec3::ZERO,
+        direction: PVec3::ZERO,
     };
     let degen_pc = Curve2d::Line {
         origin: (uv_start.0, uv_start.1),
@@ -205,8 +205,8 @@ fn pcurve_point_3d(
     pc: &Curve2d,
     surface: Option<&SurfaceGeom>,
     fallback_curve: &CurveGeom,
-    t: f32,
-) -> Vec3 {
+    t: Real,
+) -> PVec3 {
     if let Some(surf) = surface {
         let uv = pc.d0(t);
         surf.d0_native(uv.0, uv.1)
@@ -225,31 +225,31 @@ mod tests {
     #[test]
     fn trim_line_endpoints_match() {
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let trimmed = trim_edge_curve(&line, 0.25, 0.75);
-        assert!((trimmed.d0(0.0) - Vec3::new(0.25, 0.0, 0.0)).length() < 1e-5);
-        assert!((trimmed.d0(1.0) - Vec3::new(0.75, 0.0, 0.0)).length() < 1e-5);
+        assert!((trimmed.d0(0.0) - PVec3::new(0.25, 0.0, 0.0)).length() < 1e-5);
+        assert!((trimmed.d0(1.0) - PVec3::new(0.75, 0.0, 0.0)).length() < 1e-5);
     }
 
     #[test]
     fn split_edge_produces_trimmed_segments() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let pc = Curve2d::Line {
             origin: (0.0, 0.0),
             direction: (1.0, 0.0),
         };
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -265,7 +265,7 @@ mod tests {
         let parts = split_edge_at_params(ek, fk, Orientation::Forward, &[0.5], &mut reg);
         assert_eq!(parts.len(), 2);
         let e0 = reg.edges.get(parts[0].0).unwrap();
-        assert!((e0.curve.d0(0.0) - Vec3::ZERO).length() < 1e-4);
-        assert!((e0.curve.d0(1.0) - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-4);
+        assert!((e0.curve.d0(0.0) - PVec3::ZERO).length() < 1e-4);
+        assert!((e0.curve.d0(1.0) - PVec3::new(0.5, 0.0, 0.0)).length() < 1e-4);
     }
 }

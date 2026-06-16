@@ -1,5 +1,6 @@
 //! Shell-level fixes: orientation, vertex positions, and face splitting.
 
+use rc3d_core::math::Real;
 use std::collections::{HashSet, VecDeque};
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, ShellKey, WireKey};
@@ -74,7 +75,7 @@ pub(crate) fn fix_shell_orientation(
 pub(crate) fn fix_vertex_positions(
     shell_key: ShellKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> usize {
     let face_keys: Vec<_> = {
         let Some(shell) = reg.shells.get(shell_key) else { return 0; };
@@ -215,9 +216,9 @@ pub(crate) fn fix_split_face(
     report
 }
 
-fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32> {
+fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<Real> {
     let wire = reg.wires.get(wk)?;
-    let mut pts: Vec<(f32, f32)> = Vec::new();
+    let mut pts: Vec<(Real, Real)> = Vec::new();
     for &(ek, _) in &wire.edges {
         let edge = reg.edges.get(ek)?;
         let pc = edge.pcurves.get(&fk)?;
@@ -236,7 +237,7 @@ fn wire_signed_area_uv(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<f32>
         }
     }
     let n = pts.len();
-    let mut area = 0.0f32;
+    let mut area = 0.0_f64;
     for i in 0..n {
         let j = (i + 1) % n;
         area += pts[i].0 * pts[j].1;
@@ -252,21 +253,21 @@ mod vertex_tests {
     use super::*;
     use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_fix_vertex_on_surface() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.005), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.005), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc2d = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc2d, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -280,9 +281,9 @@ mod vertex_tests {
     #[test]
     fn test_fix_vertex_no_projection() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -294,7 +295,7 @@ mod vertex_tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc2d = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc2d, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -313,18 +314,18 @@ mod split_tests {
     use super::*;
     use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_no_split_single_outer() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 2.0, 0.0), 1e-4);
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(2.0, 2.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 2.0, 0.0), 1e-4);
 
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (2.0, 0.0) };
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -350,13 +351,13 @@ mod split_tests {
     #[test]
     fn test_split_face_with_same_sign_inner() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
 
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(3.0, 3.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 3.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(3.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(3.0, 3.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 3.0, 0.0), 1e-4);
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface, outer_wire: wk_outer, inner_wires: vec![],
@@ -374,10 +375,10 @@ mod split_tests {
         ];
 
         // Inner wire that is also CCW (same sign as outer) - should be split out
-        let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
-        let v7 = reg.find_or_add_vertex(Vec3::new(1.0, 2.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(2.0, 1.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(2.0, 2.0, 0.0), 1e-4);
+        let v7 = reg.find_or_add_vertex(PVec3::new(1.0, 2.0, 0.0), 1e-4);
         let pc_inner = Curve2d::Line { origin: (1.0, 1.0), direction: (1.0, 0.0) };
         let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner.clone(), true);
         let ei2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner.clone(), true);

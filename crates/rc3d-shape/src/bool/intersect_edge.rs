@@ -4,7 +4,7 @@
 //! cross each other (edge-edge). Used in B-rep boolean operations to detect
 //! vertices where edges from one body touch faces or edges of another body.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::{CurveGeom, SurfaceGeom, project::project_point_on_curve};
 use crate::topo::{EdgeKey, FaceKey, WireKey};
 use crate::store::BRepStore;
@@ -15,22 +15,22 @@ use crate::store::BRepStore;
 #[derive(Debug, Clone)]
 pub struct EdgeFaceHit {
     /// Parameter on edge curve [0,1].
-    pub t_edge: f32,
+    pub t_edge: Real,
     /// 3D intersection point.
-    pub point: Vec3,
+    pub point: PVec3,
     /// UV on face surface (native parameters).
-    pub uv_face: (f32, f32),
+    pub uv_face: (Real, Real),
 }
 
 /// Hit point from an edge-edge intersection.
 #[derive(Debug, Clone)]
 pub struct EdgeEdgeHit {
     /// Parameter on edge A [0,1].
-    pub t_a: f32,
+    pub t_a: Real,
     /// Parameter on edge B [0,1].
-    pub t_b: f32,
+    pub t_b: Real,
     /// 3D intersection point.
-    pub point: Vec3,
+    pub point: PVec3,
 }
 
 // ── Edge-Face intersection ───────────────────────────────────────
@@ -43,14 +43,14 @@ pub struct EdgeEdgeHit {
 pub fn intersect_edge_face(
     edge_curve: &CurveGeom,
     surface: &SurfaceGeom,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Vec<EdgeFaceHit> {
     let samples = edge_curve.sample_adaptive(0.0, 1.0, tolerance);
 
     // Compute signed distance of each sample to the surface.
     // For planes this is exact (signed); for other surfaces we use
     // projection distance.
-    let dists: Vec<f32> = samples.iter().map(|&(_, p)| {
+    let dists: Vec<Real> = samples.iter().map(|&(_, p)| {
         surface_distance(surface, p)
     }).collect();
 
@@ -88,7 +88,7 @@ pub fn intersect_edge_face(
 /// For planes: exact signed distance (positive on normal side).
 /// For other surfaces: distance from point to its nearest projection on the
 /// surface, signed by the surface normal (positive = outside, negative = inside).
-fn surface_distance(surface: &SurfaceGeom, point: Vec3) -> f32 {
+fn surface_distance(surface: &SurfaceGeom, point: PVec3) -> Real {
     match surface {
         SurfaceGeom::Plane { origin, normal, .. } => {
             (point - *origin).dot(*normal)
@@ -113,9 +113,9 @@ fn surface_distance(surface: &SurfaceGeom, point: Vec3) -> f32 {
 fn bisect_edge_face(
     curve: &CurveGeom,
     surface: &SurfaceGeom,
-    s0: (f32, Vec3),
-    s1: (f32, Vec3),
-    tolerance: f32,
+    s0: (Real, PVec3),
+    s1: (Real, PVec3),
+    tolerance: Real,
 ) -> Option<EdgeFaceHit> {
     let (mut t0, _) = s0;
     let (mut t1, _) = s1;
@@ -167,7 +167,7 @@ fn bisect_edge_face(
 pub fn intersect_edge_edge(
     edge_a: &CurveGeom,
     edge_b: &CurveGeom,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Vec<EdgeEdgeHit> {
     let samples_a = edge_a.sample_adaptive(0.0, 1.0, tolerance);
     let tol_sq = tolerance * tolerance;
@@ -212,7 +212,7 @@ pub fn intersect_wire_face(
     wire_key: WireKey,
     face_key: FaceKey,
     reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Vec<(EdgeKey, Vec<EdgeFaceHit>)> {
     let wire = match reg.wires.get(wire_key) {
         Some(w) => w,
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepFace, BRepWire};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     /// Helper: create a BRepFace with a dummy wire in a fresh BRepStore.
     fn make_face_with_store(surface: SurfaceGeom) -> (BRepStore, crate::topo::FaceKey) {
@@ -269,13 +269,13 @@ mod tests {
     fn test_intersect_line_through_plane() {
         // Line along Z from (-1) to (+1), passing through the z=0 plane.
         let line = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, -1.0),
-            direction: Vec3::new(0.0, 0.0, 2.0), // t=0 → z=-1, t=1 → z=+1
+            origin: PVec3::new(0.0, 0.0, -1.0),
+            direction: PVec3::new(0.0, 0.0, 2.0), // t=0 → z=-1, t=1 → z=+1
         };
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let hits = intersect_edge_face(&line, &plane, 1e-4);
         assert_eq!(hits.len(), 1, "Line through plane should produce 1 hit");
@@ -288,13 +288,13 @@ mod tests {
     fn test_intersect_line_miss_plane() {
         // Line parallel to and above the z=0 plane (at z=1).
         let line = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 1.0),
-            direction: Vec3::X, // travels along X, stays at z=1
+            origin: PVec3::new(0.0, 0.0, 1.0),
+            direction: PVec3::X, // travels along X, stays at z=1
         };
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let hits = intersect_edge_face(&line, &plane, 1e-4);
         assert!(hits.is_empty(), "Line above plane should produce 0 hits, got {}", hits.len());
@@ -304,16 +304,16 @@ mod tests {
     fn test_intersect_line_through_cylinder() {
         // Cylinder along Z axis, radius 1.0, centered at origin.
         let cylinder = SurfaceGeom::Cylinder {
-            origin: Vec3::ZERO,
-            axis: Vec3::Z,
+            origin: PVec3::ZERO,
+            axis: PVec3::Z,
             radius: 1.0,
-            x_dir: Vec3::X,
-            y_dir: Vec3::Y,
+            x_dir: PVec3::X,
+            y_dir: PVec3::Y,
         };
         // Line along X from (-2, 0, 0) to (+2, 0, 0) — passes through at x=-1 and x=+1.
         let line = CurveGeom::Line {
-            origin: Vec3::new(-2.0, 0.0, 0.0),
-            direction: Vec3::new(4.0, 0.0, 0.0),
+            origin: PVec3::new(-2.0, 0.0, 0.0),
+            direction: PVec3::new(4.0, 0.0, 0.0),
         };
         let hits = intersect_edge_face(&line, &cylinder, 1e-3);
         assert_eq!(hits.len(), 2,
@@ -332,13 +332,13 @@ mod tests {
     fn test_intersect_two_crossing_lines() {
         // Line A: along X from (-1, 0, 0) to (1, 0, 0).
         let line_a = CurveGeom::Line {
-            origin: Vec3::new(-1.0, 0.0, 0.0),
-            direction: Vec3::new(2.0, 0.0, 0.0),
+            origin: PVec3::new(-1.0, 0.0, 0.0),
+            direction: PVec3::new(2.0, 0.0, 0.0),
         };
         // Line B: along Y from (0, -1, 0) to (0, 1, 0).
         let line_b = CurveGeom::Line {
-            origin: Vec3::new(0.0, -1.0, 0.0),
-            direction: Vec3::new(0.0, 2.0, 0.0),
+            origin: PVec3::new(0.0, -1.0, 0.0),
+            direction: PVec3::new(0.0, 2.0, 0.0),
         };
         let hits = intersect_edge_edge(&line_a, &line_b, 1e-3);
         assert_eq!(hits.len(), 1, "Crossing lines should produce 1 hit, got {}", hits.len());
@@ -351,12 +351,12 @@ mod tests {
     fn test_intersect_parallel_lines() {
         // Two parallel lines along X, offset in Y.
         let line_a = CurveGeom::Line {
-            origin: Vec3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
+            origin: PVec3::new(0.0, 0.0, 0.0),
+            direction: PVec3::new(1.0, 0.0, 0.0),
         };
         let line_b = CurveGeom::Line {
-            origin: Vec3::new(0.0, 1.0, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
+            origin: PVec3::new(0.0, 1.0, 0.0),
+            direction: PVec3::new(1.0, 0.0, 0.0),
         };
         let hits = intersect_edge_edge(&line_a, &line_b, 1e-3);
         assert!(hits.is_empty(), "Parallel lines should produce 0 hits, got {}", hits.len());

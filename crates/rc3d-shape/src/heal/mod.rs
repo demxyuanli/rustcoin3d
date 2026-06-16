@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 pub(crate) mod edge_tolerance;
 pub(crate) mod wire_ops;
 pub(crate) mod wire_join;
@@ -125,7 +126,7 @@ fn push_skip_face(report: &mut HealReport, face_key: FaceKey, reason: FaceSkipRe
 
 #[derive(Debug, Clone)]
 pub struct HealConfig {
-    pub gap_tolerance: f32,
+    pub gap_tolerance: Real,
     pub fix_orientation: bool,
     pub fix_reorder: bool,
     pub fix_missing_seams: bool,
@@ -151,8 +152,8 @@ pub struct HealConfig {
     pub fix_face_fold: bool,
     pub fix_face_self_intersect: bool,
     pub fix_edge_connect: bool,
-    pub small_edge_min_length: f32,
-    pub uv_gap_tolerance: f32,
+    pub small_edge_min_length: Real,
+    pub uv_gap_tolerance: Real,
 }
 
 impl HealConfig {
@@ -191,7 +192,7 @@ impl HealConfig {
     }
 
     /// Minimal wire repair after self-intersection split.
-    pub fn wire_reconnect_only(gap_tolerance: f32) -> Self {
+    pub fn wire_reconnect_only(gap_tolerance: Real) -> Self {
         let mut cfg = Self::all_disabled();
         cfg.gap_tolerance = gap_tolerance;
         cfg.fix_connected = true;
@@ -673,20 +674,20 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_close_3d_gap_in_heal_shell() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -702,23 +703,23 @@ mod tests {
             origin: a,
             direction: b - a,
         };
-        let pc = |a: rc3d_core::math::Vec3, b: rc3d_core::math::Vec3| Curve2d::Line {
+        let pc = |a: rc3d_core::math::PVec3, b: rc3d_core::math::PVec3| Curve2d::Line {
             origin: (a.x, a.y),
             direction: (b.x - a.x, b.y - a.y),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X), true);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(PVec3::ZERO, PVec3::X), 1e-4, fk, pc(PVec3::ZERO, PVec3::X), true);
         let gap_v = reg.vertices.insert(crate::topo::BRepVertex {
-            position: Vec3::new(1.0, 0.00005, 0.0),
+            position: PVec3::new(1.0, 0.00005, 0.0),
             tolerance: 1e-6,
         });
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)), true);
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(PVec3::new(1.0, 0.00005, 0.0), PVec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(PVec3::new(1.0, 0.1, 0.0), PVec3::new(1.0, 1.0, 0.0)), true);
         let e2_orient = if gap_v < v2 {
             Orientation::Forward
         } else {
             Orientation::Reversed
         };
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), true);
-        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(PVec3::new(1.0, 1.0, 0.0), PVec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(PVec3::new(1.0, 1.0, 0.0), PVec3::new(0.0, 1.0, 0.0)), true);
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(PVec3::new(0.0, 1.0, 0.0), PVec3::ZERO), 1e-4, fk, pc(PVec3::new(0.0, 1.0, 0.0), PVec3::ZERO), true);
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, e2_orient),

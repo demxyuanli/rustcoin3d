@@ -1,5 +1,6 @@
 //! Shared formatting helpers for ISO 10303-21 output.
 
+use rc3d_core::math::Real;
 use super::super::value::StepValue;
 
 /// Format a StepValue as ISO 10303-21 parameter text.

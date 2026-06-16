@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
@@ -12,14 +12,14 @@ use crate::mesh_result::MeshResult;
 pub struct RefineConfig {
     /// Post-fill refine pass (OCC does deflection during node insertion, not after).
     pub enable_post_refine: bool,
-    pub max_deflection: f32,
+    pub max_deflection: Real,
     pub max_iterations: usize,
     /// Skip refine when fill already produced at least this many tris.
     pub skip_refine_above: usize,
     /// Hard cap on local tri count during iterative refinement.
     pub max_tris: usize,
     /// Angular deflection threshold for edge-split decisions.
-    pub angular_deflection: f32,
+    pub angular_deflection: Real,
 }
 
 impl Default for RefineConfig {
@@ -69,7 +69,7 @@ pub fn refine_mesh(
             let v0 = verts[i0]; let v1 = verts[i1]; let v2 = verts[i2];
 
             // Check deviation at each edge midpoint
-            let mut max_dev = 0.0f32;
+            let mut max_dev = 0.0_f64;
             for (a, b) in [(i0, i1), (i1, i2), (i2, i0)] {
                 let mid_3d = (verts[a] + verts[b]) * 0.5;
                 // Project to UV (use surface.project for available types)
@@ -87,7 +87,7 @@ pub fn refine_mesh(
                 let mid_idx = verts.len() as i32;
                 verts.push(mid_pt);
 
-                let mut mid_n = Vec3::Z;
+                let mut mid_n = PVec3::Z;
                 if let Some((u, v)) = surface.project(mid_pt) {
                     let (nu, nv) = reg.face_native_uv(face_key, u, v);
                     mid_n = surface.normal_native(nu, nv);
@@ -155,7 +155,7 @@ pub fn refine_mesh_interior(
             let v0 = refined.vertices[i0];
             let v1 = refined.vertices[i1];
             let v2 = refined.vertices[i2];
-            let mut max_dev = 0.0f32;
+            let mut max_dev = 0.0_f64;
             for (a, b) in [(i0, i1), (i1, i2), (i2, i0)] {
                 let mid_3d = (refined.vertices[a] + refined.vertices[b]) * 0.5;
                 if let Some((u, v)) = face.surface.project(mid_3d) {
@@ -176,7 +176,7 @@ pub fn refine_mesh_interior(
             }
             let mid_idx = refined.vertices.len() as i32;
             refined.vertices.push(mid_pt);
-            let mut mid_n = Vec3::Z;
+            let mut mid_n = PVec3::Z;
             if let Some((u, v)) = face.surface.project(mid_pt) {
                 let (nu, nv) = reg.face_native_uv(face_key, u, v);
                 mid_n = face.surface.normal_native(nu, nv);
@@ -201,8 +201,8 @@ pub fn refine_mesh_interior(
 }
 
 pub fn extract_face_mesh_with_map(
-    global_vertices: &[Vec3],
-    global_normals: &[Vec3],
+    global_vertices: &[PVec3],
+    global_normals: &[PVec3],
     all_indices: &[i32],
     range_start: usize,
     range_end: usize,
@@ -229,7 +229,7 @@ pub fn extract_face_mesh_with_map(
                 let g = gi as usize;
                 local_to_global.insert(li, g);
                 vertices.push(global_vertices[g]);
-                normals.push(global_normals.get(g).copied().unwrap_or(Vec3::Z));
+                normals.push(global_normals.get(g).copied().unwrap_or(PVec3::Z));
                 li
             });
             local_tri[j] = local_i as i32;
@@ -248,8 +248,8 @@ pub fn extract_face_mesh_with_map(
 }
 
 pub fn merge_refined_face(
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     tri_start: usize,
     tri_end: usize,
@@ -266,7 +266,7 @@ pub fn merge_refined_face(
     for local_i in local_to_global.len()..refined.vertices.len() {
         let gi = global_vertices.len();
         global_vertices.push(refined.vertices[local_i]);
-        global_normals.push(refined.normals.get(local_i).copied().unwrap_or(Vec3::Z));
+        global_normals.push(refined.normals.get(local_i).copied().unwrap_or(PVec3::Z));
         local_remap.insert(local_i, gi as i32);
     }
 
@@ -292,11 +292,11 @@ mod tests {
 
     #[test]
     fn test_refine_plane_no_change() {
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let mesh = MeshResult {
-            vertices: vec![Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.), Vec3::new(0.,1.,0.)],
+            vertices: vec![PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.), PVec3::new(0.,1.,0.)],
             indices: vec![0, 1, 2, -1],
-            normals: vec![Vec3::Z, Vec3::Z, Vec3::Z],
+            normals: vec![PVec3::Z, PVec3::Z, PVec3::Z],
         };
         let mut reg = BRepStore::new();
         let face_key = reg.add_face(surface.clone(), 1e-4);

@@ -4,7 +4,7 @@
 //! adjusts the PCurve parameters so that for all t ∈ [0,1]:
 //!   | surface(pcurve(t)) - curve3d(t) | < tolerance
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
@@ -15,8 +15,8 @@ use crate::topo::{EdgeKey, FaceKey};
 pub struct ReparamResult {
     pub edge_key: EdgeKey,
     pub face_key: FaceKey,
-    pub max_deviation_before: f32,
-    pub max_deviation_after: f32,
+    pub max_deviation_before: Real,
+    pub max_deviation_after: Real,
     pub converged: bool,
     pub iterations: usize,
 }
@@ -25,7 +25,7 @@ pub struct ReparamResult {
 pub fn same_parameter_reparam(
     reg: &mut BRepStore,
     shell_keys: &[crate::topo::ShellKey],
-    tolerance: f32,
+    tolerance: Real,
     max_iterations: usize,
 ) -> (Vec<ReparamResult>, usize) {
     let mut results = Vec::new();
@@ -55,7 +55,7 @@ fn reparam_one_edge(
     reg: &mut BRepStore,
     ek: EdgeKey,
     fk: FaceKey,
-    tolerance: f32,
+    tolerance: Real,
     max_iterations: usize,
 ) -> Option<ReparamResult> {
     let edge = reg.edges.get(ek)?;
@@ -107,10 +107,10 @@ fn reparam_one_edge(
 }
 
 struct DeviationSample {
-    #[allow(dead_code)] t: f32,
-    pt_3d: Vec3,
-    #[allow(dead_code)] uv: (f32, f32),
-    dev: f32,
+    #[allow(dead_code)] t: Real,
+    pt_3d: PVec3,
+    #[allow(dead_code)] uv: (Real, Real),
+    dev: Real,
 }
 
 #[allow(dead_code)]
@@ -118,7 +118,7 @@ fn sample_deviations(
     curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize,
 ) -> Vec<DeviationSample> {
     (0..=n).map(|i| {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let pt_3d = curve_3d.d0(t);
         let uv = pcurve.d0(t);
         let on_surf = surface.d0_native(uv.0, uv.1);
@@ -126,9 +126,9 @@ fn sample_deviations(
     }).collect()
 }
 
-fn max_deviation(curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize) -> f32 {
+fn max_deviation(curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize) -> Real {
     sample_deviations(curve_3d, pcurve, surface, n)
-        .iter().map(|s| s.dev).fold(0.0f32, f32::max)
+        .iter().map(|s| s.dev).fold(0.0_f64, Real::max)
 }
 
 fn adjust_pcurve(
@@ -203,9 +203,9 @@ fn adjust_bspline_pcurve(
 
 fn adjust_circle_pcurve(samples: &[DeviationSample], surface: &SurfaceGeom) -> Option<Curve2d> {
     let n = 16usize;
-    let pts: Vec<(f32, f32)> = (0..=n).filter_map(|i| {
-        let t = i as f32 / n as f32;
-        let si = (t * (samples.len() - 1) as f32) as usize;
+    let pts: Vec<(Real, Real)> = (0..=n).filter_map(|i| {
+        let t = i as Real / n as Real;
+        let si = (t * (samples.len() - 1) as Real) as usize;
         surface.project(samples[si.min(samples.len() - 1)].pt_3d)
     }).collect();
     if pts.len() < 2 { return None; }
@@ -213,7 +213,7 @@ fn adjust_circle_pcurve(samples: &[DeviationSample], surface: &SurfaceGeom) -> O
 }
 
 fn adjust_composite_pcurve(samples: &[DeviationSample], surface: &SurfaceGeom) -> Option<Curve2d> {
-    let pts: Vec<(f32, f32)> = samples.iter()
+    let pts: Vec<(Real, Real)> = samples.iter()
         .filter_map(|s| surface.project(s.pt_3d)).collect();
     if pts.len() < 2 { return None; }
     Some(Curve2d::Polyline { points: pts })
@@ -229,23 +229,23 @@ mod tests {
     use crate::store::BRepStore;
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation, ShellKey};
 
-    fn make_planar_shell(reg: &mut BRepStore, uv_shift: f32) -> (ShellKey, EdgeKey, FaceKey) {
+    fn make_planar_shell(reg: &mut BRepStore, uv_shift: Real) -> (ShellKey, EdgeKey, FaceKey) {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let fk = reg.faces.insert(BRepFace {
             surface, outer_wire: wire, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![],
             color: None, degenerated_edges: vec![],
         });
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-6);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-6);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-6);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-6);
         let mut pcurves = HashMap::new();
         // PCurve is shifted: UV(uv_shift, 0) instead of UV(0, 0)
         // surface.d0_native(uv_shift, 0) = (uv_shift, 0, 0) ≠ curve3d.d0(0) = (0, 0, 0)
         pcurves.insert(fk, Curve2d::Line { origin: (uv_shift, 0.0), direction: (1.0, 0.0) });
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1,
-            curve: CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X },
+            curve: CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X },
             tolerance: 1e-6, t_min: 0.0, t_max: 1.0, pcurves,
         });
         reg.wires.get_mut(wire).unwrap().edges.push((ek, Orientation::Forward));

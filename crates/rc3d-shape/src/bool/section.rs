@@ -6,6 +6,7 @@
 //! OCC alignment: BOPAlgo_Section — intersection wire extraction without
 //! full boolean solid computation.
 
+use rc3d_core::math::Real;
 use crate::store::BRepStore;
 use crate::topo::ShellKey;
 use crate::geom::CurveGeom;
@@ -29,7 +30,7 @@ pub fn boolean_section(
     shells_a: &[ShellKey],
     shells_b: &[ShellKey],
     reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> SectionResult {
     let mut result = SectionResult {
         curves: Vec::new(),
@@ -64,7 +65,7 @@ pub fn section_as_polyline(
     shells_a: &[ShellKey],
     shells_b: &[ShellKey],
     reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Option<CurveGeom> {
     let section = boolean_section(shells_a, shells_b, reg, tolerance);
     if section.curves.is_empty() {
@@ -75,7 +76,7 @@ pub fn section_as_polyline(
     for curve in &section.curves {
         let n = 32usize;
         for i in 0..=n {
-            let t = i as f32 / n as f32;
+            let t = i as Real / n as Real;
             all_pts.push(curve.d0(t));
         }
     }
@@ -92,18 +93,18 @@ mod tests {
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::*;
     use crate::store::BRepStore;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
-    fn make_plane_shell(reg: &mut BRepStore, origin: Vec3, normal: Vec3) -> ShellKey {
+    fn make_plane_shell(reg: &mut BRepStore, origin: PVec3, normal: PVec3) -> ShellKey {
         let surface = SurfaceGeom::Plane {
             origin,
             normal,
-            u_dir: if normal.z.abs() < 0.9 { Vec3::Z } else { Vec3::X },
+            u_dir: if normal.z.abs() < 0.9 { PVec3::Z } else { PVec3::X },
         };
-        let v0 = reg.find_or_add_vertex(origin + Vec3::new(-10.0, -10.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(origin + Vec3::new(10.0, -10.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(origin + Vec3::new(10.0, 10.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(origin + Vec3::new(-10.0, 10.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(origin + PVec3::new(-10.0, -10.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(origin + PVec3::new(10.0, -10.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(origin + PVec3::new(10.0, 10.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(origin + PVec3::new(-10.0, 10.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface: surface.clone(), outer_wire: wk, inner_wires: vec![],
@@ -129,8 +130,8 @@ mod tests {
     #[test]
     fn test_section_intersecting_planes() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Y);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Y);
         let result = boolean_section(&[sa], &[sb], &reg, 1e-4);
         assert!(!result.is_empty, "intersecting planes should produce section");
         assert!(result.face_pairs > 0);
@@ -140,8 +141,8 @@ mod tests {
     #[test]
     fn test_section_disjoint() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::new(0.0, 0.0, 0.0), Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::new(0.0, 0.0, 100.0), Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::new(0.0, 0.0, 100.0), PVec3::Z);
         let result = boolean_section(&[sa], &[sb], &reg, 1e-4);
         assert!(result.is_empty);
     }
@@ -149,8 +150,8 @@ mod tests {
     #[test]
     fn test_section_as_polyline() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Y);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Y);
         let poly = section_as_polyline(&[sa], &[sb], &reg, 1e-4);
         assert!(poly.is_some(), "should produce intersection polyline");
     }

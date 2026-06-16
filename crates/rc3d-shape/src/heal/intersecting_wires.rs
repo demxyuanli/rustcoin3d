@@ -1,5 +1,6 @@
 //! Multi-wire intersection detection and repair (OCC ShapeFix_Face::FixIntersectingWires).
 
+use rc3d_core::math::Real;
 use super::curve_trim::split_edge_at_params;
 use super::geom2d::{point_in_polygon_winding as geom_point_in_polygon_winding, segment_intersection_strict};
 use crate::store::BRepStore;
@@ -134,11 +135,11 @@ pub fn detect_intersecting_wires(face_key: FaceKey, reg: &BRepStore) -> bool {
 }
 
 fn segment_intersection_2d(
-    a0: (f32, f32),
-    a1: (f32, f32),
-    b0: (f32, f32),
-    b1: (f32, f32),
-) -> Option<(f32, f32)> {
+    a0: (Real, Real),
+    a1: (Real, Real),
+    b0: (Real, Real),
+    b1: (Real, Real),
+) -> Option<(Real, Real)> {
     segment_intersection_strict(a0, a1, b0, b1)
         .filter(|(t, u)| *t > 1e-6 && *t < 1.0 - 1e-6 && *u > 1e-6 && *u < 1.0 - 1e-6)
 }
@@ -146,7 +147,7 @@ fn segment_intersection_2d(
 /// Split inner wire edges at intersections with the outer boundary polygon.
 fn trim_inner_wire_at_outer(
     inner_wk: WireKey,
-    outer_poly: &[(f32, f32)],
+    outer_poly: &[(Real, Real)],
     face_key: FaceKey,
     reg: &mut BRepStore,
 ) -> bool {
@@ -196,7 +197,7 @@ fn trim_inner_wire_at_outer(
     trimmed
 }
 
-fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<Vec<(f32, f32)>> {
+fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<Vec<(Real, Real)>> {
     let wire = reg.wires.get(wk)?;
     let mut pts = Vec::new();
     for &(ek, _) in &wire.edges {
@@ -219,7 +220,7 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<
     Some(pts)
 }
 
-fn point_in_polygon_winding(u: f32, v: f32, poly: &[(f32, f32)]) -> bool {
+fn point_in_polygon_winding(u: Real, v: Real, poly: &[(Real, Real)]) -> bool {
     geom_point_in_polygon_winding(u, v, poly)
 }
 
@@ -275,11 +276,11 @@ fn wires_intersect_2d(wk_a: WireKey, wk_b: WireKey, fk: FaceKey, reg: &BRepStore
         || poly_b.iter().any(|&(u, v)| point_in_polygon_winding(u, v, &poly_a))
 }
 
-fn polygon_bbox(poly: &[(f32, f32)]) -> ((f32, f32), (f32, f32)) {
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
+fn polygon_bbox(poly: &[(Real, Real)]) -> ((Real, Real), (Real, Real)) {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
     for &(x, y) in poly {
         min_x = min_x.min(x);
         min_y = min_y.min(y);
@@ -295,7 +296,7 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_point_in_square() {
@@ -307,12 +308,12 @@ mod tests {
     #[test]
     fn test_inner_outside_outer_removed() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         // Outer wire: UV square from (0,0) to (1,1) — use proper per-edge PCurves
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (0.0, 1.0) };
@@ -332,9 +333,9 @@ mod tests {
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
         // Inner wire: small triangle at offset +10 (entirely outside outer square)
-        let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(10.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(11.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(11.0, 1.0, 0.0), 1e-4);
         let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
@@ -354,12 +355,12 @@ mod tests {
     #[test]
     fn test_detect_intersecting_wires_before_fix() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (0.0, 1.0) };
         let pc3 = Curve2d::Line { origin: (1.0, 1.0), direction: (-1.0, 0.0) };
@@ -377,9 +378,9 @@ mod tests {
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
-        let v4 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(11.0, 0.0, 0.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(11.0, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(10.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(11.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(11.0, 1.0, 0.0), 1e-4);
         let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
@@ -398,12 +399,12 @@ mod tests {
     #[test]
     fn test_no_false_positive_separate_inners() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(3.0, 3.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 3.0, 0.0), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(3.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(3.0, 3.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 3.0, 0.0), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         // Outer wire: UV square from (0,0) to (3,3) — proper per-edge PCurves
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (3.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (3.0, 0.0), direction: (0.0, 3.0) };
@@ -423,9 +424,9 @@ mod tests {
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
         // Inner wire: small triangle properly inside (offset by +1)
-        let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(2.0, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(2.0, 1.0, 0.0), 1e-4);
         let pc_inner1 = Curve2d::Line { origin: (1.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (2.0, 1.0), direction: (-1.0, -1.0) };
@@ -446,19 +447,19 @@ mod tests {
     fn test_inner_intersects_outer_trim() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // Outer wire: square from (0,0) to (2,2)
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 2.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(2.0, 2.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 2.0, 0.0), 1e-4);
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -485,9 +486,9 @@ mod tests {
             (e4, Orientation::Forward),
         ];
         // Inner wire: crosses outer boundary (starts inside at (0.5,0) goes to (3,0) — outside)
-        let v4 = reg.find_or_add_vertex(Vec3::new(0.5, 0.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(3.0, 0.0, 0.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(3.0, 0.5, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(0.5, 0.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(3.0, 0.0, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(3.0, 0.5, 0.0), 1e-4);
         let pc_inner = Curve2d::Line {
             origin: (0.5, 0.0),
             direction: (2.5, 0.0),
@@ -517,19 +518,19 @@ mod tests {
     fn test_two_inners_intersect_merged() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // Outer wire: large square
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(5.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(5.0, 5.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 5.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(5.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(5.0, 5.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 5.0, 0.0), 1e-4);
         let wk_outer = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -556,8 +557,8 @@ mod tests {
             (e4, Orientation::Forward),
         ];
         // Two inner wires that are close to each other (overlapping bounding boxes)
-        let v4 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(1.5, 1.0, 0.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(1.5, 1.0, 0.0), 1e-4);
         let pc_i1 = Curve2d::Line {
             origin: (1.0, 1.0),
             direction: (0.5, 0.0),
@@ -566,8 +567,8 @@ mod tests {
         let wk_i1 = reg.wires.insert(BRepWire {
             edges: vec![(ei1, Orientation::Forward)],
         });
-        let v6 = reg.find_or_add_vertex(Vec3::new(1.4, 1.4, 0.0), 1e-4);
-        let v7 = reg.find_or_add_vertex(Vec3::new(2.0, 1.4, 0.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(1.4, 1.4, 0.0), 1e-4);
+        let v7 = reg.find_or_add_vertex(PVec3::new(2.0, 1.4, 0.0), 1e-4);
         let pc_i2 = Curve2d::Line {
             origin: (1.4, 1.4),
             direction: (0.6, 0.0),

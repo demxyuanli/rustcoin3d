@@ -2,6 +2,7 @@
 //! Maps PmiData → AnnotationElement[] → AnnotationSetNode → SceneGraph.
 //! Rendering handled by existing pass_markup + plane_text pipeline.
 
+use rc3d_core::math::Real;
 use rc3d_core::NodeId;
 use rc3d_scene::SceneGraph;
 use rc3d_scene::node_data::{
@@ -22,8 +23,8 @@ fn pmi_style() -> AnnotationStyle {
     }
 }
 
-/// Helper: Vec3 to [f32; 3].
-fn to_arr(v: &rc3d_core::math::Vec3) -> [f32; 3] {
+/// Helper: PVec3 to [Real; 3].
+fn to_arr(v: &rc3d_core::math::PVec3) -> [Real; 3] {
     [v.x, v.y, v.z]
 }
 

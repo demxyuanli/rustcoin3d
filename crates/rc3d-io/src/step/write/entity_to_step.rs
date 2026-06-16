@@ -3,6 +3,7 @@
 //! Filters out presentation/metadata entities, renumbers IDs, updates references,
 //! and outputs standardized STEP text.
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 use super::super::parser::EntityIndex;
 use super::super::value::StepValue;
@@ -159,7 +160,7 @@ fn rewrite_refs(text: String, renumber: &HashMap<u64, u64>) -> String {
 }
 
 /// Format a float for STEP output: avoid trailing zeros, use "0." instead of "0"
-pub fn format_real(v: f32) -> String {
+pub fn format_real(v: Real) -> String {
     if v == 0.0 {
         "0.".to_string()
     } else if (v.round() - v).abs() < 1e-7 {
@@ -173,13 +174,13 @@ pub fn format_real(v: f32) -> String {
 }
 
 /// Write a CARTESIAN_POINT entity.
-pub fn write_cartesian_point(id: u64, pt: &[f32; 3]) -> String {
+pub fn write_cartesian_point(id: u64, pt: &[Real; 3]) -> String {
     format!("#{} = CARTESIAN_POINT('', ({}, {}, {}));\n",
         id, format_real(pt[0]), format_real(pt[1]), format_real(pt[2]))
 }
 
 /// Write a DIRECTION entity.
-pub fn write_direction(id: u64, dir: &[f32; 3]) -> String {
+pub fn write_direction(id: u64, dir: &[Real; 3]) -> String {
     format!("#{} = DIRECTION('', ({}, {}, {}));\n",
         id, format_real(dir[0]), format_real(dir[1]), format_real(dir[2]))
 }
@@ -241,17 +242,17 @@ pub fn write_manifold_solid_brep(id: u64, shell_id: u64) -> String {
 }
 
 /// Write a CYLINDRICAL_SURFACE entity.
-pub fn write_cylindrical_surface(id: u64, placement_id: u64, radius: f32) -> String {
+pub fn write_cylindrical_surface(id: u64, placement_id: u64, radius: Real) -> String {
     format!("#{} = CYLINDRICAL_SURFACE('', #{}, {});\n", id, placement_id, format_real(radius))
 }
 
 /// Write an ELLIPSE entity.
-pub fn write_ellipse(id: u64, placement_id: u64, semi_a: f32, semi_b: f32) -> String {
+pub fn write_ellipse(id: u64, placement_id: u64, semi_a: Real, semi_b: Real) -> String {
     format!("#{} = ELLIPSE('', #{}, {}, {});\n", id, placement_id, format_real(semi_a), format_real(semi_b))
 }
 
 /// Write a CIRCLE entity.
-pub fn write_circle(id: u64, placement_id: u64, radius: f32) -> String {
+pub fn write_circle(id: u64, placement_id: u64, radius: Real) -> String {
     format!("#{} = CIRCLE('', #{}, {});\n", id, placement_id, format_real(radius))
 }
 

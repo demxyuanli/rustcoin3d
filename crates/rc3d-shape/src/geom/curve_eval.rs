@@ -1,6 +1,6 @@
 //! Curve geometry evaluation (CurveGeom enum and methods).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use super::bspline::find_span;
 use super::Curve2d;
 
@@ -8,16 +8,16 @@ use super::Curve2d;
 
 /// Build perpendicular axes (x_dir, y_dir) from a direction vector,
 /// forming a right-handed orthonormal basis (x_dir, y_dir, axis).
-pub fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
+pub fn build_ortho_axes(axis: PVec3) -> (PVec3, PVec3) {
     let a = axis.normalize();
-    let ref_dir = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let ref_dir = if a.x.abs() < 0.9 { PVec3::X } else { PVec3::Y };
     let y_dir = a.cross(ref_dir).normalize();
     let x_dir = y_dir.cross(a);
     (x_dir, y_dir)
 }
 
 /// Orthonormal (u, v) tangent basis for a plane; `u_dir` is projected onto the plane.
-pub fn plane_tangent_basis(normal: Vec3, u_dir: Vec3) -> (Vec3, Vec3) {
+pub fn plane_tangent_basis(normal: PVec3, u_dir: PVec3) -> (PVec3, PVec3) {
     let n = normal.normalize();
     let mut u = u_dir - n * u_dir.dot(n);
     if u.length_squared() < 1e-20 {
@@ -48,16 +48,16 @@ fn ndu_idx(k: usize, i: usize) -> usize {
 /// A warning is logged when degree exceeds `MAX_DEGREE` (16).
 fn bspline_d012(
     degree: usize,
-    control_points: &[Vec3],
-    knots: &[f32],
-    weights: Option<&[f32]>,
-    t: f32,
-) -> (Vec3, Vec3, Vec3) {
+    control_points: &[PVec3],
+    knots: &[Real],
+    weights: Option<&[Real]>,
+    t: Real,
+) -> (PVec3, PVec3, PVec3) {
     let p = degree;
 
     // Guard: insufficient data
     if control_points.len() < p + 1 || knots.len() < 2 * (p + 1) {
-        return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        return (PVec3::ZERO, PVec3::ZERO, PVec3::ZERO);
     }
 
     // Clamp t to valid knot domain [knots[p], knots[control_points.len()]]
@@ -69,7 +69,7 @@ fn bspline_d012(
     if p == 0 {
         let span = find_span(0, knots, t);
         let pt = control_points[span];
-        return (pt, Vec3::ZERO, Vec3::ZERO);
+        return (pt, PVec3::ZERO, PVec3::ZERO);
     }
 
     if p > MAX_DEGREE {
@@ -86,7 +86,7 @@ fn bspline_d012(
     // ── Basis functions (triangular table) ──
     // ndu[k*(k+1)/2 + i] = N_{s-k+i, k}(t) for i = 0..k
     let ndu_size = (p + 1) * (p + 2) / 2;
-    let mut ndu = vec![0.0f32; ndu_size];
+    let mut ndu = vec![0.0_f64; ndu_size];
     ndu[ndu_idx(0, 0)] = 1.0;
 
     for k in 1..=p {
@@ -120,13 +120,13 @@ fn bspline_d012(
     }
 
     // ── First derivatives N'_{s-p+k, p} ──
-    let mut ndu1 = vec![0.0f32; p + 1];
+    let mut ndu1 = vec![0.0_f64; p + 1];
     for k in 0..=p {
         let idx = s + k - p;
         let left = if k >= 1 {
             let denom = knots[idx + p] - knots[idx];
             if denom > 1e-10 {
-                (p as f32) / denom * ndu[ndu_idx(p - 1, k - 1)]
+                (p as Real) / denom * ndu[ndu_idx(p - 1, k - 1)]
             } else {
                 0.0
             }
@@ -136,7 +136,7 @@ fn bspline_d012(
         let right = if k < p {
             let denom = knots[idx + p + 1] - knots[idx + 1];
             if denom > 1e-10 {
-                (p as f32) / denom * ndu[ndu_idx(p - 1, k)]
+                (p as Real) / denom * ndu[ndu_idx(p - 1, k)]
             } else {
                 0.0
             }
@@ -147,16 +147,16 @@ fn bspline_d012(
     }
 
     // ── Second derivatives N''_{s-p+k, p} ──
-    let mut ndu2 = vec![0.0f32; p + 1];
+    let mut ndu2 = vec![0.0_f64; p + 1];
     if p >= 2 {
         // First compute N'_{s-(p-1)+k, p-1} for k = 0..p-1
-        let mut ndu1_pm1 = vec![0.0f32; p];
+        let mut ndu1_pm1 = vec![0.0_f64; p];
         for k in 0..p {
             let idx = s + k - (p - 1);
             let left = if k >= 1 {
                 let denom = knots[idx + p - 1] - knots[idx];
                 if denom > 1e-10 {
-                    ((p - 1) as f32) / denom * ndu[ndu_idx(p - 2, k - 1)]
+                    ((p - 1) as Real) / denom * ndu[ndu_idx(p - 2, k - 1)]
                 } else {
                     0.0
                 }
@@ -166,7 +166,7 @@ fn bspline_d012(
             let right = if k < p - 1 {
                 let denom = knots[idx + p] - knots[idx + 1];
                 if denom > 1e-10 {
-                    ((p - 1) as f32) / denom * ndu[ndu_idx(p - 2, k)]
+                    ((p - 1) as Real) / denom * ndu[ndu_idx(p - 2, k)]
                 } else {
                     0.0
                 }
@@ -182,7 +182,7 @@ fn bspline_d012(
             let left = if k >= 1 {
                 let denom = knots[idx + p] - knots[idx];
                 if denom > 1e-10 {
-                    (p as f32) / denom * ndu1_pm1[k - 1]
+                    (p as Real) / denom * ndu1_pm1[k - 1]
                 } else {
                     0.0
                 }
@@ -192,7 +192,7 @@ fn bspline_d012(
             let right = if k < p {
                 let denom = knots[idx + p + 1] - knots[idx + 1];
                 if denom > 1e-10 {
-                    (p as f32) / denom * ndu1_pm1[k]
+                    (p as Real) / denom * ndu1_pm1[k]
                 } else {
                     0.0
                 }
@@ -204,12 +204,12 @@ fn bspline_d012(
     }
 
     // ── Assemble weighted sums ──
-    let mut a0 = Vec3::ZERO;
-    let mut a1 = Vec3::ZERO;
-    let mut a2 = Vec3::ZERO;
-    let mut w_sum = 0.0f32;
-    let mut w_sum_1 = 0.0f32;
-    let mut w_sum_2 = 0.0f32;
+    let mut a0 = PVec3::ZERO;
+    let mut a1 = PVec3::ZERO;
+    let mut a2 = PVec3::ZERO;
+    let mut w_sum = 0.0_f64;
+    let mut w_sum_1 = 0.0_f64;
+    let mut w_sum_2 = 0.0_f64;
 
     for k in 0..=p {
         let idx = s + k - p;
@@ -245,19 +245,19 @@ fn bspline_d012(
     };
 
     // NaN safety: replace any NaN component with zero
-    let safe = |v: Vec3| -> Vec3 {
-        if v.is_nan() { Vec3::ZERO } else { v }
+    let safe = |v: PVec3| -> PVec3 {
+        if v.is_nan() { PVec3::ZERO } else { v }
     };
     (safe(d0), safe(d1), safe(d2))
 }
 
 /// De Casteljau evaluation of Bezier curve at parameter t ∈ [0, 1].
-fn de_casteljau_d0(points: &[Vec3], weights: Option<&[f32]>, t: f32) -> Vec3 {
+fn de_casteljau_d0(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3 {
     let n = points.len();
-    if n == 0 { return Vec3::ZERO; }
+    if n == 0 { return PVec3::ZERO; }
     if n == 1 { return points[0]; }
     if let Some(w) = weights {
-        let mut p: Vec<(f32, Vec3)> = points.iter().zip(w.iter())
+        let mut p: Vec<(Real, PVec3)> = points.iter().zip(w.iter())
             .map(|(&pt, &wt)| (wt, pt * wt))
             .collect();
         for r in 1..n {
@@ -280,18 +280,18 @@ fn de_casteljau_d0(points: &[Vec3], weights: Option<&[f32]>, t: f32) -> Vec3 {
 }
 
 /// First derivative via De Casteljau (hodograph).
-fn de_casteljau_d1(points: &[Vec3], _weights: Option<&[f32]>, t: f32) -> Vec3 {
+fn de_casteljau_d1(points: &[PVec3], _weights: Option<&[Real]>, t: Real) -> PVec3 {
     let n = points.len();
-    if n <= 1 { return Vec3::ZERO; }
-    let degree = (n - 1) as f32;
-    let diff: Vec<Vec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
+    if n <= 1 { return PVec3::ZERO; }
+    let degree = (n - 1) as Real;
+    let diff: Vec<PVec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
     de_casteljau_d0(&diff, None, t)
 }
 
 /// Approximate arc length of a curve by chordal sum with fixed sampling.
 /// Avoids calling `arc_length` / `sample_adaptive` to break circular dependency
 /// with `Composite` segment selection.
-pub fn approx_chordal_length(curve: &CurveGeom) -> f32 {
+pub fn approx_chordal_length(curve: &CurveGeom) -> Real {
     match curve {
         CurveGeom::Composite { segments, .. } => {
             segments.iter().map(|(seg, _)| approx_chordal_length(seg)).sum()
@@ -301,7 +301,7 @@ pub fn approx_chordal_length(curve: &CurveGeom) -> f32 {
             let mut len = 0.0;
             let mut prev = curve.d0(0.0);
             for i in 1..=N {
-                let t = i as f32 / N as f32;
+                let t = i as Real / N as Real;
                 let curr = curve.d0(t);
                 len += (curr - prev).length();
                 prev = curr;
@@ -317,9 +317,9 @@ pub fn approx_chordal_length(curve: &CurveGeom) -> f32 {
 /// otherwise computes lengths on the fly.
 fn find_composite_segment(
     segments: &[(CurveGeom, bool)],
-    cached_lengths: &Option<Vec<f32>>,
-    t: f32,
-) -> Option<(usize, f32, f32)> {
+    cached_lengths: &Option<Vec<Real>>,
+    t: Real,
+) -> Option<(usize, Real, Real)> {
     if segments.is_empty() {
         return None;
     }
@@ -328,19 +328,19 @@ fn find_composite_segment(
     }
 
     // Use cached lengths if available and valid, otherwise compute
-    let owned_lengths: Option<Vec<f32>> = match cached_lengths {
+    let owned_lengths: Option<Vec<Real>> = match cached_lengths {
         Some(c) if c.len() == segments.len() => None, // use cache directly
         _ => Some(segments.iter().map(|(seg, _)| approx_chordal_length(seg).max(1e-10)).collect()),
     };
-    let lengths: &[f32] = match &owned_lengths {
+    let lengths: &[Real] = match &owned_lengths {
         Some(computed) => computed,
         None => cached_lengths.as_deref().unwrap(),
     };
-    let total: f32 = lengths.iter().sum();
+    let total: Real = lengths.iter().sum();
     let inv_total = 1.0 / total.max(1e-10);
 
     let target = t.clamp(0.0, 1.0);
-    let mut cumulative = 0.0f32;
+    let mut cumulative = 0.0_f64;
     for (i, &len) in lengths.iter().enumerate() {
         let seg_frac = len * inv_total;
         let next = cumulative + seg_frac;
@@ -362,70 +362,70 @@ fn find_composite_segment(
 /// Parametric curve geometry (retained, not sampled).
 #[derive(Debug, Clone)]
 pub enum CurveGeom {
-    Line { origin: Vec3, direction: Vec3 },
-    Circle { center: Vec3, axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3 },
-    Ellipse { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
-    Hyperbola { center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32, x_dir: Vec3, y_dir: Vec3 },
-    Parabola { center: Vec3, axis: Vec3, focal_dist: f32, x_dir: Vec3, y_dir: Vec3 },
-    BSpline { degree: usize, control_points: Vec<Vec3>, knots: Vec<f32>, weights: Option<Vec<f32>> },
+    Line { origin: PVec3, direction: PVec3 },
+    Circle { center: PVec3, axis: PVec3, radius: Real, x_dir: PVec3, y_dir: PVec3 },
+    Ellipse { center: PVec3, axis: PVec3, semi_major: Real, semi_minor: Real, x_dir: PVec3, y_dir: PVec3 },
+    Hyperbola { center: PVec3, axis: PVec3, semi_major: Real, semi_minor: Real, x_dir: PVec3, y_dir: PVec3 },
+    Parabola { center: PVec3, axis: PVec3, focal_dist: Real, x_dir: PVec3, y_dir: PVec3 },
+    BSpline { degree: usize, control_points: Vec<PVec3>, knots: Vec<Real>, weights: Option<Vec<Real>> },
     /// Bezier curve of arbitrary degree with optional rational weights.
     /// Equivalent to BSpline with knot vector [0ⁿ⁺¹, 1ⁿ⁺¹] but evaluated
     /// via De Casteljau for better performance and OCC type-6 compatibility.
     BezierCurve {
         degree: usize,
-        control_points: Vec<Vec3>,
-        weights: Option<Vec<f32>>,
+        control_points: Vec<PVec3>,
+        weights: Option<Vec<Real>>,
     },
-    Trimmed { basis: Box<CurveGeom>, t_min: f32, t_max: f32 },
-    Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<f32>> },
-    Polyline { points: Vec<Vec3> },
+    Trimmed { basis: Box<CurveGeom>, t_min: Real, t_max: Real },
+    Composite { segments: Vec<(CurveGeom, bool)>, cached_lengths: Option<Vec<Real>> },
+    Polyline { points: Vec<PVec3> },
     /// Offset curve at signed distance from basis curve.
     /// Points are computed as basis(t) + distance * normal_dir(t)
     /// where normal_dir is offset_dir projected onto the curve normal plane.
     Offset {
         basis: Box<CurveGeom>,
-        offset_dir: Vec3,
-        distance: f32,
+        offset_dir: PVec3,
+        distance: Real,
     },
 }
 
 impl CurveGeom {
     /// Construct a Circle with pre-computed ortho axes.
-    pub fn circle(center: Vec3, axis: Vec3, radius: f32) -> Self {
+    pub fn circle(center: PVec3, axis: PVec3, radius: Real) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Circle { center, axis, radius, x_dir, y_dir }
     }
     /// Construct an Ellipse with pre-computed ortho axes.
-    pub fn ellipse(center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32) -> Self {
+    pub fn ellipse(center: PVec3, axis: PVec3, semi_major: Real, semi_minor: Real) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir }
     }
     /// Construct a Hyperbola with pre-computed ortho axes.
-    pub fn hyperbola(center: Vec3, axis: Vec3, semi_major: f32, semi_minor: f32) -> Self {
+    pub fn hyperbola(center: PVec3, axis: PVec3, semi_major: Real, semi_minor: Real) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Hyperbola { center, axis, semi_major, semi_minor, x_dir, y_dir }
     }
     /// Construct a Parabola with pre-computed ortho axes.
-    pub fn parabola(center: Vec3, axis: Vec3, focal_dist: f32) -> Self {
+    pub fn parabola(center: PVec3, axis: PVec3, focal_dist: Real) -> Self {
         let (x_dir, y_dir) = build_ortho_axes(axis);
         CurveGeom::Parabola { center, axis, focal_dist, x_dir, y_dir }
     }
 
     /// Construct a Bezier curve from control points and optional rational weights.
     /// The degree is inferred from the number of control points (degree = len - 1).
-    pub fn bezier(control_points: Vec<Vec3>, weights: Option<Vec<f32>>) -> Self {
+    pub fn bezier(control_points: Vec<PVec3>, weights: Option<Vec<Real>>) -> Self {
         let degree = control_points.len().saturating_sub(1);
         CurveGeom::BezierCurve { degree, control_points, weights }
     }
 }
 
 /// Map edge parameter t in [0,1] to the basis curve parameter used by `d0`/`d1`.
-fn trimmed_edge_to_basis(basis: &CurveGeom, t_min: f32, t_max: f32, t: f32) -> (f32, f32) {
+fn trimmed_edge_to_basis(basis: &CurveGeom, t_min: Real, t_max: Real, t: Real) -> (Real, Real) {
     let span = (t_max - t_min).max(1e-12);
     let t_mapped = t_min + t * span;
     match basis {
         CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => {
-            (t_mapped / std::f32::consts::TAU, span / std::f32::consts::TAU)
+            (t_mapped / std::f64::consts::TAU, span / std::f64::consts::TAU)
         }
         _ => (t_mapped, span),
     }
@@ -433,7 +433,7 @@ fn trimmed_edge_to_basis(basis: &CurveGeom, t_min: f32, t_max: f32, t: f32) -> (
 
 impl CurveGeom {
     /// Native parameter interval for curve evaluation (STEP knot domain when applicable).
-    pub fn native_param_range(&self) -> (f32, f32) {
+    pub fn native_param_range(&self) -> (Real, Real) {
         match self {
             CurveGeom::Trimmed { t_min, t_max, .. } => (*t_min, *t_max),
             CurveGeom::BSpline { degree, control_points, knots, .. } => {
@@ -449,17 +449,17 @@ impl CurveGeom {
     }
 
     /// Evaluate position at parameter t ∈ [0, 1].
-    pub fn d0(&self, t: f32) -> Vec3 {
+    pub fn d0(&self, t: Real) -> PVec3 {
         match self {
             CurveGeom::Line { origin, direction } => *origin + *direction * t,
 
             CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 *center + *x_dir * radius * theta.cos() + *y_dir * radius * theta.sin()
             }
 
             CurveGeom::Ellipse { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 *center + *x_dir * semi_major * theta.cos() + *y_dir * semi_minor * theta.sin()
             }
 
@@ -492,18 +492,18 @@ impl CurveGeom {
                     let t_eval = if *reversed { 1.0 - t_local } else { t_local };
                     seg.d0(t_eval)
                 } else {
-                    Vec3::ZERO
+                    PVec3::ZERO
                 }
             }
 
             CurveGeom::Polyline { points } => {
                 if points.len() < 2 {
-                    return points.first().copied().unwrap_or(Vec3::ZERO);
+                    return points.first().copied().unwrap_or(PVec3::ZERO);
                 }
                 let n = points.len() - 1;
-                let t_scaled = t.clamp(0.0, 1.0) * n as f32;
+                let t_scaled = t.clamp(0.0, 1.0) * n as Real;
                 let idx = (t_scaled as usize).min(n - 1);
-                let frac = t_scaled - idx as f32;
+                let frac = t_scaled - idx as Real;
                 if idx >= n {
                     points[n]
                 } else {
@@ -525,19 +525,19 @@ impl CurveGeom {
     }
 
     /// Evaluate first derivative (tangent) at parameter t ∈ [0, 1].
-    pub fn d1(&self, t: f32) -> Vec3 {
+    pub fn d1(&self, t: Real) -> PVec3 {
         match self {
             CurveGeom::Line { direction, .. } => *direction,
 
             CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 twopi * radius * (-theta.sin() * *x_dir + theta.cos() * *y_dir)
             }
 
             CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 twopi * (-semi_major * theta.sin() * *x_dir + semi_minor * theta.cos() * *y_dir)
             }
 
@@ -571,22 +571,22 @@ impl CurveGeom {
                     let chain_scale = if *reversed { -1.0 / seg_width } else { 1.0 / seg_width };
                     seg.d1(t_eval) * chain_scale
                 } else {
-                    Vec3::ZERO
+                    PVec3::ZERO
                 }
             }
 
             CurveGeom::Polyline { points } => {
                 let n = points.len();
                 if n < 2 {
-                    return Vec3::ZERO;
+                    return PVec3::ZERO;
                 }
                 let n_seg = n - 1;
-                let t_scaled = t.clamp(0.0, 1.0) * n_seg as f32;
+                let t_scaled = t.clamp(0.0, 1.0) * n_seg as Real;
                 let idx = (t_scaled as usize).min(n_seg - 1);
                 if idx >= n_seg {
-                    Vec3::ZERO
+                    PVec3::ZERO
                 } else {
-                    (points[idx + 1] - points[idx]) * n_seg as f32
+                    (points[idx + 1] - points[idx]) * n_seg as Real
                 }
             }
 
@@ -600,19 +600,19 @@ impl CurveGeom {
     }
 
     /// Evaluate second derivative at parameter t ∈ [0, 1].
-    pub fn d2(&self, t: f32) -> Vec3 {
+    pub fn d2(&self, t: Real) -> PVec3 {
         match self {
-            CurveGeom::Line { .. } => Vec3::ZERO,
+            CurveGeom::Line { .. } => PVec3::ZERO,
 
             CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 -(twopi * twopi) * radius * (theta.cos() * *x_dir + theta.sin() * *y_dir)
             }
 
             CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 -(twopi * twopi) * (semi_major * theta.cos() * *x_dir + semi_minor * theta.sin() * *y_dir)
             }
 
@@ -646,11 +646,11 @@ impl CurveGeom {
                     // d² is divided by seg_width² (squared is always positive, reversal doesn't matter)
                     seg.d2(t_eval) / (seg_width * seg_width)
                 } else {
-                    Vec3::ZERO
+                    PVec3::ZERO
                 }
             }
 
-            CurveGeom::Polyline { .. } => Vec3::ZERO,
+            CurveGeom::Polyline { .. } => PVec3::ZERO,
 
             CurveGeom::Offset { .. } => {
                 let eps = 1e-4;
@@ -663,7 +663,7 @@ impl CurveGeom {
 
     /// Third derivative d³C/dt³ at parameter t via finite differences.
     /// Uses 5-point stencil for smooth curves, falling back to forward difference.
-    pub fn d3(&self, t: f32) -> Vec3 {
+    pub fn d3(&self, t: Real) -> PVec3 {
         let eps = 2e-4;
         let t0 = (t - eps * 2.0).max(0.0);
         let t1 = (t - eps).max(0.0);
@@ -677,14 +677,14 @@ impl CurveGeom {
         let p3 = self.d0(t3);
         let h3 = (t3 - t0).powi(3);
         if h3 < 1e-15 {
-            return Vec3::ZERO;
+            return PVec3::ZERO;
         }
         (-p0 + 2.0 * p1 - 2.0 * p2 + p3) / h3
     }
 
     /// Curvature κ = |d1 × d2| / |d1|³ at parameter t.
     /// Returns 0.0 if the first derivative magnitude is below 1e-10.
-    pub fn curvature(&self, t: f32) -> f32 {
+    pub fn curvature(&self, t: Real) -> Real {
         let d1 = self.d1(t);
         let d1_len = d1.length();
         if d1_len < 1e-10 {
@@ -697,7 +697,7 @@ impl CurveGeom {
 
     /// Torsion τ = (d1 × d2) · d3 / |d1 × d2|² at parameter t.
     /// Uses finite-difference for d3. Returns 0.0 for degenerate cases.
-    pub fn torsion(&self, t: f32) -> f32 {
+    pub fn torsion(&self, t: Real) -> Real {
         let eps = 1e-4;
         let t_hi = (t + eps).min(1.0);
         let d1 = self.d1(t);
@@ -716,7 +716,7 @@ impl CurveGeom {
     /// Returns Vec of [d0, d1, d2, ..., dN] where d0 is position.
     /// For orders > 2, uses finite-difference on lower-order derivatives.
     /// Line: d3+ = zero. Circle/Ellipse: trigonometric recurrence.
-    pub fn dn(&self, t: f32, order: usize) -> Vec<Vec3> {
+    pub fn dn(&self, t: Real, order: usize) -> Vec<PVec3> {
         if order == 0 { return vec![self.d0(t)]; }
         let mut result = Vec::with_capacity(order + 1);
         result.push(self.d0(t));
@@ -726,17 +726,17 @@ impl CurveGeom {
 
         match self {
             CurveGeom::Line { .. } => {
-                for _ in 3..=order { result.push(Vec3::ZERO); }
+                for _ in 3..=order { result.push(PVec3::ZERO); }
             }
             CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
-                let twopi = std::f32::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 for n in 3..=order {
                     let deriv = circle_deriv_n(t, n, *x_dir, *y_dir, *radius, twopi);
                     result.push(deriv);
                 }
             }
             CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
-                let twopi = std::f32::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 for n in 3..=order {
                     let deriv = ellipse_deriv_n(t, n, *x_dir, *y_dir, *semi_major, *semi_minor, twopi);
                     result.push(deriv);
@@ -755,7 +755,7 @@ impl CurveGeom {
                     let d_n = if fwd.len() >= n && bwd.len() >= n {
                         (fwd[n - 1] - bwd[n - 1]) / (2.0 * eps)
                     } else {
-                        Vec3::ZERO
+                        PVec3::ZERO
                     };
                     result.push(d_n);
                 }
@@ -767,7 +767,7 @@ impl CurveGeom {
     /// Combined position, first, and second derivative in one call.
     /// For BSpline curves, this avoids 3× redundant Cox-de Boor evaluation
     /// vs calling `d0`, `d1`, `d2` separately.
-    pub fn d012(&self, t: f32) -> (Vec3, Vec3, Vec3) {
+    pub fn d012(&self, t: Real) -> (PVec3, PVec3, PVec3) {
         match self {
             CurveGeom::BSpline { degree, control_points, knots, weights } => {
                 bspline_d012(*degree, control_points, knots, weights.as_deref(), t)
@@ -782,8 +782,8 @@ impl CurveGeom {
                 (p, d1, d2)
             }
             CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 let (c, s) = (theta.cos(), theta.sin());
                 let d0 = *x_dir * (*radius * c) + *y_dir * (*radius * s);
                 let d1 = twopi * *radius * (-s * *x_dir + c * *y_dir);
@@ -791,8 +791,8 @@ impl CurveGeom {
                 (d0, d1, d2)
             }
             CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
-                let theta = t * std::f32::consts::TAU;
-                let twopi = std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
+                let twopi = std::f64::consts::TAU;
                 let (c, s) = (theta.cos(), theta.sin());
                 let d0 = *x_dir * (*semi_major * c) + *y_dir * (*semi_minor * s);
                 let d1 = twopi * (-*semi_major * s * *x_dir + *semi_minor * c * *y_dir);
@@ -815,7 +815,7 @@ impl CurveGeom {
                 (d0, d1, d2)
             }
             CurveGeom::Line { origin, direction } => {
-                (*origin + *direction * t, *direction, Vec3::ZERO)
+                (*origin + *direction * t, *direction, PVec3::ZERO)
             }
             CurveGeom::Trimmed { basis, t_min, t_max } => {
                 let (t_eval, dt) = trimmed_edge_to_basis(basis, *t_min, *t_max, t);
@@ -830,7 +830,7 @@ impl CurveGeom {
                     let scale = if *rev { -1.0 / w } else { 1.0 / w };
                     (d0, d1 * scale, d2 / (w * w))
                 } else {
-                    (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+                    (PVec3::ZERO, PVec3::ZERO, PVec3::ZERO)
                 }
             }
             CurveGeom::Polyline { .. } => (self.d0(t), self.d1(t), self.d2(t)),
@@ -841,7 +841,7 @@ impl CurveGeom {
 
     /// Adaptive chordal arc length between t0 and t1.
     /// Uses `sample_adaptive` and sums chord lengths of the result points.
-    pub fn arc_length(&self, t0: f32, t1: f32) -> f32 {
+    pub fn arc_length(&self, t0: Real, t1: Real) -> Real {
         let pts = self.sample_adaptive(t0, t1, 0.1);
         let mut len = 0.0;
         for w in pts.windows(2) {
@@ -857,14 +857,14 @@ impl CurveGeom {
     /// - `curvature(midpoint) * segment_length > tolerance`.
     ///
     /// Stops at 512 points or when all segments are within tolerance.
-    pub fn sample_adaptive(&self, t0: f32, t1: f32, tolerance: f32) -> Vec<(f32, Vec3)> {
+    pub fn sample_adaptive(&self, t0: Real, t1: Real, tolerance: Real) -> Vec<(Real, PVec3)> {
         const MAX_POINTS: usize = 512;
 
         // Seed with 8 uniform samples
-        let mut points: Vec<(f32, Vec3)> = Vec::with_capacity(MAX_POINTS);
+        let mut points: Vec<(Real, PVec3)> = Vec::with_capacity(MAX_POINTS);
         let initial = 8usize;
         for i in 0..=initial {
-            let ti = t0 + (t1 - t0) * i as f32 / initial as f32;
+            let ti = t0 + (t1 - t0) * i as Real / initial as Real;
             points.push((ti, self.d0(ti)));
         }
 
@@ -904,7 +904,7 @@ impl CurveGeom {
 ///
 /// For Circle/Ellipse curves, find angular parameters matching vertex positions.
 fn trim_circle_to_vertices(
-    curve: &CurveGeom, p_lo: Vec3, p_hi: Vec3,
+    curve: &CurveGeom, p_lo: PVec3, p_hi: PVec3,
 ) -> Option<CurveGeom> {
     match curve {
         CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
@@ -926,15 +926,15 @@ fn trim_circle_to_vertices(
 
 /// Compute angular parameter [0,TAU) of a point on a circle/ellipse.
 fn circle_angle_geom(
-    center: &Vec3, _axis: Vec3, radius: f32, x_dir: Vec3, y_dir: Vec3, point: Vec3,
-) -> Option<f32> {
+    center: &PVec3, _axis: PVec3, radius: Real, x_dir: PVec3, y_dir: PVec3, point: PVec3,
+) -> Option<Real> {
     let rel = point - *center;
     let a = _axis.normalize();
     let proj = rel - a * rel.dot(a);
     let dist = proj.length();
     if (dist - radius).abs() > radius * 0.1 && (dist - radius).abs() > 0.5 { return None; }
-    let u = f32::atan2(proj.dot(y_dir), proj.dot(x_dir));
-    Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
+    let u = Real::atan2(proj.dot(y_dir), proj.dot(x_dir));
+    Some(if u < 0.0 { u + std::f64::consts::TAU } else { u })
 }
 
 /// Compute eccentric anomaly angle [0,TAU) of a point on an ellipse.
@@ -943,22 +943,22 @@ fn circle_angle_geom(
 /// (e.g. a=10, b=1) by computing θ = atan2(y/b, x/a) instead of assuming
 /// constant distance from center.
 fn ellipse_angle_geom(
-    center: &Vec3, axis: Vec3, semi_major: f32, semi_minor: f32,
-    x_dir: Vec3, y_dir: Vec3, point: Vec3,
-) -> Option<f32> {
+    center: &PVec3, axis: PVec3, semi_major: Real, semi_minor: Real,
+    x_dir: PVec3, y_dir: PVec3, point: PVec3,
+) -> Option<Real> {
     let a = axis.normalize();
     let rel = point - *center;
     let proj = rel - a * rel.dot(a);
-    let u = f32::atan2(proj.dot(y_dir) / semi_minor, proj.dot(x_dir) / semi_major);
-    Some(if u < 0.0 { u + std::f32::consts::TAU } else { u })
+    let u = Real::atan2(proj.dot(y_dir) / semi_minor, proj.dot(x_dir) / semi_major);
+    Some(if u < 0.0 { u + std::f64::consts::TAU } else { u })
 }
 
 /// Clamp arc params to [0,TAU) with correct t_min < t_max ordering.
-fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
+fn normalize_arc_params(a0: Real, a1: Real) -> (Real, Real) {
     let diff = a1 - a0;
-    if diff.abs() > std::f32::consts::PI {
-        if a0 < a1 { (a1 - std::f32::consts::TAU, a0) }
-        else { (a0 - std::f32::consts::TAU, a1) }
+    if diff.abs() > std::f64::consts::PI {
+        if a0 < a1 { (a1 - std::f64::consts::TAU, a0) }
+        else { (a0 - std::f64::consts::TAU, a1) }
     } else { (a0.min(a1), a0.max(a1)) }
 }
 
@@ -967,7 +967,7 @@ fn normalize_arc_params(a0: f32, a1: f32) -> (f32, f32) {
 /// Uses uniform sampling followed by iterative step-halving refinement.
 /// `n_samples` controls the initial grid resolution; `refine_iters` controls
 /// the number of refinement passes.
-pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, _n_samples: usize, _refine_iters: usize) -> f32 {
+pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3, _n_samples: usize, _refine_iters: usize) -> Real {
     let results = super::project::project_point_on_curve(curve, target);
     results.first().map(|(t, _)| *t).unwrap_or(0.0)
 }
@@ -976,9 +976,9 @@ pub fn find_param_on_curve(curve: &CurveGeom, target: Vec3, _n_samples: usize, _
 /// defined by `VERTEX_POINT` coordinates, not vector magnitude.
 pub fn normalize_edge_curve_to_vertices(
     curve: CurveGeom,
-    p_lo: Vec3,
-    p_hi: Vec3,
-    tol: f32,
+    p_lo: PVec3,
+    p_hi: PVec3,
+    tol: Real,
 ) -> CurveGeom {
     let chord = p_hi - p_lo;
     let len = chord.length();
@@ -1017,7 +1017,7 @@ pub fn normalize_edge_curve_to_vertices(
 }
 
 /// Signed area of a 2D polygon (shoelace formula). Returns positive for CCW winding.
-pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
+pub fn signed_area_2d(uv: &[(Real, Real)]) -> f64 {
     let n = uv.len();
     if n < 3 {
         return 0.0;
@@ -1032,7 +1032,7 @@ pub fn signed_area_2d(uv: &[(f32, f32)]) -> f64 {
 }
 
 /// Evaluate PCurve on surface at t (OCCT BRepAdaptor_Curve with face context).
-pub fn eval_pcurve_on_surface(pcurve: &Curve2d, surface: &super::SurfaceGeom, t: f32) -> Vec3 {
+pub fn eval_pcurve_on_surface(pcurve: &Curve2d, surface: &super::SurfaceGeom, t: Real) -> PVec3 {
     let uv = pcurve.d0(t);
     surface.d0_native(uv.0, uv.1)
 }
@@ -1047,28 +1047,28 @@ mod tests {
 
     #[test]
     fn test_line_d0() {
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let p = line.d0(0.5);
-        assert!((p - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-6);
+        assert!((p - PVec3::new(0.5, 0.0, 0.0)).length() < 1e-6);
     }
 
     #[test]
     fn test_line_d1_is_direction() {
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(3.0, 4.0, 0.0) };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(3.0, 4.0, 0.0) };
         let d = line.d1(0.5);
-        assert!((d - Vec3::new(3.0, 4.0, 0.0)).length() < 1e-6);
+        assert!((d - PVec3::new(3.0, 4.0, 0.0)).length() < 1e-6);
     }
 
     #[test]
     fn test_circle_curvature() {
-        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 2.0);
+        let circle = CurveGeom::circle(PVec3::ZERO, PVec3::Z, 2.0);
         let k = circle.curvature(0.25);
         assert!((k - 0.5).abs() < 1e-4); // curvature = 1/r
     }
 
     #[test]
     fn test_circle_d1_orthogonal_to_radius() {
-        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
+        let circle = CurveGeom::circle(PVec3::ZERO, PVec3::Z, 1.0);
         let pos = circle.d0(0.0); // at angle 0 -> (1,0,0)
         let tan = circle.d1(0.0);
         // tangent at angle 0 should be (0, 2pi, 0) -- orthogonal to radius
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn test_sample_adaptive_line_minimal() {
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(10.0, 0.0, 0.0) };
         let pts = line.sample_adaptive(0.0, 1.0, 0.1);
         // A line should need very few points (low curvature)
         assert!(pts.len() >= 2); // at least start and end
@@ -1107,10 +1107,10 @@ mod tests {
         // Cubic B-spline with 4 collinear control points along X axis.
         // Clamped knot vector → curve starts at P0 and ends at P3.
         let cps = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(3.0, 0.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(2.0, 0.0, 0.0),
+            PVec3::new(3.0, 0.0, 0.0),
         ];
         let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
 
@@ -1122,7 +1122,7 @@ mod tests {
 
         // Curve stays on X axis (y=0, z=0) for all t
         for i in 0..=10 {
-            let t = i as f32 / 10.0;
+            let t = i as Real / 10.0;
             let (d0, d1, d2) = bspline_d012(3, &cps, &knots, None, t);
             assert!(d0.y.abs() < 1e-5 && d0.z.abs() < 1e-5, "off-axis at t={t}: {d0:?}");
             // Tangent should be along X
@@ -1138,7 +1138,7 @@ mod tests {
     fn test_bspline_d012_degree8_collinear() {
         // Degree-8 B-spline with 9 collinear control points along X axis.
         // Tests the stack path near the upper limit (8 < MAX_DEGREE=16).
-        let cps: Vec<Vec3> = (0..9).map(|i| Vec3::new(i as f32, 0.0, 0.0)).collect();
+        let cps: Vec<PVec3> = (0..9).map(|i| PVec3::new(i as Real, 0.0, 0.0)).collect();
         let knots = vec![
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
@@ -1152,7 +1152,7 @@ mod tests {
 
         // Stays on X axis
         for i in 0..=10 {
-            let t = i as f32 / 10.0;
+            let t = i as Real / 10.0;
             let (d0, d1, _d2) = bspline_d012(8, &cps, &knots, None, t);
             assert!(d0.y.abs() < 1e-4 && d0.z.abs() < 1e-4, "off-axis at t={t}: {d0:?}");
             assert!(d1.y.abs() < 1e-3 && d1.z.abs() < 1e-3, "tangent off-axis at t={t}: {d1:?}");
@@ -1163,15 +1163,15 @@ mod tests {
     fn test_ellipse_trim_eccentric() {
         // High-eccentricity ellipse: a=10, b=1.  The old circle_angle_geom
         // rejects valid points because distance from center varies from 1 to 10.
-        let center = Vec3::ZERO;
-        let axis = Vec3::Z;
-        let a = 10.0f32;
-        let b = 1.0f32;
+        let center = PVec3::ZERO;
+        let axis = PVec3::Z;
+        let a = 10.0_f64;
+        let b = 1.0_f64;
         let ellipse = CurveGeom::ellipse(center, axis, a, b);
         // Point at eccentric anomaly θ=0:  (a, 0, 0)
-        let p_lo = Vec3::new(a, 0.0, 0.0);
+        let p_lo = PVec3::new(a, 0.0, 0.0);
         // Point at eccentric anomaly θ=π/2:  (0, b, 0)
-        let p_hi = Vec3::new(0.0, b, 0.0);
+        let p_hi = PVec3::new(0.0, b, 0.0);
 
         let trimmed = trim_circle_to_vertices(&ellipse, p_lo, p_hi);
         assert!(trimmed.is_some(), "high-eccentricity ellipse trim must succeed");
@@ -1187,12 +1187,12 @@ mod tests {
     #[test]
     fn test_composite_cached_lengths() {
         // Build a composite of two line segments: length 1 + length 2 = total 3.
-        let seg1 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let seg2 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(2.0, 0.0, 0.0) };
+        let seg1 = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
+        let seg2 = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(2.0, 0.0, 0.0) };
         let segments = vec![(seg1, false), (seg2, false)];
 
         // Precompute cached lengths (as build_curve does)
-        let cached: Vec<f32> = segments.iter()
+        let cached: Vec<Real> = segments.iter()
             .map(|(seg, _)| approx_chordal_length(seg).max(1e-10))
             .collect();
         let comp = CurveGeom::Composite { segments, cached_lengths: Some(cached.clone()) };
@@ -1208,16 +1208,16 @@ mod tests {
 
         // d0 at t=1 should be end of second segment (seg2.d0(1.0) = (2,0,0))
         let p1 = comp.d0(1.0);
-        assert!((p1 - Vec3::new(2.0, 0.0, 0.0)).length() < 0.1, "d0(1) ≈ (2,0,0), got {:?}", p1);
+        assert!((p1 - PVec3::new(2.0, 0.0, 0.0)).length() < 0.1, "d0(1) ≈ (2,0,0), got {:?}", p1);
 
         // d0 at t=1/3 should be near the junction (end of seg1 = (1,0,0))
         let p_third = comp.d0(1.0 / 3.0);
-        assert!((p_third - Vec3::new(1.0, 0.0, 0.0)).length() < 0.1,
+        assert!((p_third - PVec3::new(1.0, 0.0, 0.0)).length() < 0.1,
             "d0(1/3) ≈ junction (1,0,0), got {:?}", p_third);
 
         // Also test Composite without cache (cached_lengths: None) still works
-        let seg3 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
-        let seg4 = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::Y };
+        let seg3 = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
+        let seg4 = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::Y };
         let comp_no_cache = CurveGeom::Composite {
             segments: vec![(seg3, false), (seg4, false)],
             cached_lengths: None,
@@ -1231,10 +1231,10 @@ mod tests {
     fn test_bspline_d012_rational_degree3() {
         // Rational cubic B-spline (NURBS) — verify weights affect the curve.
         let cps = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(2.0, 1.0, 0.0),
-            Vec3::new(3.0, 0.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(2.0, 1.0, 0.0),
+            PVec3::new(3.0, 0.0, 0.0),
         ];
         let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
         let weights = vec![1.0, 2.0, 2.0, 1.0];
@@ -1259,9 +1259,9 @@ mod tests {
     #[test]
     fn test_hyperbola_d0_d1_d2() {
         let h = CurveGeom::Hyperbola {
-            center: Vec3::ZERO, axis: Vec3::Z,
+            center: PVec3::ZERO, axis: PVec3::Z,
             semi_major: 2.0, semi_minor: 1.0,
-            x_dir: Vec3::X, y_dir: Vec3::Y,
+            x_dir: PVec3::X, y_dir: PVec3::Y,
         };
         // At t=0.5, s=0: P = center + cosh(0)*2*X + sinh(0)*1*Y = (2, 0, 0)
         let p = h.d0(0.5);
@@ -1289,9 +1289,9 @@ mod tests {
     #[test]
     fn test_parabola_d0_d1_d2() {
         let p = CurveGeom::Parabola {
-            center: Vec3::ZERO, axis: Vec3::Z,
+            center: PVec3::ZERO, axis: PVec3::Z,
             focal_dist: 1.0,
-            x_dir: Vec3::X, y_dir: Vec3::Y,
+            x_dir: PVec3::X, y_dir: PVec3::Y,
         };
         // At t=0.5, s=0: P = center + 0*X + 0*Y = (0, 0, 0)
         let pt = p.d0(0.5);
@@ -1316,7 +1316,7 @@ mod tests {
 
     #[test]
     fn test_hyperbola_constructor() {
-        let h = CurveGeom::hyperbola(Vec3::new(1.0, 2.0, 3.0), Vec3::Z, 3.0, 1.5);
+        let h = CurveGeom::hyperbola(PVec3::new(1.0, 2.0, 3.0), PVec3::Z, 3.0, 1.5);
         // At t=0.5 (s=0), position should be center + semi_major * x_dir
         let p = h.d0(0.5);
         assert!((p.x - 4.0).abs() < 1e-5, "expected x=4.0, got {}", p.x);
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_parabola_constructor() {
-        let p = CurveGeom::parabola(Vec3::new(1.0, 0.0, 0.0), Vec3::Z, 2.0);
+        let p = CurveGeom::parabola(PVec3::new(1.0, 0.0, 0.0), PVec3::Z, 2.0);
         // At t=0.5 (s=0), position should be center
         let pt = p.d0(0.5);
         assert!((pt.x - 1.0).abs() < 1e-5);
@@ -1336,12 +1336,12 @@ mod tests {
     #[test]
     fn test_offset_curve_line() {
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let offset = CurveGeom::Offset {
             basis: Box::new(line),
-            offset_dir: Vec3::Y,
+            offset_dir: PVec3::Y,
             distance: 1.0,
         };
         let p = offset.d0(0.5);
@@ -1352,10 +1352,10 @@ mod tests {
 
     #[test]
     fn test_offset_curve_circle() {
-        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
+        let circle = CurveGeom::circle(PVec3::ZERO, PVec3::Z, 1.0);
         let offset = CurveGeom::Offset {
             basis: Box::new(circle),
-            offset_dir: Vec3::X,
+            offset_dir: PVec3::X,
             distance: 0.5,
         };
         let p = offset.d0(0.0);
@@ -1365,39 +1365,39 @@ mod tests {
 
     #[test]
     fn test_line_dn_d3_is_zero() {
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let d = line.dn(0.5, 3);
         assert_eq!(d.len(), 4); // [d0, d1, d2, d3]
-        assert!((d[3] - Vec3::ZERO).length() < 1e-6); // d3 of line = 0
+        assert!((d[3] - PVec3::ZERO).length() < 1e-6); // d3 of line = 0
     }
 
     #[test]
     fn test_circle_d3_matches_recurrence() {
-        let circle = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 2.0);
+        let circle = CurveGeom::circle(PVec3::ZERO, PVec3::Z, 2.0);
         // d3 of circle: (2π)^3 * r * (+sin * x_dir - cos * y_dir) at t=0
         let d = circle.dn(0.0, 3);
         assert_eq!(d.len(), 4);
-        let twopi3 = (2.0 * std::f32::consts::PI).powi(3) * 2.0; // radius=2
+        let twopi3 = (2.0 * std::f64::consts::PI).powi(3) * 2.0; // radius=2
         // At t=0: sin(0)=0, cos(0)=1 → d3 = twopi3 * (0*x_dir - 1*y_dir) = -twopi3 * y_dir
-        assert!((d[3] - Vec3::new(0.0, -twopi3, 0.0)).length() < 1.0);
+        assert!((d[3] - PVec3::new(0.0, -twopi3, 0.0)).length() < 1.0);
     }
 }
 
 // ── Trigonometric derivative recurrence for circle/ellipse ──────────
 
-fn circle_deriv_n(t: f32, n: usize, x_dir: Vec3, y_dir: Vec3, r: f32, twopi: f32) -> Vec3 {
+fn circle_deriv_n(t: Real, n: usize, x_dir: PVec3, y_dir: PVec3, r: Real, twopi: Real) -> PVec3 {
     let theta = t * twopi;
     let twopi_n = twopi.powi(n as i32);
     // d^n/dt^n [r*cos(θ)*x + r*sin(θ)*y]
     // = r * (2π)^n * [cos(θ+nπ/2)*x + sin(θ+nπ/2)*y]
-    let phase = theta + n as f32 * std::f32::consts::FRAC_PI_2;
+    let phase = theta + n as Real * std::f64::consts::FRAC_PI_2;
     let scale = r * twopi_n;
     scale * (phase.cos() * x_dir + phase.sin() * y_dir)
 }
 
-fn ellipse_deriv_n(t: f32, n: usize, x_dir: Vec3, y_dir: Vec3, a: f32, b: f32, twopi: f32) -> Vec3 {
+fn ellipse_deriv_n(t: Real, n: usize, x_dir: PVec3, y_dir: PVec3, a: Real, b: Real, twopi: Real) -> PVec3 {
     let theta = t * twopi;
     let twopi_n = twopi.powi(n as i32);
-    let phase = theta + n as f32 * std::f32::consts::FRAC_PI_2;
+    let phase = theta + n as Real * std::f64::consts::FRAC_PI_2;
     twopi_n * (a * phase.cos() * x_dir + b * phase.sin() * y_dir)
 }

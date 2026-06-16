@@ -1,4 +1,5 @@
 //! Face color extraction from STYLED_ITEM.
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 use super::super::parser::EntityIndex;
 use super::super::value::StepValue;
@@ -6,8 +7,8 @@ use super::helpers::*;
 
 /// Extract per-face colors from STYLED_ITEM → SURFACE_STYLE_FILL_AREA → COLOUR_RGB chain.
 /// Returns a map from face entity ID to (R, G, B) color.
-pub fn collect_face_colors(entities: &EntityIndex) -> HashMap<u64, [f32; 3]> {
-    let mut colors: HashMap<u64, [f32; 3]> = HashMap::new();
+pub fn collect_face_colors(entities: &EntityIndex) -> HashMap<u64, [Real; 3]> {
+    let mut colors: HashMap<u64, [Real; 3]> = HashMap::new();
 
     for (_, record) in entities.iter() {
         if record.name != "STYLED_ITEM" {
@@ -31,7 +32,7 @@ pub fn collect_face_colors(entities: &EntityIndex) -> HashMap<u64, [f32; 3]> {
 
 /// Walk PRESENTATION_STYLE_ASSIGNMENT → SURFACE_STYLE_USAGE → SURFACE_STYLE_FILL_AREA
 /// → FILL_AREA_STYLE → COLOUR_RGB chain to extract RGB triplet.
-fn extract_color_from_styles(style_list: Option<&[StepValue]>, entities: &EntityIndex) -> Option<[f32; 3]> {
+fn extract_color_from_styles(style_list: Option<&[StepValue]>, entities: &EntityIndex) -> Option<[Real; 3]> {
     let list = style_list?;
     for psa_val in list {
         let psa_id = psa_val.as_ref_id()?;
@@ -63,7 +64,7 @@ fn extract_color_from_styles(style_list: Option<&[StepValue]>, entities: &Entity
     None
 }
 
-fn resolve_surface_style_to_rgb(side_style_id: u64, entities: &EntityIndex) -> Option<[f32; 3]> {
+fn resolve_surface_style_to_rgb(side_style_id: u64, entities: &EntityIndex) -> Option<[Real; 3]> {
     let record = entities.get(&side_style_id)?;
     match record.name.as_str() {
         "SURFACE_SIDE_STYLE" => {
@@ -85,14 +86,14 @@ fn resolve_surface_style_to_rgb(side_style_id: u64, entities: &EntityIndex) -> O
     }
 }
 
-fn resolve_colour_rgb(colour_id: u64, entities: &EntityIndex) -> Option<[f32; 3]> {
+fn resolve_colour_rgb(colour_id: u64, entities: &EntityIndex) -> Option<[Real; 3]> {
     let record = entities.get(&colour_id)?;
     if record.name != "COLOUR_RGB" && record.name != "COLOUR" {
         return None;
     }
-    let r = record.params.nth_param(1).and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
-    let g = record.params.nth_param(2).and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
-    let b = record.params.nth_param(3).and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
+    let r = record.params.nth_param(1).and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
+    let g = record.params.nth_param(2).and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
+    let b = record.params.nth_param(3).and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
     Some([r, g, b])
 }
 

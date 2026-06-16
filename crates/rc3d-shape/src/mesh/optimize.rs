@@ -1,12 +1,12 @@
 //! Delaunay edge-flip mesh optimization. T2.7
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::mesh_result::MeshResult;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct OptimizeConfig {
-    pub min_angle_degrees: f32,
+    pub min_angle_degrees: Real,
     pub max_iterations: usize,
     /// Skip Delaunay edge-flip when triangle count exceeds this (large meshes).
     pub max_tris: usize,
@@ -38,7 +38,7 @@ pub fn optimize_mesh(mesh: &mut MeshResult, config: &OptimizeConfig) {
 }
 
 /// One pass of edge flipping. Returns number of edges flipped.
-fn run_flip_pass(verts: &mut Vec<Vec3>, indices: &mut Vec<i32>, _normals: &mut Vec<Vec3>) -> usize {
+fn run_flip_pass(verts: &mut Vec<PVec3>, indices: &mut Vec<i32>, _normals: &mut Vec<PVec3>) -> usize {
     // Build edge->triangle adjacency
     let mut edge_to_tris: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
     let mut flipped = 0usize;
@@ -101,14 +101,14 @@ fn run_flip_pass(verts: &mut Vec<Vec3>, indices: &mut Vec<i32>, _normals: &mut V
     flipped
 }
 
-fn min_angle_quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> f32 {
+fn min_angle_quad(a: PVec3, b: PVec3, c: PVec3, d: PVec3) -> Real {
     // Compute min angle in triangles (a,b,c) and (a,c,d)
     let tri1_min = min_tri_angle(a, b, c);
     let tri2_min = min_tri_angle(a, c, d);
     tri1_min.min(tri2_min).to_degrees()
 }
 
-fn min_tri_angle(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+fn min_tri_angle(a: PVec3, b: PVec3, c: PVec3) -> Real {
     let ab = (b - a).length(); let bc = (c - b).length(); let ca = (a - c).length();
     if ab < 1e-10 || bc < 1e-10 || ca < 1e-10 { return 0.0; }
     let alpha = ((bc*bc + ca*ca - ab*ab) / (2.0*bc*ca)).acos();
@@ -125,11 +125,11 @@ mod tests {
     fn test_optimize_does_not_crash() {
         let mut mesh = MeshResult {
             vertices: vec![
-                Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.),
-                Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.),
+                PVec3::new(0.,0.,0.), PVec3::new(1.,0.,0.),
+                PVec3::new(1.,1.,0.), PVec3::new(0.,1.,0.),
             ],
             indices: vec![0,1,2,-1, 0,2,3,-1],
-            normals: vec![Vec3::Z; 4],
+            normals: vec![PVec3::Z; 4],
         };
         optimize_mesh(&mut mesh, &OptimizeConfig::default());
         // Should not crash and should still be valid

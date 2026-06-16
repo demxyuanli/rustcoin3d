@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 //! BREP diagnostic parser — validates OCC BREP ASCII format.
 //! Run: cargo test -p rc3d-io --test brep_parse_diag -- --nocapture
 
@@ -19,7 +20,7 @@ struct BrepDiag {
     // Content validation
     surface_info: Vec<String>,
     curve_info: Vec<String>,
-    edge_tolerances: Vec<f32>,
+    edge_tolerances: Vec<Real>,
     face_orientations: Vec<i32>,
 
     errors: Vec<String>,
@@ -150,7 +151,7 @@ fn parse_brep(path: &Path) -> BrepDiag {
                         if i < lines.len() {
                             let tol_line = lines[i].trim();
                             if let Some(tol_str) = tol_line.split_whitespace().next() {
-                                if let Ok(tol) = tol_str.parse::<f32>() {
+                                if let Ok(tol) = tol_str.parse::<Real>() {
                                     d.edge_tolerances.push(tol);
                                 }
                             }
@@ -222,7 +223,7 @@ fn print_diag(d: &BrepDiag) {
     if !d.face_orientations.is_empty() {
         println!("  Fa orient: {:?}", d.face_orientations);
     }
-    let tol_max = d.edge_tolerances.iter().cloned().fold(0.0f32, f32::max);
+    let tol_max = d.edge_tolerances.iter().cloned().fold(0.0_f64, Real::max);
     let tol_big = d.edge_tolerances.iter().filter(|&&t| t > 0.01).count();
     println!("  Ed tolerances: max={:.6} big(>.01)={}/{}", tol_max, tol_big, d.edge_tolerances.len());
     for e in &d.errors { println!("  ERROR: {}", e); }

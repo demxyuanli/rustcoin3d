@@ -1,5 +1,6 @@
 //! BRepLib::SameParameter subset — propagate 3D/PCurve deviation into edge tolerance (OCC-aligned).
 
+use rc3d_core::math::Real;
 use std::collections::HashSet;
 
 use rc3d_shape::BRepStore;
@@ -10,7 +11,7 @@ const SAMPLE_COUNT: usize = 32;
 /// Recompute edge tolerances from PCurve vs 3D curve deviation for every edge in a shell.
 ///
 /// Delegates to [`BRepStore::ensure_same_parameter`] for each edge-face pair.
-pub fn same_parameter_shell(reg: &mut BRepStore, shell_key: ShellKey, base_tol: f32) -> usize {
+pub fn same_parameter_shell(reg: &mut BRepStore, shell_key: ShellKey, base_tol: Real) -> usize {
     let edges = shell_edge_keys(reg, shell_key);
     let mut updated = 0usize;
     for ek in edges {
@@ -68,7 +69,7 @@ fn shell_edge_keys(reg: &BRepStore, shell_key: ShellKey) -> Vec<EdgeKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use std::collections::HashMap;
 
     use crate::step::brep::geom::{Curve2d, CurveGeom, SurfaceGeom};
@@ -80,9 +81,9 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -92,8 +93,8 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-6);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-6);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-6);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-6);
         let mut pcurves = HashMap::new();
         pcurves.insert(
             face_key,
@@ -106,8 +107,8 @@ mod tests {
             v_low: v0,
             v_high: v1,
             curve: CurveGeom::Line {
-                origin: Vec3::new(0.0, 0.0, 0.1),
-                direction: Vec3::new(1.0, 0.0, 0.0),
+                origin: PVec3::new(0.0, 0.0, 0.1),
+                direction: PVec3::new(1.0, 0.0, 0.0),
             },
             tolerance: 1e-6,
             t_min: 0.0,

@@ -1,8 +1,9 @@
 //! STEP CAF transfer: EntityIndex -> ShapeDocument (OCC STEPCAF-style).
 
+use rc3d_core::math::Real;
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Mat4;
+use rc3d_core::math::PMat4;
 use rc3d_shape::{
     AttributeBag, LabelId, PmiDataSet, PmiEntry, ShapeDocument, ShapeError, ShapeKind, XdeLabel,
 };
@@ -171,7 +172,7 @@ impl StepCafTransfer {
 
 fn install_root_solids(doc: &mut ShapeDocument, root_solids: &[SolidKey]) {
     for &sk in root_solids {
-        doc.add_solid_instance(sk, Mat4::IDENTITY, None);
+        doc.add_solid_instance(sk, PMat4::IDENTITY, None);
     }
 }
 
@@ -276,7 +277,7 @@ fn build_xde_labels(
         }
     }
 
-    let placements: Vec<(u64, Mat4)> = if !shell_instances.is_empty() {
+    let placements: Vec<(u64, PMat4)> = if !shell_instances.is_empty() {
         shell_instances
             .iter()
             .map(|(shell_id, xform)| (*shell_id, xform.matrix))
@@ -291,7 +292,7 @@ fn build_xde_labels(
         let Some(sk) = dedup.resolve_solid(shell_step_id, shell_to_solid)? else {
             continue;
         };
-        let placement_key = (sk, world.to_cols_array().map(f32::to_bits));
+        let placement_key = (sk, world.to_cols_array().map(Real::to_bits));
         if !seen_placements.insert(placement_key) {
             continue;
         }
@@ -389,7 +390,7 @@ fn detach_shape_from_roots(doc: &mut ShapeDocument, shape_id: rc3d_shape::ShapeI
     }
 }
 
-fn style_rgb(style: &StyleInfo) -> [f32; 3] {
+fn style_rgb(style: &StyleInfo) -> [Real; 3] {
     [style.diffuse.x, style.diffuse.y, style.diffuse.z]
 }
 

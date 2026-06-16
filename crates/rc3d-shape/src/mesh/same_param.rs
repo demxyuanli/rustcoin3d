@@ -1,5 +1,6 @@
 //! SameParameter snap — align edge 3D samples with PCurve-on-surface (OCC ShapeFix_Edge subset).
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use super::edge_disc::EdgePolygon;
@@ -10,7 +11,7 @@ use crate::topo::EdgeKey;
 pub fn apply_same_parameter(
     edge_polygons: &mut HashMap<EdgeKey, EdgePolygon>,
     reg: &BRepStore,
-    base_tol: f32,
+    base_tol: Real,
 ) {
     for (&ek, poly) in edge_polygons.iter_mut() {
         let edge = match reg.edges.get(ek) {
@@ -47,7 +48,7 @@ pub fn apply_same_parameter(
 
         for (&face_key, pcurve) in &edge.pcurves {
             if reg.faces.get(face_key).is_some() {
-                let pts_2d: Vec<(f32, (f32, f32))> = poly
+                let pts_2d: Vec<(Real, (Real, Real))> = poly
                     .params_3d
                     .iter()
                     .map(|&(t, _)| {
@@ -64,7 +65,7 @@ pub fn apply_same_parameter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use crate::geom::{CurveGeom, Curve2d, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace};
 
@@ -73,9 +74,9 @@ mod tests {
         let mut reg = BRepStore::new();
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: reg.wires.insert(crate::topo::BRepWire { edges: vec![] }),
             inner_wires: vec![],
@@ -86,14 +87,14 @@ mod tests {
             degenerated_edges: vec![],
         });
 
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(5.0, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(5.0, 0.0, 0.0), 1e-4);
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0,
             v_high: v1,
             curve: CurveGeom::Line {
-                origin: Vec3::ZERO,
-                direction: Vec3::new(5.0, 0.0, 0.0),
+                origin: PVec3::ZERO,
+                direction: PVec3::new(5.0, 0.0, 0.0),
             },
             tolerance: 1e-4,
             t_min: 0.0,
@@ -109,15 +110,15 @@ mod tests {
             edge.pcurves.insert(face_key, pcurve);
         }
 
-        let offset = Vec3::new(0.0, 0.0, 0.5);
+        let offset = PVec3::new(0.0, 0.0, 0.5);
         let mut polys = HashMap::new();
         polys.insert(
             ek,
             EdgePolygon {
                 params_3d: vec![
-                    (0.0, Vec3::ZERO + offset),
-                    (0.5, Vec3::new(2.5, 0.0, 0.0) + offset),
-                    (1.0, Vec3::new(5.0, 0.0, 0.0) + offset),
+                    (0.0, PVec3::ZERO + offset),
+                    (0.5, PVec3::new(2.5, 0.0, 0.0) + offset),
+                    (1.0, PVec3::new(5.0, 0.0, 0.0) + offset),
                 ],
                 params_2d: HashMap::new(),
             },

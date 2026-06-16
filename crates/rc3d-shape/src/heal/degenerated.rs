@@ -4,20 +4,20 @@ use super::curve_trim::{add_degenerated_edge_at_pole, split_edge_at_params};
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Descriptive info about a degenerated edge (OCC equivalent).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct DegeneratedEdgeInfo {
     pub edge_key: crate::topo::EdgeKey,
-    pub singularity_3d: Vec3,
-    pub singularity_uv: (f32, f32),
+    pub singularity_3d: PVec3,
+    pub singularity_uv: (Real, Real),
     pub regular_vertex: crate::topo::VertexKey,
 }
 
 impl DegeneratedEdgeInfo {
-    pub fn new(ek: crate::topo::EdgeKey, sing_3d: Vec3, sing_uv: (f32, f32), reg_vk: crate::topo::VertexKey) -> Self {
+    pub fn new(ek: crate::topo::EdgeKey, sing_3d: PVec3, sing_uv: (Real, Real), reg_vk: crate::topo::VertexKey) -> Self {
         Self { edge_key: ek, singularity_3d: sing_3d, singularity_uv: sing_uv, regular_vertex: reg_vk }
     }
 }
@@ -75,9 +75,9 @@ pub fn fix_degenerated_edges(
             };
 
             let mut best_t = None;
-            let mut best_dist = f32::MAX;
+            let mut best_dist = f64::MAX;
             for s in 0..=16 {
-                let t = s as f32 / 16.0;
+                let t = s as Real / 16.0;
                 let uv = pc.d0(t);
                 let dist = ((uv.0 - singularity.uv.0).powi(2)
                     + (uv.1 - singularity.uv.1).powi(2))
@@ -155,16 +155,16 @@ pub fn fix_degenerated_edges(
 }
 
 struct SingularityInfo {
-    point_3d: Vec3,
-    uv: (f32, f32),
+    point_3d: PVec3,
+    uv: (Real, Real),
 }
 
 fn find_singularities(surface: &SurfaceGeom) -> Vec<SingularityInfo> {
     match surface {
         SurfaceGeom::Sphere { center, radius } => {
             vec![
-                SingularityInfo { point_3d: *center + Vec3::new(0.0, 0.0, *radius), uv: (0.0, std::f32::consts::FRAC_PI_2) },
-                SingularityInfo { point_3d: *center - Vec3::new(0.0, 0.0, *radius), uv: (0.0, -std::f32::consts::FRAC_PI_2) },
+                SingularityInfo { point_3d: *center + PVec3::new(0.0, 0.0, *radius), uv: (0.0, std::f64::consts::FRAC_PI_2) },
+                SingularityInfo { point_3d: *center - PVec3::new(0.0, 0.0, *radius), uv: (0.0, -std::f64::consts::FRAC_PI_2) },
             ]
         }
         SurfaceGeom::Cone { apex, .. } => {
@@ -184,9 +184,9 @@ fn find_bspline_singularities(nurbs: &crate::nurbs::NurbsSurface) -> Vec<Singula
     let mut result = Vec::new();
     let samples = 8;
     for iu in 0..=samples {
-        let u = nurbs.knots_u[0] + (nurbs.knots_u[nurbs.knots_u.len() - 1] - nurbs.knots_u[0]) * iu as f32 / samples as f32;
+        let u = nurbs.knots_u[0] + (nurbs.knots_u[nurbs.knots_u.len() - 1] - nurbs.knots_u[0]) * iu as Real / samples as Real;
         for iv in 0..=samples {
-            let v = nurbs.knots_v[0] + (nurbs.knots_v[nurbs.knots_v.len() - 1] - nurbs.knots_v[0]) * iv as f32 / samples as f32;
+            let v = nurbs.knots_v[0] + (nurbs.knots_v[nurbs.knots_v.len() - 1] - nurbs.knots_v[0]) * iv as Real / samples as Real;
             let d1 = nurbs.derivative(u, v);
             let cross = d1.0.cross(d1.1).length();
             if cross < 1e-6 {
@@ -198,7 +198,7 @@ fn find_bspline_singularities(nurbs: &crate::nurbs::NurbsSurface) -> Vec<Singula
     result
 }
 
-fn find_revolution_singularities(generatrix: &crate::geom::CurveGeom, axis_origin: Vec3, axis_dir: Vec3) -> Vec<SingularityInfo> {
+fn find_revolution_singularities(generatrix: &crate::geom::CurveGeom, axis_origin: PVec3, axis_dir: PVec3) -> Vec<SingularityInfo> {
     // A revolution surface has a singularity where the generatrix touches the axis.
     // Check the generatrix endpoints: if either is on the axis, that's a pole.
     let axis_n = axis_dir.normalize();
@@ -220,12 +220,12 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::CurveGeom;
     use crate::topo::{BRepWire, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_detect_sphere_pole_degeneracy() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_detect_cone_apex_degeneracy() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, 0.5, 0.0);
+        let surface = SurfaceGeom::cone(PVec3::ZERO, PVec3::Z, 0.5, 0.0);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn test_create_degenerated_edge_with_uv_extent() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
         // Create a wire edge whose PCurve passes near the north pole
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
@@ -262,11 +262,11 @@ mod tests {
             degenerated_edges: vec![],
         });
         // Vertex near equator, PCurve goes from equator to near north pole
-        let v_eq = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v_near_pole = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::new(-1.0, 0.0, 1.0) };
+        let v_eq = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v_near_pole = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 1.0), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::new(1.0, 0.0, 0.0), direction: PVec3::new(-1.0, 0.0, 1.0) };
         // PCurve: UV from (0,0) at the equator to near the north pole at (0, PI/2 - 1e-6)
-        let pole_v = std::f32::consts::FRAC_PI_2 - 1e-6;
+        let pole_v = std::f64::consts::FRAC_PI_2 - 1e-6;
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, pole_v) };
         let ek = reg.add_edge_with_pcurve(v_eq, v_near_pole, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn test_no_false_degeneracy_plane() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
@@ -307,17 +307,17 @@ mod tests {
     #[test]
     fn test_degenerated_edges_on_face() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
-        let v_np = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
-        let v_eq = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
+        let v_np = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 1.0), 1e-4);
+        let v_eq = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let line = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 1.0), direction: Vec3::new(1.0, 0.0, -1.0) };
-        let pc = Curve2d::Line { origin: (0.0, std::f32::consts::FRAC_PI_2 - 1e-6), direction: (0.1, -std::f32::consts::FRAC_PI_2 + 1e-6) };
+        let line = CurveGeom::Line { origin: PVec3::new(0.0, 0.0, 1.0), direction: PVec3::new(1.0, 0.0, -1.0) };
+        let pc = Curve2d::Line { origin: (0.0, std::f64::consts::FRAC_PI_2 - 1e-6), direction: (0.1, -std::f64::consts::FRAC_PI_2 + 1e-6) };
         let ek = reg.add_edge_with_pcurve(v_np, v_eq, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let report = fix_degenerated_edges(fk, &mut reg);
@@ -362,10 +362,10 @@ pub fn fix_periodic_degenerated(
     };
 
     // Determine poles based on surface type
-    let poles: Vec<(Vec3, (f32, f32))> = match &surface {
+    let poles: Vec<(PVec3, (Real, Real))> = match &surface {
         SurfaceGeom::Sphere { center, radius } => vec![
-            (*center + Vec3::new(0.0, 0.0, *radius), (0.0, std::f32::consts::FRAC_PI_2)),
-            (*center - Vec3::new(0.0, 0.0, *radius), (0.0, -std::f32::consts::FRAC_PI_2)),
+            (*center + PVec3::new(0.0, 0.0, *radius), (0.0, std::f64::consts::FRAC_PI_2)),
+            (*center - PVec3::new(0.0, 0.0, *radius), (0.0, -std::f64::consts::FRAC_PI_2)),
         ],
         SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
             let axis_n = axis_dir.normalize();
@@ -398,8 +398,8 @@ pub fn fix_periodic_degenerated(
     };
 
     // Check if the wire wraps full U range
-    let mut u_min = f32::MAX;
-    let mut u_max = f32::MIN;
+    let mut u_min = f64::MAX;
+    let mut u_max = f64::MIN;
     for &(ek, _) in &wire.edges {
         let Some(edge) = reg.edges.get(ek) else { continue; };
         let Some(pc) = edge.pcurves.get(&face_key) else { continue; };
@@ -411,7 +411,7 @@ pub fn fix_periodic_degenerated(
     }
 
     let u_span = u_max - u_min;
-    if u_span < std::f32::consts::TAU * 0.9 {
+    if u_span < std::f64::consts::TAU * 0.9 {
         return report;
     }
 
@@ -420,7 +420,7 @@ pub fn fix_periodic_degenerated(
         let vk = reg.find_or_add_vertex(pole_3d, tolerance);
         let degen_curve = crate::geom::CurveGeom::Line {
             origin: pole_3d,
-            direction: Vec3::ZERO,
+            direction: PVec3::ZERO,
         };
         let degen_pc = crate::geom::Curve2d::Line {
             origin: (pole_uv.0, pole_uv.1),
@@ -450,16 +450,16 @@ mod periodic_tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::CurveGeom;
     use crate::topo::{BRepWire, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_sphere_wrap_detected() {
         // (periodic tests)
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
         // Create a wire with edges spanning full U range
-        let v_np = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v_sp = reg.find_or_add_vertex(Vec3::new(-1.0, 0.0, 0.0), 1e-4);
+        let v_np = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v_sp = reg.find_or_add_vertex(PVec3::new(-1.0, 0.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
@@ -467,9 +467,9 @@ mod periodic_tests {
             degenerated_edges: vec![],
         });
         // Create edges that span the full U range
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         // PCurve wrapping 0 to 2*PI in U, V near equator
-        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (std::f32::consts::TAU, 0.0) };
+        let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (std::f64::consts::TAU, 0.0) };
         let ek = reg.add_edge_with_pcurve(v_np, v_sp, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 
@@ -482,7 +482,7 @@ mod periodic_tests {
     #[test]
     fn test_no_wrap_no_degeneracy() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let surface = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],

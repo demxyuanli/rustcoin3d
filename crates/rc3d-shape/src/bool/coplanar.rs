@@ -6,6 +6,7 @@
 //!
 //! OCC alignment: BOPTools_AlgoTools2D (coplanar face boolean path)
 
+use rc3d_core::math::Real;
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use crate::heal::geom2d::{collect_wire_uv_polygon, point_in_polygon_winding};
 use crate::topo::*;
@@ -20,7 +21,7 @@ use super::{BoolOp, stitch};
 /// using the Sutherland-Hodgman algorithm.
 ///
 /// Returns the intersection polygon (may be empty if disjoint).
-pub fn clip_polygon(subject: &[(f32, f32)], clip: &[(f32, f32)]) -> Vec<(f32, f32)> {
+pub fn clip_polygon(subject: &[(Real, Real)], clip: &[(Real, Real)]) -> Vec<(Real, Real)> {
     if subject.len() < 3 || clip.len() < 3 {
         return Vec::new();
     }
@@ -66,15 +67,15 @@ pub fn clip_polygon(subject: &[(f32, f32)], clip: &[(f32, f32)]) -> Vec<(f32, f3
 }
 
 /// Test if point `p` is on the left side (inside) of edge `a → b`.
-fn is_inside(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> bool {
+fn is_inside(p: (Real, Real), a: (Real, Real), b: (Real, Real)) -> bool {
     (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0) >= 0.0
 }
 
 /// Find intersection of line segment (p1→p2) with line (p3→p4).
 fn line_intersection(
-    p1: (f32, f32), p2: (f32, f32),
-    p3: (f32, f32), p4: (f32, f32),
-) -> Option<(f32, f32)> {
+    p1: (Real, Real), p2: (Real, Real),
+    p3: (Real, Real), p4: (Real, Real),
+) -> Option<(Real, Real)> {
     let denom = (p1.0 - p2.0) * (p3.1 - p4.1) - (p1.1 - p2.1) * (p3.0 - p4.0);
     if denom.abs() < 1e-12 {
         return None;
@@ -86,7 +87,7 @@ fn line_intersection(
     ))
 }
 
-fn dedup_polygon(poly: &mut Vec<(f32, f32)>) {
+fn dedup_polygon(poly: &mut Vec<(Real, Real)>) {
     if poly.len() <= 1 {
         return;
     }
@@ -114,12 +115,12 @@ fn dedup_polygon(poly: &mut Vec<(f32, f32)>) {
 }
 
 /// Compute polygon area via shoelace formula. Positive = CCW.
-fn polygon_area(poly: &[(f32, f32)]) -> f32 {
+fn polygon_area(poly: &[(Real, Real)]) -> Real {
     if poly.len() < 3 {
         return 0.0;
     }
     let n = poly.len();
-    let mut area = 0.0f32;
+    let mut area = 0.0_f64;
     for i in 0..n {
         let j = (i + 1) % n;
         area += poly[i].0 * poly[j].1;
@@ -129,7 +130,7 @@ fn polygon_area(poly: &[(f32, f32)]) -> f32 {
 }
 
 /// Ensure polygon is in CCW winding (positive area).
-fn ensure_ccw(poly: &mut Vec<(f32, f32)>) {
+fn ensure_ccw(poly: &mut Vec<(Real, Real)>) {
     if polygon_area(poly) < 0.0 {
         poly.reverse();
     }
@@ -147,15 +148,15 @@ fn ensure_ccw(poly: &mut Vec<(f32, f32)>) {
 ///
 /// OCC alignment: BOPTools_AlgoTools2D general 2D clipping path.
 pub fn clip_polygon_general(
-    subject: &[(f32, f32)],
-    clip: &[(f32, f32)],
-) -> Vec<(f32, f32)> {
+    subject: &[(Real, Real)],
+    clip: &[(Real, Real)],
+) -> Vec<(Real, Real)> {
     if subject.len() < 3 || clip.len() < 3 {
         return Vec::new();
     }
 
     // Step 1: Find all intersection points between subject and clip edges
-    let mut intersections: Vec<(usize, usize, (f32, f32))> = Vec::new();
+    let mut intersections: Vec<(usize, usize, (Real, Real))> = Vec::new();
     for i in 0..subject.len() {
         let j = (i + 1) % subject.len();
         for k in 0..clip.len() {
@@ -201,9 +202,9 @@ pub fn clip_polygon_general(
 /// Check if line segments (p1→p2) and (p3→p4) intersect in their interiors.
 /// Returns the intersection point.
 fn line_intersection_segment(
-    p1: (f32, f32), p2: (f32, f32),
-    p3: (f32, f32), p4: (f32, f32),
-) -> Option<(f32, f32)> {
+    p1: (Real, Real), p2: (Real, Real),
+    p3: (Real, Real), p4: (Real, Real),
+) -> Option<(Real, Real)> {
     let denom = (p1.0 - p2.0) * (p3.1 - p4.1) - (p1.1 - p2.1) * (p3.0 - p4.0);
     if denom.abs() < 1e-12 {
         return None;
@@ -218,7 +219,7 @@ fn line_intersection_segment(
 }
 
 /// Simple containment test using winding number (from heal/geom2d).
-fn point_in_containment(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
+fn point_in_containment(p: (Real, Real), poly: &[(Real, Real)]) -> bool {
     let mut inside = false;
     let n = poly.len();
     for i in 0..n {
@@ -239,16 +240,16 @@ fn point_in_containment(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
 /// Result of a 2D polygon boolean operation.
 pub struct PolygonBooleanResult {
     /// Result polygons in UV space (may be multiple disjoint regions).
-    pub polygons: Vec<Vec<(f32, f32)>>,
+    pub polygons: Vec<Vec<(Real, Real)>>,
     /// Whether the result is non-empty.
     pub is_non_empty: bool,
 }
 
 /// Compute 2D polygon boolean: A ∩ B (intersection).
 pub fn polygon_intersection(
-    poly_a: &[(f32, f32)],
-    poly_b: &[(f32, f32)],
-) -> Vec<Vec<(f32, f32)>> {
+    poly_a: &[(Real, Real)],
+    poly_b: &[(Real, Real)],
+) -> Vec<Vec<(Real, Real)>> {
     // Try Sutherland-Hodgman first (fast, works for convex polygons)
     let clipped = clip_polygon(poly_a, poly_b);
     if clipped.len() >= 3 {
@@ -266,9 +267,9 @@ pub fn polygon_intersection(
 /// For convex polygons, union = A + B - intersection.
 /// Simplified: return both polygons; the caller (mesh/stitch) handles overlap.
 pub fn polygon_union(
-    poly_a: &[(f32, f32)],
-    poly_b: &[(f32, f32)],
-) -> Vec<Vec<(f32, f32)>> {
+    poly_a: &[(Real, Real)],
+    poly_b: &[(Real, Real)],
+) -> Vec<Vec<(Real, Real)>> {
     // Check if they overlap
     let overlap = clip_polygon(poly_a, poly_b);
     if overlap.len() < 3 {
@@ -286,9 +287,9 @@ pub fn polygon_union(
 /// A - B = clip(A, complement(B)).
 /// For convex B: A - B = A \ (A ∩ B).
 pub fn polygon_difference(
-    poly_a: &[(f32, f32)],
-    poly_b: &[(f32, f32)],
-) -> Vec<Vec<(f32, f32)>> {
+    poly_a: &[(Real, Real)],
+    poly_b: &[(Real, Real)],
+) -> Vec<Vec<(Real, Real)>> {
     let intersection = clip_polygon(poly_a, poly_b);
     if intersection.len() < 3 {
         // No overlap — return A unchanged
@@ -339,7 +340,7 @@ pub fn handle_coplanar_boolean(
     shells_b: &[ShellKey],
     reg: &mut BRepStore,
     op: BoolOp,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Option<super::BRepBoolResult> {
     // Collect all coplanar face pairs across shells
     let mut faces_a = Vec::new();
@@ -443,12 +444,12 @@ pub fn handle_coplanar_boolean(
 /// Creates vertices at 3D positions (surface.d0_native(u, v)),
 /// edges along the polygon boundary, a wire, and a face.
 fn build_face_from_uv_polygon(
-    uv_poly: &[(f32, f32)],
+    uv_poly: &[(Real, Real)],
     surface: &SurfaceGeom,
     _face_a: FaceKey,
     _face_b: FaceKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Option<FaceKey> {
     if uv_poly.len() < 3 {
         return None;
@@ -516,7 +517,7 @@ fn build_face_from_uv_polygon(
 mod tests {
     use super::*;
     use crate::geom::curve2d::Curve2d;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_clip_square_inside_square() {
@@ -597,17 +598,17 @@ mod tests {
         let mut reg = BRepStore::new();
 
         // Build two overlapping square faces on z=0 plane
-        let build_square = |reg: &mut BRepStore, ox: f32, oy: f32, size: f32| -> (ShellKey, FaceKey) {
+        let build_square = |reg: &mut BRepStore, ox: Real, oy: Real, size: Real| -> (ShellKey, FaceKey) {
             let half = size * 0.5;
-            let v0 = reg.find_or_add_vertex(Vec3::new(ox - half, oy - half, 0.0), 1e-4);
-            let v1 = reg.find_or_add_vertex(Vec3::new(ox + half, oy - half, 0.0), 1e-4);
-            let v2 = reg.find_or_add_vertex(Vec3::new(ox + half, oy + half, 0.0), 1e-4);
-            let v3 = reg.find_or_add_vertex(Vec3::new(ox - half, oy + half, 0.0), 1e-4);
+            let v0 = reg.find_or_add_vertex(PVec3::new(ox - half, oy - half, 0.0), 1e-4);
+            let v1 = reg.find_or_add_vertex(PVec3::new(ox + half, oy - half, 0.0), 1e-4);
+            let v2 = reg.find_or_add_vertex(PVec3::new(ox + half, oy + half, 0.0), 1e-4);
+            let v3 = reg.find_or_add_vertex(PVec3::new(ox - half, oy + half, 0.0), 1e-4);
 
             let surface = SurfaceGeom::Plane {
-                origin: Vec3::new(ox, oy, 0.0),
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::new(ox, oy, 0.0),
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             };
             let wk = reg.wires.insert(BRepWire { edges: vec![] });
             let fk = reg.faces.insert(BRepFace {
@@ -630,8 +631,8 @@ mod tests {
             let mut wire_edges = Vec::new();
             for (va, vb, (ua, va_uv), (ub, vb_uv)) in corners {
                 let curve = CurveGeom::Line {
-                    origin: Vec3::new(ua, va_uv, 0.0),
-                    direction: Vec3::new(ub - ua, vb_uv - va_uv, 0.0),
+                    origin: PVec3::new(ua, va_uv, 0.0),
+                    direction: PVec3::new(ub - ua, vb_uv - va_uv, 0.0),
                 };
                 let pcurve = Curve2d::Line {
                     origin: (ua, va_uv),

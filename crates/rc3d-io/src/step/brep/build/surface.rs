@@ -1,15 +1,16 @@
+use rc3d_core::math::Real;
 use super::*;
 use crate::step::brep::geom::nurbs_build::build_nurbs_surface;
 
 /// Extract the rectangular trim range if this is a RECTANGULAR_TRIMMED_SURFACE.
 /// Returns (u_min, u_max, v_min, v_max) or None.
-pub fn build_surface_trim_range(surface_id: u64, entities: &EntityIndex) -> Option<(f32, f32, f32, f32)> {
+pub fn build_surface_trim_range(surface_id: u64, entities: &EntityIndex) -> Option<(Real, Real, Real, Real)> {
     let record = entities.get(&surface_id)?;
     if record.name == "RECTANGULAR_TRIMMED_SURFACE" {
-        let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
-        let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
-        let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as f32;
-        let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as f32;
+        let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as Real;
+        let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as Real;
+        let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as Real;
+        let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as Real;
         Some((u1.min(u2), u1.max(u2), v1.min(v2), v1.max(v2)))
     } else {
         None
@@ -31,7 +32,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         }
         "CYLINDRICAL_SURFACE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(SurfaceGeom::cylinder(origin, z_axis.normalize(), radius))
@@ -39,15 +40,15 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         "CONICAL_SURFACE" => {
             // CONICAL_SURFACE('', #placement, radius, semi_angle)
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let radius = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
-            let semi_angle = geom::nth_real(&record.params, 3).unwrap_or(0.7854) as f32;
+            let radius = geom::nth_real(&record.params, 2).unwrap_or(0.0) as Real;
+            let semi_angle = geom::nth_real(&record.params, 3).unwrap_or(0.7854) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(SurfaceGeom::cone(origin, z_axis.normalize(), semi_angle, radius))
         }
         "SPHERICAL_SURFACE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (origin, _, _) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(SurfaceGeom::Sphere { center: origin, radius })
@@ -55,8 +56,8 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         "TOROIDAL_SURFACE" => {
             // TOROIDAL_SURFACE('', #placement, major_r, minor_r)
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let major_r = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
-            let minor_r = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
+            let major_r = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
+            let minor_r = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(SurfaceGeom::torus(origin, z_axis.normalize(), major_r, minor_r))
@@ -92,7 +93,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         }
         "OFFSET_SURFACE" => {
             let basis_id = geom::nth_ref(&record.params, 1)?;
-            let distance = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
+            let distance = geom::nth_real(&record.params, 2).unwrap_or(0.0) as Real;
             let basis = build_surface(basis_id, entities)?;
             Some(SurfaceGeom::Offset { basis: Box::new(basis), distance })
         }
@@ -111,10 +112,10 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         }
         "RECTANGULAR_TRIMMED_SURFACE" => {
             let basis_id = geom::nth_ref(&record.params, 1)?;
-            let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as f32;
-            let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
-            let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as f32;
-            let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as f32;
+            let u1 = geom::nth_real(&record.params, 2).unwrap_or(0.0) as Real;
+            let u2 = geom::nth_real(&record.params, 3).unwrap_or(1.0) as Real;
+            let v1 = geom::nth_real(&record.params, 4).unwrap_or(0.0) as Real;
+            let v2 = geom::nth_real(&record.params, 5).unwrap_or(1.0) as Real;
             log::debug!(
                 "[BRep] {:?}: RECTANGULAR_TRIMMED_SURFACE trim range: u=[{}, {}], v=[{}, {}]",
                 surface_id, u1, u2, v1, v2
@@ -145,7 +146,7 @@ pub(crate) fn resolve_vector_magnitude(vec_id: u64, entities: &EntityIndex) -> O
         "VECTOR" => {
             let dir_id = geom::nth_ref(&record.params, 1)?;
             let dir = topology::resolve_direction(dir_id, entities)?;
-            let mag = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let mag = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             Some(dir * mag)
         }
         "DIRECTION" => {

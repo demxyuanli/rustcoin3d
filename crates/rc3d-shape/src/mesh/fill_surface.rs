@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use super::boundary::{
     register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
 };
@@ -30,7 +30,7 @@ pub fn default_grid_for_surface(surface: &SurfaceGeom) -> (u32, u32) {
 }
 
 /// Effective MinSize for a face (absolute floor + relative to boundary bbox diagonal).
-pub fn effective_min_size(config: &FaceFillConfig) -> f32 {
+pub fn effective_min_size(config: &FaceFillConfig) -> Real {
     // MinSize floor tied to DeflectionInterior (OCC: min edge ~ few × deflection).
     let def_floor = config.deflection_interior * 2.0;
     let mut min = config.min_size.max(def_floor);
@@ -40,11 +40,11 @@ pub fn effective_min_size(config: &FaceFillConfig) -> f32 {
     min
 }
 
-pub fn face_boundary_is_mixed(loops: &FaceUvLoops, verts: &[Vec3]) -> bool {
+pub fn face_boundary_is_mixed(loops: &FaceUvLoops, verts: &[PVec3]) -> bool {
     boundary_is_mixed(&loops.outer.boundary, verts)
 }
 
-pub(crate) fn max_allowed_triangle_edge(loops: &FaceUvLoops, verts: &[Vec3]) -> f32 {
+pub(crate) fn max_allowed_triangle_edge(loops: &FaceUvLoops, verts: &[PVec3]) -> Real {
     let boundary = &loops.outer.boundary;
     let n = boundary.len();
     if n < 2 {
@@ -77,7 +77,7 @@ pub(crate) fn max_allowed_triangle_edge(loops: &FaceUvLoops, verts: &[Vec3]) -> 
     let mut sorted = lens.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let med = sorted[sorted.len() / 2];
-    let max_b = lens.iter().copied().fold(0.0f32, f32::max);
+    let max_b = lens.iter().copied().fold(0.0_f64, Real::max);
     (med * 3.0).max(1e-4).min(max_b * 1.5)
 }
 
@@ -86,8 +86,8 @@ pub(crate) fn fill_mixed_boundary_segmented(
     face_key: FaceKey,
     work_loops: &FaceUvLoops,
     face: &BRepFace,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     first_tri: usize,
     boundary_global: HashSet<usize>,
@@ -124,7 +124,7 @@ pub(crate) fn fill_mixed_boundary_segmented(
 
 /// CDT-first triangulation with Steiner refinement, earcut as ultimate fallback.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn polyline_surface_uv(surface: &SurfaceGeom, indices: &[usize], verts: &[Vec3]) -> Vec<(f32, f32)> {
+pub(crate) fn polyline_surface_uv(surface: &SurfaceGeom, indices: &[usize], verts: &[PVec3]) -> Vec<(Real, Real)> {
     let uv_surface = surface_uv_basis(surface);
     if matches!(uv_surface, SurfaceGeom::Revolution { .. }) && indices.len() >= 2 {
         let mut loop_data = UvLoop {
@@ -168,8 +168,8 @@ pub fn surface_fill_3d(
     inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
     reg: &BRepStore,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
@@ -233,7 +233,7 @@ pub fn surface_fill_3d(
 
     // ── Phase 1: project boundary points to surface ──
     let inv_tol = face.tolerance.max(1e-3);
-    let mut projected: Vec<Option<(f32, f32)>> = Vec::with_capacity(boundary_global.len());
+    let mut projected: Vec<Option<(Real, Real)>> = Vec::with_capacity(boundary_global.len());
     let mut success_count = 0usize;
     for &gi in boundary_global {
         let pt = global_vertices[gi];
@@ -252,7 +252,7 @@ pub fn surface_fill_3d(
         }
         projected.push(uv);
     }
-    let success_ratio = success_count as f32 / boundary_global.len() as f32;
+    let success_ratio = success_count as Real / boundary_global.len() as Real;
 
     log::debug!(
         "[BRep mesh] face {:?}: {}/{} boundary pts projected ({:.0}%)",
@@ -391,8 +391,8 @@ pub(crate) fn surface_fill_3d_planar(
     inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
     reg: &BRepStore,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
@@ -407,12 +407,12 @@ pub(crate) fn surface_fill_3d_planar(
     );
 
     // Fit plane
-    let points: Vec<Vec3> = boundary_global
+    let points: Vec<PVec3> = boundary_global
         .iter()
         .map(|&gi| global_vertices[gi])
         .collect();
 
-    let mut normal = Vec3::ZERO;
+    let mut normal = PVec3::ZERO;
     for i in 0..points.len() {
         let p0 = points[i];
         let p1 = points[(i + 1) % points.len()];
@@ -432,10 +432,10 @@ pub(crate) fn surface_fill_3d_planar(
     }
     normal = normal.normalize();
 
-    let u_axis = if normal.dot(Vec3::Z).abs() < 0.9 {
-        normal.cross(Vec3::Z).normalize()
+    let u_axis = if normal.dot(PVec3::Z).abs() < 0.9 {
+        normal.cross(PVec3::Z).normalize()
     } else {
-        normal.cross(Vec3::Y).normalize()
+        normal.cross(PVec3::Y).normalize()
     };
     let v_axis = normal.cross(u_axis).normalize();
     let origin = points[0];
@@ -460,10 +460,10 @@ pub(crate) fn surface_fill_3d_planar(
         v_max = v_max.max(pv);
     }
     let mut cdt = NativeCdt::from_uv_bbox(
-        u_min as f32,
-        v_min as f32,
-        u_max as f32,
-        v_max as f32,
+        u_min as Real,
+        v_min as Real,
+        u_max as Real,
+        v_max as Real,
     );
     let mut handles: Vec<CdtVertHandle> = Vec::new();
 
@@ -494,7 +494,7 @@ pub(crate) fn surface_fill_3d_planar(
         if inner_bdy.len() < 3 {
             continue;
         }
-        let inner_pts: Vec<Vec3> = inner_bdy.iter().map(|&gi| global_vertices[gi]).collect();
+        let inner_pts: Vec<PVec3> = inner_bdy.iter().map(|&gi| global_vertices[gi]).collect();
         let mut inner_handles: Vec<CdtVertHandle> = Vec::new();
         for pt in &inner_pts {
             let rel = *pt - origin;
@@ -512,12 +512,12 @@ pub(crate) fn surface_fill_3d_planar(
     }
 
     // Helper: compute 3D point on fitted plane from 2D coords
-    let plane_to_3d = |pu: f64, pv: f64| -> Vec3 {
-        origin + u_axis * (pu as f32) + v_axis * (pv as f32)
+    let plane_to_3d = |pu: f64, pv: f64| -> PVec3 {
+        origin + u_axis * (pu as Real) + v_axis * (pv as Real)
     };
 
     // ── Steiner refinement (surface-projected) ──
-    let mut max_chord = 0.0f32;
+    let mut max_chord = 0.0_f64;
     if config.enable_interior && config.deflection_interior > 0.0 {
         let min_sz = effective_min_size(config);
         for _iter in 0..config.max_adapt_iterations {

@@ -18,7 +18,7 @@ use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use crate::topo_iter;
 use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, InterfPoint, PaveBlock};
 use super::face_intersector;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Result of the pave filling phase.
 #[derive(Debug, Default)]
@@ -38,7 +38,7 @@ pub fn fill_paves(
     shells_a: &[ShellKey],
     shells_b: &[ShellKey],
     reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> (BopDS, PaveFillerReport) {
     let mut ds = BopDS::new(tolerance);
     let mut report = PaveFillerReport::default();
@@ -138,7 +138,7 @@ pub fn fill_paves(
 
 /// Quick AABB check: does the edge's bounding box intersect the face bbox?
 fn edge_bbox_touches(
-    edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: f32, reg: &BRepStore,
+    edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: Real, reg: &BRepStore,
 ) -> bool {
     use super::aabb::AABB;
     let p0 = edge.curve.d0(0.0);
@@ -146,8 +146,8 @@ fn edge_bbox_touches(
     let mut edge_bb = AABB::empty();
     edge_bb.expand(p0);
     edge_bb.expand(p1);
-    edge_bb.expand(Vec3::new(p0.x + tol, p0.y + tol, p0.z + tol));
-    edge_bb.expand(Vec3::new(p1.x + tol, p1.y + tol, p1.z + tol));
+    edge_bb.expand(PVec3::new(p0.x + tol, p0.y + tol, p0.z + tol));
+    edge_bb.expand(PVec3::new(p1.x + tol, p1.y + tol, p1.z + tol));
     edge_bb.overlaps(face_bbox)
 }
 
@@ -157,7 +157,7 @@ fn compute_face_pair_interf(
     face_a: &crate::topo::BRepFace,
     face_b: &crate::topo::BRepFace,
     _reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> Option<FaceFaceInterf> {
     // Try the general face intersector (marching + Newton for all surface types)
     face_intersector::intersect_faces(
@@ -252,7 +252,7 @@ fn face_boundary_edges(fk: FaceKey, reg: &BRepStore) -> Vec<EdgeKey> {
 }
 
 /// Check if a 3D point lies on an edge within tolerance.
-fn point_on_edge(pt: Vec3, ek: EdgeKey, reg: &BRepStore, tol: f32) -> bool {
+fn point_on_edge(pt: PVec3, ek: EdgeKey, reg: &BRepStore, tol: Real) -> bool {
     let edge = match reg.edges.get(ek) { Some(e) => e, None => return false };
     let t = find_param_on_edge(pt, edge);
     let curve_pt = edge.curve.d0(t);
@@ -260,17 +260,17 @@ fn point_on_edge(pt: Vec3, ek: EdgeKey, reg: &BRepStore, tol: f32) -> bool {
 }
 
 /// Find the parameter t on an edge closest to a 3D point.
-fn point_param_on_edge(pt: Vec3, ek: EdgeKey, reg: &BRepStore) -> f32 {
+fn point_param_on_edge(pt: PVec3, ek: EdgeKey, reg: &BRepStore) -> Real {
     let edge = match reg.edges.get(ek) { Some(e) => e, None => return 0.0 };
     find_param_on_edge(pt, edge)
 }
 
-fn find_param_on_edge(pt: Vec3, edge: &crate::topo::BRepEdge) -> f32 {
+fn find_param_on_edge(pt: PVec3, edge: &crate::topo::BRepEdge) -> Real {
     let n = 16;
-    let mut best_t = 0.0f32;
-    let mut best_d2 = f32::MAX;
+    let mut best_t = 0.0_f64;
+    let mut best_d2 = f64::MAX;
     for i in 0..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let d2 = (edge.curve.d0(t) - pt).length_squared();
         if d2 < best_d2 {
             best_d2 = d2;
@@ -279,7 +279,7 @@ fn find_param_on_edge(pt: Vec3, edge: &crate::topo::BRepEdge) -> f32 {
     }
     // Refine with binary search
     for _ in 0..4 {
-        let eps = 0.01 / (1 << 4) as f32;
+        let eps = 0.01 / (1 << 4) as Real;
         for &dt in &[-eps, eps] {
             let t = (best_t + dt).clamp(0.0, 1.0);
             let d2 = (edge.curve.d0(t) - pt).length_squared();
@@ -298,11 +298,11 @@ mod tests {
     use crate::geom::SurfaceGeom;
     use crate::store::BRepStore;
     use crate::topo::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use std::collections::HashMap;
 
-    fn make_plane_shell(reg: &mut BRepStore, origin: Vec3, normal: Vec3) -> ShellKey {
-        let surface = SurfaceGeom::Plane { origin, normal, u_dir: Vec3::X };
+    fn make_plane_shell(reg: &mut BRepStore, origin: PVec3, normal: PVec3) -> ShellKey {
+        let surface = SurfaceGeom::Plane { origin, normal, u_dir: PVec3::X };
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -324,8 +324,8 @@ mod tests {
     #[test]
     fn test_fill_paves_finds_plane_intersection() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Y);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Y);
 
         let (ds, report) = fill_paves(&[sa], &[sb], &reg, 1e-4);
         assert!(report.face_pairs_tested > 0, "should test face pairs");
@@ -338,8 +338,8 @@ mod tests {
     #[test]
     fn test_fill_paves_parallel_planes_no_intersection() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::new(100.0, 0.0, 0.0), Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
         let (_ds, report) = fill_paves(&[sa], &[sb], &reg, 1e-4);
         // Parallel planes at different positions — no overlap
@@ -350,10 +350,10 @@ mod tests {
     #[test]
     fn test_find_param_on_edge_line() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let curve = crate::geom::CurveGeom::Line {
-            origin: Vec3::ZERO, direction: Vec3::X,
+            origin: PVec3::ZERO, direction: PVec3::X,
         };
         let ek = reg.edges.insert(BRepEdge {
             curve, tolerance: 1e-4,
@@ -363,7 +363,7 @@ mod tests {
             pcurves: HashMap::new(),
         });
         let edge = reg.edges.get(ek).unwrap();
-        let t = find_param_on_edge(Vec3::new(0.5, 0.0, 0.0), edge);
+        let t = find_param_on_edge(PVec3::new(0.5, 0.0, 0.0), edge);
         assert!((t - 0.5).abs() < 0.1, "midpoint should map to t≈0.5, got {}", t);
     }
 }

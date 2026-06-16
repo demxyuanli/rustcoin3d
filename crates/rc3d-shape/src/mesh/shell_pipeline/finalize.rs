@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
 use crate::mesh_result::MeshResult;
 use crate::store::BRepStore;
@@ -22,12 +22,12 @@ pub(crate) fn finalize_shell_mesh(
     reg: &BRepStore,
     face_ranges: &[FaceMeshRange],
     mut all_indices: Vec<i32>,
-    mut global_vertices: Vec<Vec3>,
-    mut global_normals: Vec<Vec3>,
+    mut global_vertices: Vec<PVec3>,
+    mut global_normals: Vec<PVec3>,
     mut report: ShellMeshReport,
     heal_skipped_faces: &[FaceKey],
     scaled_config: &BRepMeshConfig,
-    shell_diag: f32,
+    shell_diag: Real,
     face_infos_len: usize,
     boundary_vertex_count: usize,
     wire_diag: &[String],
@@ -167,10 +167,10 @@ pub(crate) fn finalize_shell_mesh(
         protected.insert(i);
     }
 
-    let protected_positions: HashSet<[u32; 3]> = protected
+    let protected_positions: HashSet<[u64; 3]> = protected
         .iter()
         .filter_map(|&i| mesh.vertices.get(i))
-        .map(|v| rc3d_core::utils::hash::f32x3_quantized_bits([v.x, v.y, v.z]))
+        .map(|v| rc3d_core::utils::hash::f64x3_quantized_bits([v.x, v.y, v.z]))
         .collect();
 
     let welded = mesh.weld_vertices_protected(weld_tol, &protected);
@@ -186,7 +186,7 @@ pub(crate) fn finalize_shell_mesh(
             .iter()
             .enumerate()
             .filter(|(_, v)| {
-                let key = rc3d_core::utils::hash::f32x3_quantized_bits([v.x, v.y, v.z]);
+                let key = rc3d_core::utils::hash::f64x3_quantized_bits([v.x, v.y, v.z]);
                 protected_positions.contains(&key)
             })
             .map(|(i, _)| i)

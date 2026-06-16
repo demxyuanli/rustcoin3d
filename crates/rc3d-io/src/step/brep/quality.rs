@@ -1,5 +1,6 @@
 //! Quality metrics for STEP import pipeline (OCC quality baseline).
 
+use rc3d_core::math::Real;
 use std::collections::HashSet;
 
 use rc3d_shape::BRepStore;
@@ -16,9 +17,9 @@ pub struct ShellQualityMetrics {
     /// Number of faces that skipped meshing.
     pub skipped_faces: usize,
     /// Maximum chord error (normalized by bbox diagonal).
-    pub max_chord_error: f32,
+    pub max_chord_error: Real,
     /// Average chord error.
-    pub avg_chord_error: f32,
+    pub avg_chord_error: Real,
     /// Number of degenerate faces (zero-area).
     pub degenerate_faces: usize,
     /// Whether shell passed Euler-Poincaré check.
@@ -79,13 +80,13 @@ pub struct PipelineQualityReport {
     pub faces_meshed: usize,
     pub heal_passes_run: usize,
     pub heal_errors: usize,
-    pub avg_quality_score: f32,
+    pub avg_quality_score: Real,
 }
 
 /// Compute a 0.0–1.0 quality score from shell metrics.
 /// 1.0 = perfect (Euler valid, no degenerate faces, low chord error).
-pub fn quality_score(metrics: &ShellQualityMetrics) -> f32 {
-    let mut score = 1.0f32;
+pub fn quality_score(metrics: &ShellQualityMetrics) -> Real {
+    let mut score = 1.0_f64;
 
     // Euler validity
     if !metrics.euler_valid {
@@ -94,7 +95,7 @@ pub fn quality_score(metrics: &ShellQualityMetrics) -> f32 {
 
     // Degenerate face penalty
     if metrics.face_count > 0 {
-        let degen_ratio = metrics.degenerate_faces as f32 / metrics.face_count as f32;
+        let degen_ratio = metrics.degenerate_faces as Real / metrics.face_count as Real;
         score -= degen_ratio * 0.3;
     }
 
@@ -126,15 +127,15 @@ mod tests {
     fn test_quality_single_face() {
         let mut reg = BRepStore::new();
         // Create a simple triangular face
-        let v0 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::Vec3::ZERO, tolerance: 1e-6 });
-        let v1 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::Vec3::X, tolerance: 1e-6 });
-        let v2 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::Vec3::Y, tolerance: 1e-6 });
+        let v0 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::PVec3::ZERO, tolerance: 1e-6 });
+        let v1 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::PVec3::X, tolerance: 1e-6 });
+        let v2 = reg.vertices.insert(BRepVertex { position: rc3d_core::math::PVec3::Y, tolerance: 1e-6 });
 
         let e0 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1,
             curve: crate::step::brep::geom::CurveGeom::Line {
-                origin: rc3d_core::math::Vec3::ZERO,
-                direction: rc3d_core::math::Vec3::X,
+                origin: rc3d_core::math::PVec3::ZERO,
+                direction: rc3d_core::math::PVec3::X,
             },
             tolerance: 1e-6,
             t_min: 0.0,
@@ -144,8 +145,8 @@ mod tests {
         let e1 = reg.edges.insert(BRepEdge {
             v_low: v1, v_high: v2,
             curve: crate::step::brep::geom::CurveGeom::Line {
-                origin: rc3d_core::math::Vec3::X,
-                direction: rc3d_core::math::Vec3::Y - rc3d_core::math::Vec3::X,
+                origin: rc3d_core::math::PVec3::X,
+                direction: rc3d_core::math::PVec3::Y - rc3d_core::math::PVec3::X,
             },
             tolerance: 1e-6,
             t_min: 0.0,
@@ -155,8 +156,8 @@ mod tests {
         let e2 = reg.edges.insert(BRepEdge {
             v_low: v2, v_high: v0,
             curve: crate::step::brep::geom::CurveGeom::Line {
-                origin: rc3d_core::math::Vec3::Y,
-                direction: -rc3d_core::math::Vec3::Y,
+                origin: rc3d_core::math::PVec3::Y,
+                direction: -rc3d_core::math::PVec3::Y,
             },
             tolerance: 1e-6,
             t_min: 0.0,
@@ -174,9 +175,9 @@ mod tests {
 
         let face = reg.faces.insert(BRepFace {
             surface: crate::step::brep::geom::SurfaceGeom::Plane {
-                origin: rc3d_core::math::Vec3::ZERO,
-                normal: rc3d_core::math::Vec3::Z,
-                u_dir: rc3d_core::math::Vec3::X,
+                origin: rc3d_core::math::PVec3::ZERO,
+                normal: rc3d_core::math::PVec3::Z,
+                u_dir: rc3d_core::math::PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],

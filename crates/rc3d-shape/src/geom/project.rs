@@ -6,7 +6,7 @@
 //!
 //! Falls back to grid-search + coordinate-descent when Newton fails to converge.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use super::curve_eval::CurveGeom;
 use super::surface_eval::{grid_project_2d, SurfaceGeom};
 
@@ -20,21 +20,21 @@ use super::surface_eval::{grid_project_2d, SurfaceGeom};
 /// candidates as (t, distance²).
 pub fn project_point_on_curve(
     curve: &CurveGeom,
-    target: Vec3,
-) -> Vec<(f32, f32)> {
+    target: PVec3,
+) -> Vec<(Real, Real)> {
     const SEEDS: usize = 4;
     const MAX_RESULTS: usize = 3;
 
     // Seed points: uniform + endpoints (6 total, down from 10)
-    let mut seeds: Vec<f32> = Vec::with_capacity(SEEDS + 2);
+    let mut seeds: Vec<Real> = Vec::with_capacity(SEEDS + 2);
     seeds.push(0.0);
     for i in 0..SEEDS {
-        seeds.push((i + 1) as f32 / (SEEDS + 1) as f32);
+        seeds.push((i + 1) as Real / (SEEDS + 1) as Real);
     }
     seeds.push(1.0);
 
     // Newton-Raphson from each seed
-    let mut converged: Vec<(f32, f32)> = Vec::new();
+    let mut converged: Vec<(Real, Real)> = Vec::new();
     for &seed in &seeds {
         if let Some((t, d2)) = newton_curve(curve, target, seed) {
             converged.push((t, d2));
@@ -45,7 +45,7 @@ pub fn project_point_on_curve(
     converged.sort_by(|a, b| {
         a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut unique: Vec<(f32, f32)> = Vec::new();
+    let mut unique: Vec<(Real, Real)> = Vec::new();
     for (t, d2) in converged {
         if !unique.iter().any(|(u, _)| (u - t).abs() < 1e-4) {
             unique.push((t, d2));
@@ -62,10 +62,10 @@ pub fn project_point_on_curve(
 }
 
 /// Single-start Newton-Raphson on f(t) = (C(t) - P)·C'(t) = 0.
-fn newton_curve(curve: &CurveGeom, target: Vec3, mut t: f32) -> Option<(f32, f32)> {
+fn newton_curve(curve: &CurveGeom, target: PVec3, mut t: Real) -> Option<(Real, Real)> {
     const MAX_ITER: usize = 20;
-    const TOL_F: f32 = 1e-10;
-    const TOL_DT: f32 = 1e-12;
+    const TOL_F: Real = 1e-10;
+    const TOL_DT: Real = 1e-12;
 
     for _ in 0..MAX_ITER {
         let (c, c1, c2) = curve.d012(t);
@@ -99,18 +99,18 @@ fn newton_curve(curve: &CurveGeom, target: Vec3, mut t: f32) -> Option<(f32, f32
 }
 
 /// Dense-grid fallback when Newton fails.
-fn grid_fallback_curve(curve: &CurveGeom, target: Vec3) -> Vec<(f32, f32)> {
+fn grid_fallback_curve(curve: &CurveGeom, target: PVec3) -> Vec<(Real, Real)> {
     const N: usize = 64;
-    let mut best = (0.0f32, f32::MAX);
+    let mut best = (0.0_f64, f64::MAX);
 
     for i in 0..=N {
-        let t = i as f32 / N as f32;
+        let t = i as Real / N as Real;
         let d2 = (curve.d0(t) - target).length_squared();
         if d2 < best.1 { best = (t, d2); }
     }
 
     let mut t = best.0;
-    let mut step = 1.0 / (N as f32 * 2.0);
+    let mut step = 1.0 / (N as Real * 2.0);
     for _ in 0..5 {
         for &dt in &[-step, step] {
             let nt = (t + dt).clamp(0.0, 1.0);
@@ -130,8 +130,8 @@ fn grid_fallback_curve(curve: &CurveGeom, target: Vec3) -> Vec<(f32, f32)> {
 /// from each, deduplicates, returns best candidates.
 pub fn project_point_on_surface(
     surface: &SurfaceGeom,
-    target: Vec3,
-) -> Vec<(f32, f32, f32)> {
+    target: PVec3,
+) -> Vec<(Real, Real, Real)> {
     const MAX_RESULTS: usize = 3;
     let range = surface.param_range();
     let u_lo = range.u_min;
@@ -147,12 +147,12 @@ pub fn project_point_on_surface(
     // from nearby seeds; fewer seeds reduces redundant convergence.
     let coarse = 2;
     let n_seeds = (coarse + 1) * (coarse + 1);
-    let mut candidates: Vec<(f32, f32, f32)> = Vec::with_capacity(n_seeds);
+    let mut candidates: Vec<(Real, Real, Real)> = Vec::with_capacity(n_seeds);
 
     for i in 0..=coarse {
-        let u = u_lo + (u_hi - u_lo) * i as f32 / coarse as f32;
+        let u = u_lo + (u_hi - u_lo) * i as Real / coarse as Real;
         for j in 0..=coarse {
-            let v = v_lo_s + (v_hi_s - v_lo_s) * j as f32 / coarse as f32;
+            let v = v_lo_s + (v_hi_s - v_lo_s) * j as Real / coarse as Real;
             if let Some(result) = newton_surface(surface, target, u, v) {
                 candidates.push(result);
             }
@@ -163,7 +163,7 @@ pub fn project_point_on_surface(
         a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut unique: Vec<(f32, f32, f32)> = Vec::new();
+    let mut unique: Vec<(Real, Real, Real)> = Vec::new();
     for (u, v, d2) in candidates {
         if !unique.iter().any(|(pu, pv, _)| {
             (pu - u).abs() < 1e-5 && (pv - v).abs() < 1e-5
@@ -195,10 +195,10 @@ pub fn project_point_on_surface(
 ///   g(u,v) = (S(u,v) - P) · ∂S/∂v = 0
 fn newton_surface(
     surface: &SurfaceGeom,
-    target: Vec3,
-    mut u: f32,
-    mut v: f32,
-) -> Option<(f32, f32, f32)> {
+    target: PVec3,
+    mut u: Real,
+    mut v: Real,
+) -> Option<(Real, Real, Real)> {
     let range = surface.param_range();
     let u_lo = range.u_min.max(-1e3);
     let u_hi = range.u_max.min(1e3);
@@ -206,8 +206,8 @@ fn newton_surface(
     let v_hi = range.v_max.min(1e3);
 
     const MAX_ITER: usize = 20;
-    const TOL_F: f32 = 1e-8;
-    const TOL_DX: f32 = 1e-8;
+    const TOL_F: Real = 1e-8;
+    const TOL_DX: Real = 1e-8;
 
     for _ in 0..MAX_ITER {
         let (s, su, sv, suu, suv, svv) = surface.d0_d1_d2_native(u, v);
@@ -260,7 +260,7 @@ fn newton_surface(
     ];
     let min_corner_d2 = corners.iter()
         .map(|c| (c - target).length_squared())
-        .fold(f32::MAX, |a, b| a.min(b));
+        .fold(f64::MAX, |a, b| a.min(b));
     if d2 > min_corner_d2 * 3.0 && min_corner_d2 > 1e-6 {
         return None;
     }
@@ -274,16 +274,16 @@ mod tests {
 
     #[test]
     fn test_project_circle() {
-        let (x_dir, y_dir) = build_ortho_axes(Vec3::Z);
+        let (x_dir, y_dir) = build_ortho_axes(PVec3::Z);
         let circle = CurveGeom::Circle {
-            center: Vec3::ZERO,
-            axis: Vec3::Z,
+            center: PVec3::ZERO,
+            axis: PVec3::Z,
             radius: 2.0,
             x_dir,
             y_dir,
         };
         // Point at (0, 2.1, 0) — closest point should be near (0, 2, 0) at θ=π/2
-        let results = project_point_on_curve(&circle, Vec3::new(0.0, 2.1, 0.0));
+        let results = project_point_on_curve(&circle, PVec3::new(0.0, 2.1, 0.0));
         assert!(!results.is_empty(), "should find at least one candidate");
         let (t, d2) = results[0];
         assert!((t - 0.25).abs() < 0.02, "quarter-turn expected, got t={:.4}", t);
@@ -293,29 +293,29 @@ mod tests {
     #[test]
     fn test_project_line_endpoint() {
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::new(10.0, 0.0, 0.0),
+            origin: PVec3::ZERO,
+            direction: PVec3::new(10.0, 0.0, 0.0),
         };
         // Point at x=11 — closest is x=10 (t=1)
-        let results = project_point_on_curve(&line, Vec3::new(11.0, 1.0, 0.0));
+        let results = project_point_on_curve(&line, PVec3::new(11.0, 1.0, 0.0));
         assert!(!results.is_empty());
         let (t, d2) = results[0];
         assert!((t - 1.0).abs() < 0.01, "endpoint expected, got t={:.4}", t);
-        assert!((d2.sqrt() - (1.0f32 + 1.0f32).sqrt()).abs() < 0.01);
+        assert!((d2.sqrt() - (1.0_f64 + 1.0_f64).sqrt()).abs() < 0.01);
     }
 
     #[test]
     fn test_project_circle_exact() {
-        let (x_dir, y_dir) = build_ortho_axes(Vec3::Z);
+        let (x_dir, y_dir) = build_ortho_axes(PVec3::Z);
         let circle = CurveGeom::Circle {
-            center: Vec3::ZERO,
-            axis: Vec3::Z,
+            center: PVec3::ZERO,
+            axis: PVec3::Z,
             radius: 5.0,
             x_dir,
             y_dir,
         };
         // Point ON the circle at θ=0 → (5, 0, 0)
-        let on_curve = Vec3::new(5.0, 0.0, 0.0);
+        let on_curve = PVec3::new(5.0, 0.0, 0.0);
         let results = project_point_on_curve(&circle, on_curve);
         assert!(!results.is_empty(), "should project onto exact point");
         let (t, d2) = results[0];
@@ -326,10 +326,10 @@ mod tests {
     #[test]
     fn test_project_line_midpoint() {
         let line = CurveGeom::Line {
-            origin: Vec3::new(1.0, 2.0, 3.0),
-            direction: Vec3::new(6.0, 0.0, 0.0),
+            origin: PVec3::new(1.0, 2.0, 3.0),
+            direction: PVec3::new(6.0, 0.0, 0.0),
         };
-        let results = project_point_on_curve(&line, Vec3::new(4.0, 2.0, 3.0));
+        let results = project_point_on_curve(&line, PVec3::new(4.0, 2.0, 3.0));
         assert!(!results.is_empty());
         let (t, _) = results[0];
         assert!((t - 0.5).abs() < 0.05, "midpoint expected");

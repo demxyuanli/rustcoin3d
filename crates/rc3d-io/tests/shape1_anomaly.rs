@@ -1,7 +1,7 @@
 //! Per-face anomaly scan for Shape-1.step — locates faces emitting out-of-bbox vertices.
 //! Run: cargo test -p rc3d-io --test shape1_anomaly --release -- --nocapture
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::geom::SurfaceGeom;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
@@ -30,9 +30,9 @@ fn surface_kind(surface: &SurfaceGeom) -> &'static str {
     }
 }
 
-fn mesh_bbox(verts: &[Vec3]) -> (Vec3, Vec3) {
-    let mut mn = Vec3::splat(f32::MAX);
-    let mut mx = Vec3::splat(f32::MIN);
+fn mesh_bbox(verts: &[PVec3]) -> (PVec3, PVec3) {
+    let mut mn = PVec3::splat(f64::MAX);
+    let mut mx = PVec3::splat(f64::MIN);
     for v in verts {
         mn = mn.min(*v);
         mx = mx.max(*v);
@@ -101,8 +101,8 @@ fn shape1_per_face_anomaly_scan() {
             }
         }
 
-        let mut brep_mn = Vec3::splat(f32::MAX);
-        let mut brep_mx = Vec3::splat(f32::MIN);
+        let mut brep_mn = PVec3::splat(f64::MAX);
+        let mut brep_mx = PVec3::splat(f64::MIN);
         let mut bad_brep_verts = 0usize;
         for (vk, v) in reg.vertices.iter() {
             brep_mn = brep_mn.min(v.position);
@@ -118,7 +118,7 @@ fn shape1_per_face_anomaly_scan() {
             }
         }
         let brep_diag = (brep_mx - brep_mn).length().max(1.0);
-        let limit = 500.0f32;
+        let limit = 500.0_f64;
 
         let (mn, mx) = mesh_bbox(&combined_verts);
         let mesh_diag = (mx - mn).length();
@@ -152,8 +152,8 @@ fn shape1_per_face_anomaly_scan() {
                 .unwrap_or(0);
             let gis = face_vertex_indices(&combined_indices, fs.first_tri, fs.tri_count);
             let mut bad = 0usize;
-            let mut worst = Vec3::ZERO;
-            let mut worst_abs = 0.0f32;
+            let mut worst = PVec3::ZERO;
+            let mut worst_abs = 0.0_f64;
             for gi in &gis {
                 if *gi >= combined_verts.len() {
                     bad += 1;

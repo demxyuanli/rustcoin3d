@@ -4,6 +4,7 @@
 //! super-triangle -> sorted incremental insertion -> constraint enforcement
 //! -> remove auxiliary triangles.
 
+use rc3d_core::math::Real;
 mod constraints;
 mod insertion;
 
@@ -122,7 +123,7 @@ impl Delaunay2d {
         idx
     }
 
-    pub fn insert_f32(&mut self, x: f32, y: f32, data: u32) -> VertIdx {
+    pub fn insert_f32(&mut self, x: Real, y: Real, data: u32) -> VertIdx {
         self.insert(x as f64, y as f64, data)
     }
 

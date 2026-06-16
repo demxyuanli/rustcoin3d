@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use slotmap::new_key_type;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::CurveGeom;
 use crate::geom::curve2d::Curve2d;
 
@@ -18,20 +18,20 @@ new_key_type! { pub struct CompoundKey; }
 pub enum Orientation { Forward, Reversed, Internal, External }
 
 #[derive(Debug, Clone)]
-pub struct BRepVertex { pub position: Vec3, pub tolerance: f32 }
+pub struct BRepVertex { pub position: PVec3, pub tolerance: Real }
 
 #[derive(Debug, Clone)]
 pub struct BRepEdge {
     pub curve: CurveGeom,
-    pub tolerance: f32,
+    pub tolerance: Real,
     /// Canonical low vertex (min SlotMap key) — mesh t=0
     pub v_low: VertexKey,
     /// Canonical high vertex (max SlotMap key) — mesh t=1
     pub v_high: VertexKey,
     /// Parameter interval on the 3D curve: always t_min < t_max.
     /// Reverse traversal expressed by Orientation at wire level.
-    pub t_min: f32,
-    pub t_max: f32,
+    pub t_min: Real,
+    pub t_max: Real,
     /// PCurves: 2D curves in UV space of each referencing face.
     /// OCC alignment: BRep_CurveOnSurface (Geom2d_Curve per face).
     ///
@@ -49,11 +49,11 @@ pub struct BRepFace {
     pub outer_wire: WireKey,
     pub inner_wires: Vec<WireKey>,
     pub same_sense: bool,
-    pub tolerance: f32,
+    pub tolerance: Real,
     /// Seam edges on closed parametric faces (OCCT ShapeFix_Face::FixMissingSeamMode).
     pub seam_edges: Vec<EdgeKey>,
     /// Surface color from STYLED_ITEM, if present in the STEP file.
-    pub color: Option<[f32; 3]>,
+    pub color: Option<[Real; 3]>,
     /// Degenerated edges at surface singularities (Phase 2+).
     pub degenerated_edges: Vec<EdgeKey>,
 }

@@ -1,6 +1,7 @@
 //! STEP import orchestration helpers (heal, continuity checks, mesh props).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use rc3d_core::math::PVec3;
 
 use crate::step::brep::heal::{
     auto_heal_shell, check_shell_continuity, log_shell_topo_diag, HealLevel, HealReport,
@@ -47,7 +48,7 @@ pub fn run_heal_pipeline(
 pub fn run_continuity_checks(
     reg: &BRepStore,
     root_solids: &[SolidKey],
-    g0_tol: f32,
+    g0_tol: Real,
     import_report: &mut StepImportReport,
 ) {
     for &sk in root_solids {
@@ -78,7 +79,7 @@ pub fn run_continuity_checks(
 /// Public helper for aggregating mesh properties from emit plan meshes.
 pub fn append_props_mesh_public(
     mesh: &MeshResult,
-    props_vertices: &mut Vec<Vec3>,
+    props_vertices: &mut Vec<PVec3>,
     props_indices: &mut Vec<i32>,
 ) {
     let base_offset = props_vertices.len() as i32;

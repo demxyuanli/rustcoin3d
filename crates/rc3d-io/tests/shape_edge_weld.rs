@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 //! Regression: duplicate EdgeKeys (same vertex pair) must weld boundary samples.
 //! Run: cargo test -p rc3d-io --test shape_edge_weld --release -- --nocapture
 //!
@@ -36,7 +37,7 @@ fn load_healed_store(step_file: &str) -> BRepStore {
     reg
 }
 
-fn assert_shape_weld_gap(step_file: &str, max_gap: f32) {
+fn assert_shape_weld_gap(step_file: &str, max_gap: Real) {
     let path = test_data(step_file);
     if !path.exists() {
         println!("SKIP {step_file}");
@@ -52,7 +53,7 @@ fn assert_shape_weld_gap(step_file: &str, max_gap: f32) {
     );
 }
 
-fn assert_shape_boundary_on_surface(step_file: &str, max_gap: f32) {
+fn assert_shape_boundary_on_surface(step_file: &str, max_gap: Real) {
     let path = test_data(step_file);
     if !path.exists() {
         println!("SKIP {step_file}");
@@ -60,7 +61,7 @@ fn assert_shape_boundary_on_surface(step_file: &str, max_gap: f32) {
     }
     let reg = load_healed_store(step_file);
     let cfg = EdgeDiscConfig::default();
-    let mut max_all = 0.0f32;
+    let mut max_all = 0.0_f64;
     for (_sk, solid) in reg.solids.iter() {
         let gap = measure_face_boundary_surface_gap(&reg, solid.outer_shell, &cfg);
         println!(
@@ -80,15 +81,15 @@ fn shape_boundary_on_surface() {
     assert_shape_boundary_on_surface("Shape.step", 1e-3);
 }
 
-fn assert_shape_topo_sewing(step_file: &str, max_wire_gap: f32, max_pcurve_drift: f32) {
+fn assert_shape_topo_sewing(step_file: &str, max_wire_gap: Real, max_pcurve_drift: Real) {
     let path = test_data(step_file);
     if !path.exists() {
         println!("SKIP {step_file}");
         return;
     }
     let reg = load_healed_store(step_file);
-    let mut max_w = 0.0f32;
-    let mut max_d = 0.0f32;
+    let mut max_w = 0.0_f64;
+    let mut max_d = 0.0_f64;
     for (_sk, solid) in reg.solids.iter() {
         let diag = check_shell_topo_diag(solid.outer_shell, &reg);
         println!(

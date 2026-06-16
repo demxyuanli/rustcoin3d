@@ -4,6 +4,7 @@
 //! This module implements a zero-dependency XML writer (EntityIndex → XML)
 //! and a lightweight regex-based XML reader (XML → EntityIndex).
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 use super::parser::EntityIndex;
 use super::value::StepValue;

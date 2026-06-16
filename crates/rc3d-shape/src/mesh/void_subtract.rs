@@ -3,7 +3,7 @@
 //! Legacy centroid ray-cast removal. Production paths use
 //! [`solid_mesh::mesh_solid_with_voids`] (OCC oriented multi-shell merge).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::mesh_result::MeshResult;
 
 /// Result of void subtraction.
@@ -32,7 +32,7 @@ pub fn subtract_void_meshes(
     }
 
     // Collect void triangles as (v0, v1, v2) for ray-cast tests
-    let void_tris: Vec<[Vec3; 3]> = void_meshes
+    let void_tris: Vec<[PVec3; 3]> = void_meshes
         .iter()
         .flat_map(|m| {
             m.indices.chunks(4).filter_map(|chunk| {
@@ -64,7 +64,7 @@ pub fn subtract_void_meshes(
             let e20 = (t[0] - t[2]).length();
             vec![e01, e12, e20]
         })
-        .fold(1e-6f32, f32::max)
+        .fold(1e-6_f64, Real::max)
         .max(1e-3) * 2.0;
 
     let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
@@ -109,7 +109,7 @@ pub fn subtract_void_meshes(
         let v0 = outer_mesh.vertices[i0];
         let v1 = outer_mesh.vertices[i1];
         let v2 = outer_mesh.vertices[i2];
-        let centroid = Vec3::new(
+        let centroid = PVec3::new(
             (v0.x + v1.x + v2.x) / 3.0,
             (v0.y + v1.y + v2.y) / 3.0,
             (v0.z + v1.z + v2.z) / 3.0,
@@ -148,10 +148,10 @@ pub fn subtract_void_meshes(
 /// DDA grid traversal. Odd count → inside, even count → outside.
 #[allow(dead_code)]
 fn point_inside_void_mesh(
-    point: &Vec3,
-    void_tris: &[[Vec3; 3]],
+    point: &PVec3,
+    void_tris: &[[PVec3; 3]],
     grid: &std::collections::HashMap<(i32, i32, i32), Vec<usize>>,
-    cell_size_inv: f32,
+    cell_size_inv: Real,
     max_x: i32,
 ) -> bool {
     let cx = (point.x * cell_size_inv).floor() as i32;
@@ -173,7 +173,7 @@ fn point_inside_void_mesh(
 
     // Möller–Trumbore ray-triangle intersection along +X
     let ray_origin = *point;
-    let ray_dir = Vec3::X;
+    let ray_dir = PVec3::X;
     let mut count = 0u32;
 
     for &ti in &seen {
@@ -188,7 +188,7 @@ fn point_inside_void_mesh(
 
 /// Möller–Trumbore ray-triangle intersection.
 #[allow(dead_code)]
-fn ray_triangle_intersect(origin: &Vec3, dir: &Vec3, tri: &[Vec3; 3]) -> bool {
+fn ray_triangle_intersect(origin: &PVec3, dir: &PVec3, tri: &[PVec3; 3]) -> bool {
     let e1 = tri[1] - tri[0];
     let e2 = tri[2] - tri[0];
     let pvec = dir.cross(e2);
@@ -223,9 +223,9 @@ mod tests {
     fn test_empty_voids_returns_unchanged() {
         let outer = MeshResult {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 0.0, 0.0),
+                PVec3::new(0.0, 1.0, 0.0),
             ],
             indices: vec![0, 1, 2, -1],
             normals: vec![],
@@ -240,10 +240,10 @@ mod tests {
         // Outer: large square (two tris) at z=0 from [-2,-2] to [2,2]
         let outer = MeshResult {
             vertices: vec![
-                Vec3::new(-2.0, -2.0, 0.0),
-                Vec3::new(2.0, -2.0, 0.0),
-                Vec3::new(2.0, 2.0, 0.0),
-                Vec3::new(-2.0, 2.0, 0.0),
+                PVec3::new(-2.0, -2.0, 0.0),
+                PVec3::new(2.0, -2.0, 0.0),
+                PVec3::new(2.0, 2.0, 0.0),
+                PVec3::new(-2.0, 2.0, 0.0),
             ],
             indices: vec![
                 0, 1, 2, -1,  // centroid (0.667, -0.667) — inside void
@@ -254,14 +254,14 @@ mod tests {
         // Void: box covering bottom-right quadrant only
         let void = MeshResult {
             vertices: vec![
-                Vec3::new(0.5, -2.5, 0.1),
-                Vec3::new(2.5, -2.5, 0.1),
-                Vec3::new(2.5, -0.5, 0.1),
-                Vec3::new(0.5, -0.5, 0.1),
-                Vec3::new(0.5, -2.5, -0.1),
-                Vec3::new(2.5, -2.5, -0.1),
-                Vec3::new(2.5, -0.5, -0.1),
-                Vec3::new(0.5, -0.5, -0.1),
+                PVec3::new(0.5, -2.5, 0.1),
+                PVec3::new(2.5, -2.5, 0.1),
+                PVec3::new(2.5, -0.5, 0.1),
+                PVec3::new(0.5, -0.5, 0.1),
+                PVec3::new(0.5, -2.5, -0.1),
+                PVec3::new(2.5, -2.5, -0.1),
+                PVec3::new(2.5, -0.5, -0.1),
+                PVec3::new(0.5, -0.5, -0.1),
             ],
             indices: vec![
                 0, 1, 2, -1,  0, 2, 3, -1,  // top
@@ -282,13 +282,13 @@ mod tests {
     #[test]
     fn test_ray_triangle_hit() {
         let tri = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 1.0),
         ];
         assert!(ray_triangle_intersect(
-            &Vec3::new(-1.0, 0.3, 0.3),
-            &Vec3::X,
+            &PVec3::new(-1.0, 0.3, 0.3),
+            &PVec3::X,
             &tri
         ));
     }
@@ -296,13 +296,13 @@ mod tests {
     #[test]
     fn test_ray_triangle_miss() {
         let tri = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 1.0),
         ];
         assert!(!ray_triangle_intersect(
-            &Vec3::new(-1.0, 2.0, 2.0),
-            &Vec3::X,
+            &PVec3::new(-1.0, 2.0, 2.0),
+            &PVec3::X,
             &tri
         ));
     }

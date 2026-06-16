@@ -1,4 +1,4 @@
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
 use super::edge_disc::EdgeDiscConfig;
 use super::face_fill::FaceFillConfig;
@@ -28,9 +28,9 @@ pub enum TessellationTier {
 #[derive(Debug, Clone)]
 pub enum DeflectionPolicy {
     /// Absolute chord height in world units.
-    Absolute(f32),
+    Absolute(Real),
     /// Relative to shell bounding-box diagonal (OCC `isRelative` mode).
-    Relative(f32),
+    Relative(Real),
 }
 
 impl Default for DeflectionPolicy {
@@ -70,11 +70,11 @@ impl Default for FallbackAllowlist {
 #[derive(Debug, Clone)]
 pub struct MeshQualityGate {
     /// Max fraction of degenerate (zero-area) triangles before action.
-    pub max_degenerate_rate: f32,
+    pub max_degenerate_rate: Real,
     /// Max triangle aspect ratio (longest/shortest edge).
-    pub max_aspect_ratio: f32,
+    pub max_aspect_ratio: Real,
     /// Chord error multiplier over deflection; exceeding triggers retry or skip.
-    pub chord_error_factor: f32,
+    pub chord_error_factor: Real,
 }
 
 impl Default for MeshQualityGate {
@@ -198,12 +198,12 @@ pub struct BRepMeshConfig {
     pub refine: RefineConfig,
     pub optimize: OptimizeConfig,
     /// When > 0, deflection = shell_bbox_diagonal * relative_deflection (OCC Relative).
-    pub relative_deflection: f32,
-    pub same_parameter_tol: f32,
+    pub relative_deflection: Real,
+    pub same_parameter_tol: Real,
     /// Fast tessellation: skip chord retry, grid quality trials, and per-face chord remeasure.
     pub fast_export: bool,
     /// Tolerance for vertex welding after void shell merge. Prevents visible seams.
-    pub weld_tolerance: f32,
+    pub weld_tolerance: Real,
     /// Which fallback strategies are allowed when primary algorithm fails.
     /// Default disables plane_center_fan and surface_fill_3d (他們不尊重边界约束).
     pub fallback: FallbackAllowlist,
@@ -256,7 +256,7 @@ impl BRepMeshConfig {
 /// Count triangles with non-zero area in a face index range (before global cull).
 pub fn count_valid_tris_in_range(
     indices: &[i32],
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     first_tri: usize,
     tri_count: usize,
 ) -> usize {

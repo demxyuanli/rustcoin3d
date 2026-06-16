@@ -1,4 +1,4 @@
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::mesh::face_fill::FaceMeshRange;
 use crate::mesh::report::ShellMeshReport;
 use super::types::ChunkOutput;
@@ -7,7 +7,7 @@ pub(crate) fn merge_chunk_outputs(
     chunk_outputs: Vec<ChunkOutput>,
     boundary_vertex_count: usize,
     collect_diag: bool,
-) -> (Vec<Vec3>, Vec<Vec3>, Vec<i32>, Vec<FaceMeshRange>, ShellMeshReport, Vec<String>) {
+) -> (Vec<PVec3>, Vec<PVec3>, Vec<i32>, Vec<FaceMeshRange>, ShellMeshReport, Vec<String>) {
     if chunk_outputs.is_empty() {
         return (
             Vec::new(),

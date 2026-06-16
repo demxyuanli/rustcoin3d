@@ -7,6 +7,7 @@
 //! 4. Face selection per boolean operation type
 //! 5. Stitch result into new B-rep shell
 
+use rc3d_core::math::Real;
 pub mod aabb;
 pub mod intersect;
 pub mod intersect_edge;
@@ -82,7 +83,7 @@ pub struct BRepBoolResult {
     /// Number of face-face intersection curves found.
     pub intersection_count: usize,
     /// Tolerance propagated from input face tolerances.
-    pub tolerance: f32,
+    pub tolerance: Real,
     /// History tracking: maps result shapes to source shapes.
     /// OCC alignment: BOPAlgo_Builder history.
     pub history: Option<BRepBoolHistory>,
@@ -206,7 +207,7 @@ pub fn boolean_brep(
 }
 
 /// Compute tolerance from face tolerances in the given shells.
-fn compute_face_tolerance<'a>(shells: impl Iterator<Item = &'a ShellKey>, reg: &BRepStore) -> f32 {
+fn compute_face_tolerance<'a>(shells: impl Iterator<Item = &'a ShellKey>, reg: &BRepStore) -> Real {
     shells
         .filter_map(|&sk| reg.shells.get(sk))
         .flat_map(|s| s.faces.iter())
@@ -222,7 +223,7 @@ fn handle_no_intersection(
     shells_b: &[ShellKey],
     reg: &mut BRepStore,
     op: BoolOp,
-    tolerance: f32,
+    tolerance: Real,
 ) -> BRepBoolResult {
     // Try coplanar face boolean (2D polygon clipping in UV space)
     if let Some(result) = coplanar::handle_coplanar_boolean(
@@ -322,10 +323,10 @@ mod tests {
     use crate::topo::*;
     use crate::geom::SurfaceGeom;
     use crate::geom::curve2d::Curve2d;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
-    fn make_plane_shell(reg: &mut BRepStore, origin: Vec3, normal: Vec3) -> ShellKey {
-        let surface = SurfaceGeom::Plane { origin, normal, u_dir: Vec3::X };
+    fn make_plane_shell(reg: &mut BRepStore, origin: PVec3, normal: PVec3) -> ShellKey {
+        let surface = SurfaceGeom::Plane { origin, normal, u_dir: PVec3::X };
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -356,8 +357,8 @@ mod tests {
     fn test_boolean_no_intersection_disjoint_union() {
         let mut reg = BRepStore::new();
         // Two disjoint plane shells
-        let sa = make_plane_shell(&mut reg, Vec3::new(0.0, 0.0, 0.0), Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::new(100.0, 0.0, 0.0), Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
         // Disjoint union should produce a combined shell
@@ -367,8 +368,8 @@ mod tests {
     #[test]
     fn test_boolean_no_intersection_disjoint_intersection() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::new(100.0, 0.0, 0.0), Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
         assert!(result.is_empty, "Disjoint intersection should be empty");
@@ -377,8 +378,8 @@ mod tests {
     #[test]
     fn test_boolean_no_intersection_disjoint_difference() {
         let mut reg = BRepStore::new();
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
-        let sb = make_plane_shell(&mut reg, Vec3::new(100.0, 0.0, 0.0), Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
+        let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
         assert!(!result.is_empty, "Disjoint difference should return A");
@@ -405,10 +406,10 @@ mod tests {
         let mut reg = BRepStore::new();
 
         // Shell A: face on Plane Z=0
-        let sa = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::Z);
+        let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
 
         // Shell B: face on Plane X=0, rotated 90 degrees
-        let sb = make_plane_shell(&mut reg, Vec3::ZERO, Vec3::X);
+        let sb = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::X);
 
         // Phase 1: intersection curves are found
         let raw = intersect::compute_intersections_brep(&[sa], &[sb], &reg);
@@ -450,21 +451,21 @@ mod tests {
     /// Build a square face with 4 boundary edges in the XY plane.
     fn make_square_face(
         reg: &mut BRepStore,
-        origin: Vec3,
-        size: f32,
+        origin: PVec3,
+        size: Real,
     ) -> (ShellKey, FaceKey) {
         use crate::geom::CurveGeom;
         let half = size * 0.5;
         let o = origin;
-        let v0 = reg.find_or_add_vertex(Vec3::new(o.x - half, o.y - half, o.z), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(o.x + half, o.y - half, o.z), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(o.x + half, o.y + half, o.z), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(o.x - half, o.y + half, o.z), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(o.x - half, o.y - half, o.z), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(o.x + half, o.y - half, o.z), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(o.x + half, o.y + half, o.z), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(o.x - half, o.y + half, o.z), 1e-4);
 
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::new(o.x, o.y, o.z),
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::new(o.x, o.y, o.z),
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -480,10 +481,10 @@ mod tests {
 
         // Build 4 edges
         let edges_data = [
-            (v0, v1, Vec3::new(o.x - half, o.y - half, o.z), Vec3::new(o.x + half, o.y - half, o.z)),
-            (v1, v2, Vec3::new(o.x + half, o.y - half, o.z), Vec3::new(o.x + half, o.y + half, o.z)),
-            (v2, v3, Vec3::new(o.x + half, o.y + half, o.z), Vec3::new(o.x - half, o.y + half, o.z)),
-            (v3, v0, Vec3::new(o.x - half, o.y + half, o.z), Vec3::new(o.x - half, o.y - half, o.z)),
+            (v0, v1, PVec3::new(o.x - half, o.y - half, o.z), PVec3::new(o.x + half, o.y - half, o.z)),
+            (v1, v2, PVec3::new(o.x + half, o.y - half, o.z), PVec3::new(o.x + half, o.y + half, o.z)),
+            (v2, v3, PVec3::new(o.x + half, o.y + half, o.z), PVec3::new(o.x - half, o.y + half, o.z)),
+            (v3, v0, PVec3::new(o.x - half, o.y + half, o.z), PVec3::new(o.x - half, o.y - half, o.z)),
         ];
         let mut wire_edges = Vec::new();
         for (va, vb, pa, pb) in edges_data {
@@ -507,8 +508,8 @@ mod tests {
         let mut reg = BRepStore::new();
 
         // Two overlapping squares in the XY plane
-        let (sa, _fa) = make_square_face(&mut reg, Vec3::new(0.0, 0.0, 0.0), 2.0);
-        let (sb, _fb) = make_square_face(&mut reg, Vec3::new(1.0, 0.0, 0.0), 2.0);
+        let (sa, _fa) = make_square_face(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0);
+        let (sb, _fb) = make_square_face(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0);
 
         // Verify the faces have proper edges
         let shell_a = reg.shells.get(sa).unwrap();
@@ -535,8 +536,8 @@ mod tests {
     #[test]
     fn test_coplanar_intersection_overlap() {
         let mut reg = BRepStore::new();
-        let (sa, _fa) = make_square_face(&mut reg, Vec3::new(0.0, 0.0, 0.0), 2.0);
-        let (sb, _fb) = make_square_face(&mut reg, Vec3::new(1.0, 0.0, 0.0), 2.0);
+        let (sa, _fa) = make_square_face(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0);
+        let (sb, _fb) = make_square_face(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0);
 
         let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
         // Coplanar overlapping squares should produce a non-empty intersection

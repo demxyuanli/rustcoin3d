@@ -1,7 +1,8 @@
+use rc3d_core::math::Real;
 //! Tier-2 freeform acceptance: Shape / Shape-1 / Shape-2 (T2 progress gate).
 //! Run: cargo test -p rc3d-io --test shape_corpus --release -- --test-threads=1
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::brep::mesh::{mesh_brep_shell_with_report, BRepMeshConfig};
@@ -28,9 +29,9 @@ struct CorpusRun {
     verts: usize,
     meshed: usize,
     total_faces: usize,
-    grid_fallback_rate: f32,
+    grid_fallback_rate: Real,
     deflection: DeflectionMetrics,
-    secs: f32,
+    secs: Real,
 }
 
 fn test_data(name: &str) -> PathBuf {
@@ -143,8 +144,8 @@ fn run_corpus_brep_adapter_inner(
                     );
                 }
                 eprintln!("--- mesh bbox ---");
-                let mut mn = Vec3::splat(f32::MAX);
-                let mut mx = Vec3::splat(f32::MIN);
+                let mut mn = PVec3::splat(f64::MAX);
+                let mut mx = PVec3::splat(f64::MIN);
                 for v in &mesh.vertices {
                     mn = mn.min(*v);
                     mx = mx.max(*v);
@@ -165,7 +166,7 @@ fn run_corpus_brep_adapter_inner(
         }
     }
     let rate = if total_faces > 0 {
-        grid_fallback as f32 / total_faces as f32
+        grid_fallback as Real / total_faces as Real
     } else {
         0.0
     };
@@ -194,9 +195,9 @@ fn try_hausdorff_vs_reference(step_file: &str, engine: &MeshResult) {
     let mut ref_mesh = MeshResult::default();
     for tri in tris {
         let base = ref_mesh.vertices.len() as i32;
-        ref_mesh.vertices.push(Vec3::from(tri.vertices[0]));
-        ref_mesh.vertices.push(Vec3::from(tri.vertices[1]));
-        ref_mesh.vertices.push(Vec3::from(tri.vertices[2]));
+        ref_mesh.vertices.push(PVec3::from(tri.vertices[0]));
+        ref_mesh.vertices.push(PVec3::from(tri.vertices[1]));
+        ref_mesh.vertices.push(PVec3::from(tri.vertices[2]));
         ref_mesh.indices.extend_from_slice(&[base, base + 1, base + 2, -1]);
     }
     let h = hausdorff_meshes(engine, &ref_mesh, 512);

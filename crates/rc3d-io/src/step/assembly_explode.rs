@@ -1,8 +1,9 @@
 //! Assembly preview explode offsets (transform-only, no vertex bake).
 
+use rc3d_core::math::Real;
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{PMat4, PVec3};
 use rc3d_shape::{ShapeDocument, ShapeId};
 
 use rc3d_shape::BRepStore;
@@ -11,11 +12,11 @@ use crate::step::import_options::StepImportMode;
 
 /// Resolve explode factor: explicit > 0, else Preview + overlapping solids -> 0.35.
 pub fn effective_assembly_explode(
-    requested: f32,
+    requested: Real,
     import_mode: StepImportMode,
     reg: &BRepStore,
     root_solids: &[SolidKey],
-) -> f32 {
+) -> Real {
     if requested > 0.0 {
         return requested;
     }
@@ -33,8 +34,8 @@ pub fn effective_assembly_explode(
 pub fn compute_assembly_explode_offsets(
     doc: &mut ShapeDocument,
     root_solids: &[SolidKey],
-    explode: f32,
-) -> HashMap<SolidKey, Vec3> {
+    explode: Real,
+) -> HashMap<SolidKey, PVec3> {
     if explode <= 0.0 || root_solids.len() < 2 {
         return HashMap::new();
     }
@@ -47,17 +48,17 @@ pub fn compute_assembly_explode_offsets(
         .count();
 
     let spread_dirs = [
-        Vec3::X,
-        Vec3::Y,
-        Vec3::Z,
-        Vec3::NEG_X,
-        Vec3::NEG_Y,
-        Vec3::NEG_Z,
+        PVec3::X,
+        PVec3::Y,
+        PVec3::Z,
+        PVec3::NEG_X,
+        PVec3::NEG_Y,
+        PVec3::NEG_Z,
     ];
 
-    let mut centers: Vec<(SolidKey, Vec3)> = Vec::new();
-    let mut union_min = Vec3::splat(f32::MAX);
-    let mut union_max = Vec3::splat(f32::MIN);
+    let mut centers: Vec<(SolidKey, PVec3)> = Vec::new();
+    let mut union_min = PVec3::splat(f64::MAX);
+    let mut union_max = PVec3::splat(f64::MIN);
 
     if assembly_geom_nodes > 1 {
         let shaped: Vec<(ShapeId, SolidKey)> = doc
@@ -112,7 +113,7 @@ pub fn compute_assembly_explode_offsets(
     }
 
     let assembly_diag = (union_max - union_min).length().max(1e-6);
-    let centroid = centers.iter().map(|(_, c)| *c).sum::<Vec3>() / centers.len() as f32;
+    let centroid = centers.iter().map(|(_, c)| *c).sum::<PVec3>() / centers.len() as Real;
     let mut offsets = HashMap::new();
     for (i, (sk, center)) in centers.iter().enumerate() {
         let mut dir = *center - centroid;
@@ -149,10 +150,10 @@ pub fn root_solids_overlap(reg: &BRepStore, root_solids: &[SolidKey]) -> bool {
     false
 }
 
-fn shell_bbox(reg: &BRepStore, shell_key: ShellKey) -> Option<(Vec3, Vec3)> {
+fn shell_bbox(reg: &BRepStore, shell_key: ShellKey) -> Option<(PVec3, PVec3)> {
     let shell = reg.shells.get(shell_key)?;
-    let mut min = Vec3::splat(f32::MAX);
-    let mut max = Vec3::splat(f32::MIN);
+    let mut min = PVec3::splat(f64::MAX);
+    let mut max = PVec3::splat(f64::MIN);
     let mut any = false;
     for &(face_key, _) in &shell.faces {
         let face = reg.faces.get(face_key)?;
@@ -178,7 +179,7 @@ fn shell_bbox(reg: &BRepStore, shell_key: ShellKey) -> Option<(Vec3, Vec3)> {
     }
 }
 
-fn aabb_overlap(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
+fn aabb_overlap(a_min: PVec3, a_max: PVec3, b_min: PVec3, b_max: PVec3) -> bool {
     a_min.x <= b_max.x
         && a_max.x >= b_min.x
         && a_min.y <= b_max.y
@@ -187,7 +188,7 @@ fn aabb_overlap(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
         && a_max.z >= b_min.z
 }
 
-fn transform_point_mat4(m: &Mat4, p: Vec3) -> Vec3 {
+fn transform_point_mat4(m: &PMat4, p: PVec3) -> PVec3 {
     let v = *m * p.extend(1.0);
-    Vec3::new(v.x, v.y, v.z)
+    PVec3::new(v.x, v.y, v.z)
 }

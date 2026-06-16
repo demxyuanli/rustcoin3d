@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, VertexKey};
 use crate::geom::CurveGeom;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// A parameter interval on an edge created by intersection with another face.
 ///
@@ -29,13 +29,13 @@ pub struct PaveBlock {
     /// The edge this pave block lies on.
     pub edge: EdgeKey,
     /// Parameter range [t_start, t_end] along the edge curve.
-    pub t_range: (f32, f32),
+    pub t_range: (Real, Real),
     /// The two vertices bounding this pave block (may be new split vertices).
     pub vertices: (VertexKey, VertexKey),
     /// Faces that share this pave block (2 for regular edge, >2 for non-manifold).
     pub face_refs: Vec<FaceKey>,
     /// 3D intersection points at start and end.
-    pub points_3d: (Vec3, Vec3),
+    pub points_3d: (PVec3, PVec3),
 }
 
 /// A set of pave blocks that share the same geometric edge section.
@@ -72,9 +72,9 @@ pub struct FaceFaceInterf {
 /// A single intersection point with UV coordinates on both faces.
 #[derive(Debug, Clone)]
 pub struct InterfPoint {
-    pub point_3d: Vec3,
-    pub uv_a: (f32, f32),
-    pub uv_b: (f32, f32),
+    pub point_3d: PVec3,
+    pub uv_a: (Real, Real),
+    pub uv_b: (Real, Real),
 }
 
 /// The full BOP data structure for a boolean operation.
@@ -92,11 +92,11 @@ pub struct BopDS {
     /// New vertices created during face splitting.
     pub split_vertices: Vec<VertexKey>,
     /// Tolerance for intersection computations.
-    pub tolerance: f32,
+    pub tolerance: Real,
 }
 
 impl BopDS {
-    pub fn new(tolerance: f32) -> Self {
+    pub fn new(tolerance: Real) -> Self {
         Self {
             face_face_interfs: Vec::new(),
             pave_blocks: HashMap::new(),
@@ -137,7 +137,7 @@ impl BopDS {
     /// the 3D point onto the edge's curve to find parameter t. Sorts points by t
     /// and creates PaveBlocks for each consecutive pair of intersection points.
     pub fn build_pave_blocks(&mut self, reg: &BRepStore) {
-        let mut edge_points: HashMap<EdgeKey, Vec<(f32, InterfPoint)>> = HashMap::new();
+        let mut edge_points: HashMap<EdgeKey, Vec<(Real, InterfPoint)>> = HashMap::new();
 
         for interf in &self.face_face_interfs {
             for pt in &interf.points {
@@ -164,7 +164,7 @@ impl BopDS {
         for (ek, mut pts) in edge_points {
             pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             // Deduplicate very close parameters.
-            let mut deduped: Vec<(f32, InterfPoint)> = Vec::new();
+            let mut deduped: Vec<(Real, InterfPoint)> = Vec::new();
             for (t, pt) in pts {
                 if deduped.last().map_or(true, |(lt, _)| (t - lt).abs() > self.tolerance) {
                     deduped.push((t, pt));
@@ -253,12 +253,12 @@ impl BopDS {
 // ── BopDS helpers ────────────────────────────────────────────────────
 
 /// Project a 3D point onto a curve to find parameter t (20-sample + binary refine).
-fn project_point_on_edge(curve: &CurveGeom, pt: Vec3, tolerance: f32) -> Option<f32> {
+fn project_point_on_edge(curve: &CurveGeom, pt: PVec3, tolerance: Real) -> Option<Real> {
     const N: usize = 20;
-    let mut best_t = 0.0f32;
-    let mut best_dist = f32::MAX;
+    let mut best_t = 0.0_f64;
+    let mut best_dist = f64::MAX;
     for i in 0..=N {
-        let t = i as f32 / N as f32;
+        let t = i as Real / N as Real;
         let d = (curve.d0(t) - pt).length();
         if d < best_dist { best_dist = d; best_t = t; }
     }

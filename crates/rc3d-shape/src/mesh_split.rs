@@ -1,5 +1,6 @@
 //! Extract sub-meshes by per-face triangle ranges (face-color draw batches).
 
+use rc3d_core::math::Real;
 use std::collections::{HashMap, HashSet};
 
 use crate::emit_plan::FaceMaterialGroup;
@@ -15,8 +16,8 @@ pub struct FaceTriRange {
 
 #[derive(Debug, Clone)]
 pub struct FaceDrawBatch {
-    pub color: [f32; 3],
-    pub opacity: f32,
+    pub color: [Real; 3],
+    pub opacity: Real,
     pub mesh: MeshResult,
 }
 
@@ -58,8 +59,8 @@ pub fn face_material_draw_batches(
     face_tri_ranges: &HashMap<FaceKey, FaceTriRange>,
     face_split_viable: bool,
     groups: &[FaceMaterialGroup],
-    default_color: [f32; 3],
-    default_opacity: f32,
+    default_color: [Real; 3],
+    default_opacity: Real,
 ) -> Vec<FaceDrawBatch> {
     if !face_split_viable || groups.is_empty() || face_tri_ranges.is_empty() {
         return vec![FaceDrawBatch {
@@ -125,17 +126,17 @@ pub fn face_material_draw_batches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn square_mesh() -> MeshResult {
         MeshResult {
             vertices: vec![
-                Vec3::ZERO,
-                Vec3::X,
-                Vec3::Y,
-                Vec3::new(1.0, 1.0, 0.0),
+                PVec3::ZERO,
+                PVec3::X,
+                PVec3::Y,
+                PVec3::new(1.0, 1.0, 0.0),
             ],
-            normals: vec![Vec3::Z; 4],
+            normals: vec![PVec3::Z; 4],
             indices: vec![0, 1, 2, -1, 1, 3, 2, -1],
         }
     }

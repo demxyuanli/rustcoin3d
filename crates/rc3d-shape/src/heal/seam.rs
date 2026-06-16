@@ -1,6 +1,6 @@
 //! Missing seam edges on closed parametric faces (OCCT ShapeFix_Face::FixMissingSeamMode).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::{Curve2d, CurveGeom, SurfaceGeom, SurfaceParamRange};
 use crate::store::BRepStore;
@@ -40,7 +40,7 @@ fn add_vertex_loop_seams(
     reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
-    tolerance: f32,
+    tolerance: Real,
 ) -> usize {
     let mut added = Vec::new();
     match surface {
@@ -132,7 +132,7 @@ fn fix_trimmed_periodic_seam(
     reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
-    tol: f32,
+    tol: Real,
 ) -> usize {
     let u_period = surface.native_u_period();
     if u_period.is_none() {
@@ -159,8 +159,8 @@ fn fix_trimmed_periodic_seam(
         None => return 0,
     };
 
-    let mut min_u = f32::MAX;
-    let mut max_u = f32::MIN;
+    let mut min_u = f64::MAX;
+    let mut max_u = f64::MIN;
     let mut has_uv = false;
 
     for &(ek, _) in &wire.edges {
@@ -173,7 +173,7 @@ fn fix_trimmed_periodic_seam(
             None => continue,
         };
         for i in 0..=32 {
-            let t = i as f32 / 32.0;
+            let t = i as Real / 32.0;
             let uv = pcurve.d0(t);
             min_u = min_u.min(uv.0);
             max_u = max_u.max(uv.0);
@@ -208,10 +208,10 @@ fn fix_trimmed_periodic_seam(
 
 fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfaceParamRange> {
     let face = reg.faces.get(face_key)?;
-    let mut u_min = f32::MAX;
-    let mut u_max = f32::MIN;
-    let mut v_min = f32::MAX;
-    let mut v_max = f32::MIN;
+    let mut u_min = f64::MAX;
+    let mut u_max = f64::MIN;
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
     let mut has_uv = false;
 
     let mut scan_wire = |wire_key| {
@@ -229,7 +229,7 @@ fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfacePa
                 None => continue,
             };
             for i in 0..=32 {
-                let t = i as f32 / 32.0;
+                let t = i as Real / 32.0;
                 let uv = pcurve.d0(t);
                 u_min = u_min.min(uv.0);
                 u_max = u_max.max(uv.0);
@@ -270,12 +270,12 @@ fn seam_sample_range(
     surface.param_range()
 }
 
-fn seam_u(surface: &SurfaceGeom, normalized: f32) -> f32 {
+fn seam_u(surface: &SurfaceGeom, normalized: Real) -> Real {
     let pr = surface.param_range();
     pr.u_min + normalized * (pr.u_max - pr.u_min)
 }
 
-fn seam_v(surface: &SurfaceGeom, normalized: f32) -> f32 {
+fn seam_v(surface: &SurfaceGeom, normalized: Real) -> Real {
     let pr = surface.param_range();
     pr.v_min + normalized * (pr.v_max - pr.v_min)
 }
@@ -285,8 +285,8 @@ fn build_u_isoparam_seam(
     reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
-    u: f32,
-    tol: f32,
+    u: Real,
+    tol: Real,
 ) -> Option<EdgeKey> {
     let segs = CLOSED_SURFACE_SEGS;
     let pr = seam_sample_range(reg, face_key, surface);
@@ -339,8 +339,8 @@ fn build_v_isoparam_seam(
     reg: &mut BRepStore,
     face_key: FaceKey,
     surface: &SurfaceGeom,
-    v: f32,
-    tol: f32,
+    v: Real,
+    tol: Real,
 ) -> Option<EdgeKey> {
     let segs = CLOSED_SURFACE_SEGS;
     let pr = seam_sample_range(reg, face_key, surface);
@@ -387,8 +387,8 @@ fn build_v_isoparam_seam(
 fn seam_polyline_within_face(
     reg: &BRepStore,
     face_key: FaceKey,
-    pts: &[Vec3],
-    tol: f32,
+    pts: &[PVec3],
+    tol: Real,
 ) -> bool {
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
@@ -402,8 +402,8 @@ fn seam_polyline_within_face(
         return true;
     }
 
-    let mut mn = Vec3::splat(f32::MAX);
-    let mut mx = Vec3::splat(f32::MIN);
+    let mut mn = PVec3::splat(f64::MAX);
+    let mut mx = PVec3::splat(f64::MIN);
     let mut has_pts = false;
     for &(ek, _) in &wire.edges {
         if face.seam_edges.contains(&ek) {
@@ -424,7 +424,7 @@ fn seam_polyline_within_face(
         }
         if let Some(pcurve) = edge.pcurves.get(&face_key) {
             for i in 0..=16 {
-                let t = i as f32 / 16.0;
+                let t = i as Real / 16.0;
                 let uv = pcurve.d0(t);
                 let p = face.surface.d0_native(uv.0, uv.1);
                 mn = mn.min(p);
@@ -438,23 +438,23 @@ fn seam_polyline_within_face(
     }
 
     let pad = (mx - mn).length().max(tol * 10.0) * 0.25;
-    mn -= Vec3::splat(pad);
-    mx += Vec3::splat(pad);
+    mn -= PVec3::splat(pad);
+    mx += PVec3::splat(pad);
 
     pts.iter().all(|p| p.x >= mn.x && p.x <= mx.x && p.y >= mn.y && p.y <= mx.y && p.z >= mn.z && p.z <= mx.z)
 }
 
 fn sample_isoparam(
     surface: &SurfaceGeom,
-    param: f32,
+    param: Real,
     hold_u: bool,
     segs: u32,
     pr: &crate::geom::SurfaceParamRange,
-) -> (Vec<Vec3>, Vec<(f32, f32)>) {
+) -> (Vec<PVec3>, Vec<(Real, Real)>) {
     let mut pts_3d = Vec::with_capacity(segs as usize + 1);
     let mut pts_uv = Vec::with_capacity(segs as usize + 1);
     for i in 0..=segs {
-        let t = i as f32 / segs as f32;
+        let t = i as Real / segs as Real;
         let (u, v) = if hold_u {
             (param, pr.v_min + t * (pr.v_max - pr.v_min))
         } else {
@@ -477,7 +477,7 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Sphere {
-                center: Vec3::ZERO,
+                center: PVec3::ZERO,
                 radius: 5.0,
             },
             outer_wire: wire,
@@ -505,7 +505,7 @@ mod tests {
         let mut reg = BRepStore::new();
         let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0),
+            surface: SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0),
             outer_wire: wire_key,
             inner_wires: vec![],
             same_sense: true,
@@ -515,9 +515,9 @@ mod tests {
             degenerated_edges: vec![],
         });
 
-        let z0 = 0.0f32;
-        let z1 = 10.0f32;
-        let u_mid = std::f32::consts::PI;
+        let z0 = 0.0_f64;
+        let z1 = 10.0_f64;
+        let u_mid = std::f64::consts::PI;
         let pts = [
             (u_mid, z0),
             (u_mid + 0.5, z0),
@@ -528,8 +528,8 @@ mod tests {
         for w in pts.windows(2) {
             let (ua, va) = w[0];
             let (ub, vb) = w[1];
-            let pa = Vec3::new(5.0 * ua.cos(), 5.0 * ua.sin(), va);
-            let pb = Vec3::new(5.0 * ub.cos(), 5.0 * ub.sin(), vb);
+            let pa = PVec3::new(5.0 * ua.cos(), 5.0 * ua.sin(), va);
+            let pb = PVec3::new(5.0 * ub.cos(), 5.0 * ub.sin(), vb);
             let v0 = reg.find_or_add_vertex(pa, 1e-4);
             let v1 = reg.find_or_add_vertex(pb, 1e-4);
             let curve_3d = CurveGeom::Line { origin: pa, direction: pb - pa };
@@ -557,7 +557,7 @@ mod tests {
         let mut reg = BRepStore::new();
         let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0),
+            surface: SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0),
             outer_wire: wire_key,
             inner_wires: vec![],
             same_sense: true,
@@ -567,20 +567,20 @@ mod tests {
             degenerated_edges: vec![],
         });
 
-        let z0 = 0.0f32;
-        let z1 = 10.0f32;
+        let z0 = 0.0_f64;
+        let z1 = 10.0_f64;
         let pts = [
             (0.0, z0),
-            (std::f32::consts::TAU * 0.25, z0),
-            (std::f32::consts::TAU * 0.5, z1),
+            (std::f64::consts::TAU * 0.25, z0),
+            (std::f64::consts::TAU * 0.5, z1),
             (0.0, z1),
         ];
         let mut wire_edges = Vec::new();
         for w in pts.windows(2) {
             let (ua, va) = w[0];
             let (ub, vb) = w[1];
-            let pa = Vec3::new(5.0 * ua.cos(), 5.0 * ua.sin(), va);
-            let pb = Vec3::new(5.0 * ub.cos(), 5.0 * ub.sin(), vb);
+            let pa = PVec3::new(5.0 * ua.cos(), 5.0 * ua.sin(), va);
+            let pb = PVec3::new(5.0 * ub.cos(), 5.0 * ub.sin(), vb);
             let v0 = reg.find_or_add_vertex(pa, 1e-4);
             let v1 = reg.find_or_add_vertex(pb, 1e-4);
             let curve_3d = CurveGeom::Line { origin: pa, direction: pb - pa };

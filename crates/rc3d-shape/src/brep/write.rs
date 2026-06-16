@@ -13,7 +13,7 @@
 //! - Sub-shape references count backwards from end: +N = shape at total-N+1
 
 use std::io::{self, Write};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::curve2d::Curve2d;
 use crate::geom::{CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
@@ -21,7 +21,7 @@ use crate::topo::*;
 
 /// Round a float for BREP output to avoid tiny FP artifacts that confuse OCC.
 /// Values below 1e-7 are snapped to zero.
-fn rnd(x: f32) -> f32 {
+fn rnd(x: Real) -> Real {
     if x.abs() < 1e-7 { 0.0 } else { (x * 1e7).round() / 1e7 }
 }
 
@@ -201,11 +201,11 @@ impl<'a> BrepWriter<'a> {
                 }
                 Curve2d::Circle { center, radius } => {
                     let r = radius.max(1e-6);
-                    let tau = std::f32::consts::TAU;
+                    let tau = std::f64::consts::TAU;
                     writeln!(output, "2 0 {} {} {} {} {} {}", tau * r, center.0, center.1, 1.0, 0.0, r)?;
                 }
                 Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                    writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f32::consts::TAU * semi_major.max(*semi_minor),
+                    writeln!(output, "3 0 {} {} {} {} {} {} {}", std::f64::consts::TAU * semi_major.max(*semi_minor),
                         center.0, center.1, *semi_major, *semi_minor, 1.0, 0.0)?;
                 }
                 Curve2d::BSpline { control_points, .. } => {
@@ -224,7 +224,7 @@ impl<'a> BrepWriter<'a> {
                         }
                         Curve2d::Circle { center, radius } => {
                             let r = radius.max(1e-6);
-                            writeln!(output, "2 0 {} {} {} {} {} {}", std::f32::consts::TAU * r, center.0, center.1, 1.0, 0.0, r)?;
+                            writeln!(output, "2 0 {} {} {} {} {} {}", std::f64::consts::TAU * r, center.0, center.1, 1.0, 0.0, r)?;
                         }
                         _ => writeln!(output, "1 0 1 1 0")?,
                     }
@@ -269,7 +269,7 @@ impl<'a> BrepWriter<'a> {
             match expanded {
                 CurveGeom::Line { origin, direction } => {
                     let len = direction.length();
-                    let dir = if len > 1e-12 { *direction / len } else { Vec3::X };
+                    let dir = if len > 1e-12 { *direction / len } else { PVec3::X };
                     writeln!(output, "1 {} {} {} {} {} {}",
                         rnd(origin.x), rnd(origin.y), rnd(origin.z),
                         rnd(dir.x), rnd(dir.y), rnd(dir.z))?;
@@ -409,9 +409,9 @@ impl<'a> BrepWriter<'a> {
                 SurfaceGeom::Sphere { center, radius } => {
                     // OCC Sphere format: 4 cx cy cz nx ny nz ux uy uz vx vy vz r
                     // nx,ny,nz = polar axis (Z), u_dir = (1,0,0), v_dir = (0,1,0)
-                    let u = Vec3::X;
-                    let v = Vec3::Y;
-                    let n = Vec3::Z;
+                    let u = PVec3::X;
+                    let v = PVec3::Y;
+                    let n = PVec3::Z;
                     writeln!(output, "4 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         rnd(center.x), rnd(center.y), rnd(center.z),
                         rnd(n.x), rnd(n.y), rnd(n.z),
@@ -456,7 +456,7 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "7 {} {} {} {} {} {}",
                         axis_origin.x, axis_origin.y, axis_origin.z,
                         axis_dir.x, axis_dir.y, axis_dir.z)?;
-                    let gen_pts: Vec<Vec3> = (0..=16).map(|i| generatrix.d0(i as f32 / 16.0)).collect();
+                    let gen_pts: Vec<PVec3> = (0..=16).map(|i| generatrix.d0(i as Real / 16.0)).collect();
                     let n = gen_pts.len();
                     write!(output, "7 0 0  1 {} {}", n, n + 2)?;
                     for p in &gen_pts { write!(output, "  {} {} {}", p.x, p.y, p.z)?; }
@@ -511,7 +511,7 @@ impl<'a> BrepWriter<'a> {
 
     fn write_ve(&self, output: &mut impl Write, vk: VertexKey) -> io::Result<()> {
         let v = self.store.vertices.get(vk).map(|v| (v.position, v.tolerance.max(1e-7)))
-            .unwrap_or((Vec3::ZERO, 1e-7));
+            .unwrap_or((PVec3::ZERO, 1e-7));
         writeln!(output, "Ve")?;
         writeln!(output, "{}", v.1)?;
         writeln!(output, "{} {} {}", rnd(v.0.x), rnd(v.0.y), rnd(v.0.z))?;
@@ -743,7 +743,7 @@ fn occ_curve_type(curve: &CurveGeom) -> usize {
 
 /// Compute the natural parameter range for a curve between t_min and t_max.
 /// OCC uses the curve's natural parameterization, not chord distance.
-fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
+fn curve_param_range(curve: &CurveGeom, t_min: Real, t_max: Real) -> Real {
     let span = (t_max - t_min).abs();
     if span < 1e-12 { return 1.0; }
     match curve {
@@ -752,19 +752,19 @@ fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
             if len > 1e-12 { len * span } else { 1.0 }
         }
         CurveGeom::Circle { radius, .. } => {
-            std::f32::consts::TAU * radius * span
+            std::f64::consts::TAU * radius * span
         }
         CurveGeom::Ellipse { semi_major, semi_minor, .. } => {
             // Approximate with Ramanujan's formula for perimeter
             let a = semi_major.max(*semi_minor);
             let b = semi_minor.min(*semi_major);
             let h = ((a - b) / (a + b)).powi(2);
-            let perimeter = std::f32::consts::PI * (a + b) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()));
+            let perimeter = std::f64::consts::PI * (a + b) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()));
             perimeter * span
         }
         CurveGeom::BSpline { control_points, knots, degree, .. } => {
             // Approximate: chord length of control polygon
-            let mut total = 0.0f32;
+            let mut total = 0.0_f64;
             for w in control_points.windows(2) {
                 total += w[0].distance(w[1]);
             }
@@ -774,7 +774,7 @@ fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
             total * span / domain
         }
         CurveGeom::Polyline { points } => {
-            let mut total = 0.0f32;
+            let mut total = 0.0_f64;
             for w in points.windows(2) {
                 total += w[0].distance(w[1]);
             }
@@ -788,7 +788,7 @@ fn curve_param_range(curve: &CurveGeom, t_min: f32, t_max: f32) -> f32 {
     }
 }
 
-fn nurbs_is_rational(weights: &[Vec<f32>]) -> bool {
+fn nurbs_is_rational(weights: &[Vec<Real>]) -> bool {
     weights.iter().any(|row| row.iter().any(|&w| (w - 1.0).abs() > 1e-6))
 }
 
@@ -796,7 +796,7 @@ fn nurbs_is_rational(weights: &[Vec<f32>]) -> bool {
 fn write_expanded_offset_surface(
     output: &mut impl Write,
     basis: &SurfaceGeom,
-    distance: f32,
+    distance: Real,
 ) -> io::Result<()> {
     match basis {
         SurfaceGeom::Plane { origin, normal, u_dir } => {
@@ -828,9 +828,9 @@ fn write_expanded_offset_surface(
                 y_dir.x, y_dir.y, y_dir.z)?;
         }
         SurfaceGeom::Sphere { center, radius } => {
-            let n = Vec3::Z;
-            let u = Vec3::X;
-            let v = Vec3::Y;
+            let n = PVec3::Z;
+            let u = PVec3::X;
+            let v = PVec3::Y;
             writeln!(output, "4 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 center.x, center.y, center.z,
                 n.x, n.y, n.z,
@@ -850,15 +850,15 @@ fn write_expanded_offset_surface(
 fn write_extrusion_as_bspline(
     output: &mut impl Write,
     generatrix: &CurveGeom,
-    direction: Vec3,
+    direction: PVec3,
 ) -> io::Result<()> {
     // Sample the generatrix at N points
     let n = 8usize;
-    let mut pts: Vec<Vec3> = (0..=n).map(|i| {
-        generatrix.d0(i as f32 / n as f32)
+    let mut pts: Vec<PVec3> = (0..=n).map(|i| {
+        generatrix.d0(i as Real / n as Real)
     }).collect();
     // Top row = generatrix + direction
-    let top: Vec<Vec3> = pts.iter().map(|p| *p + direction).collect();
+    let top: Vec<PVec3> = pts.iter().map(|p| *p + direction).collect();
     pts.extend(top);
 
     let u_count = 2usize; // 2 rows (bottom, top)
@@ -866,11 +866,11 @@ fn write_extrusion_as_bspline(
     let degree_u = 1usize;
     let degree_v = 1usize;
     let knots_u = vec![0.0, 0.0, 1.0, 1.0];
-    let knots_v: Vec<f32> = {
+    let knots_v: Vec<Real> = {
         let mut k = vec![0.0, 0.0];
-        for i in 1..v_count-1 { k.push(i as f32); }
-        k.push((v_count - 1) as f32);
-        k.push((v_count - 1) as f32);
+        for i in 1..v_count-1 { k.push(i as Real); }
+        k.push((v_count - 1) as Real);
+        k.push((v_count - 1) as Real);
         k
     };
 
@@ -891,20 +891,20 @@ fn write_extrusion_as_bspline(
 fn write_revolution_as_bspline(
     output: &mut impl Write,
     generatrix: &CurveGeom,
-    axis_origin: Vec3,
-    axis_dir: Vec3,
+    axis_origin: PVec3,
+    axis_dir: PVec3,
 ) -> io::Result<()> {
     let n_u = 16usize;
     let n_v = 8usize;
 
-    let gen_pts: Vec<Vec3> = (0..=n_v).map(|i| {
-        generatrix.d0(i as f32 / n_v as f32)
+    let gen_pts: Vec<PVec3> = (0..=n_v).map(|i| {
+        generatrix.d0(i as Real / n_v as Real)
     }).collect();
 
     let axis = axis_dir.normalize();
     let mut all_pts = Vec::new();
     for i in 0..=n_u {
-        let angle = (i as f32 / n_u as f32) * std::f32::consts::TAU;
+        let angle = (i as Real / n_u as Real) * std::f64::consts::TAU;
         for p in &gen_pts {
             // Rodrigues rotation: p' = origin + R * (p - origin)
             let rel = *p - axis_origin;
@@ -929,14 +929,14 @@ fn write_revolution_as_bspline(
     }
     // u-knots (periodic-like for full revolution)
     for i in 0..ku_count {
-        write!(output, " {}", i as f32)?;
+        write!(output, " {}", i as Real)?;
     }
     writeln!(output)?;
     // v-knots (clamped)
     for i in 0..kv_count {
         if i <= degree_v { write!(output, " 0")?; }
-        else if i >= kv_count - degree_v - 1 { write!(output, " {}", (v_count - degree_v) as f32)?; }
-        else { write!(output, " {}", (i - degree_v) as f32)?; }
+        else if i >= kv_count - degree_v - 1 { write!(output, " {}", (v_count - degree_v) as Real)?; }
+        else { write!(output, " {}", (i - degree_v) as Real)?; }
     }
     writeln!(output)?;
     Ok(())
@@ -951,7 +951,7 @@ fn is_planar_surface(surface: &SurfaceGeom) -> bool {
 }
 
 /// Project 3D point to UV coordinates on a surface. Returns None if projection fails.
-fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)> {
+fn project_point_to_uv(point: PVec3, surface: &SurfaceGeom) -> Option<(Real, Real)> {
     match surface {
         SurfaceGeom::Plane { origin, normal, u_dir } => {
             let rel = point - *origin;
@@ -1003,8 +1003,8 @@ fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)>
     }
 }
 /// Estimate the center of a shell by averaging all vertex positions of its faces.
-fn shell_center(faces: &[(FaceKey, Orientation)], store: &BRepStore) -> Vec3 {
-    let mut sum = Vec3::ZERO;
+fn shell_center(faces: &[(FaceKey, Orientation)], store: &BRepStore) -> PVec3 {
+    let mut sum = PVec3::ZERO;
     let mut count = 0usize;
     for &(fk, _) in faces {
         if let Some(face) = store.faces.get(fk) {
@@ -1024,12 +1024,12 @@ fn shell_center(faces: &[(FaceKey, Orientation)], store: &BRepStore) -> Vec3 {
             }
         }
     }
-    if count > 0 { sum / count as f32 } else { Vec3::ZERO }
+    if count > 0 { sum / count as Real } else { PVec3::ZERO }
 }
 
 /// Check whether the face normal (accounting for same_sense) points away
 /// from the given reference point (typically the solid center).
-fn face_normal_points_outward(fk: FaceKey, ref_point: Vec3, store: &BRepStore) -> bool {
+fn face_normal_points_outward(fk: FaceKey, ref_point: PVec3, store: &BRepStore) -> bool {
     if let Some(face) = store.faces.get(fk) {
         // Sample a point near the face center from the outer wire
         if let Some(wire) = store.wires.get(face.outer_wire) {
@@ -1065,7 +1065,7 @@ fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
 }
 
 /// Write a 2D polyline as a 2D BSpline degree 1.
-fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(f32, f32)]) -> io::Result<()> {
+fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(Real, Real)]) -> io::Result<()> {
     if points.len() < 2 {
         return writeln!(output, "1 0 1 1 0");
     }
@@ -1081,7 +1081,7 @@ fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(f32, f32)]) -
     Ok(())
 }
 
-fn write_polyline_as_bspline(output: &mut impl Write, points: &[Vec3]) -> io::Result<()> {
+fn write_polyline_as_bspline(output: &mut impl Write, points: &[PVec3]) -> io::Result<()> {
     if points.len() < 2 {
         return writeln!(output, "1 0 0 0  1 0 0");
     }

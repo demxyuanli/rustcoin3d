@@ -1,5 +1,6 @@
 //! UV boundary self-intersection repair (OCC ShapeFix_Wire::FixSelfIntersection).
 
+use rc3d_core::math::Real;
 use super::curve_trim::split_edge_at_params;
 use super::geom2d::segment_intersection_strict;
 use super::wire_ops::reorder_wire_edges;
@@ -10,8 +11,8 @@ use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct IntersectionPoint {
-    pub ta: f32,       // parameter along segment_a (0..1)
-    pub tb: f32,       // parameter along segment_b (0..1)
+    pub ta: Real,       // parameter along segment_a (0..1)
+    pub tb: Real,       // parameter along segment_b (0..1)
     pub uv: (f64, f64), // UV coordinates of intersection
     pub edge_a: usize,  // index of first intersecting edge
     pub edge_b: usize,  // index of second intersecting edge
@@ -45,7 +46,7 @@ pub fn fix_self_intersecting_wire(
 
     // Collect UV segments
     let n = edges.len();
-    let mut segments: Vec<(usize, (f32, f32), (f32, f32))> = Vec::with_capacity(n);
+    let mut segments: Vec<(usize, (Real, Real), (Real, Real))> = Vec::with_capacity(n);
     for (i, &(ek, orient)) in edges.iter().enumerate() {
         let edge = match reg.edges.get(ek) {
             Some(e) => e,
@@ -115,7 +116,7 @@ pub fn fix_self_intersecting_wire(
     }
 
     // Collect split parameters per edge
-    let mut edge_splits: Vec<Vec<f32>> = vec![Vec::new(); n];
+    let mut edge_splits: Vec<Vec<Real>> = vec![Vec::new(); n];
     for ip in &intersections {
         edge_splits[ip.edge_a].push(ip.ta);
         edge_splits[ip.edge_b].push(ip.tb);
@@ -173,11 +174,11 @@ pub fn fix_self_intersecting_wire(
 
 /// Compute intersection of two 2D segments. Returns (t_a, t_b) where intersection = a0 + t*(a1-a0).
 fn segment_intersection_2d(
-    a0: (f32, f32),
-    a1: (f32, f32),
-    b0: (f32, f32),
-    b1: (f32, f32),
-) -> Option<(f32, f32)> {
+    a0: (Real, Real),
+    a1: (Real, Real),
+    b0: (Real, Real),
+    b1: (Real, Real),
+) -> Option<(Real, Real)> {
     segment_intersection_strict(a0, a1, b0, b1)
 }
 
@@ -186,16 +187,16 @@ mod tests {
     use super::*;
     use crate::geom::{Curve2d, CurveGeom, SurfaceGeom};
     use crate::topo::BRepWire;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn make_self_intersecting_wire(reg: &mut BRepStore) -> (WireKey, FaceKey) {
         // Create wire first so the face can reference it
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
 
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -209,14 +210,14 @@ mod tests {
         });
 
         // Figure-8 shape: edges (0,0)→(2,2)→(0,2)→(2,0)→(0,0) with a crossing
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(2.0, 2.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(0.0, 2.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(2.0, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(2.0, 2.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(0.0, 2.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(2.0, 0.0, 0.0), 1e-4);
 
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // PCurves in UV space (2D), encoded as 3D lines with z=0
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (2.0, 2.0) };
@@ -258,9 +259,9 @@ mod tests {
 
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -273,13 +274,13 @@ mod tests {
             color: None,
         });
 
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
 
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let pc = Curve2d::Line {
             origin: (0.0, 0.0),
@@ -306,7 +307,7 @@ mod tests {
     fn test_fix_self_intersect_too_many() {
         let mut reg = BRepStore::new();
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface, outer_wire: wk, inner_wires: vec![],
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
@@ -315,14 +316,14 @@ mod tests {
         // Create edges that all cross through the origin (0,0) at interior t≈0.5.
         // Each edge goes from one point on the unit circle to the opposite point,
         // so every non-adjacent pair intersects at (0,0) — far more than the 50 cap.
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let mut edges = Vec::new();
         for i in 0..60 {
-            let angle = (i as f32 / 60.0) * std::f32::consts::TAU;
+            let angle = (i as Real / 60.0) * std::f64::consts::TAU;
             let cos_a = angle.cos();
             let sin_a = angle.sin();
-            let a = reg.find_or_add_vertex(Vec3::new(cos_a, sin_a, 0.0), 1e-4);
-            let b = reg.find_or_add_vertex(Vec3::new(-cos_a, -sin_a, 0.0), 1e-4);
+            let a = reg.find_or_add_vertex(PVec3::new(cos_a, sin_a, 0.0), 1e-4);
+            let b = reg.find_or_add_vertex(PVec3::new(-cos_a, -sin_a, 0.0), 1e-4);
             let pc = Curve2d::Line { origin: (cos_a, sin_a), direction: (-2.0 * cos_a, -2.0 * sin_a) };
             let ek = reg.add_edge_with_pcurve(a, b, line.clone(), 1e-4, fk, pc, true);
             edges.push((ek, Orientation::Forward));

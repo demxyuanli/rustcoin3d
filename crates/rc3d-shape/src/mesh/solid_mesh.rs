@@ -7,6 +7,7 @@
 //! 3. If face-level projection isn't possible (surface mismatch), fall back to
 //!    mesh-level void mesh append with reversed winding + vertex weld.
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use crate::geom::SurfaceGeom;
@@ -68,8 +69,8 @@ fn project_void_face_as_inner_wire(
     store: &BRepStore,
     outer_face_key: FaceKey,
     void_face_key: FaceKey,
-    tolerance: f32,
-) -> Option<Vec<(f32, f32)>> {
+    tolerance: Real,
+) -> Option<Vec<(Real, Real)>> {
     let outer_face = store.faces.get(outer_face_key)?;
     let void_face = store.faces.get(void_face_key)?;
 
@@ -89,7 +90,7 @@ fn project_void_face_as_inner_wire(
     }
 
     let void_wire = store.wires.get(void_face.outer_wire)?;
-    let mut projected_uvs: Vec<(f32, f32)> = Vec::new();
+    let mut projected_uvs: Vec<(Real, Real)> = Vec::new();
 
     for &(ek, _orient) in &void_wire.edges {
         let edge = store.edges.get(ek)?;
@@ -119,9 +120,9 @@ fn project_voids_as_inner_wires(
     store: &BRepStore,
     outer_face_keys: &[FaceKey],
     void_face_keys: &[FaceKey],
-    tolerance: f32,
-) -> (HashMap<FaceKey, Vec<Vec<(f32, f32)>>>, Vec<FaceKey>) {
-    let mut face_inner_wires: HashMap<FaceKey, Vec<Vec<(f32, f32)>>> = HashMap::new();
+    tolerance: Real,
+) -> (HashMap<FaceKey, Vec<Vec<(Real, Real)>>>, Vec<FaceKey>) {
+    let mut face_inner_wires: HashMap<FaceKey, Vec<Vec<(Real, Real)>>> = HashMap::new();
     let mut remaining_voids: Vec<FaceKey> = Vec::new();
 
     for &vfk in void_face_keys {
@@ -190,15 +191,15 @@ mod tests {
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::geom::curve2d::Curve2d;
     use crate::topo::{BRepFace, BRepShell, BRepWire, Orientation, WireKey};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
-    fn build_plane_face(reg: &mut BRepStore, origin: Vec3, normal: Vec3, size: f32) -> FaceKey {
-        let surface = SurfaceGeom::Plane { origin, normal, u_dir: Vec3::X };
-        let v0 = reg.find_or_add_vertex(Vec3::new(origin.x, origin.y, origin.z), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(origin.x + size, origin.y, origin.z), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(origin.x + size, origin.y + size, origin.z), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(origin.x, origin.y + size, origin.z), 1e-4);
-        let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
+    fn build_plane_face(reg: &mut BRepStore, origin: PVec3, normal: PVec3, size: Real) -> FaceKey {
+        let surface = SurfaceGeom::Plane { origin, normal, u_dir: PVec3::X };
+        let v0 = reg.find_or_add_vertex(PVec3::new(origin.x, origin.y, origin.z), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(origin.x + size, origin.y, origin.z), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(origin.x + size, origin.y + size, origin.z), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(origin.x, origin.y + size, origin.z), 1e-4);
+        let line = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -220,8 +221,8 @@ mod tests {
     #[test]
     fn test_project_void_as_inner_wire_plane() {
         let mut reg = BRepStore::new();
-        let _outer = build_plane_face(&mut reg, Vec3::ZERO, Vec3::Z, 2.0);
-        let void_fk = build_plane_face(&mut reg, Vec3::new(0.5, 0.5, 0.0), Vec3::Z, 0.5);
+        let _outer = build_plane_face(&mut reg, PVec3::ZERO, PVec3::Z, 2.0);
+        let void_fk = build_plane_face(&mut reg, PVec3::new(0.5, 0.5, 0.0), PVec3::Z, 0.5);
         let inner_uvs = project_void_face_as_inner_wire(&reg, _outer, void_fk, 1e-4);
         assert!(inner_uvs.is_some(), "co-planar void should project as inner wire");
         let uvs = inner_uvs.unwrap();
@@ -237,9 +238,9 @@ mod tests {
     #[test]
     fn test_project_void_non_planar_fails() {
         let mut reg = BRepStore::new();
-        let _outer = build_plane_face(&mut reg, Vec3::ZERO, Vec3::Z, 2.0);
+        let _outer = build_plane_face(&mut reg, PVec3::ZERO, PVec3::Z, 2.0);
         // Create a sphere face as void — can't project onto plane.
-        let sphere = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 0.5 };
+        let sphere = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 0.5 };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let void_fk = reg.faces.insert(BRepFace {
             surface: sphere, outer_wire: wk, inner_wires: vec![],
@@ -254,20 +255,20 @@ mod tests {
     fn merge_appends_void_tris_with_reversed_winding() {
         let outer_mesh = MeshResult {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 0.0, 0.0),
+                PVec3::new(0.0, 1.0, 0.0),
             ],
-            normals: vec![Vec3::Z; 3],
+            normals: vec![PVec3::Z; 3],
             indices: vec![0, 1, 2, -1],
         };
         let void_mesh = MeshResult {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 1.0),
-                Vec3::new(1.0, 0.0, 1.0),
-                Vec3::new(0.0, 1.0, 1.0),
+                PVec3::new(0.0, 0.0, 1.0),
+                PVec3::new(1.0, 0.0, 1.0),
+                PVec3::new(0.0, 1.0, 1.0),
             ],
-            normals: vec![Vec3::Z; 3],
+            normals: vec![PVec3::Z; 3],
             indices: vec![0, 1, 2, -1],
         };
 

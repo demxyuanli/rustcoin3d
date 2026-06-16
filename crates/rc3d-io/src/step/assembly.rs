@@ -1,7 +1,8 @@
 //! Assembly hierarchy reconstruction from STEP entities.
 
+use rc3d_core::math::Real;
 use std::collections::{HashMap, HashSet};
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{PMat4, PVec3};
 use super::entity_types::EntityType;
 use super::parser::EntityIndex;
 use super::value::StepValue;
@@ -11,8 +12,8 @@ use super::topology;
 /// RGBA color extracted from STYLED_ITEM.
 #[derive(Debug, Clone, Default)]
 pub struct StyleInfo {
-    pub diffuse: Vec3,   // RGB
-    pub opacity: f32,      // 0.0-1.0
+    pub diffuse: PVec3,   // RGB
+    pub opacity: Real,      // 0.0-1.0
 }
 
 /// Map from shell entity ID to its style (color/opacity).
@@ -164,40 +165,40 @@ fn extract_color_from_style(style_id: u64, entities: &EntityIndex, info: &mut St
 fn extract_color_from_colour(colour_id: u64, entities: &EntityIndex, info: &mut StyleInfo) {
     if let Some(record) = entities.get(&colour_id) {
         let r = record.params.nth_param(1)
-            .and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
+            .and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
         let g = record.params.nth_param(2)
-            .and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
+            .and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
         let b = record.params.nth_param(3)
-            .and_then(|v| v.as_real()).unwrap_or(0.8) as f32;
-        info.diffuse = Vec3::new(r, g, b);
+            .and_then(|v| v.as_real()).unwrap_or(0.8) as Real;
+        info.diffuse = PVec3::new(r, g, b);
     }
 }
 
 /// Transform matrix extracted from AXIS2_PLACEMENT_3D.
 #[derive(Debug, Clone)]
 pub struct AssemblyTransform {
-    pub matrix: Mat4,
+    pub matrix: PMat4,
 }
 
 impl Default for AssemblyTransform {
     fn default() -> Self {
-        Self { matrix: Mat4::IDENTITY }
+        Self { matrix: PMat4::IDENTITY }
     }
 }
 
 impl AssemblyTransform {
-    pub fn from_placement(origin: Vec3, x_axis: Vec3, z_axis: Vec3) -> Self {
+    pub fn from_placement(origin: PVec3, x_axis: PVec3, z_axis: PVec3) -> Self {
         let z = z_axis.normalize();
         // Gram-Schmidt: project x_axis onto z's perpendicular plane
         let x_raw = x_axis - z * x_axis.dot(z);
         let x = if x_raw.length() > 1e-10 {
             x_raw.normalize()
         } else {
-            Vec3::Y.cross(z).normalize()
+            PVec3::Y.cross(z).normalize()
         };
         let y = z.cross(x).normalize();
 
-        let mat = Mat4::from_cols(
+        let mat = PMat4::from_cols(
             x.extend(0.0),
             y.extend(0.0),
             z.extend(0.0),
@@ -206,9 +207,9 @@ impl AssemblyTransform {
         Self { matrix: mat }
     }
 
-    pub fn transform_point(&self, pt: Vec3) -> Vec3 {
+    pub fn transform_point(&self, pt: PVec3) -> PVec3 {
         let v = self.matrix * pt.extend(1.0);
-        Vec3::new(v.x, v.y, v.z)
+        PVec3::new(v.x, v.y, v.z)
     }
 
     pub fn compose(&self, other: &AssemblyTransform) -> AssemblyTransform {
@@ -491,7 +492,7 @@ impl AssemblyGraph {
                 if let Some(shape_reprs) = self.shapes.get(&pd_id) {
                     for &sid in shape_reprs {
                         for shell_id in find_shells_in_representation(sid, entities) {
-                            let key = (shell_id, frame.world.matrix.to_cols_array().map(f32::to_bits));
+                            let key = (shell_id, frame.world.matrix.to_cols_array().map(Real::to_bits));
                             if seen.insert(key) {
                                 out.push((shell_id, frame.world.clone()));
                             }
@@ -574,10 +575,10 @@ fn resolve_placement_transform(placement_id: u64, entities: &EntityIndex) -> Opt
             let refdir_id = geom::nth_ref(&record.params, 3);
             let origin = topology::resolve_point(origin_id, entities)?;
             let axis = topology::resolve_direction(axis_id, entities)
-                .unwrap_or(Vec3::Z);
+                .unwrap_or(PVec3::Z);
             let ref_dir = refdir_id
                 .and_then(|id| topology::resolve_direction(id, entities))
-                .unwrap_or(Vec3::X);
+                .unwrap_or(PVec3::X);
             Some(AssemblyTransform::from_placement(origin, ref_dir, axis))
         }
         _ => None,
@@ -686,7 +687,7 @@ fn build_assembly_tree_with_graph(
             nodes.push(AssemblyNode {
                 name,
                 description,
-                transform: Mat4::IDENTITY,
+                transform: PMat4::IDENTITY,
                 children: Vec::new(),
                 shells: Vec::new(),
                 product_id: eid,
@@ -750,9 +751,9 @@ fn build_assembly_tree_with_graph(
                 nodes[node_idx].shells.extend(shells);
             }
         }
-        if nodes[node_idx].transform == Mat4::IDENTITY {
+        if nodes[node_idx].transform == PMat4::IDENTITY {
             let world = graph.accumulate(pd_id).matrix;
-            if world != Mat4::IDENTITY {
+            if world != PMat4::IDENTITY {
                 nodes[node_idx].transform = world;
             }
         }
@@ -825,9 +826,9 @@ fn nth_list(val: Option<&StepValue>) -> Vec<StepValue> {
 mod tests {
     use super::*;
 
-    fn make_xform(tx: f32, ty: f32, tz: f32) -> AssemblyTransform {
+    fn make_xform(tx: Real, ty: Real, tz: Real) -> AssemblyTransform {
         AssemblyTransform {
-            matrix: Mat4::from_translation(Vec3::new(tx, ty, tz)),
+            matrix: PMat4::from_translation(PVec3::new(tx, ty, tz)),
         }
     }
 
@@ -836,7 +837,7 @@ mod tests {
         // No parent → identity
         let graph = AssemblyGraph::default();
         let result = graph.accumulate(1);
-        assert!((result.matrix - Mat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
+        assert!((result.matrix - PMat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
     }
 
     #[test]
@@ -896,7 +897,7 @@ mod tests {
         // Equivalent to old find_parent not-found test
         let graph = AssemblyGraph::default();
         let result = graph.accumulate(1);
-        assert!((result.matrix - Mat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
+        assert!((result.matrix - PMat4::IDENTITY).to_scale_rotation_translation().0.length() < 1e-6);
     }
 
     #[test]
@@ -944,11 +945,11 @@ mod tests {
 ENDSEC;\nEND-ISO-10303-21;\n";
         let ex = super::super::parser::parse_exchange(text).unwrap();
         let xform = resolve_placement_transform(1, &ex.entities).expect("AXIS2_PLACEMENT_3D");
-        let world = xform.transform_point(Vec3::ZERO);
+        let world = xform.transform_point(PVec3::ZERO);
         assert!((world.x - 1.0).abs() < 1e-5, "origin.x");
         assert!((world.y - 2.0).abs() < 1e-5, "origin.y");
         assert!((world.z - 3.0).abs() < 1e-5, "origin.z");
-        let unit_x = xform.transform_point(Vec3::X) - world;
+        let unit_x = xform.transform_point(PVec3::X) - world;
         assert!((unit_x.x - 1.0).abs() < 1e-5 && unit_x.y.abs() < 1e-5);
     }
 

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use super::boundary::{
     register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
 };
@@ -29,8 +29,8 @@ fn needs_adaptive_ruled(surface: &SurfaceGeom, _wire_edges: &[(EdgeKey, Vec<usiz
 }
 
 pub struct RuledMeshBuffers<'a> {
-    pub global_vertices: &'a mut Vec<Vec3>,
-    pub global_normals: &'a mut Vec<Vec3>,
+    pub global_vertices: &'a mut Vec<PVec3>,
+    pub global_normals: &'a mut Vec<PVec3>,
     pub all_indices: &'a mut Vec<i32>,
     pub pos_to_idx: &'a mut BoundaryPosIndex,
     pub shared_boundary: Option<&'a SharedBoundaryPool>,
@@ -254,17 +254,17 @@ fn ruled_two_wire_once(
     }
 }
 
-fn sample_ruled_polyline(curve: &[Vec3], t: f32) -> Vec3 {
+fn sample_ruled_polyline(curve: &[PVec3], t: Real) -> PVec3 {
     if curve.is_empty() {
-        return Vec3::ZERO;
+        return PVec3::ZERO;
     }
     if curve.len() == 1 {
         return curve[0];
     }
-    let f = t * (curve.len() - 1) as f32;
+    let f = t * (curve.len() - 1) as Real;
     let i = f.floor() as usize;
     let j = (i + 1).min(curve.len() - 1);
-    let u = f - i as f32;
+    let u = f - i as Real;
     curve[i].lerp(curve[j], u)
 }
 
@@ -274,14 +274,14 @@ fn ruled_strip_uv_segs(
     config: &FaceFillConfig,
 ) -> (u32, u32) {
     let defl = config.deflection_interior.max(1e-6);
-    let mut max_arc = 0.0f32;
-    let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    let mut max_arc = 0.0_f64;
+    let mut curves: [Vec<PVec3>; 2] = [Vec::new(), Vec::new()];
     for (side, &(ek, ref pis)) in wire_edges.iter().enumerate() {
         let Some(poly) = edge_polygons.get(&ek) else {
             continue;
         };
-        let mut chain_wire = 0.0f32;
-        let mut prev: Option<Vec3> = None;
+        let mut chain_wire = 0.0_f64;
+        let mut prev: Option<PVec3> = None;
         for &pi in pis {
             let Some(&(_, pt)) = poly.params_3d.get(pi) else {
                 continue;
@@ -298,7 +298,7 @@ fn ruled_strip_uv_segs(
                 curves[side].push(pt);
             }
         }
-        let mut chain_full = 0.0f32;
+        let mut chain_full = 0.0_f64;
         for w in poly.params_3d.windows(2) {
             chain_full += (w[1].1 - w[0].1).length();
         }
@@ -317,10 +317,10 @@ fn ruled_strip_uv_segs(
         max_arc = max_arc.max(chain_wire.max(chain_full));
     }
     let segs_u = ((max_arc / (defl * 0.85)).ceil() as u32).clamp(8, 96);
-    let mut max_width = 0.0f32;
+    let mut max_width = 0.0_f64;
     if curves[0].len() >= 2 && curves[1].len() >= 2 {
         for i in 0..=16 {
-            let t = i as f32 / 16.0;
+            let t = i as Real / 16.0;
             let p0 = sample_ruled_polyline(&curves[0], t);
             let p1 = sample_ruled_polyline(&curves[1], t);
             max_width = max_width.max((p1 - p0).length());
@@ -330,17 +330,17 @@ fn ruled_strip_uv_segs(
     (segs_u, segs_v)
 }
 
-pub fn sample_polyline(indices: &[usize], verts: &[Vec3], t: f32) -> Vec3 {
+pub fn sample_polyline(indices: &[usize], verts: &[PVec3], t: Real) -> PVec3 {
     if indices.is_empty() {
-        return Vec3::ZERO;
+        return PVec3::ZERO;
     }
     if indices.len() == 1 {
         return verts[indices[0]];
     }
-    let f = t * (indices.len() - 1) as f32;
+    let f = t * (indices.len() - 1) as Real;
     let i = f.floor() as usize;
     let j = (i + 1).min(indices.len() - 1);
-    let u = f - i as f32;
+    let u = f - i as Real;
     verts[indices[i]].lerp(verts[indices[j]], u)
 }
 
@@ -351,8 +351,8 @@ pub fn mesh_ruled_two_wire_edges(
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &FaceEdgeBoundaryIdx,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut BoundaryPosIndex,
     segs_u: u32,
@@ -449,7 +449,7 @@ pub fn mesh_ruled_two_wire_edges(
         };
         for i in 0..=nu {
             for j in 0..=nv {
-                let s = j as f32 / nv as f32;
+                let s = j as Real / nv as Real;
                 let (pt, n) = if let Some((ref r0, ref r1)) = resampled {
                     let (u0, v0) = r0[i];
                     let (u1, v1) = r1[i];
@@ -462,11 +462,11 @@ pub fn mesh_ruled_two_wire_edges(
                     }
                     (pt, n)
                 } else {
-                    let t = i as f32 / nu as f32;
+                    let t = i as Real / nu as Real;
                     let p0 = sample_polyline(&curves[0], global_vertices, t);
                     let p1 = sample_polyline(&curves[1], global_vertices, t);
                     let pt = p0 * (1.0 - s) + p1 * s;
-                    (pt, Vec3::Z)
+                    (pt, PVec3::Z)
                 };
                 let gi = if use_native_uv {
                     let idx = global_vertices.len();
@@ -529,8 +529,8 @@ pub fn mesh_ruled_wire_polygons_3d(
     face: &BRepFace,
     wire_edges: &[(EdgeKey, Orientation, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     segs_u: u32,
     segs_v: u32,
@@ -546,7 +546,7 @@ pub fn mesh_ruled_wire_polygons_3d(
             cdt_constraint_failures: 0,
         };
     }
-    let mut curves: [Vec<Vec3>; 2] = [Vec::new(), Vec::new()];
+    let mut curves: [Vec<PVec3>; 2] = [Vec::new(), Vec::new()];
     for (side, &(ek, _orient, ref pis)) in wire_edges.iter().enumerate() {
         let Some(poly) = edge_polygons.get(&ek) else {
             return FaceMeshRange {
@@ -581,26 +581,26 @@ pub fn mesh_ruled_wire_polygons_3d(
             cdt_constraint_failures: 0,
         };
     }
-    let sample_curve = |c: &[Vec3], t: f32| -> Vec3 {
+    let sample_curve = |c: &[PVec3], t: Real| -> PVec3 {
         if c.len() == 1 {
             return c[0];
         }
-        let f = t * (c.len() - 1) as f32;
+        let f = t * (c.len() - 1) as Real;
         let i = f.floor() as usize;
         let j = (i + 1).min(c.len() - 1);
-        let u = f - i as f32;
+        let u = f - i as Real;
         c[i].lerp(c[j], u)
     };
     // If the two curves are nearly coincident, the ruled strip has zero width -> all degenerate.
     let n_samples = curves[0].len().max(curves[1].len()).max(2);
     let max_separation = (0..n_samples)
         .map(|i| {
-            let t = i as f32 / (n_samples - 1) as f32;
+            let t = i as Real / (n_samples - 1) as Real;
             let a = sample_curve(&curves[0], t);
             let b = sample_curve(&curves[1], t);
             (a - b).length_squared()
         })
-        .fold(0.0f32, f32::max);
+        .fold(0.0_f64, Real::max);
     if max_separation < 1e-6 {
         return FaceMeshRange {
             face_key,
@@ -615,11 +615,11 @@ pub fn mesh_ruled_wire_polygons_3d(
     let nv = segs_v.max(2) as usize;
     let mut grid: Vec<Vec<usize>> = vec![vec![0; nv + 1]; nu + 1];
     for i in 0..=nu {
-        let t = i as f32 / nu as f32;
+        let t = i as Real / nu as Real;
         let p0 = sample_curve(&curves[0], t);
         let p1 = sample_curve(&curves[1], t);
         for j in 0..=nv {
-            let s = j as f32 / nv as f32;
+            let s = j as Real / nv as Real;
             let pm = p0 * (1.0 - s) + p1 * s;
             let (pt, mut n) = match &face.surface {
                 SurfaceGeom::Revolution { .. } => {
@@ -652,7 +652,7 @@ pub fn mesh_ruled_wire_polygons_3d(
                 }
             };
             if n.length_squared() < 1e-12 {
-                n = Vec3::Y;
+                n = PVec3::Y;
             } else {
                 n = n.normalize();
             }

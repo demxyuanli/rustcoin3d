@@ -4,6 +4,7 @@
 //! - `BowyerWatson` (default) — existing incremental CDT implementation
 //! - `DelaBella` — Newton Apple Wrapper algorithm (experimental, adaptive-exact predicates)
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use super::triangulation::Delaunay2d;
@@ -47,16 +48,16 @@ pub struct NativeCdt {
 
 impl NativeCdt {
     /// Create with the default backend (BowyerWatson).
-    pub fn from_uv_bbox(u_min: f32, v_min: f32, u_max: f32, v_max: f32) -> Self {
+    pub fn from_uv_bbox(u_min: Real, v_min: Real, u_max: Real, v_max: Real) -> Self {
         Self::from_uv_bbox_with_backend(u_min, v_min, u_max, v_max, DelaunayBackend::default())
     }
 
     /// Create with a specified backend.
     pub fn from_uv_bbox_with_backend(
-        u_min: f32,
-        v_min: f32,
-        u_max: f32,
-        v_max: f32,
+        u_min: Real,
+        v_min: Real,
+        u_max: Real,
+        v_max: Real,
         backend: DelaunayBackend,
     ) -> Self {
         let inner = match backend {
@@ -155,16 +156,16 @@ impl NativeCdt {
         self.constraints
     }
 
-    pub fn vertex_uv(&self, ha: CdtVertHandle) -> (f32, f32) {
+    pub fn vertex_uv(&self, ha: CdtVertHandle) -> (Real, Real) {
         let vi = self.handles[ha as usize];
         match &self.inner {
             CdtInner::BowyerWatson(delaunay) => {
                 let p = delaunay.vertex_point(vi);
-                (p.x as f32, p.y as f32)
+                (p.x as Real, p.y as Real)
             }
             CdtInner::DelaBella(della) => {
                 let (x, y) = della.vert_pos(vi);
-                (x as f32, y as f32)
+                (x as Real, y as Real)
             }
         }
     }
@@ -175,7 +176,7 @@ impl NativeCdt {
 
     pub fn extract_triangles(
         &self,
-        filter: impl Fn(f32, f32) -> bool,
+        filter: impl Fn(Real, Real) -> bool,
     ) -> Vec<usize> {
         let mut tris = Vec::new();
         for (gids, uvs) in self.inner_faces_detail() {
@@ -192,7 +193,7 @@ impl NativeCdt {
     }
 
     /// Global indices and UV coords per inner triangle.
-    pub fn inner_faces_detail(&self) -> Vec<([usize; 3], [(f32, f32); 3])> {
+    pub fn inner_faces_detail(&self) -> Vec<([usize; 3], [(Real, Real); 3])> {
         match &self.inner {
             CdtInner::BowyerWatson(delaunay) => {
                 let mut out = Vec::new();
@@ -228,7 +229,7 @@ impl NativeCdt {
                         {
                             let uv = |vi: u32| {
                                 let (x, y) = della.vert_pos(vi);
-                                (x as f32, y as f32)
+                                (x as Real, y as Real)
                             };
                             [uv(verts[0]), uv(verts[1]), uv(verts[2])]
                         },
@@ -476,13 +477,13 @@ mod tests {
 
 /// UV bbox (min_u, min_v, max_u, max_v) from trim loops.
 pub fn uv_bbox_from_loops(
-    outer: &[(f32, f32)],
-    inners: &[Vec<(f32, f32)>],
-) -> (f32, f32, f32, f32) {
-    let mut u_min = f32::MAX;
-    let mut u_max = f32::MIN;
-    let mut v_min = f32::MAX;
-    let mut v_max = f32::MIN;
+    outer: &[(Real, Real)],
+    inners: &[Vec<(Real, Real)>],
+) -> (Real, Real, Real, Real) {
+    let mut u_min = f64::MAX;
+    let mut u_max = f64::MIN;
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
     for &(u, v) in outer {
         u_min = u_min.min(u);
         u_max = u_max.max(u);
@@ -506,11 +507,11 @@ pub fn uv_bbox_from_loops(
 /// Insert UV with quantization / bump logic for coincident UV keys.
 pub fn insert_uv_native(
     cdt: &mut NativeCdt,
-    mut uv: (f32, f32),
+    mut uv: (Real, Real),
     gi: usize,
     uv_to_handle: &mut HashMap<(u64, u64), CdtVertHandle>,
-    uv_span: Option<(f32, f32)>,
-    quant_key: fn((f32, f32), Option<(f32, f32)>) -> (u64, u64),
+    uv_span: Option<(Real, Real)>,
+    quant_key: fn((Real, Real), Option<(Real, Real)>) -> (u64, u64),
 ) -> Option<CdtVertHandle> {
     for bump in 0..32usize {
         let key = quant_key(uv, uv_span);
@@ -518,13 +519,13 @@ pub fn insert_uv_native(
             if cdt.handle_global_index(hi) == gi {
                 return Some(hi);
             }
-            let bump_scale = 1e-5 * (bump as f32 + 1.0);
+            let bump_scale = 1e-5 * (bump as Real + 1.0);
             if let Some(span) = uv_span {
                 uv.0 += bump_scale * span.0;
-                uv.1 += bump_scale * span.1 * ((bump % 2) as f32 * 2.0 - 1.0);
+                uv.1 += bump_scale * span.1 * ((bump % 2) as Real * 2.0 - 1.0);
             } else {
                 uv.0 += bump_scale;
-                uv.1 += bump_scale * ((bump % 2) as f32 * 2.0 - 1.0);
+                uv.1 += bump_scale * ((bump % 2) as Real * 2.0 - 1.0);
             }
             continue;
         }

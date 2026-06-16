@@ -1,7 +1,8 @@
+use rc3d_core::math::Real;
 //! Verify per-face STL exports: bbox, degeneracy, vertex sanity
 //! Run: cargo test -p rc3d-io --test verify_faces --release -- --nocapture
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::parse_stl_triangles;
 use std::path::Path;
 use std::fs;
@@ -12,7 +13,7 @@ fn test_data(name: &str) -> std::path::PathBuf {
 }
 
 // Simple hash for vertex dedup
-fn vhash(v: &[f32; 3]) -> u64 {
+fn vhash(v: &[Real; 3]) -> u64 {
     (v[0].to_bits() as u64).wrapping_mul(31)
         .wrapping_add(v[1].to_bits() as u64).wrapping_mul(31)
         .wrapping_add(v[2].to_bits() as u64)
@@ -43,16 +44,16 @@ fn verify_face_stls() {
             Err(e) => { println!("  {} ERROR: {}", name, e); continue; }
         };
 
-        let mut mn = Vec3::splat(f32::MAX);
-        let mut mx = Vec3::splat(f32::MIN);
+        let mut mn = PVec3::splat(f64::MAX);
+        let mut mx = PVec3::splat(f64::MIN);
         let mut degens = 0usize;
         let mut vert_keys = HashSet::new();
-        let mut max_edge = 0.0f32;
+        let mut max_edge = 0.0_f64;
 
         for tri in &tris {
-            let a = Vec3::new(tri.vertices[0][0], tri.vertices[0][1], tri.vertices[0][2]);
-            let b = Vec3::new(tri.vertices[1][0], tri.vertices[1][1], tri.vertices[1][2]);
-            let c = Vec3::new(tri.vertices[2][0], tri.vertices[2][1], tri.vertices[2][2]);
+            let a = PVec3::new(tri.vertices[0][0], tri.vertices[0][1], tri.vertices[0][2]);
+            let b = PVec3::new(tri.vertices[1][0], tri.vertices[1][1], tri.vertices[1][2]);
+            let c = PVec3::new(tri.vertices[2][0], tri.vertices[2][1], tri.vertices[2][2]);
             mn = mn.min(a).min(b).min(c);
             mx = mx.max(a).max(b).max(c);
             vert_keys.insert(vhash(&tri.vertices[0]));
@@ -80,11 +81,11 @@ fn verify_face_stls() {
             Ok(t) => t,
             Err(e) => { println!("  {}: parse error {} (skip)", label, e); continue; }
         };
-        let mut mn = Vec3::splat(f32::MAX);
-        let mut mx = Vec3::splat(f32::MIN);
+        let mut mn = PVec3::splat(f64::MAX);
+        let mut mx = PVec3::splat(f64::MIN);
         for tri in &tris {
             for v in &tri.vertices {
-                let p = Vec3::new(v[0], v[1], v[2]);
+                let p = PVec3::new(v[0], v[1], v[2]);
                 mn = mn.min(p); mx = mx.max(p);
             }
         }

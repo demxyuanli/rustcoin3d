@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::boundary::{
     register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
@@ -28,28 +28,28 @@ impl CdtConstraintReport {
     }
 }
 
-fn uv_quant_key(uv: (f32, f32)) -> (u64, u64) {
+fn uv_quant_key(uv: (Real, Real)) -> (u64, u64) {
     ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
 }
 
-fn uv_quant_key_relative(uv: (f32, f32), uv_span: (f32, f32)) -> (u64, u64) {
+fn uv_quant_key_relative(uv: (Real, Real), uv_span: (Real, Real)) -> (u64, u64) {
     let su = uv_span.0.max(1e-6);
     let sv = uv_span.1.max(1e-6);
     ((uv.0 / su * 1e6).round() as u64, (uv.1 / sv * 1e6).round() as u64)
 }
 
-fn quant_key(uv: (f32, f32), span: Option<(f32, f32)>) -> (u64, u64) {
+fn quant_key(uv: (Real, Real), span: Option<(Real, Real)>) -> (u64, u64) {
     match span {
         Some(s) => uv_quant_key_relative(uv, s),
         None => uv_quant_key(uv),
     }
 }
 
-fn compute_uv_span(loops: &FaceUvLoops) -> (f32, f32) {
-    let mut u_min = f32::MAX;
-    let mut u_max = f32::MIN;
-    let mut v_min = f32::MAX;
-    let mut v_max = f32::MIN;
+fn compute_uv_span(loops: &FaceUvLoops) -> (Real, Real) {
+    let mut u_min = f64::MAX;
+    let mut u_max = f64::MIN;
+    let mut v_min = f64::MAX;
+    let mut v_max = f64::MIN;
     for v in &loops.outer.boundary {
         u_min = u_min.min(v.uv.0);
         u_max = u_max.max(v.uv.0);
@@ -74,19 +74,19 @@ pub fn triangulate_uv_cdt_with_steiner(
     loops: &FaceUvLoops,
     face: &BRepFace,
     face_key: Option<FaceKey>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     config: &FaceFillConfig,
     reg: Option<&BRepStore>,
     shared_boundary: Option<&SharedBoundaryPool>,
-) -> (Vec<usize>, f32, CdtConstraintReport) {
+) -> (Vec<usize>, Real, CdtConstraintReport) {
     if loops.outer.boundary.len() < 3 {
         return (Vec::new(), 0.0, CdtConstraintReport::default());
     }
 
-    let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
-    let inner_uv: Vec<Vec<(f32, f32)>> = loops
+    let outer_uv: Vec<(Real, Real)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    let inner_uv: Vec<Vec<(Real, Real)>> = loops
         .inners
         .iter()
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
@@ -125,7 +125,7 @@ pub fn triangulate_uv_cdt_with_steiner(
     let uv_span = compute_uv_span(loops);
     let span_opt = Some(uv_span);
 
-    let native_uv = |u: f32, v: f32| -> (f32, f32) {
+    let native_uv = |u: Real, v: Real| -> (Real, Real) {
         if let (Some(r), Some(fk)) = (reg, face_key) {
             r.face_native_uv(fk, u, v)
         } else {
@@ -263,13 +263,13 @@ pub fn triangulate_uv_cdt_with_steiner(
         }
     }
 
-    let mut max_chord = 0.0f32;
+    let mut max_chord = 0.0_f64;
     if config.enable_interior && config.deflection_interior > 0.0 {
         // Reuse UV bbox already computed above (outer_uv/inner_uv).
-        let mut u_min = outer_uv.iter().map(|&(u, _)| u).fold(f32::INFINITY, f32::min);
-        let mut u_max = outer_uv.iter().map(|&(u, _)| u).fold(f32::MIN, f32::max);
-        let mut v_min = outer_uv.iter().map(|&(_, v)| v).fold(f32::INFINITY, f32::min);
-        let mut v_max = outer_uv.iter().map(|&(_, v)| v).fold(f32::MIN, f32::max);
+        let mut u_min = outer_uv.iter().map(|&(u, _)| u).fold(f64::INFINITY, Real::min);
+        let mut u_max = outer_uv.iter().map(|&(u, _)| u).fold(f64::MIN, Real::max);
+        let mut v_min = outer_uv.iter().map(|&(_, v)| v).fold(f64::INFINITY, Real::min);
+        let mut v_max = outer_uv.iter().map(|&(_, v)| v).fold(f64::MIN, Real::max);
         for inner in &inner_uv {
             for &(u, v) in inner {
                 u_min = u_min.min(u); u_max = u_max.max(u);
@@ -371,7 +371,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 // - 1 failing edge → insert at its UV midpoint
                 // - 2+ failing edges → insert at triangle UV centroid
                 // - Sort by descending chord error → worst triangles refined first.
-                let mut splits: Vec<((f64, f64), f32)> = Vec::new(); // ((u,v), chord_error)
+                let mut splits: Vec<((f64, f64), Real)> = Vec::new(); // ((u,v), chord_error)
                 for (_gids, uvs) in cdt.inner_faces_detail() {
                     let uv0 = uvs[0];
                     let uv1 = uvs[1];
@@ -388,8 +388,8 @@ pub fn triangulate_uv_cdt_with_steiner(
                     }
 
                     // Collect which edges fail and their chord errors.
-                    let mut failed_edges: Vec<(usize, f32, (f32, f32))> = Vec::new(); // (edge_idx, chord_err, uv_mid)
-                    let edges: [(&Vec3, &Vec3, (f32, f32), (f32, f32)); 3] = [
+                    let mut failed_edges: Vec<(usize, Real, (Real, Real))> = Vec::new(); // (edge_idx, chord_err, uv_mid)
+                    let edges: [(&PVec3, &PVec3, (Real, Real), (Real, Real)); 3] = [
                         (&p0, &p1, uv0, uv1),
                         (&p1, &p2, uv1, uv2),
                         (&p2, &p0, uv2, uv0),
@@ -434,7 +434,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                         (cu, cv)
                     };
                     if point_in_trim(split_uv.0, split_uv.1, &outer_uv, &inner_uv) {
-                        let max_dev = failed_edges.iter().map(|&(_, d, _)| d).fold(0.0f32, f32::max);
+                        let max_dev = failed_edges.iter().map(|&(_, d, _)| d).fold(0.0_f64, Real::max);
                         splits.push(((split_uv.0 as f64, split_uv.1 as f64), max_dev));
                     }
                 }
@@ -450,7 +450,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                         continue;
                     }
                     dedup.insert(key);
-                    let (nu, nv) = native_uv(u as f32, v as f32);
+                    let (nu, nv) = native_uv(u as Real, v as Real);
                     let pt_3d = face.surface.d0_native(nu, nv);
                     let gi = register_boundary_point_with_normal_indexed_shared(
                         pt_3d,
@@ -468,7 +468,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                     );
                     insert_uv_native(
                         &mut cdt,
-                        (u as f32, v as f32),
+                        (u as Real, v as Real),
                         gi,
                         &mut uv_to_handle,
                         span_opt,
@@ -513,9 +513,9 @@ pub fn triangulate_uv_cdt(loops: &FaceUvLoops) -> Option<Vec<usize>> {
     }
     let face = BRepFace {
         surface: SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         },
         outer_wire: Default::default(),
         inner_wires: vec![],
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn steiner_split_on_curved_surface() {
         let surface = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 10.0,
         };
         let face = BRepFace {
@@ -597,7 +597,7 @@ mod tests {
             face.surface.d0_native(1.5708, 2.5708),
             face.surface.d0_native(0.0, 2.5708),
         ];
-        let mut norms = vec![Vec3::Z; 4];
+        let mut norms = vec![PVec3::Z; 4];
         let mut pos_map =
             BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
@@ -611,7 +611,7 @@ mod tests {
             min_size_relative: 0.0,
             shell_min_size: 0.0,
             max_adapt_iterations: 4,
-            angular_deflection: std::f32::consts::PI,
+            angular_deflection: std::f64::consts::PI,
             parameter_division_max_depth: 0, // disable grid; test Steiner splitting only
             skip_interior_edge_split: false, // enable Steiner edge splits
             ..Default::default()
@@ -695,7 +695,7 @@ mod tests {
         let tris = triangulate_uv_cdt(&loops).expect("CDT should succeed");
         assert!(tris.len() >= 3);
 
-        let gi_to_uv: HashMap<usize, (f32, f32)> = loops
+        let gi_to_uv: HashMap<usize, (Real, Real)> = loops
             .outer
             .boundary
             .iter()
@@ -703,8 +703,8 @@ mod tests {
             .map(|v| (v.global_idx, v.uv))
             .collect();
 
-        let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
-        let inner_uv: Vec<Vec<(f32, f32)>> = loops
+        let outer_uv: Vec<(Real, Real)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+        let inner_uv: Vec<Vec<(Real, Real)>> = loops
             .inners
             .iter()
             .map(|l| l.boundary.iter().map(|v| v.uv).collect())
@@ -750,9 +750,9 @@ mod tests {
         };
         let face = BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: Default::default(),
             inner_wires: vec![],
@@ -763,12 +763,12 @@ mod tests {
             degenerated_edges: vec![],
         };
         let mut verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(2.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(2.0, 0.0, 0.0),
+            PVec3::new(2.0, 1.0, 0.0),
         ];
-        let mut norms = vec![Vec3::Z; 4];
+        let mut norms = vec![PVec3::Z; 4];
         let mut pos_map =
             BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn test_steiner_edge_midpoint() {
         let surface = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 10.0,
         };
         let face = BRepFace {
@@ -836,7 +836,7 @@ mod tests {
             surface.d0_native(1.5708, 2.5708),
             surface.d0_native(0.0, 2.5708),
         ];
-        let mut norms = vec![Vec3::Z; 4];
+        let mut norms = vec![PVec3::Z; 4];
         let mut pos_map =
             BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
@@ -863,11 +863,11 @@ mod tests {
         use crate::store::BRepStore;
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 1.0,
         };
-        let pole = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
-        let equator_key = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let pole = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 1.0), 1e-4);
+        let equator_key = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let equator_pos = reg.vertices[equator_key].position;
         let fk = reg.faces.insert(BRepFace {
             surface: surface.clone(),
@@ -884,8 +884,8 @@ mod tests {
             direction: (0.0, -0.5),
         };
         let degen_curve = CurveGeom::Line {
-            origin: Vec3::new(1.0, 0.0, 0.0),
-            direction: Vec3::new(-1.0, 0.0, 1.0),
+            origin: PVec3::new(1.0, 0.0, 0.0),
+            direction: PVec3::new(-1.0, 0.0, 1.0),
         };
         let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, degen_pc, true);
         if let Some(face) = reg.faces.get_mut(fk) {
@@ -924,7 +924,7 @@ mod tests {
             surface.d0_native(0.0, 1.6),
             equator_pos,
         ];
-        let mut norms = vec![Vec3::Z; verts.len()];
+        let mut norms = vec![PVec3::Z; verts.len()];
         let mut pos_map =
             BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {
@@ -951,8 +951,8 @@ mod tests {
     fn test_cdt_degenerated_cone() {
         use crate::store::BRepStore;
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cone(Vec3::ZERO, Vec3::Z, 0.463648f32, 0.0);
-        let apex = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
+        let surface = SurfaceGeom::cone(PVec3::ZERO, PVec3::Z, 0.463648_f64, 0.0);
+        let apex = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
         let fk = reg.faces.insert(BRepFace {
             surface: surface.clone(),
             outer_wire: Default::default(),
@@ -968,8 +968,8 @@ mod tests {
             direction: (0.0, 0.5),
         };
         let degen_curve = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::Z,
+            origin: PVec3::ZERO,
+            direction: PVec3::Z,
         };
         let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, degen_pc, true);
         if let Some(face) = reg.faces.get_mut(fk) {
@@ -1007,7 +1007,7 @@ mod tests {
             surface.d0_native(1.0, 0.4),
             surface.d0_native(0.0, 0.4),
         ];
-        let mut norms = vec![Vec3::Z; verts.len()];
+        let mut norms = vec![PVec3::Z; verts.len()];
         let mut pos_map =
             BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
         for (i, v) in verts.iter().enumerate() {

@@ -4,6 +4,7 @@
 //! Full implementation deferred to Phase 4+ (requires robust edge chain
 //! detection, variable radius support, and spring/back surface fitting).
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use rc3d_shape::BRepStore;
@@ -36,7 +37,7 @@ pub struct FilletParams {
     /// Edge to fillet.
     pub edge: EdgeKey,
     /// Fillet radius (constant).
-    pub radius: f32,
+    pub radius: Real,
     /// `true` for convex (external) edges, `false` for concave (re-entrant) edges.
     pub convex: bool,
 }
@@ -47,9 +48,9 @@ pub struct ChamferParams {
     /// Edge to chamfer.
     pub edge: EdgeKey,
     /// Chamfer distance from the edge on face A side.
-    pub distance_a: f32,
+    pub distance_a: Real,
     /// Chamfer distance from the edge on face B side.
-    pub distance_b: f32,
+    pub distance_b: Real,
 }
 
 /// Apply a constant-radius fillet to a single edge.
@@ -68,7 +69,7 @@ pub struct ChamferParams {
 /// 6. Return the new and modified face keys
 pub fn constant_radius_fillet(
     edge: EdgeKey,
-    radius: f32,
+    radius: Real,
     convex: bool,
     reg: &mut BRepStore,
 ) -> Result<FilletResult, String> {
@@ -244,7 +245,7 @@ pub fn constant_radius_fillet(
 /// 5. Update topology
 pub fn chamfer_edge(
     edge: EdgeKey,
-    distance: f32,
+    distance: Real,
     reg: &mut BRepStore,
 ) -> Result<FilletResult, String> {
     if distance <= 0.0 {
@@ -290,15 +291,15 @@ mod tests {
     use rc3d_shape::BRepStore;
     use rc3d_shape::topo::*;
     use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     /// Helper: create two planar faces sharing an edge, with `edge_to_faces` populated.
     fn setup_two_planar_faces(
         reg: &mut BRepStore,
-        n1: Vec3,
-        n2: Vec3,
-        edge_start: Vec3,
-        edge_end: Vec3,
+        n1: PVec3,
+        n2: PVec3,
+        edge_start: PVec3,
+        edge_end: PVec3,
     ) -> (FaceKey, FaceKey, EdgeKey) {
         let v0 = reg.find_or_add_vertex(edge_start, 1e-6);
         let v1 = reg.find_or_add_vertex(edge_end, 1e-6);
@@ -308,7 +309,7 @@ mod tests {
             direction: edge_end - edge_start,
         };
 
-        let face_keys: Vec<FaceKey> = [(n1, Vec3::Y), (n2, Vec3::X)]
+        let face_keys: Vec<FaceKey> = [(n1, PVec3::Y), (n2, PVec3::X)]
             .iter()
             .map(|(normal, u_dir)| {
                 reg.add_face(
@@ -348,10 +349,10 @@ mod tests {
         // Edge: from (0,0,-10) to (0,0,10)
         let (fk_a, fk_b, ek) = setup_two_planar_faces(
             &mut reg,
-            Vec3::X,
-            Vec3::Y,
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 10.0),
+            PVec3::X,
+            PVec3::Y,
+            PVec3::new(0.0, 0.0, -10.0),
+            PVec3::new(0.0, 0.0, 10.0),
         );
 
         let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
@@ -386,12 +387,12 @@ mod tests {
     fn test_fillet_rejects_single_face_edge() {
         // Edge not shared by any faces should fail with "must be shared" error
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-6);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-6);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-6);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-6);
         let ek = reg.edges.insert(BRepEdge {
             curve: CurveGeom::Line {
-                origin: Vec3::ZERO,
-                direction: Vec3::X,
+                origin: PVec3::ZERO,
+                direction: PVec3::X,
             },
             tolerance: 1e-6,
             v_low: v0,
@@ -418,10 +419,10 @@ mod tests {
 
         let (fk_a, fk_b, ek) = setup_two_planar_faces(
             &mut reg,
-            Vec3::X,
-            Vec3::Y,
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 10.0),
+            PVec3::X,
+            PVec3::Y,
+            PVec3::new(0.0, 0.0, -10.0),
+            PVec3::new(0.0, 0.0, 10.0),
         );
 
         let result = constant_radius_fillet(ek, 2.0, true, &mut reg);
@@ -444,7 +445,7 @@ mod tests {
                 // Axis should be parallel to Z (the edge direction)
                 let axis_norm = axis.normalize();
                 assert!(
-                    (axis_norm.dot(Vec3::Z).abs() - 1.0).abs() < 1e-5,
+                    (axis_norm.dot(PVec3::Z).abs() - 1.0).abs() < 1e-5,
                     "Cylinder axis should be parallel to Z, got {:?}",
                     axis_norm
                 );
@@ -486,10 +487,10 @@ mod tests {
 
         let (_, _, ek) = setup_two_planar_faces(
             &mut reg,
-            Vec3::X,
-            Vec3::X, // Same normal — coplanar
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 10.0),
+            PVec3::X,
+            PVec3::X, // Same normal — coplanar
+            PVec3::new(0.0, 0.0, -10.0),
+            PVec3::new(0.0, 0.0, 10.0),
         );
 
         let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
@@ -504,15 +505,15 @@ mod tests {
 
         let (fk_a, _, ek) = setup_two_planar_faces(
             &mut reg,
-            Vec3::X,
-            Vec3::Y,
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 10.0),
+            PVec3::X,
+            PVec3::Y,
+            PVec3::new(0.0, 0.0, -10.0),
+            PVec3::new(0.0, 0.0, 10.0),
         );
 
         // Replace face A with a cylinder surface
         if let Some(face) = reg.faces.get_mut(fk_a) {
-            face.surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0);
+            face.surface = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0);
         }
 
         let result = constant_radius_fillet(ek, 1.0, true, &mut reg);
@@ -535,10 +536,10 @@ mod tests {
         // Set up a valid edge + faces for the first param
         let (_, _, ek) = setup_two_planar_faces(
             &mut reg,
-            Vec3::X,
-            Vec3::Y,
-            Vec3::new(0.0, 0.0, -10.0),
-            Vec3::new(0.0, 0.0, 10.0),
+            PVec3::X,
+            PVec3::Y,
+            PVec3::new(0.0, 0.0, -10.0),
+            PVec3::new(0.0, 0.0, 10.0),
         );
 
         let params = vec![

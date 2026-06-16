@@ -1,4 +1,4 @@
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
@@ -7,7 +7,7 @@ use super::face_uv::{FaceUvLoops, uv_loop_is_degenerate};
 /// True when UV bounds cover most of the native period (untrimmed analytic sheet).
 pub fn uv_bounds_span_untrimmed_period(
     surface: &SurfaceGeom,
-    bounds: (f32, f32, f32, f32),
+    bounds: (Real, Real, Real, Real),
 ) -> bool {
     let pr = surface.param_range();
     let du = (bounds.1 - bounds.0) / (pr.u_max - pr.u_min).max(1e-6);
@@ -19,8 +19,8 @@ pub fn uv_bounds_span_untrimmed_period(
 pub fn revolution_fallback_uv_bounds(
     loops: &FaceUvLoops,
     face: &crate::topo::BRepFace,
-    global_vertices: &[Vec3],
-) -> Option<(f32, f32, f32, f32)> {
+    global_vertices: &[PVec3],
+) -> Option<(Real, Real, Real, Real)> {
     let (u0, u1, v0, v1) = loops.native_uv_bounds()?;
     if (u1 - u0).abs() < 1e-6 {
         return None;
@@ -36,7 +36,7 @@ pub fn allows_trimmed_uv_grid(
     reg: &BRepStore,
     face: &crate::topo::BRepFace,
     loops: &FaceUvLoops,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> bool {
     if loops.native_uv_bounds().is_none()
         && loops.uv_bounds_from_projection(face, global_vertices).is_none()

@@ -1,6 +1,6 @@
 //! Shell-level mesh diagnostics (OCC BRepMesh reporting subset).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::face_uv::UvSource;
 use super::t4_quality::DeflectionMetrics;
@@ -14,7 +14,7 @@ pub struct FaceMeshStats {
     pub tri_count: usize,
     pub first_tri: usize,
     pub uv_source: UvSource,
-    pub max_chord_error: f32,
+    pub max_chord_error: Real,
     pub grid_fallback: bool,
     pub cdt_constraint_failures: usize,
 }
@@ -26,18 +26,18 @@ pub struct ShellMeshReport {
     pub grid_fallback_count: usize,
     pub cdt_constraint_failure_count: usize,
     pub total_tris: usize,
-    pub shell_diag: f32,
+    pub shell_diag: Real,
     /// Max 3D gap between boundary samples on duplicate EdgeKeys (same vertex pair).
-    pub max_equiv_edge_weld_gap: f32,
+    pub max_equiv_edge_weld_gap: Real,
     pub faces: Vec<FaceMeshStats>,
 }
 
 impl ShellMeshReport {
-    pub fn grid_fallback_rate(&self) -> f32 {
+    pub fn grid_fallback_rate(&self) -> Real {
         if self.face_count == 0 {
             0.0
         } else {
-            self.grid_fallback_count as f32 / self.face_count as f32
+            self.grid_fallback_count as Real / self.face_count as Real
         }
     }
 
@@ -58,17 +58,17 @@ impl ShellMeshReport {
 }
 
 /// Bounding-box diagonal of all vertices referenced by a shell's faces/edges.
-pub fn shell_bbox_diagonal(shell_key: ShellKey, reg: &BRepStore) -> f32 {
+pub fn shell_bbox_diagonal(shell_key: ShellKey, reg: &BRepStore) -> Real {
     shell_vertex_bbox(shell_key, reg)
         .map(|(min, max)| (max - min).length())
         .unwrap_or(0.0)
 }
 
 /// Axis-aligned bbox (min, max) of BRep vertices on a shell.
-pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepStore) -> Option<(Vec3, Vec3)> {
+pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepStore) -> Option<(PVec3, PVec3)> {
     let shell = reg.shells.get(shell_key)?;
-    let mut min = Vec3::splat(f32::MAX);
-    let mut max = Vec3::splat(f32::MIN);
+    let mut min = PVec3::splat(f64::MAX);
+    let mut max = PVec3::splat(f64::MIN);
     let mut any = false;
 
     for &(face_key, _) in &shell.faces {
@@ -97,7 +97,7 @@ pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepStore) -> Option<(Vec3, 
 }
 
 /// Scale mesh deflection by shell bbox diagonal (OCC IMeshTools_Parameters::Relative).
-pub fn apply_relative_deflection(config: &mut BRepMeshConfig, shell_diag: f32) {
+pub fn apply_relative_deflection(config: &mut BRepMeshConfig, shell_diag: Real) {
     if config.relative_deflection <= 0.0 || shell_diag <= 0.0 {
         return;
     }
@@ -109,7 +109,7 @@ pub fn apply_relative_deflection(config: &mut BRepMeshConfig, shell_diag: f32) {
 
 /// T4 deflection from per-face `max_chord_error` (matches `adapt_tris_to_deflection` guarantee).
 pub fn deflection_from_report(report: &ShellMeshReport) -> DeflectionMetrics {
-    let chords: Vec<f32> = report
+    let chords: Vec<Real> = report
         .faces
         .iter()
         .filter(|f| f.tri_count > 0 && !f.grid_fallback)
@@ -124,7 +124,7 @@ pub fn deflection_from_report(report: &ShellMeshReport) -> DeflectionMetrics {
     DeflectionMetrics {
         sample_count: n,
         max: *sorted.last().unwrap_or(&0.0),
-        p95: sorted[((n as f32 * 0.95) as usize).min(n.saturating_sub(1))],
+        p95: sorted[((n as Real * 0.95) as usize).min(n.saturating_sub(1))],
     }
 }
 
@@ -140,9 +140,9 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -153,10 +153,10 @@ mod tests {
             degenerated_edges: vec![],
         });
         let edges_data = [
-            (Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)),
-            (Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
-            (Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
-            (Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO),
+            (PVec3::ZERO, PVec3::new(1.0, 0.0, 0.0)),
+            (PVec3::new(1.0, 0.0, 0.0), PVec3::new(1.0, 1.0, 0.0)),
+            (PVec3::new(1.0, 1.0, 0.0), PVec3::new(0.0, 1.0, 0.0)),
+            (PVec3::new(0.0, 1.0, 0.0), PVec3::ZERO),
         ];
         let mut wire_edges = Vec::new();
         for (a, b) in edges_data {

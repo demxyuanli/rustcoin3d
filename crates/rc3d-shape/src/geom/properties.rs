@@ -1,22 +1,22 @@
 //! OCC BRepGProp — geometric properties: area, volume, center of mass.
 //! Uses surface integration for faces and divergence theorem for solids.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::topo::FaceKey;
 use crate::store::BRepStore;
 
 /// Face area via numerical integration of |dS/du × dS/dv| over the UV domain.
-pub fn face_area(reg: &BRepStore, fk: FaceKey, grid_res: usize) -> f32 {
+pub fn face_area(reg: &BRepStore, fk: FaceKey, grid_res: usize) -> Real {
     let face = match reg.faces.get(fk) { Some(f) => f, None => return 0.0 };
     let pr = reg.face_param_range(fk, &face.surface);
     let n = grid_res.max(2);
-    let du = pr.u_span() / n as f32;
-    let dv = pr.v_span() / n as f32;
-    let mut area = 0.0f32;
+    let du = pr.u_span() / n as Real;
+    let dv = pr.v_span() / n as Real;
+    let mut area = 0.0_f64;
     for iu in 0..n {
-        let u = pr.u_min + (iu as f32 + 0.5) * du;
+        let u = pr.u_min + (iu as Real + 0.5) * du;
         for iv in 0..n {
-            let v = pr.v_min + (iv as f32 + 0.5) * dv;
+            let v = pr.v_min + (iv as Real + 0.5) * dv;
             let (su, sv) = face.surface.d1_native(u, v);
             let n = su.cross(sv);
             area += n.length();
@@ -27,10 +27,10 @@ pub fn face_area(reg: &BRepStore, fk: FaceKey, grid_res: usize) -> f32 {
 
 /// Solid volume via divergence theorem: ∫∫∫ div(F) dV = ∫∫ F·n dS.
 /// Using F(x,y,z) = (x, 0, 0), div(F) = 1 → volume = ∫∫ x·nx dS.
-pub fn solid_volume(reg: &BRepStore, solid_key: crate::topo::SolidKey, grid_res: usize) -> f32 {
+pub fn solid_volume(reg: &BRepStore, solid_key: crate::topo::SolidKey, grid_res: usize) -> Real {
     let solid = match reg.solids.get(solid_key) { Some(s) => s, None => return 0.0 };
     let all_shells = std::iter::once(solid.outer_shell).chain(solid.void_shells.iter().copied());
-    let mut volume = 0.0f32;
+    let mut volume = 0.0_f64;
     for sk in all_shells {
         let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
         for &(fk, orient) in &shell.faces {
@@ -41,17 +41,17 @@ pub fn solid_volume(reg: &BRepStore, solid_key: crate::topo::SolidKey, grid_res:
 }
 
 /// Flux contribution of one face to volume integral: ∫ x·nx dS
-fn oriented_face_flux(reg: &BRepStore, fk: FaceKey, _orient: crate::topo::Orientation, grid_res: usize) -> f32 {
+fn oriented_face_flux(reg: &BRepStore, fk: FaceKey, _orient: crate::topo::Orientation, grid_res: usize) -> Real {
     let face = match reg.faces.get(fk) { Some(f) => f, None => return 0.0 };
     let pr = reg.face_param_range(fk, &face.surface);
     let n = grid_res.max(4);
-    let du = pr.u_span() / n as f32;
-    let dv = pr.v_span() / n as f32;
-    let mut flux = 0.0f32;
+    let du = pr.u_span() / n as Real;
+    let dv = pr.v_span() / n as Real;
+    let mut flux = 0.0_f64;
     for iu in 0..n {
-        let u = pr.u_min + (iu as f32 + 0.5) * du;
+        let u = pr.u_min + (iu as Real + 0.5) * du;
         for iv in 0..n {
-            let v = pr.v_min + (iv as f32 + 0.5) * dv;
+            let v = pr.v_min + (iv as Real + 0.5) * dv;
             let p = face.surface.d0_native(u, v);
             let (su, sv) = face.surface.d1_native(u, v);
             let normal = su.cross(sv);
@@ -74,12 +74,12 @@ mod tests {
         let mut faces = Vec::new();
         // 10×10×10 cube faces. Plane param range is [0,1]² → set trim_ranges for 10×10 domain.
         let specs = [
-            (Vec3::ZERO, Vec3::new(1.0,0.0,0.0), Vec3::new(0.0,0.0,1.0), Vec3::new(0.0,10.0,0.0)),
-            (Vec3::new(10.0,0.0,0.0), Vec3::new(1.0,0.0,0.0), Vec3::new(0.0,0.0,1.0), Vec3::new(0.0,10.0,0.0)),
-            (Vec3::ZERO, Vec3::new(0.0,1.0,0.0), Vec3::new(10.0,0.0,0.0), Vec3::new(0.0,0.0,1.0)),
-            (Vec3::new(0.0,10.0,0.0), Vec3::new(0.0,1.0,0.0), Vec3::new(10.0,0.0,0.0), Vec3::new(0.0,0.0,1.0)),
-            (Vec3::ZERO, Vec3::new(0.0,0.0,1.0), Vec3::new(10.0,0.0,0.0), Vec3::new(0.0,10.0,0.0)),
-            (Vec3::new(0.0,0.0,10.0), Vec3::new(0.0,0.0,1.0), Vec3::new(10.0,0.0,0.0), Vec3::new(0.0,10.0,0.0)),
+            (PVec3::ZERO, PVec3::new(1.0,0.0,0.0), PVec3::new(0.0,0.0,1.0), PVec3::new(0.0,10.0,0.0)),
+            (PVec3::new(10.0,0.0,0.0), PVec3::new(1.0,0.0,0.0), PVec3::new(0.0,0.0,1.0), PVec3::new(0.0,10.0,0.0)),
+            (PVec3::ZERO, PVec3::new(0.0,1.0,0.0), PVec3::new(10.0,0.0,0.0), PVec3::new(0.0,0.0,1.0)),
+            (PVec3::new(0.0,10.0,0.0), PVec3::new(0.0,1.0,0.0), PVec3::new(10.0,0.0,0.0), PVec3::new(0.0,0.0,1.0)),
+            (PVec3::ZERO, PVec3::new(0.0,0.0,1.0), PVec3::new(10.0,0.0,0.0), PVec3::new(0.0,10.0,0.0)),
+            (PVec3::new(0.0,0.0,10.0), PVec3::new(0.0,0.0,1.0), PVec3::new(10.0,0.0,0.0), PVec3::new(0.0,10.0,0.0)),
         ];
         for (origin, normal, u_dir, v_dir) in specs {
             let wk = reg.wires.insert(BRepWire { edges: vec![] });
@@ -94,7 +94,7 @@ mod tests {
         }
         let sk = reg.shells.insert(BRepShell { faces, closed: true, step_id: None });
 
-        let area: f32 = reg.shells.get(sk).unwrap().faces.iter()
+        let area: Real = reg.shells.get(sk).unwrap().faces.iter()
             .map(|(fk, _)| face_area(&reg, *fk, 16))
             .sum();
         // Cube surface area = 6 × 10² = 600
@@ -106,12 +106,12 @@ mod tests {
         let mut reg = BRepStore::new();
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 5.0 },
+            surface: SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 5.0 },
             outer_wire: wk, inner_wires: vec![], same_sense: true, tolerance: 1e-4,
             seam_edges: vec![], color: None, degenerated_edges: vec![],
         });
         let area = face_area(&reg, fk, 32);
-        let expected = 4.0 * std::f32::consts::PI * 25.0; // 4πr² ≈ 314.16
+        let expected = 4.0 * std::f64::consts::PI * 25.0; // 4πr² ≈ 314.16
         assert!((area - expected).abs() < 10.0, "sphere area ≈ {}, got {}", expected, area);
     }
 }

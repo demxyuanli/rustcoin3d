@@ -3,6 +3,7 @@
 //! Extracted from `brep/build/surface.rs` to be reusable by other modules
 //! (e.g. legacy `surface_tess.rs` before its removal).
 
+use rc3d_core::math::Real;
 use crate::step::parser::{EntityIndex, EntityRecord};
 use crate::step::value::StepValue;
 use crate::step::{entity_geom as geom, topology};
@@ -70,7 +71,7 @@ pub fn build_nurbs_surface(
 
     // Extract rational weights if present
     let weights = find_surface_weights(params, control_points.len(), control_points[0].len())
-        .unwrap_or_else(|| vec![vec![1.0f32; control_points[0].len()]; control_points.len()]);
+        .unwrap_or_else(|| vec![vec![1.0_f64; control_points[0].len()]; control_points.len()]);
 
     Some(NurbsSurface {
         degree_u,
@@ -88,12 +89,12 @@ pub fn build_surface_knots(
     knot_values: &[StepValue],
     degree: usize,
     cp_count: usize,
-) -> Vec<f32> {
+) -> Vec<Real> {
     let mut knots = Vec::new();
     if !multiplicities.is_empty() && !knot_values.is_empty() {
         for (i, &mult) in multiplicities.iter().enumerate() {
             if i < knot_values.len() {
-                let k = knot_values[i].as_real().unwrap_or(0.0) as f32;
+                let k = knot_values[i].as_real().unwrap_or(0.0) as Real;
                 for _ in 0..mult.max(1) {
                     knots.push(k);
                 }
@@ -106,7 +107,7 @@ pub fn build_surface_knots(
         let max_k = *knots.last().unwrap_or(&1.0);
         let extra = needed - knots.len();
         for i in 0..extra {
-            let t = (i + 1) as f32 / (extra + 1) as f32;
+            let t = (i + 1) as Real / (extra + 1) as Real;
             knots.push(min_k + (max_k - min_k) * t);
         }
     }
@@ -166,7 +167,7 @@ fn scan_knot_data(
 }
 
 /// Scan params for a 2D weights list matching NURBS control point dimensions.
-pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Option<Vec<Vec<f32>>> {
+pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Option<Vec<Vec<Real>>> {
     let list = params.as_list()?;
     for val in list.iter().rev() {
         if let StepValue::List(inner) = val {
@@ -180,7 +181,7 @@ pub fn find_surface_weights(params: &StepValue, rows: usize, cols: usize) -> Opt
                 return Some(
                     inner.iter()
                         .map(|v| v.as_list().unwrap().iter()
-                            .map(|r| r.as_real().unwrap() as f32)
+                            .map(|r| r.as_real().unwrap() as Real)
                             .collect())
                         .collect(),
                 );

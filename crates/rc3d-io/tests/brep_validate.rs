@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 //! BREP format self-validation: parse classic OCC BREP, check reference integrity.
 //! Closed-loop test: write .brep → validate → report broken refs.
 
@@ -203,7 +204,7 @@ fn parse_edge_curve_idx(line: &str) -> usize {
     parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-fn parse_face_data(line: &str) -> (usize, f32) {
+fn parse_face_data(line: &str) -> (usize, Real) {
     // Format: "location  tolerance  surface_idx  orientation"
     let parts: Vec<&str> = line.split_whitespace().collect();
     let si = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);

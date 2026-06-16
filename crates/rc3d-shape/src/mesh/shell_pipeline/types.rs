@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::topo::{BRepFace, EdgeKey, FaceKey};
 use crate::mesh::boundary::BoundaryPosIndex;
 use crate::mesh::face_fill::FaceMeshRange;
@@ -31,8 +31,8 @@ pub(crate) struct FaceLoopData {
 }
 
 pub(crate) struct ChunkOutput {
-    pub vertices: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
+    pub vertices: Vec<PVec3>,
+    pub normals: Vec<PVec3>,
     pub indices: Vec<i32>,
     pub face_ranges: Vec<FaceMeshRange>,
     pub report: ShellMeshReport,
@@ -40,13 +40,13 @@ pub(crate) struct ChunkOutput {
 }
 
 pub(crate) struct BoundaryPoolResult {
-    pub boundary_vertices: Vec<Vec3>,
-    pub boundary_normals: Vec<Vec3>,
+    pub boundary_vertices: Vec<PVec3>,
+    pub boundary_normals: Vec<PVec3>,
     pub boundary_pos_to_idx: BoundaryPosIndex,
     pub boundary_vertex_count: usize,
     pub edge_boundary_idx: HashMap<(FaceKey, EdgeKey, usize), usize>,
     pub face_infos: Vec<FaceWireInfo>,
     pub face_orient: HashMap<FaceKey, bool>,
     pub heal_skipped_faces: Vec<FaceKey>,
-    pub global_vertices: Vec<Vec3>,
+    pub global_vertices: Vec<PVec3>,
 }

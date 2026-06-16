@@ -270,7 +270,7 @@ fn triangles_to_scene(triangles: &[StlTriangle]) -> SceneGraph {
 
     for tri in triangles {
         for v in tri.vertices {
-            let key = rc3d_core::utils::hash::f32x3_to_bits(v);
+            let key = rc3d_core::utils::hash::f64x3_to_bits(v);
             let idx = if let Some(&i) = remap.get(&key) {
                 i
             } else {

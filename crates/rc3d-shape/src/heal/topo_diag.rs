@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::{Curve2d, SurfaceGeom, eval_pcurve_on_surface, signed_area_2d};
 use crate::store::BRepStore;
@@ -17,8 +17,8 @@ pub struct TopoDiagReport {
     pub wire_junction_gaps: Vec<WireJunctionGap>,
     pub pcurve_drifts: Vec<PcurveDrift>,
     pub orientation_flags: Vec<WireOrientationFlag>,
-    pub max_wire_junction_gap: f32,
-    pub max_pcurve_drift: f32,
+    pub max_wire_junction_gap: Real,
+    pub max_pcurve_drift: Real,
 }
 
 #[derive(Debug, Clone)]
@@ -27,23 +27,23 @@ pub struct WireJunctionGap {
     pub wire_key: WireKey,
     pub edge_prev: EdgeKey,
     pub edge_next: EdgeKey,
-    pub gap_3d: f32,
-    pub tol_used: f32,
+    pub gap_3d: Real,
+    pub tol_used: Real,
 }
 
 #[derive(Debug, Clone)]
 pub struct PcurveDrift {
     pub face_key: FaceKey,
     pub edge_key: EdgeKey,
-    pub max_drift: f32,
-    pub tol_used: f32,
+    pub max_drift: Real,
+    pub tol_used: Real,
 }
 
 #[derive(Debug, Clone)]
 pub struct WireOrientationFlag {
     pub face_key: FaceKey,
     pub wire_key: WireKey,
-    pub signed_uv_area: f32,
+    pub signed_uv_area: Real,
     pub same_sense: bool,
     pub is_inner: bool,
 }
@@ -92,12 +92,12 @@ pub fn check_shell_topo_diag(shell_key: ShellKey, reg: &BRepStore) -> TopoDiagRe
         .wire_junction_gaps
         .iter()
         .map(|g| g.gap_3d)
-        .fold(0.0f32, f32::max);
+        .fold(0.0_f64, Real::max);
     report.max_pcurve_drift = report
         .pcurve_drifts
         .iter()
         .map(|d| d.max_drift)
-        .fold(0.0f32, f32::max);
+        .fold(0.0_f64, Real::max);
     report
 }
 
@@ -105,7 +105,7 @@ fn oriented_curve_endpoints(
     ek: EdgeKey,
     orient: Orientation,
     reg: &BRepStore,
-) -> Option<(Vec3, Vec3)> {
+) -> Option<(PVec3, PVec3)> {
     let edge = reg.edges.get(ek)?;
     let p_lo = reg.vertices.get(edge.v_low)?.position;
     let p_hi = reg.vertices.get(edge.v_high)?.position;
@@ -123,7 +123,7 @@ fn oriented_curve_endpoints(
 fn measure_wire_junction_gaps(
     face_key: FaceKey,
     wire_key: WireKey,
-    tol: f32,
+    tol: Real,
     reg: &BRepStore,
 ) -> Vec<WireJunctionGap> {
     let wire = match reg.wires.get(wire_key) {
@@ -164,7 +164,7 @@ fn measure_wire_junction_gaps(
 fn measure_pcurve_drift(
     face_key: FaceKey,
     ek: EdgeKey,
-    tol: f32,
+    tol: Real,
     reg: &BRepStore,
 ) -> Option<PcurveDrift> {
     let edge = reg.edges.get(ek)?;
@@ -173,9 +173,9 @@ fn measure_pcurve_drift(
     let surface = &face.surface;
     let match_tol = pcurve_match_tol(&edge.curve, tol);
 
-    let mut max_drift = 0.0f32;
+    let mut max_drift = 0.0_f64;
     for i in 0..=PCURVE_DRIFT_SAMPLES {
-        let t = i as f32 / PCURVE_DRIFT_SAMPLES as f32;
+        let t = i as Real / PCURVE_DRIFT_SAMPLES as Real;
         max_drift = max_drift.max(pcurve_on_surface_gap(surface, pcurve, t, match_tol));
     }
     let _ = edge;
@@ -192,7 +192,7 @@ fn measure_pcurve_drift(
 }
 
 /// Gap between PCURVE-induced point and face surface (periodic UV branches included).
-fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &Curve2d, t: f32, match_tol: f32) -> f32 {
+fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &Curve2d, t: Real, match_tol: Real) -> Real {
     let pt = eval_pcurve_on_surface(pcurve, surface, t);
     let uv = pcurve.d0(t);
     if pcurve_uv_matches_surface(surface, pt, uv, match_tol) {
@@ -200,7 +200,7 @@ fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &Curve2d, t: f32, match_
     }
     let mut best = (pt - surface.d0_native(uv.0, uv.1)).length();
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
-        const TAU: f32 = std::f32::consts::TAU;
+        const TAU: Real = std::f64::consts::TAU;
         if uv.0 <= 1.0 + 1e-4 {
             best = best.min((pt - surface.d0_native(uv.0 * TAU, uv.1)).length());
         }
@@ -212,32 +212,32 @@ fn pcurve_on_surface_gap(surface: &SurfaceGeom, pcurve: &Curve2d, t: f32, match_
         }
     }
     if let Some(pu) = surface.native_u_period() {
-        for shift in [-1.0f32, 1.0] {
+        for shift in [-1.0_f64, 1.0] {
             best = best.min((pt - surface.d0_native(uv.0 + shift * pu, uv.1)).length());
         }
     }
     if let Some(pv) = surface.native_v_period() {
-        for shift in [-1.0f32, 1.0] {
+        for shift in [-1.0_f64, 1.0] {
             best = best.min((pt - surface.d0_native(uv.0, uv.1 + shift * pv)).length());
         }
     }
     best
 }
 
-fn pcurve_match_tol(curve: &crate::geom::CurveGeom, tol: f32) -> f32 {
+fn pcurve_match_tol(curve: &crate::geom::CurveGeom, tol: Real) -> Real {
     let edge_len = (curve.d0(0.0) - curve.d0(1.0)).length();
     (tol.max(1e-4) * 10.0).max(edge_len * 0.05).max(1e-3)
 }
 
 fn pcurve_uv_matches_surface(
     surface: &SurfaceGeom,
-    p3: Vec3,
-    uv: (f32, f32),
-    match_tol: f32,
+    p3: PVec3,
+    uv: (Real, Real),
+    match_tol: Real,
 ) -> bool {
     let mut candidates = vec![(uv.0, uv.1)];
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
-        const TAU: f32 = std::f32::consts::TAU;
+        const TAU: Real = std::f64::consts::TAU;
         if uv.0 <= 1.0 + 1e-4 {
             candidates.push((uv.0 * TAU, uv.1));
         }
@@ -253,14 +253,14 @@ fn pcurve_uv_matches_surface(
             return true;
         }
         if let Some(period_u) = surface.native_u_period() {
-            for shift in [-1.0f32, 1.0] {
+            for shift in [-1.0_f64, 1.0] {
                 if (p3 - surface.d0_native(u + shift * period_u, v)).length() <= match_tol {
                     return true;
                 }
             }
         }
         if let Some(period_v) = surface.native_v_period() {
-            for shift in [-1.0f32, 1.0] {
+            for shift in [-1.0_f64, 1.0] {
                 if (p3 - surface.d0_native(u, v + shift * period_v)).length() <= match_tol {
                     return true;
                 }
@@ -282,7 +282,7 @@ fn check_wire_uv_orientation(
     if uv_points.len() < 3 {
         return None;
     }
-    let area = signed_area_2d(&uv_points) as f32;
+    let area = signed_area_2d(&uv_points) as Real;
     let outer_positive = face.same_sense;
     let bad = if is_inner {
         (area > 0.0) == outer_positive

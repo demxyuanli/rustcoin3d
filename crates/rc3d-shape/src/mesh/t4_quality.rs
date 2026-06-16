@@ -1,7 +1,7 @@
 //! T4 mesh quality metrics — surface-to-mesh deflection and optional reference comparison.
 //! OCC parity: 95th percentile surface sample distance ≤ 2× linear deflection.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::face_uv::point_in_trim;
 use super::BRepMeshConfig;
@@ -13,19 +13,19 @@ use crate::mesh_result::MeshResult;
 #[derive(Debug, Clone, Default)]
 pub struct DeflectionMetrics {
     pub sample_count: usize,
-    pub max: f32,
-    pub p95: f32,
+    pub max: Real,
+    pub p95: Real,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct HausdorffMetrics {
     pub sample_count: usize,
-    pub max_a_to_b: f32,
-    pub p95_a_to_b: f32,
-    pub max_b_to_a: f32,
-    pub p95_b_to_a: f32,
-    pub symmetric_max: f32,
-    pub symmetric_p95: f32,
+    pub max_a_to_b: Real,
+    pub p95_a_to_b: Real,
+    pub max_b_to_a: Real,
+    pub p95_b_to_a: Real,
+    pub symmetric_max: Real,
+    pub symmetric_p95: Real,
 }
 
 /// Geometric deflection: mesh triangle centroids → nearest trimmed face surface.
@@ -49,7 +49,7 @@ fn sample_mesh_to_surface(
     reg: &BRepStore,
     shell: &crate::topo::BRepShell,
     mesh: &MeshResult,
-    out: &mut Vec<f32>,
+    out: &mut Vec<Real>,
 ) {
     for chunk in mesh.indices.chunks(4) {
         if chunk.len() < 3 {
@@ -63,14 +63,14 @@ fn sample_mesh_to_surface(
         }
         let c = (mesh.vertices[i0] + mesh.vertices[i1] + mesh.vertices[i2]) * (1.0 / 3.0);
         let d = closest_surface_distance(reg, shell, c);
-        if d.is_finite() && d < f32::MAX {
+        if d.is_finite() && d < f64::MAX {
             out.push(d);
         }
     }
 }
 
-fn closest_surface_distance(reg: &BRepStore, shell: &crate::topo::BRepShell, point: Vec3) -> f32 {
-    let mut best = f32::MAX;
+fn closest_surface_distance(reg: &BRepStore, shell: &crate::topo::BRepShell, point: PVec3) -> Real {
+    let mut best = f64::MAX;
     for &(face_key, _) in &shell.faces {
         let Some(face) = reg.faces.get(face_key) else {
             continue;
@@ -85,7 +85,7 @@ fn closest_surface_distance(reg: &BRepStore, shell: &crate::topo::BRepShell, poi
         };
         let outer_uv = wire_uv_polygon(reg, face_key, face.outer_wire, &face.surface, inv_tol);
         if outer_uv.len() >= 3 {
-            let inner_uv: Vec<Vec<(f32, f32)>> = face
+            let inner_uv: Vec<Vec<(Real, Real)>> = face
                 .inner_wires
                 .iter()
                 .map(|&wk| wire_uv_polygon(reg, face_key, wk, &face.surface, inv_tol))
@@ -98,7 +98,7 @@ fn closest_surface_distance(reg: &BRepStore, shell: &crate::topo::BRepShell, poi
         let on = face.surface.d0_native(uv.0, uv.1);
         best = best.min((point - on).length());
     }
-    if best == f32::MAX {
+    if best == f64::MAX {
         0.0
     } else {
         best
@@ -110,8 +110,8 @@ fn wire_uv_polygon(
     face_key: FaceKey,
     wire_key: WireKey,
     surface: &SurfaceGeom,
-    inv_tol: f32,
-) -> Vec<(f32, f32)> {
+    inv_tol: Real,
+) -> Vec<(Real, Real)> {
     let wire = match reg.wires.get(wire_key) {
         Some(w) => w,
         None => return Vec::new(),
@@ -124,7 +124,7 @@ fn wire_uv_polygon(
         };
         if let Some(pcurve) = edge.pcurves.get(&face_key) {
             for i in 0..=STEPS {
-                let t = i as f32 / STEPS as f32;
+                let t = i as Real / STEPS as Real;
                 let t = if orient == Orientation::Reversed {
                     1.0 - t
                 } else {
@@ -154,13 +154,13 @@ fn wire_uv_polygon(
     poly
 }
 
-fn push_uv(poly: &mut Vec<(f32, f32)>, uv: (f32, f32)) {
+fn push_uv(poly: &mut Vec<(Real, Real)>, uv: (Real, Real)) {
     if poly.last().copied() != Some(uv) {
         poly.push(uv);
     }
 }
 
-fn dists_to_metrics(dists: &[f32]) -> DeflectionMetrics {
+fn dists_to_metrics(dists: &[Real]) -> DeflectionMetrics {
     if dists.is_empty() {
         return DeflectionMetrics::default();
     }
@@ -170,13 +170,13 @@ fn dists_to_metrics(dists: &[f32]) -> DeflectionMetrics {
     DeflectionMetrics {
         sample_count: n,
         max: *sorted.last().unwrap_or(&0.0),
-        p95: sorted[((n as f32 * 0.95) as usize).min(n.saturating_sub(1))],
+        p95: sorted[((n as Real * 0.95) as usize).min(n.saturating_sub(1))],
     }
 }
 
 /// Closest distance from point to triangle soup.
-pub fn point_to_mesh_distance(point: Vec3, mesh: &MeshResult) -> f32 {
-    let mut best = f32::MAX;
+pub fn point_to_mesh_distance(point: PVec3, mesh: &MeshResult) -> Real {
+    let mut best = f64::MAX;
     for chunk in mesh.indices.chunks(4) {
         if chunk.len() < 3 {
             continue;
@@ -197,14 +197,14 @@ pub fn point_to_mesh_distance(point: Vec3, mesh: &MeshResult) -> f32 {
             best = d;
         }
     }
-    if best == f32::MAX {
+    if best == f64::MAX {
         0.0
     } else {
         best
     }
 }
 
-fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
+fn closest_point_on_triangle(p: PVec3, a: PVec3, b: PVec3, c: PVec3) -> Real {
     let ab = b - a;
     let ac = c - a;
     let ap = p - a;
@@ -256,16 +256,16 @@ fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
 pub fn hausdorff_meshes(a: &MeshResult, b: &MeshResult, max_samples: usize) -> HausdorffMetrics {
     let a_to_b = sample_mesh_distances(a, b, max_samples);
     let b_to_a = sample_mesh_distances(b, a, max_samples);
-    let p95 = |d: &[f32]| -> f32 {
+    let p95 = |d: &[Real]| -> Real {
         if d.is_empty() {
             return 0.0;
         }
         let mut s = d.to_vec();
         s.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
         let n = s.len();
-        s[((n as f32 * 0.95) as usize).min(n.saturating_sub(1))]
+        s[((n as Real * 0.95) as usize).min(n.saturating_sub(1))]
     };
-    let max = |d: &[f32]| d.iter().copied().fold(0.0f32, f32::max);
+    let max = |d: &[Real]| d.iter().copied().fold(0.0_f64, Real::max);
     HausdorffMetrics {
         sample_count: a_to_b.len().max(b_to_a.len()),
         max_a_to_b: max(&a_to_b),
@@ -277,7 +277,7 @@ pub fn hausdorff_meshes(a: &MeshResult, b: &MeshResult, max_samples: usize) -> H
     }
 }
 
-fn sample_mesh_distances(from: &MeshResult, to: &MeshResult, max_samples: usize) -> Vec<f32> {
+fn sample_mesh_distances(from: &MeshResult, to: &MeshResult, max_samples: usize) -> Vec<Real> {
     let tri_count = from.indices.len() / 4;
     if tri_count == 0 {
         return Vec::new();
@@ -314,21 +314,21 @@ mod tests {
     fn point_on_triangle_has_zero_distance() {
         let mesh = MeshResult {
             vertices: vec![
-                Vec3::ZERO,
-                Vec3::X,
-                Vec3::Y,
+                PVec3::ZERO,
+                PVec3::X,
+                PVec3::Y,
             ],
             normals: vec![],
             indices: vec![0, 1, 2, -1],
         };
-        let d = point_to_mesh_distance(Vec3::new(0.25, 0.25, 0.0), &mesh);
+        let d = point_to_mesh_distance(PVec3::new(0.25, 0.25, 0.0), &mesh);
         assert!(d < 1e-4);
     }
 
     #[test]
     fn hausdorff_identical_meshes_near_zero() {
         let mesh = MeshResult {
-            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            vertices: vec![PVec3::ZERO, PVec3::X, PVec3::Y],
             normals: vec![],
             indices: vec![0, 1, 2, -1],
         };

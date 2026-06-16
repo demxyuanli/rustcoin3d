@@ -8,7 +8,7 @@
 //! for PCurves (parametric curves on surface UV space).
 
 use super::CurveGeom;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// 2D curve in UV parameter space.
 ///
@@ -18,31 +18,31 @@ use rc3d_core::math::Vec3;
 #[derive(Debug, Clone)]
 pub enum Curve2d {
     Line {
-        origin: (f32, f32),
-        direction: (f32, f32),
+        origin: (Real, Real),
+        direction: (Real, Real),
     },
     Circle {
-        center: (f32, f32),
-        radius: f32,
+        center: (Real, Real),
+        radius: Real,
     },
     Ellipse {
-        center: (f32, f32),
-        semi_major: f32,
-        semi_minor: f32,
+        center: (Real, Real),
+        semi_major: Real,
+        semi_minor: Real,
     },
     BSpline {
         degree: usize,
-        control_points: Vec<(f32, f32)>,
-        knots: Vec<f32>,
-        weights: Option<Vec<f32>>,
+        control_points: Vec<(Real, Real)>,
+        knots: Vec<Real>,
+        weights: Option<Vec<Real>>,
     },
     Trimmed {
         basis: Box<Curve2d>,
-        t_min: f32,
-        t_max: f32,
+        t_min: Real,
+        t_max: Real,
     },
     Polyline {
-        points: Vec<(f32, f32)>,
+        points: Vec<(Real, Real)>,
     },
     Composite {
         segments: Vec<(Curve2d, bool)>,
@@ -83,17 +83,17 @@ impl Curve2d {
     }
 
     /// Evaluate the curve at parameter t ∈ [0, 1].
-    pub fn d0(&self, t: f32) -> (f32, f32) {
+    pub fn d0(&self, t: Real) -> (Real, Real) {
         match self {
             Curve2d::Line { origin, direction } => {
                 (origin.0 + direction.0 * t, origin.1 + direction.1 * t)
             }
             Curve2d::Circle { center, radius } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 (center.0 + radius * theta.cos(), center.1 + radius * theta.sin())
             }
             Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 (center.0 + semi_major * theta.cos(), center.1 + semi_minor * theta.sin())
             }
             Curve2d::BSpline { degree, control_points, knots, weights } => {
@@ -111,9 +111,9 @@ impl Curve2d {
                     return points.first().copied().unwrap_or((0.0, 0.0));
                 }
                 let n = points.len() - 1;
-                let idx_f = t.clamp(0.0, 1.0) * n as f32;
+                let idx_f = t.clamp(0.0, 1.0) * n as Real;
                 let idx = idx_f as usize;
-                let frac = idx_f - idx as f32;
+                let frac = idx_f - idx as Real;
                 let a = points[idx.min(n)];
                 let b = points[(idx + 1).min(n)];
                 (a.0 + (b.0 - a.0) * frac, a.1 + (b.1 - a.1) * frac)
@@ -126,10 +126,10 @@ impl Curve2d {
                     return segments[0].0.d0(t);
                 }
                 // Map t ∈ [0,1] to segment index and local parameter
-                let n = segments.len() as f32;
+                let n = segments.len() as Real;
                 let idx_f = t.clamp(0.0, 1.0) * n;
                 let idx = (idx_f as usize).min(segments.len() - 1);
-                let local_t = idx_f - idx as f32;
+                let local_t = idx_f - idx as Real;
                 segments[idx].0.d0(local_t.clamp(0.0, 1.0))
             }
         }
@@ -137,20 +137,20 @@ impl Curve2d {
 
     /// Evaluate first derivative at parameter t ∈ [0, 1].
     /// Returns (point, tangent_direction).
-    pub fn d1(&self, t: f32) -> ((f32, f32), (f32, f32)) {
+    pub fn d1(&self, t: Real) -> ((Real, Real), (Real, Real)) {
         match self {
             Curve2d::Line { origin, direction } => {
                 let p = (origin.0 + direction.0 * t, origin.1 + direction.1 * t);
                 (p, *direction)
             }
             Curve2d::Circle { center, radius } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 let p = (center.0 + radius * theta.cos(), center.1 + radius * theta.sin());
                 let dt = (-radius * theta.sin(), radius * theta.cos());
                 (p, dt)
             }
             Curve2d::Ellipse { center, semi_major, semi_minor } => {
-                let theta = t * std::f32::consts::TAU;
+                let theta = t * std::f64::consts::TAU;
                 let p = (center.0 + semi_major * theta.cos(), center.1 + semi_minor * theta.sin());
                 let dt = (-semi_major * theta.sin(), semi_minor * theta.cos());
                 (p, dt)
@@ -167,17 +167,17 @@ impl Curve2d {
                     return (self.d0(t), (0.0, 0.0));
                 }
                 // Build derivative CPs: Q_i = p * (P_{i+1} - P_i) / (k_{i+p+1} - k_{i+1})
-                let mut d_cps: Vec<(f32, f32)> = Vec::with_capacity(n - 1);
+                let mut d_cps: Vec<(Real, Real)> = Vec::with_capacity(n - 1);
                 for i in 0..n - 1 {
                     let denom = knots[i + p + 1] - knots[i + 1];
-                    let scale = if denom.abs() > 1e-10 { p as f32 / denom } else { 0.0 };
+                    let scale = if denom.abs() > 1e-10 { p as Real / denom } else { 0.0 };
                     d_cps.push((
                         scale * (control_points[i + 1].0 - control_points[i].0),
                         scale * (control_points[i + 1].1 - control_points[i].1),
                     ));
                 }
                 // Derivative B-spline is degree p-1 on the same knot vector
-                let dt = bspline_2d_d0(p - 1, &d_cps, knots, None::<&[f32]>, t);
+                let dt = bspline_2d_d0(p - 1, &d_cps, knots, None::<&[Real]>, t);
                 let pos = self.d0(t);
                 (pos, dt)
             }
@@ -195,7 +195,7 @@ impl Curve2d {
                     return (p, (0.0, 0.0));
                 }
                 let n = points.len() - 1;
-                let idx_f = t.clamp(0.0, 1.0) * n as f32;
+                let idx_f = t.clamp(0.0, 1.0) * n as Real;
                 let idx = (idx_f as usize).min(n - 1);
                 let a = points[idx];
                 let b = points[idx + 1];
@@ -227,7 +227,7 @@ impl Curve2d {
             Curve2d::Circle { center, radius } => {
                 // Approximate full circle with 4 cubic Bézier arcs (90° each).
                 // Magic constant K = 4/3 * tan(π/8) ≈ 0.5522847498
-                const K: f32 = 0.552_284_8;
+                const K: Real = 0.552_284_8;
                 let r = *radius;
                 let cx = center.0;
                 let cy = center.1;
@@ -251,7 +251,7 @@ impl Curve2d {
             }
             Curve2d::Ellipse { center, semi_major, semi_minor } => {
                 // Approximate ellipse with 4 cubic Bézier arcs (90° each)
-                const K: f32 = 0.552_284_8;
+                const K: Real = 0.552_284_8;
                 let cx = center.0;
                 let cy = center.1;
                 let a = *semi_major;
@@ -288,12 +288,12 @@ impl Curve2d {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Conversion: CurveGeom (3D, used as PCurve with Vec3(u,v,0)) ↔ Curve2d
+//  Conversion: CurveGeom (3D, used as PCurve with PVec3(u,v,0)) ↔ Curve2d
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Simplify a polyline to a Line if all points are collinear within tolerance.
 /// Returns None for degenerate (closed-loop or zero-length) polylines.
-pub fn simplify_polyline_to_line(pts: &[(f32, f32)]) -> Option<Curve2d> {
+pub fn simplify_polyline_to_line(pts: &[(Real, Real)]) -> Option<Curve2d> {
     if pts.len() < 2 {
         return None;
     }
@@ -333,7 +333,7 @@ pub fn simplify_polyline_to_line(pts: &[(f32, f32)]) -> Option<Curve2d> {
 }
 
 impl Curve2d {
-    /// Convert a 3D CurveGeom used as a PCurve (where d0 returns Vec3(u, v, 0))
+    /// Convert a 3D CurveGeom used as a PCurve (where d0 returns PVec3(u, v, 0))
     /// into a native 2D Curve2d.
     ///
     /// OCC alignment: Geom2dAdaptor_Curve — adapts between 3D and 2D representations.
@@ -364,7 +364,7 @@ impl Curve2d {
                 t_max: *t_max,
             },
             CurveGeom::Polyline { points } => {
-                let pts_2d: Vec<(f32, f32)> = points.iter().map(|p| (p.x, p.y)).collect();
+                let pts_2d: Vec<(Real, Real)> = points.iter().map(|p| (p.x, p.y)).collect();
                 simplify_polyline_to_line(&pts_2d).unwrap_or(Curve2d::Polyline { points: pts_2d })
             },
             CurveGeom::Composite { segments, .. } => Curve2d::Composite {
@@ -383,8 +383,8 @@ impl Curve2d {
             CurveGeom::Parabola { center: _, focal_dist: _, .. } => {
                 // Approximate as polyline via sampling
                 let n = 32;
-                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
-                    let t = i as f32 / n as f32;
+                let pts: Vec<(Real, Real)> = (0..=n).map(|i| {
+                    let t = i as Real / n as Real;
                     let p = curve.d0(t);
                     (p.x, p.y)
                 }).collect();
@@ -393,8 +393,8 @@ impl Curve2d {
             CurveGeom::BezierCurve { .. } => {
                 // Sample the Bezier curve as a polyline
                 let n = 32;
-                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
-                    let t = i as f32 / n as f32;
+                let pts: Vec<(Real, Real)> = (0..=n).map(|i| {
+                    let t = i as Real / n as Real;
                     let p = curve.d0(t);
                     (p.x, p.y)
                 }).collect();
@@ -403,8 +403,8 @@ impl Curve2d {
             CurveGeom::Offset { basis: _, offset_dir: _, distance: _ } => {
                 // Sample the offset curve as a polyline
                 let n = 64;
-                let pts: Vec<(f32, f32)> = (0..=n).map(|i| {
-                    let t = i as f32 / n as f32;
+                let pts: Vec<(Real, Real)> = (0..=n).map(|i| {
+                    let t = i as Real / n as Real;
                     let p = curve.d0(t);
                     (p.x, p.y)
                 }).collect();
@@ -413,31 +413,31 @@ impl Curve2d {
         }
     }
 
-    /// Convert back to a 3D CurveGeom used as PCurve (Vec3(u, v, 0) convention).
+    /// Convert back to a 3D CurveGeom used as PCurve (PVec3(u, v, 0) convention).
     pub fn to_pcurve_3d(&self) -> CurveGeom {
         match self {
             Curve2d::Line { origin, direction } => CurveGeom::Line {
-                origin: Vec3::new(origin.0, origin.1, 0.0),
-                direction: Vec3::new(direction.0, direction.1, 0.0),
+                origin: PVec3::new(origin.0, origin.1, 0.0),
+                direction: PVec3::new(direction.0, direction.1, 0.0),
             },
             Curve2d::Circle { center, radius } => CurveGeom::Circle {
-                center: Vec3::new(center.0, center.1, 0.0),
-                axis: Vec3::Z,
+                center: PVec3::new(center.0, center.1, 0.0),
+                axis: PVec3::Z,
                 radius: *radius,
-                x_dir: Vec3::X,
-                y_dir: Vec3::Y,
+                x_dir: PVec3::X,
+                y_dir: PVec3::Y,
             },
             Curve2d::Ellipse { center, semi_major, semi_minor } => CurveGeom::Ellipse {
-                center: Vec3::new(center.0, center.1, 0.0),
-                axis: Vec3::Z,
+                center: PVec3::new(center.0, center.1, 0.0),
+                axis: PVec3::Z,
                 semi_major: *semi_major,
                 semi_minor: *semi_minor,
-                x_dir: Vec3::X,
-                y_dir: Vec3::Y,
+                x_dir: PVec3::X,
+                y_dir: PVec3::Y,
             },
             Curve2d::BSpline { degree, control_points, knots, weights } => CurveGeom::BSpline {
                 degree: *degree,
-                control_points: control_points.iter().map(|&(u, v)| Vec3::new(u, v, 0.0)).collect(),
+                control_points: control_points.iter().map(|&(u, v)| PVec3::new(u, v, 0.0)).collect(),
                 knots: knots.clone(),
                 weights: weights.clone(),
             },
@@ -447,7 +447,7 @@ impl Curve2d {
                 t_max: *t_max,
             },
             Curve2d::Polyline { points } => CurveGeom::Polyline {
-                points: points.iter().map(|&(u, v)| Vec3::new(u, v, 0.0)).collect(),
+                points: points.iter().map(|&(u, v)| PVec3::new(u, v, 0.0)).collect(),
             },
             Curve2d::Composite { segments } => CurveGeom::Composite {
                 segments: segments.iter().map(|(seg, rev)| (seg.to_pcurve_3d(), *rev)).collect(),
@@ -462,15 +462,15 @@ impl Curve2d {
 ///   B(t) = (1-t)³·c0 + 3(1-t)²t·c1 + 3(1-t)t²·c2 + t³·c3
 #[derive(Debug, Clone, Copy)]
 pub struct Bezier2d {
-    pub c0: (f32, f32),
-    pub c1: (f32, f32),
-    pub c2: (f32, f32),
-    pub c3: (f32, f32),
+    pub c0: (Real, Real),
+    pub c1: (Real, Real),
+    pub c2: (Real, Real),
+    pub c3: (Real, Real),
 }
 
 impl Bezier2d {
     /// Evaluate the Bézier at parameter t.
-    pub fn eval(&self, t: f32) -> (f32, f32) {
+    pub fn eval(&self, t: Real) -> (Real, Real) {
         let t2 = t * t;
         let t3 = t2 * t;
         let mt = 1.0 - t;
@@ -483,19 +483,19 @@ impl Bezier2d {
     }
 
     /// Axis-aligned bounding box.
-    pub fn bbox(&self) -> (f32, f32, f32, f32) {
+    pub fn bbox(&self) -> (Real, Real, Real, Real) {
         let xs = [self.c0.0, self.c1.0, self.c2.0, self.c3.0];
         let ys = [self.c0.1, self.c1.1, self.c2.1, self.c3.1];
         (
-            xs.iter().cloned().fold(f32::INFINITY, f32::min),
-            xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
-            ys.iter().cloned().fold(f32::INFINITY, f32::min),
-            ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+            xs.iter().cloned().fold(f64::INFINITY, Real::min),
+            xs.iter().cloned().fold(Real::NEG_INFINITY, Real::max),
+            ys.iter().cloned().fold(f64::INFINITY, Real::min),
+            ys.iter().cloned().fold(Real::NEG_INFINITY, Real::max),
         )
     }
 
     /// Split at parameter t ∈ [0, 1] using de Casteljau subdivision.
-    pub fn split_at(&self, t: f32) -> (Bezier2d, Bezier2d) {
+    pub fn split_at(&self, t: Real) -> (Bezier2d, Bezier2d) {
         let p00 = self.c0;
         let p01 = self.c1;
         let p02 = self.c2;
@@ -517,7 +517,7 @@ impl Bezier2d {
     }
 }
 
-fn lerp_2d(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
+fn lerp_2d(a: (Real, Real), b: (Real, Real), t: Real) -> (Real, Real) {
     (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
@@ -533,9 +533,9 @@ fn lerp_2d(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
 pub fn bezier_clip_intersect(
     a: &Bezier2d,
     b: &Bezier2d,
-    tol: f32,
+    tol: Real,
     max_depth: usize,
-) -> Vec<((f32, f32), (f32, f32))> {
+) -> Vec<((Real, Real), (Real, Real))> {
     // Phase 1: Bounding box rejection
     let (ax0, ax1, ay0, ay1) = a.bbox();
     let (bx0, bx1, by0, by1) = b.bbox();
@@ -617,7 +617,7 @@ pub fn bezier_clip_intersect(
 /// on each pair of segments whose bounding boxes overlap.
 ///
 /// Uses max_depth=12 for robust convergence on line-line intersections.
-pub fn intersect_curves_2d(a: &Curve2d, b: &Curve2d, tol: f32) -> Vec<((f32, f32), (f32, f32))> {
+pub fn intersect_curves_2d(a: &Curve2d, b: &Curve2d, tol: Real) -> Vec<((Real, Real), (Real, Real))> {
     let beziers_a = a.to_beziers();
     let beziers_b = b.to_beziers();
 
@@ -641,11 +641,11 @@ pub fn intersect_curves_2d(a: &Curve2d, b: &Curve2d, tol: f32) -> Vec<((f32, f32
 /// Evaluate a B-spline curve at parameter t (de Boor algorithm).
 fn bspline_2d_d0(
     degree: usize,
-    cps: &[(f32, f32)],
-    knots: &[f32],
-    weights: Option<&[f32]>,
-    t: f32,
-) -> (f32, f32) {
+    cps: &[(Real, Real)],
+    knots: &[Real],
+    weights: Option<&[Real]>,
+    t: Real,
+) -> (Real, Real) {
     let p = degree;
     let n = cps.len();
     if n < p + 1 || knots.len() < p + n + 1 {
@@ -671,7 +671,7 @@ fn bspline_2d_d0(
     };
 
     // de Boor for 2D
-    let mut d: Vec<(f32, f32)> = cps[span - p..=span].to_vec();
+    let mut d: Vec<(Real, Real)> = cps[span - p..=span].to_vec();
     for k in 1..=p {
         for i in (k..=p).rev() {
             let idx = span - p + i;
@@ -686,7 +686,7 @@ fn bspline_2d_d0(
     }
 
     if let Some(ws) = weights {
-        let mut w: Vec<f32> = ws[span - p..=span].to_vec();
+        let mut w: Vec<Real> = ws[span - p..=span].to_vec();
         for k in 1..=p {
             for i in (k..=p).rev() {
                 let idx = span - p + i;
@@ -709,9 +709,9 @@ fn bspline_2d_d0(
 /// internal knots to full multiplicity.
 fn decompose_bspline_to_beziers(
     degree: usize,
-    cps: &[(f32, f32)],
-    knots: &[f32],
-    _weights: Option<&[f32]>,
+    cps: &[(Real, Real)],
+    knots: &[Real],
+    _weights: Option<&[Real]>,
 ) -> Vec<Bezier2d> {
     let n = cps.len();
     if n <= degree + 1 {
@@ -757,11 +757,11 @@ fn decompose_bspline_to_beziers(
 }
 
 /// Clip a list of Bézier segments to a parameter range [t_min, t_max].
-fn clip_beziers_to_range(beziers: &[Bezier2d], t_min: f32, t_max: f32) -> Vec<Bezier2d> {
+fn clip_beziers_to_range(beziers: &[Bezier2d], t_min: Real, t_max: Real) -> Vec<Bezier2d> {
     if beziers.is_empty() {
         return vec![];
     }
-    let n = beziers.len() as f32;
+    let n = beziers.len() as Real;
     let idx_min = ((t_min * n).floor() as usize).min(beziers.len() - 1);
     let idx_max = ((t_max * n).ceil() as usize).min(beziers.len() - 1);
     beziers[idx_min..=idx_max].to_vec()

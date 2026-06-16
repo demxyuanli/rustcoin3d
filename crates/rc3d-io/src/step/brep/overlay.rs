@@ -1,8 +1,9 @@
 //! B-Rep edge curve overlay for the scene graph.
 
+use rc3d_core::math::Real;
 use std::collections::HashSet;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_shape::geom::curve2d::Curve2d;
 use rc3d_scene::SceneGraph;
 use rc3d_scene::node_data::{
@@ -17,7 +18,7 @@ use rc3d_shape::BRepStore;
 use rc3d_shape::topo::{EdgeKey, FaceKey, ShellKey, SolidKey};
 
 /// Pull seam/overlay lines slightly along the outward normal to avoid depth fighting.
-const SURFACE_NORMAL_BIAS_FRAC: f32 = 3e-5;
+const SURFACE_NORMAL_BIAS_FRAC: Real = 3e-5;
 
 /// Build an `IndexedLineSet` overlay from B-Rep edge curves.
 ///
@@ -32,7 +33,7 @@ pub fn build_edge_curves(
 ) -> Option<rc3d_core::NodeId> {
     let edge_config = &mesh_config.edge;
 
-    let mut points: Vec<Vec3> = Vec::new();
+    let mut points: Vec<PVec3> = Vec::new();
     let mut indices: Vec<i32> = Vec::new();
 
     for &sk in root_solids {
@@ -146,7 +147,7 @@ fn append_edge_segments(
     edge_keys: &HashSet<EdgeKey>,
     seam_keys: &HashSet<EdgeKey>,
     xform: Option<&AssemblyTransform>,
-    points: &mut Vec<Vec3>,
+    points: &mut Vec<PVec3>,
     indices: &mut Vec<i32>,
 ) {
     for &ek in edge_keys {
@@ -155,7 +156,7 @@ fn append_edge_segments(
             continue;
         }
 
-        let mut chain: Vec<Vec3> = chain_src
+        let mut chain: Vec<PVec3> = chain_src
             .iter()
             .map(|p| {
                 xform
@@ -187,7 +188,7 @@ fn is_closed_edge(reg: &BRepStore, ek: EdgeKey) -> bool {
 }
 
 /// Offset seam polyline along the face outward normal so it renders in front of the mesh.
-fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
+fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [PVec3]) {
     let Some(edge) = reg.edges.get(ek) else {
         return;
     };
@@ -199,10 +200,10 @@ fn pull_chain_on_surface(reg: &BRepStore, ek: EdgeKey, chain: &mut [Vec3]) {
     };
 
     let n_pts = chain.len();
-    let denom = (n_pts - 1).max(1) as f32;
+    let denom = (n_pts - 1).max(1) as Real;
 
     for (i, p) in chain.iter_mut().enumerate() {
-        let t = i as f32 / denom;
+        let t = i as Real / denom;
         let uv = pcurve.d0(t);
         let mut n = face.surface.normal_native(uv.0, uv.1);
         if !face.same_sense {
@@ -221,7 +222,7 @@ fn primary_face_pcurve(edge: &rc3d_shape::topo::BRepEdge) -> Option<(FaceKey, &C
     Some((face_key, pcurve))
 }
 
-fn surface_normal_bias(surface: &SurfaceGeom, pos: Vec3) -> f32 {
+fn surface_normal_bias(surface: &SurfaceGeom, pos: PVec3) -> Real {
     let scale = match surface {
         SurfaceGeom::Sphere { radius, .. } => *radius,
         SurfaceGeom::Cylinder { radius, .. } => *radius,
@@ -231,12 +232,12 @@ fn surface_normal_bias(surface: &SurfaceGeom, pos: Vec3) -> f32 {
     (scale * SURFACE_NORMAL_BIAS_FRAC).max(1e-6)
 }
 
-fn dedup_consecutive(chain: &mut Vec<Vec3>, tol: f32) {
+fn dedup_consecutive(chain: &mut Vec<PVec3>, tol: Real) {
     chain.dedup_by(|a, b| (*a - *b).length() < tol);
 }
 
 /// Append an open polyline using shared vertex indices.
-fn append_polyline_chain(chain: &[Vec3], points: &mut Vec<Vec3>, indices: &mut Vec<i32>) {
+fn append_polyline_chain(chain: &[PVec3], points: &mut Vec<PVec3>, indices: &mut Vec<i32>) {
     if chain.len() < 2 {
         return;
     }
@@ -251,7 +252,7 @@ fn append_polyline_chain(chain: &[Vec3], points: &mut Vec<Vec3>, indices: &mut V
 }
 
 /// Append a closed polyline (last vertex connects back to first).
-fn append_closed_polyline_chain(chain: &[Vec3], points: &mut Vec<Vec3>, indices: &mut Vec<i32>) {
+fn append_closed_polyline_chain(chain: &[PVec3], points: &mut Vec<PVec3>, indices: &mut Vec<i32>) {
     if chain.len() < 2 {
         return;
     }
@@ -267,14 +268,14 @@ fn append_closed_polyline_chain(chain: &[Vec3], points: &mut Vec<Vec3>, indices:
 pub fn build_mesh_wireframe(
     graph: &mut SceneGraph,
     root: rc3d_core::NodeId,
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     indices: &[i32],
 ) {
     if vertices.is_empty() || indices.is_empty() {
         return;
     }
 
-    let mut line_points: Vec<Vec3> = Vec::new();
+    let mut line_points: Vec<PVec3> = Vec::new();
     let mut line_indices: Vec<i32> = Vec::new();
 
     for chunk in indices.chunks(4) {

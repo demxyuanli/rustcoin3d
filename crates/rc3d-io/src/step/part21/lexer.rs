@@ -1,5 +1,6 @@
 //! Lexer for ISO 10303-21 clear-text exchange structures.
 
+use rc3d_core::math::Real;
 use super::token::{Span, Token};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

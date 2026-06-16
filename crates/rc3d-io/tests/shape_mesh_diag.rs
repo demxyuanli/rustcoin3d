@@ -1,7 +1,8 @@
+use rc3d_core::math::Real;
 //! Mesh quality stats for Shape corpus.
 //! Run: cargo test -p rc3d-io --test shape_mesh_diag --release -- --nocapture
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::geom::SurfaceGeom;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
@@ -34,9 +35,9 @@ fn surface_kind(surface: &SurfaceGeom) -> &'static str {
     }
 }
 
-fn mesh_quality(verts: &[Vec3], indices: &[i32], shell_diag: f32) -> (usize, f32, f32, usize) {
-    let mut max_edge = 0.0f32;
-    let mut max_aspect = 0.0f32;
+fn mesh_quality(verts: &[PVec3], indices: &[i32], shell_diag: Real) -> (usize, Real, Real, usize) {
+    let mut max_edge = 0.0_f64;
+    let mut max_aspect = 0.0_f64;
     let mut sliver_count = 0usize;
     let sliver_thresh = shell_diag * 0.05;
 

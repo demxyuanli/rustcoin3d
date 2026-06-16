@@ -1,6 +1,6 @@
 //! TopoDS_Shape-like handles.
 
-use rc3d_core::math::Mat4;
+use rc3d_core::math::{Real, PMat4};
 use slotmap::new_key_type;
 
 use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, SolidKey, VertexKey, WireKey};
@@ -40,7 +40,7 @@ impl Shape {
 pub struct ShapeNode {
     pub kind: ShapeKind,
     pub orientation: Orientation,
-    pub location: Mat4,
+    pub location: PMat4,
     pub parent: Option<ShapeId>,
     pub children: Vec<ShapeId>,
 }

@@ -312,17 +312,17 @@ mod tests {
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepWire, Orientation};
     use crate::store::BRepStore;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn build_closed_triangle_shell(reg: &mut BRepStore) -> (ShellKey, crate::topo::FaceKey) {
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface,
@@ -335,8 +335,8 @@ mod tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let pc = Curve2d::Line {
             origin: (0.0, 0.0),
@@ -378,9 +378,9 @@ mod tests {
     fn test_auto_heal_max_iterations() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {

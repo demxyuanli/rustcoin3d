@@ -1,6 +1,7 @@
 //! SceneEmitPlan -> SceneGraph adapter (transform instancing, no vertex bake).
 
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::Real;
+use rc3d_core::math::{PMat4, PVec3};
 use rc3d_core::NodeId;
 use rc3d_scene::annotation::AnnotationPoint;
 use rc3d_scene::node_data::{
@@ -272,27 +273,27 @@ fn pmi_style() -> rc3d_scene::annotation::AnnotationStyle {
     }
 }
 
-fn material_node_from_rgb(color: [f32; 3]) -> MaterialNode {
+fn material_node_from_rgb(color: [Real; 3]) -> MaterialNode {
     MaterialNode {
-        diffuse_color: Vec3::new(color[0], color[1], color[2]),
-        base_color: Vec3::new(color[0], color[1], color[2]),
+        diffuse_color: PVec3::new(color[0], color[1], color[2]),
+        base_color: PVec3::new(color[0], color[1], color[2]),
         roughness: 0.35,
         opacity: 1.0,
         ..Default::default()
     }
 }
 
-fn material_with_opacity(mut node: MaterialNode, opacity: f32) -> MaterialNode {
+fn material_with_opacity(mut node: MaterialNode, opacity: Real) -> MaterialNode {
     node.opacity = opacity;
     node
 }
 
-fn transform_node_from_mat4(m: Mat4) -> TransformNode {
+fn transform_node_from_mat4(m: PMat4) -> TransformNode {
     TransformNode {
-        translation: Vec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z),
+        translation: PVec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z),
         rotation: m,
-        scale: Vec3::ONE,
-        center: Vec3::ZERO,
+        scale: PVec3::ONE,
+        center: PVec3::ZERO,
     }
 }
 

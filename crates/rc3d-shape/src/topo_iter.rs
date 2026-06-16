@@ -258,7 +258,7 @@ mod tests {
     use super::*;
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use std::collections::HashMap;
 
     /// Build a shell with two coplanar faces sharing one edge.
@@ -272,17 +272,17 @@ mod tests {
         let mut reg = BRepStore::new();
 
         // Vertices
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
 
         // Face A (rectangle, normal +Z)
         let face_a = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: WireKey::default(), // placeholder, set below
             inner_wires: vec![],
@@ -296,9 +296,9 @@ mod tests {
         // Face B (shares e01, normal +Y)
         let face_b = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Y,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Y,
+                u_dir: PVec3::X,
             },
             outer_wire: WireKey::default(), // placeholder, set below
             inner_wires: vec![],
@@ -310,10 +310,10 @@ mod tests {
         });
 
         // Edges (line curves)
-        let line01 = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 0.0), direction: Vec3::X };
-        let line12 = CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 0.0), direction: Vec3::Y };
-        let line23 = CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::NEG_X };
-        let line30 = CurveGeom::Line { origin: Vec3::new(0.0, 1.0, 0.0), direction: Vec3::NEG_Y };
+        let line01 = CurveGeom::Line { origin: PVec3::new(0.0, 0.0, 0.0), direction: PVec3::X };
+        let line12 = CurveGeom::Line { origin: PVec3::new(1.0, 0.0, 0.0), direction: PVec3::Y };
+        let line23 = CurveGeom::Line { origin: PVec3::new(1.0, 1.0, 0.0), direction: PVec3::NEG_X };
+        let line30 = CurveGeom::Line { origin: PVec3::new(0.0, 1.0, 0.0), direction: PVec3::NEG_Y };
 
         let e01 = reg.edges.insert(BRepEdge {
             curve: line01,

@@ -1,4 +1,4 @@
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::mesh_result::MeshResult;
 
 /// Recompute normals from triangle faces, preserving specified vertex normals.
@@ -6,18 +6,18 @@ use crate::mesh_result::MeshResult;
 /// Vertices in `preserve` keep their existing normals. All others are
 /// recomputed from adjacent triangle face normals (area-weighted average).
 pub fn recompute_normals_from_tris_preserving(
-    vertices: &[Vec3], indices: &[i32], normals: &mut Vec<Vec3>, preserve: &[usize],
+    vertices: &[PVec3], indices: &[i32], normals: &mut Vec<PVec3>, preserve: &[usize],
 ) {
     use std::collections::HashSet;
     let preserved: HashSet<usize> = preserve.iter().copied().collect();
 
     if normals.len() != vertices.len() {
-        normals.resize(vertices.len(), Vec3::ZERO);
+        normals.resize(vertices.len(), PVec3::ZERO);
     }
     // Only zero out normals for non-preserved vertices
     for (i, n) in normals.iter_mut().enumerate() {
         if !preserved.contains(&i) {
-            *n = Vec3::ZERO;
+            *n = PVec3::ZERO;
         }
     }
     for chunk in indices.chunks(4) {
@@ -49,13 +49,13 @@ pub fn recompute_normals_from_tris_preserving(
             if len > 1e-10 {
                 *n *= (1.0 / len);
             } else {
-                *n = Vec3::Z; // zero → downstream should handle
+                *n = PVec3::Z; // zero → downstream should handle
             }
         }
     }
 }
 
-pub fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[Vec3]) -> usize {
+pub fn cull_degenerate_tris(indices: &mut Vec<i32>, vertices: &[PVec3]) -> usize {
     let mut out = Vec::with_capacity(indices.len());
     let mut removed = 0usize;
     for chunk in indices.chunks(4) {
@@ -108,7 +108,7 @@ pub fn compact_mesh_vertices(mesh: &mut MeshResult) {
         }
         remap[old] = new_verts.len() as i32;
         new_verts.push(mesh.vertices[old]);
-        let n = mesh.normals.get(old).copied().unwrap_or(Vec3::Y);
+        let n = mesh.normals.get(old).copied().unwrap_or(PVec3::Y);
         new_normals.push(n);
     }
     for idx in mesh.indices.iter_mut() {

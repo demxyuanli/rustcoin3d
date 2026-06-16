@@ -1,5 +1,6 @@
 //! STEP import strictness and quality reporting.
 
+use rc3d_core::math::Real;
 use rc3d_scene::SceneGraph;
 use rc3d_shape::ShapeDocument;
 use rc3d_shape::mesh::config::TessellationTier;
@@ -27,14 +28,14 @@ pub struct StepImportOptions {
     /// Auto-heal level for B-Rep shells (default Advanced for industrial STEP).
     pub heal_level: HealLevel,
     /// When > 0, mesh deflection scales with shell bbox diagonal (OCC relative mode).
-    pub mesh_relative_deflection: f32,
+    pub mesh_relative_deflection: Real,
     /// Run AP242 WR subset on Part21 instances before adapter transfer.
     pub strict_schema: bool,
     /// Complex-entity flattening mode for Part21 → `EntityIndex` adapter.
     pub adapter_mode: AdapterMode,
     /// Radial preview separation for multi-solid assemblies (0 = off).
     /// In Preview mode, overlapping solid bboxes still auto-apply 0.35 when this is zero.
-    pub assembly_preview_explode: f32,
+    pub assembly_preview_explode: Real,
     /// Skip visualization-only work (edge overlay, wireframe, mesh properties).
     /// Set true for non-interactive use cases like STL export.
     pub skip_visualization: bool,

@@ -3,15 +3,16 @@
 //! Computes dC/dt for LINE, CIRCLE, ELLIPSE, and B_SPLINE_CURVE types
 //! at a given parameter t in [0, 1].
 
-use std::f32::consts::PI;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use std::f64::consts::PI;
+use rc3d_core::math::PVec3;
 use super::super::parser::EntityIndex;
 use super::super::topology;
 use super::super::entity_geom as geom;
 use super::super::value::StepValue;
 
 /// Compute the derivative dC/dt of a curve entity at parameter `t` in [0, 1].
-pub fn curve_derivative(curve_id: u64, entities: &EntityIndex, t: f32) -> Option<Vec3> {
+pub fn curve_derivative(curve_id: u64, entities: &EntityIndex, t: Real) -> Option<PVec3> {
     let record = entities.get(&curve_id)?;
     match record.name.as_str() {
         "LINE" => line_derivative(&record.params, entities),
@@ -40,8 +41,8 @@ pub fn curve_derivative(curve_id: u64, entities: &EntityIndex, t: f32) -> Option
                 return None;
             }
             let n = seg_ids.len();
-            let seg_idx = ((t * n as f32) as usize).min(n - 1);
-            let seg_t = (t * n as f32) - seg_idx as f32;
+            let seg_idx = ((t * n as Real) as usize).min(n - 1);
+            let seg_t = (t * n as Real) - seg_idx as Real;
             if let Some(seg) = entities.get(&seg_ids[seg_idx]) {
                 if let Some(parent_id) = geom::nth_ref(&seg.params, 3) {
                     return curve_derivative(parent_id, entities, seg_t);
@@ -55,16 +56,16 @@ pub fn curve_derivative(curve_id: u64, entities: &EntityIndex, t: f32) -> Option
 
 /// LINE derivative: constant direction vector.
 /// LINE('', #pnt, #dir) → dC/dt = direction
-fn line_derivative(params: &StepValue, entities: &EntityIndex) -> Option<Vec3> {
+fn line_derivative(params: &StepValue, entities: &EntityIndex) -> Option<PVec3> {
     let dir_id = geom::nth_ref(params, 2)?;
     topology::resolve_direction(dir_id, entities)
 }
 
 /// CIRCLE derivative: dC/dt = 2πr·(-sin(θ)·X + cos(θ)·Y)
 /// where θ = 2πt. At t=0, derivative points in +Y direction.
-fn circle_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Option<Vec3> {
+fn circle_derivative(params: &StepValue, entities: &EntityIndex, t: Real) -> Option<PVec3> {
     let pos_id = geom::nth_ref(params, 1)?;
-    let radius = geom::nth_real(params, 2).unwrap_or(1.0) as f32;
+    let radius = geom::nth_real(params, 2).unwrap_or(1.0) as Real;
     let (_origin, x_axis, z_axis) = topology::resolve_placement(pos_id, entities)?;
     let y_axis = z_axis.cross(x_axis).normalize();
 
@@ -75,10 +76,10 @@ fn circle_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Opti
 
 /// ELLIPSE derivative: dC/dt = 2π·(-a·sin(θ)·X + b·cos(θ)·Y)
 /// where θ = 2πt, a and b are semi-axes.
-fn ellipse_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Option<Vec3> {
+fn ellipse_derivative(params: &StepValue, entities: &EntityIndex, t: Real) -> Option<PVec3> {
     let pos_id = geom::nth_ref(params, 1)?;
-    let a = geom::nth_real(params, 2).unwrap_or(1.0) as f32;
-    let b = geom::nth_real(params, 3).unwrap_or(1.0) as f32;
+    let a = geom::nth_real(params, 2).unwrap_or(1.0) as Real;
+    let b = geom::nth_real(params, 3).unwrap_or(1.0) as Real;
     let (_origin, x_axis, z_axis) = topology::resolve_placement(pos_id, entities)?;
     let y_axis = z_axis.cross(x_axis).normalize();
 
@@ -92,7 +93,7 @@ fn ellipse_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Opt
 /// N'_{i,p} = p/(k_{i+p}-k_i)·N_{i,p-1} - p/(k_{i+p+1}-k_{i+1})·N_{i+1,p-1}
 ///
 /// For rational curves, the quotient rule is applied.
-fn bspline_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Option<Vec3> {
+fn bspline_derivative(params: &StepValue, entities: &EntityIndex, t: Real) -> Option<PVec3> {
     let degree = geom::nth_int(params, 1).unwrap_or(3) as usize;
     let ctrl_pts = geom::resolve_bspline_ctrl_pts(params, 2, entities);
 
@@ -107,7 +108,7 @@ fn bspline_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Opt
     let knot_vec = build_knot_vector(&knots_raw, &multiplicities, degree, ctrl_pts.len());
 
     // Extract rational weights
-    let weights: Vec<f32> = geom::find_weights_list(params, ctrl_pts.len())
+    let weights: Vec<Real> = geom::find_weights_list(params, ctrl_pts.len())
         .unwrap_or_else(|| vec![1.0; ctrl_pts.len()]);
 
     let n = ctrl_pts.len();
@@ -135,10 +136,10 @@ fn bspline_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Opt
     // Rational derivative via quotient rule:
     // C = A/W where A = Σ w_i·P_i·N_i, W = Σ w_i·N_i
     // C' = (A'·W - A·W') / W²
-    let mut a = Vec3::ZERO;
-    let mut w = 0.0f32;
-    let mut a_deriv = Vec3::ZERO;
-    let mut w_deriv = 0.0f32;
+    let mut a = PVec3::ZERO;
+    let mut w = 0.0_f64;
+    let mut a_deriv = PVec3::ZERO;
+    let mut w_deriv = 0.0_f64;
 
     for i in min_idx..max_idx.min(n) {
         let wi = *weights.get(i).unwrap_or(&1.0);
@@ -177,9 +178,9 @@ fn bspline_derivative(params: &StepValue, entities: &EntityIndex, t: f32) -> Opt
 fn bspline_basis_derivatives(
     span: usize,
     degree: usize,
-    u: f32,
-    knots: &[f32],
-) -> Vec<(usize, f32)> {
+    u: Real,
+    knots: &[Real],
+) -> Vec<(usize, Real)> {
     if degree == 0 {
         // N'_{i,0} = 0 everywhere (step function, derivative is a Dirac delta)
         return vec![];
@@ -200,7 +201,7 @@ fn bspline_basis_derivatives(
             let denom = knots[i + degree] - knots[i];
             if denom > 1e-10 {
                 let n_i_pm1 = basis_value(i, degree - 1, u, knots);
-                degree as f32 / denom * n_i_pm1
+                degree as Real / denom * n_i_pm1
             } else {
                 0.0
             }
@@ -213,7 +214,7 @@ fn bspline_basis_derivatives(
             let denom = knots[i + degree + 1] - knots[i + 1];
             if denom > 1e-10 {
                 let n_ip1_pm1 = basis_value(i + 1, degree - 1, u, knots);
-                degree as f32 / denom * n_ip1_pm1
+                degree as Real / denom * n_ip1_pm1
             } else {
                 0.0
             }
@@ -231,7 +232,7 @@ fn bspline_basis_derivatives(
 }
 
 /// Evaluate a single basis function N_{i,p}(u) using recursive definition.
-fn basis_value(i: usize, p: usize, u: f32, knots: &[f32]) -> f32 {
+fn basis_value(i: usize, p: usize, u: Real, knots: &[Real]) -> Real {
     if p == 0 {
         // Indicator: 1 if u in [k_i, k_{i+1}), 0 otherwise.
         // At the last knot, include the right endpoint.
@@ -277,13 +278,13 @@ fn build_knot_vector(
     multiplicities: &[i64],
     degree: usize,
     num_ctrl_pts: usize,
-) -> Vec<f32> {
-    let mut knot_vec: Vec<f32> = Vec::new();
+) -> Vec<Real> {
+    let mut knot_vec: Vec<Real> = Vec::new();
 
     if !multiplicities.is_empty() && !knots.is_empty() {
         for (i, &mult) in multiplicities.iter().enumerate() {
             if i < knots.len() {
-                let k = knots[i].as_real().unwrap_or(0.0) as f32;
+                let k = knots[i].as_real().unwrap_or(0.0) as Real;
                 for _ in 0..mult {
                     knot_vec.push(k);
                 }
@@ -293,9 +294,9 @@ fn build_knot_vector(
 
     // Expand if needed
     if knot_vec.len() < num_ctrl_pts + degree + 1 {
-        let mut expanded: Vec<f32> = Vec::new();
+        let mut expanded: Vec<Real> = Vec::new();
         for (i, k) in knots.iter().enumerate() {
-            let kval = k.as_real().unwrap_or(i as f64) as f32;
+            let kval = k.as_real().unwrap_or(i as f64) as Real;
             let mult = if i < multiplicities.len() { multiplicities[i] as usize } else { degree };
             for _ in 0..mult {
                 expanded.push(kval);
@@ -306,7 +307,7 @@ fn build_knot_vector(
             let max_k = *expanded.last().unwrap_or(&1.0);
             let needed = num_ctrl_pts + degree + 1 - expanded.len();
             for i in 0..needed {
-                let t = (i + 1) as f32 / (needed + 1) as f32;
+                let t = (i + 1) as Real / (needed + 1) as Real;
                 expanded.push(min_k + (max_k - min_k) * t);
             }
         }
@@ -342,7 +343,7 @@ mod tests {
 ",
         );
         let deriv = curve_derivative(10, &entities, 0.5).unwrap();
-        assert!((deriv - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-4,
+        assert!((deriv - PVec3::new(1.0, 0.0, 0.0)).length() < 1e-4,
             "line derivative should equal the direction vector");
         // Derivative should be the same at any t
         let deriv2 = curve_derivative(10, &entities, 0.0).unwrap();
@@ -422,7 +423,7 @@ mod tests {
         );
         // TRIMMED_CURVE should unwrap to the inner LINE
         let deriv = curve_derivative(20, &entities, 0.5).unwrap();
-        assert!((deriv - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
+        assert!((deriv - PVec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
     }
 
     #[test]

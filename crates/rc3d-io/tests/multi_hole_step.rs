@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 //! Multi-hole plate STEP solid test: square hole + circular hole + hexagonal hole.
 //!
 //! Reads `steps/HoledPlate.step` (hand-written closed-shell BRep) and verifies
@@ -48,11 +49,11 @@ fn test_multi_hole_step_import_and_mesh() {
     assert!(total_tris > 0, "expected mesh triangles from holed plate STEP");
 
     // Holes: square + circle (32-gon) + hexagon from HoledPlate.step wire vertices.
-    let holes: Vec<Vec<(f32, f32)>> = vec![
+    let holes: Vec<Vec<(Real, Real)>> = vec![
         vec![(19.0, 34.0), (19.0, 46.0), (31.0, 46.0), (31.0, 34.0)],
         (0..32)
             .map(|i| {
-                let angle = std::f32::consts::TAU * i as f32 / 32.0;
+                let angle = std::f64::consts::TAU * i as Real / 32.0;
                 (50.0 + angle.cos() * 8.0, 40.0 + angle.sin() * 8.0)
             })
             .collect(),
@@ -88,7 +89,7 @@ fn test_multi_hole_step_import_and_mesh() {
             if cz < 0.5 || cz > 4.5 {
                 let cu = (p0.x + p1.x + p2.x) / 3.0;
                 let cv = (p0.y + p1.y + p2.y) / 3.0;
-                let c = rc3d_core::math::Vec3::new(cu, cv, 0.0);
+                let c = rc3d_core::math::PVec3::new(cu, cv, 0.0);
                 let c_local = inst.world_transform.inverse() * c.extend(1.0);
                 let cu_local = c_local.x;
                 let cv_local = c_local.y;

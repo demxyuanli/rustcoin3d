@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use crate::geom::SurfaceGeom;
@@ -32,7 +33,7 @@ pub(crate) fn mesh_faces_in_chunk(
     chunk: &[FaceLoopData],
     reg: &BRepStore,
     scaled_config: &BRepMeshConfig,
-    shell_diag: f32,
+    shell_diag: Real,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(FaceKey, EdgeKey, usize), usize>,
     face_orient: &HashMap<FaceKey, bool>,
@@ -605,7 +606,7 @@ pub(crate) fn mesh_faces_in_chunk(
         );
         all_indices.truncate(tris_before_face * 4);
         let uv_bounds = loops.outer.boundary.iter().fold(
-            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+            (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
             |(u0, u1, v0, v1), v| {
                 (u0.min(v.uv.0), u1.max(v.uv.0), v0.min(v.uv.1), v1.max(v.uv.1))
             },
@@ -689,13 +690,13 @@ pub(crate) fn mesh_faces_in_chunk(
         .boundary
         .iter()
         .map(|v| v.uv.1)
-        .fold(f32::INFINITY, f32::min);
+        .fold(f64::INFINITY, Real::min);
             let v_max = grid_loops
         .outer
         .boundary
         .iter()
         .map(|v| v.uv.1)
-        .fold(f32::MIN, f32::max);
+        .fold(f64::MIN, Real::max);
             eprintln!(
         "[mesh diag] {:?} pre-grid tris={} wire={} outer_uv={} v=[{:.4},{:.4}] native={:?} rv={:?} allow={}",
         info_face_key,
@@ -834,7 +835,7 @@ pub(crate) fn mesh_faces_in_chunk(
         range.tri_count,
             );
             let valid_ratio = if range.tri_count > 0 {
-        valid as f32 / range.tri_count as f32
+        valid as Real / range.tri_count as Real
             } else {
         0.0
             };

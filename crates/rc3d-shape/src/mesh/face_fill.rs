@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::face_cdt::{triangulate_uv_cdt_with_steiner, CdtConstraintReport};
 use super::grid::mesh_trimmed_uv_grid;
@@ -31,17 +31,17 @@ pub(crate) use super::fill_surface::{
 pub struct FaceFillConfig {
     pub enable_interior: bool,
     /// IMeshTools_Parameters::DeflectionInterior — max chord-to-surface gap (3D).
-    pub deflection_interior: f32,
+    pub deflection_interior: Real,
     /// IMeshTools_Parameters::MinSize — absolute minimum triangle edge length (3D).
-    pub min_size: f32,
+    pub min_size: Real,
     /// Fraction of shell bbox diagonal used as MinSize floor when `relative_deflection > 0`.
-    pub min_size_relative: f32,
+    pub min_size_relative: Real,
     /// Set by shell mesher: shell_diag * min_size_relative when relative mode active.
-    pub shell_min_size: f32,
+    pub shell_min_size: Real,
     /// Max deflection-driven split iterations during fill (OCC node-insertion loop).
     pub max_adapt_iterations: usize,
     /// IMeshTools_Parameters::Angle — max angular deflection in radians for Steiner splits.
-    pub angular_deflection: f32,
+    pub angular_deflection: Real,
     /// Adaptive UV subdivision depth for structured interior grid (default 4).
     pub parameter_division_max_depth: usize,
     /// Skip expensive surface.project edge splits after structured grid insert.
@@ -77,16 +77,16 @@ pub struct FaceMeshRange {
     pub first_tri: usize,
     pub tri_count: usize,
     pub boundary_global: HashSet<usize>,
-    pub max_chord_error: f32,
+    pub max_chord_error: Real,
     /// CDT boundary constraints that failed enforcement (0 = success).
     pub cdt_constraint_failures: usize,
 }
 
 
-fn tri_max_edge_len(i0: i32, i1: i32, i2: i32, verts: &[Vec3]) -> f32 {
+fn tri_max_edge_len(i0: i32, i1: i32, i2: i32, verts: &[PVec3]) -> Real {
     let (i0, i1, i2) = (i0 as usize, i1 as usize, i2 as usize);
     if i0 >= verts.len() || i1 >= verts.len() || i2 >= verts.len() {
-        return f32::MAX;
+        return f64::MAX;
     }
     let (p0, p1, p2) = (verts[i0], verts[i1], verts[i2]);
     (p1 - p0)
@@ -99,8 +99,8 @@ fn triangle_passes_quality(
     i0: i32,
     i1: i32,
     i2: i32,
-    verts: &[Vec3],
-    max_edge: f32,
+    verts: &[PVec3],
+    max_edge: Real,
     surface: &SurfaceGeom,
     same_sense: bool,
 ) -> bool {
@@ -130,10 +130,10 @@ fn triangle_passes_quality(
 /// Used when centroid projection fails.
 fn compute_vertex_averaged_normal(
     surface: &SurfaceGeom,
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     same_sense: bool,
-) -> Vec3 {
-    let mut avg = Vec3::ZERO;
+) -> PVec3 {
+    let mut avg = PVec3::ZERO;
     let mut count = 0usize;
     for &pt in vertices {
         if let Some((u, v)) = surface.project(pt) {
@@ -148,23 +148,23 @@ fn compute_vertex_averaged_normal(
         }
     }
     if count > 0 {
-        let n = avg / count as f32;
+        let n = avg / count as Real;
         let len = n.length();
         if len > 1e-10 {
             n / len
         } else {
-            Vec3::Z
+            PVec3::Z
         }
     } else {
-        Vec3::Z
+        PVec3::Z
     }
 }
 
-fn chain_arc_length(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
+fn chain_arc_length(chain: &[super::face_uv::UvVertex], verts: &[PVec3]) -> Real {
     if chain.len() < 2 {
         return 0.0;
     }
-    let mut arc = 0.0f32;
+    let mut arc = 0.0_f64;
     for w in chain.windows(2) {
         let a = w[0].global_idx;
         let b = w[1].global_idx;
@@ -193,11 +193,11 @@ fn triangulate_open_chain_strip(chain: &[super::face_uv::UvVertex]) -> Vec<(i32,
     tris
 }
 
-fn chain_planarity_deviation(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> f32 {
+fn chain_planarity_deviation(chain: &[super::face_uv::UvVertex], verts: &[PVec3]) -> Real {
     if chain.len() < 3 {
-        return f32::MAX;
+        return f64::MAX;
     }
-    let mut normal = Vec3::ZERO;
+    let mut normal = PVec3::ZERO;
     for i in 0..chain.len() {
         let j = (i + 1) % chain.len();
         let Some(pi) = verts.get(chain[i].global_idx) else { continue; };
@@ -207,20 +207,20 @@ fn chain_planarity_deviation(chain: &[super::face_uv::UvVertex], verts: &[Vec3])
         normal.z += (pi.x - pj.x) * (pi.y + pj.y);
     }
     if normal.length_squared() < 1e-20 {
-        return f32::MAX;
+        return f64::MAX;
     }
     normal = normal.normalize();
     let Some(origin) = verts.get(chain[0].global_idx) else {
-        return f32::MAX;
+        return f64::MAX;
     };
     chain
         .iter()
         .filter_map(|v| verts.get(v.global_idx))
         .map(|p| (*p - *origin).cross(normal).length())
-        .fold(0.0f32, f32::max)
+        .fold(0.0_f64, Real::max)
 }
 
-fn chain_should_earcut(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> bool {
+fn chain_should_earcut(chain: &[super::face_uv::UvVertex], verts: &[PVec3]) -> bool {
     let arc = chain_arc_length(chain, verts);
     if arc < 1e-6 {
         return false;
@@ -228,7 +228,7 @@ fn chain_should_earcut(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> bo
     chain_planarity_deviation(chain, verts) < arc * 0.08
 }
 
-pub(crate) fn triangulate_open_chain_uv(chain: &[super::face_uv::UvVertex], verts: &[Vec3]) -> Vec<(i32, i32, i32)> {
+pub(crate) fn triangulate_open_chain_uv(chain: &[super::face_uv::UvVertex], verts: &[PVec3]) -> Vec<(i32, i32, i32)> {
     if chain.len() < 3 {
         return Vec::new();
     }
@@ -271,12 +271,12 @@ fn triangulate_loops_cdt(
     face: &BRepFace,
     face_key: FaceKey,
     reg: &BRepStore,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     fill_cfg: &FaceFillConfig,
     shared_boundary: Option<&super::boundary::SharedBoundaryPool>,
-) -> (Vec<(i32, i32, i32)>, f32, CdtConstraintReport) {
+) -> (Vec<(i32, i32, i32)>, Real, CdtConstraintReport) {
     let (tris_flat, max_chord_error, constraint_report) = triangulate_uv_cdt_with_steiner(
         work_loops,
         face,
@@ -298,9 +298,9 @@ fn triangulate_loops_cdt(
     (tris, max_chord_error, constraint_report)
 }
 
-fn uv_bounds_from_loops(loops: &FaceUvLoops) -> (f32, f32, f32, f32) {
+fn uv_bounds_from_loops(loops: &FaceUvLoops) -> (Real, Real, Real, Real) {
     loops.outer.boundary.iter().fold(
-        (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
         |(u0, u1, v0, v1), v| (u0.min(v.uv.0), u1.max(v.uv.0), v0.min(v.uv.1), v1.max(v.uv.1)),
     )
 }
@@ -313,18 +313,18 @@ fn filter_tris_outside_uv_holes(
     if work_loops.inners.is_empty() {
         return tris;
     }
-    let outer_uv: Vec<(f32, f32)> = work_loops
+    let outer_uv: Vec<(Real, Real)> = work_loops
         .outer
         .boundary
         .iter()
         .map(|v| v.uv)
         .collect();
-    let holes: Vec<Vec<(f32, f32)>> = work_loops
+    let holes: Vec<Vec<(Real, Real)>> = work_loops
         .inners
         .iter()
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
         .collect();
-    let mut uv_by_gi: HashMap<usize, (f32, f32)> = HashMap::new();
+    let mut uv_by_gi: HashMap<usize, (Real, Real)> = HashMap::new();
     for v in work_loops
         .outer
         .boundary
@@ -351,14 +351,14 @@ fn filter_tris_outside_uv_holes(
         .collect()
 }
 
-fn loop_uv_centroid(boundary: &[super::face_uv::UvVertex]) -> (f32, f32) {
-    let n = boundary.len() as f32;
+fn loop_uv_centroid(boundary: &[super::face_uv::UvVertex]) -> (Real, Real) {
+    let n = boundary.len() as Real;
     if n < 1.0 {
         return (0.0, 0.0);
     }
     let (su, sv) = boundary
         .iter()
-        .fold((0.0f32, 0.0f32), |(u, v), vtx| (u + vtx.uv.0, v + vtx.uv.1));
+        .fold((0.0_f64, 0.0_f64), |(u, v), vtx| (u + vtx.uv.0, v + vtx.uv.1));
     (su / n, sv / n)
 }
 
@@ -374,7 +374,7 @@ fn match_inner_indices_by_quadrant(
             let o_hi_u = ov.uv.0 >= oc.0;
             let o_hi_v = ov.uv.1 >= oc.1;
             let mut best = 0usize;
-            let mut best_d2 = f32::MAX;
+            let mut best_d2 = f64::MAX;
             for (ii, iv) in inner.iter().enumerate() {
                 if (iv.uv.0 >= ic.0) != o_hi_u || (iv.uv.1 >= ic.1) != o_hi_v {
                     continue;
@@ -434,12 +434,12 @@ fn triangulate_holed_uv_corridor_quads(work_loops: &FaceUvLoops) -> Vec<(i32, i3
 }
 
 fn find_closest_bridge_pair(
-    poly: &[(usize, (f32, f32))],
+    poly: &[(usize, (Real, Real))],
     inner: &[super::face_uv::UvVertex],
 ) -> (usize, usize) {
     let mut best_pi = 0usize;
     let mut best_ii = 0usize;
-    let mut best_d2 = f32::MAX;
+    let mut best_d2 = f64::MAX;
     for (pi, &(_, puv)) in poly.iter().enumerate() {
         for (ii, iv) in inner.iter().enumerate() {
             let du = puv.0 - iv.uv.0;
@@ -456,7 +456,7 @@ fn find_closest_bridge_pair(
 }
 
 fn insert_hole_loop_into_polygon(
-    poly: &mut Vec<(usize, (f32, f32))>,
+    poly: &mut Vec<(usize, (Real, Real))>,
     insert_after: usize,
     inner: &[super::face_uv::UvVertex],
     inner_start: usize,
@@ -466,7 +466,7 @@ fn insert_hole_loop_into_polygon(
         return;
     }
     let bridge = &inner[inner_start];
-    let mut hole_verts: Vec<(usize, (f32, f32))> = vec![(bridge.global_idx, bridge.uv)];
+    let mut hole_verts: Vec<(usize, (Real, Real))> = vec![(bridge.global_idx, bridge.uv)];
     for i in 1..n {
         let v = &inner[(inner_start + n - i) % n];
         hole_verts.push((v.global_idx, v.uv));
@@ -488,7 +488,7 @@ fn triangulate_holed_uv_multi_bridge_earcut(work_loops: &FaceUvLoops) -> Vec<(i3
     if outer.len() < 3 {
         return Vec::new();
     }
-    let mut poly: Vec<(usize, (f32, f32))> = outer
+    let mut poly: Vec<(usize, (Real, Real))> = outer
         .iter()
         .map(|v| (v.global_idx, v.uv))
         .collect();
@@ -554,7 +554,7 @@ fn triangulate_holed_uv_bridge_earcut(work_loops: &FaceUvLoops) -> Vec<(i32, i32
 
     let mut best_oi = 0usize;
     let mut best_ii = 0usize;
-    let mut best_d2 = f32::MAX;
+    let mut best_d2 = f64::MAX;
     for (oi, ov) in outer.iter().enumerate() {
         for (ii, iv) in inner.iter().enumerate() {
             let du = ov.uv.0 - iv.uv.0;
@@ -568,7 +568,7 @@ fn triangulate_holed_uv_bridge_earcut(work_loops: &FaceUvLoops) -> Vec<(i32, i32
         }
     }
 
-    let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::with_capacity(outer.len() + inner.len() + 1);
+    let mut earcut_verts: Vec<(usize, (Real, Real))> = Vec::with_capacity(outer.len() + inner.len() + 1);
     for i in 0..outer.len() {
         let v = &outer[(best_oi + i) % outer.len()];
         earcut_verts.push((v.global_idx, v.uv));
@@ -607,7 +607,7 @@ fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32,
     if !work_loops.inners.is_empty() {
         return triangulate_planar_holed_face(work_loops);
     }
-    let mut earcut_verts: Vec<(usize, (f32, f32))> = Vec::new();
+    let mut earcut_verts: Vec<(usize, (Real, Real))> = Vec::new();
     for v in &work_loops.outer.boundary {
         earcut_verts.push((v.global_idx, v.uv));
     }
@@ -644,10 +644,10 @@ fn triangulate_loops_earcut_fallback(work_loops: &FaceUvLoops) -> Vec<(i32, i32,
 pub(crate) fn emit_filtered_triangles(
     tris: Vec<(i32, i32, i32)>,
     apply_quality: bool,
-    max_edge: f32,
+    max_edge: Real,
     face: &BRepFace,
-    global_vertices: &mut [Vec3],
-    global_normals: &mut [Vec3],
+    global_vertices: &mut [PVec3],
+    global_normals: &mut [PVec3],
     all_indices: &mut Vec<i32>,
 ) -> usize {
     let mut emitted = 0usize;
@@ -778,8 +778,8 @@ pub fn fill_trimmed(
     loops: &FaceUvLoops,
     face: &BRepFace,
     reg: &BRepStore,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     all_indices: &mut Vec<i32>,
     pos_to_idx: &mut super::boundary::BoundaryPosIndex,
     wire_edge_count: usize,
@@ -890,7 +890,7 @@ pub fn fill_trimmed(
                 let emitted = emit_filtered_triangles(
                     tris,
                     false,
-                    f32::MAX,
+                    f64::MAX,
                     face,
                     global_vertices,
                     global_normals,
@@ -913,7 +913,7 @@ pub fn fill_trimmed(
                 let emitted = emit_filtered_triangles(
                     holed_tris,
                     false,
-                    f32::MAX,
+                    f64::MAX,
                     face,
                     global_vertices,
                     global_normals,
@@ -949,7 +949,7 @@ pub fn fill_trimmed(
         for chain in &chains {
             seg_tris.extend(triangulate_open_chain_uv(chain, global_vertices));
         }
-        (seg_tris, 0.0f32, CdtConstraintReport::default())
+        (seg_tris, 0.0_f64, CdtConstraintReport::default())
     } else {
         triangulate_loops_cdt(
             &work_loops,
@@ -976,7 +976,7 @@ pub fn fill_trimmed(
                 let emitted = emit_filtered_triangles(
                     bridge_tris,
                     false,
-                    f32::MAX,
+                    f64::MAX,
                     face,
                     global_vertices,
                     global_normals,
@@ -996,7 +996,7 @@ pub fn fill_trimmed(
                 let emitted = emit_filtered_triangles(
                     tris,
                     false,
-                    f32::MAX,
+                    f64::MAX,
                     face,
                     global_vertices,
                     global_normals,
@@ -1082,7 +1082,7 @@ pub fn fill_trimmed(
     let max_edge = if apply_quality {
         max_allowed_triangle_edge(&work_loops, global_vertices)
     } else {
-        f32::MAX
+        f64::MAX
     };
 
     if is_planar_trim && !work_loops.inners.is_empty() {
@@ -1112,14 +1112,14 @@ pub fn fill_trimmed(
 
 pub fn measure_face_chord_error(
     face: &BRepFace,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
     all_indices: &[i32],
     range: &FaceMeshRange,
-) -> f32 {
+) -> Real {
     let inv_tol = face.tolerance.max(1e-3);
     let start = range.first_tri * 4;
     let end = start + range.tri_count * 4;
-    let mut max_chord = 0.0f32;
+    let mut max_chord = 0.0_f64;
     let slice = all_indices.get(start..end.min(all_indices.len()));
     let Some(tris) = slice else { return max_chord; };
     // For large faces, sample at most MAX_CHORD_SAMPLES evenly-spaced
@@ -1157,15 +1157,15 @@ pub fn measure_face_chord_error(
 /// Projection cache keyed by quantized 3D position.
 /// Eliminates redundant `surface.project()` calls when the same 3D point
 /// is sampled across multiple triangles during chord error measurement.
-type ProjectionCache = HashMap<[u32; 3], Option<(f32, f32)>>;
+type ProjectionCache = HashMap<[u64; 3], Option<(Real, Real)>>;
 
 fn surface_point_deviation_cached(
-    p: Vec3,
+    p: PVec3,
     surface: &SurfaceGeom,
-    inv_tol: f32,
+    inv_tol: Real,
     cache: &mut ProjectionCache,
-) -> f32 {
-    let key = rc3d_core::utils::hash::f32x3_quantized_bits([p.x, p.y, p.z]);
+) -> Real {
+    let key = rc3d_core::utils::hash::f64x3_quantized_bits([p.x, p.y, p.z]);
     if let Some(cached) = cache.get(&key) {
         return match cached {
             Some((u, v)) => (p - surface.d0_at_native_uv(*u, *v)).length(),
@@ -1201,15 +1201,15 @@ fn tri_max_chord_error(
     i0: i32,
     i1: i32,
     i2: i32,
-    verts: &[Vec3],
+    verts: &[PVec3],
     surface: &SurfaceGeom,
-    inv_tol: f32,
+    inv_tol: Real,
     cache: &mut ProjectionCache,
-) -> f32 {
+) -> Real {
     let p0 = verts[i0 as usize];
     let p1 = verts[i1 as usize];
     let p2 = verts[i2 as usize];
-    let mut max_dev = 0.0f32;
+    let mut max_dev = 0.0_f64;
     for p in [p0, p1, p2] {
         max_dev = max_dev.max(surface_point_deviation_cached(p, surface, inv_tol, cache));
     }
@@ -1226,7 +1226,7 @@ pub(crate) fn fix_tri_winding(
     i0: &mut i32,
     i1: &mut i32,
     i2: &mut i32,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
     surface: &SurfaceGeom,
     same_sense: bool,
 ) {
@@ -1260,8 +1260,8 @@ pub(crate) fn accumulate_normals(
     i0: i32,
     i1: i32,
     i2: i32,
-    global_vertices: &[Vec3],
-    global_normals: &mut [Vec3],
+    global_vertices: &[PVec3],
+    global_normals: &mut [PVec3],
 ) {
     let p0 = global_vertices[i0 as usize];
     let p1 = global_vertices[i1 as usize];
@@ -1307,9 +1307,9 @@ mod tests {
         };
         let face = BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: Default::default(),
             inner_wires: vec![],
@@ -1319,17 +1319,17 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         };
-        let mut verts: Vec<Vec3> = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(4.0, 0.0, 0.0),
-            Vec3::new(4.0, 4.0, 0.0),
-            Vec3::new(0.0, 4.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(3.0, 1.0, 0.0),
-            Vec3::new(3.0, 3.0, 0.0),
-            Vec3::new(1.0, 3.0, 0.0),
+        let mut verts: Vec<PVec3> = vec![
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(4.0, 0.0, 0.0),
+            PVec3::new(4.0, 4.0, 0.0),
+            PVec3::new(0.0, 4.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(3.0, 1.0, 0.0),
+            PVec3::new(3.0, 3.0, 0.0),
+            PVec3::new(1.0, 3.0, 0.0),
         ];
-        let mut norms = vec![Vec3::Z; 8];
+        let mut norms = vec![PVec3::Z; 8];
         let mut indices = Vec::new();
         let mut pos_map = crate::mesh::boundary::BoundaryPosIndex::with_cell_size(
             crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE,
@@ -1358,7 +1358,7 @@ mod tests {
         assert!(range.tri_count > 0);
         let hole = vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)];
         let outer_poly = vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
-        let uv_map: HashMap<usize, (f32, f32)> = loops
+        let uv_map: HashMap<usize, (Real, Real)> = loops
             .outer
             .boundary
             .iter()

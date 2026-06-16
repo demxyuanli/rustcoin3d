@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use crate::geom::curve2d::Curve2d;
 use crate::geom::curve_eval::find_param_on_curve;
@@ -26,8 +26,8 @@ fn curves_should_weld(reg: &BRepStore, ek_a: EdgeKey, ek_b: EdgeKey) -> bool {
     let (Some(ea), Some(eb)) = (reg.edges.get(ek_a), reg.edges.get(ek_b)) else {
         return false;
     };
-    let p_lo = reg.vertices.get(ea.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
-    let p_hi = reg.vertices.get(ea.v_high).map(|v| v.position).unwrap_or(Vec3::ZERO);
+    let p_lo = reg.vertices.get(ea.v_low).map(|v| v.position).unwrap_or(PVec3::ZERO);
+    let p_hi = reg.vertices.get(ea.v_high).map(|v| v.position).unwrap_or(PVec3::ZERO);
     let tol = ea.tolerance.max(eb.tolerance);
     let chord = (p_hi - p_lo).length().max(tol);
     let tight = (chord * 0.01).max(1e-4) + tol * 10.0;
@@ -53,7 +53,7 @@ struct EdgeSampleKey {
     t_q: u32,
 }
 
-fn quantize_t(t: f32) -> u32 {
+fn quantize_t(t: Real) -> u32 {
     (t.clamp(0.0, 1.0) * 1_000_000.0).round() as u32
 }
 
@@ -103,13 +103,13 @@ fn pick_canonical_polygon<'a>(
 }
 
 /// Arc-length fraction [0,1] of `pt` along a polyline (piecewise linear).
-fn arc_length_fraction(polyline: &[(f32, Vec3)], pt: Vec3) -> f32 {
+fn arc_length_fraction(polyline: &[(Real, PVec3)], pt: PVec3) -> Real {
     if polyline.len() < 2 {
         return 0.0;
     }
 
-    let mut seg_lens: Vec<f32> = Vec::with_capacity(polyline.len() - 1);
-    let mut total = 0.0f32;
+    let mut seg_lens: Vec<Real> = Vec::with_capacity(polyline.len() - 1);
+    let mut total = 0.0_f64;
     for w in polyline.windows(2) {
         let len = (w[1].1 - w[0].1).length();
         seg_lens.push(len);
@@ -119,9 +119,9 @@ fn arc_length_fraction(polyline: &[(f32, Vec3)], pt: Vec3) -> f32 {
         return 0.0;
     }
 
-    let mut best_s = 0.0f32;
-    let mut best_d2 = f32::MAX;
-    let mut cum = 0.0f32;
+    let mut best_s = 0.0_f64;
+    let mut best_d2 = f64::MAX;
+    let mut cum = 0.0_f64;
 
     for (i, &seg_len) in seg_lens.iter().enumerate() {
         let a = polyline[i].1;
@@ -146,14 +146,14 @@ fn arc_length_fraction(polyline: &[(f32, Vec3)], pt: Vec3) -> f32 {
 fn unified_arc_fraction(
     reg: &BRepStore,
     ek: EdgeKey,
-    pt: Vec3,
+    pt: PVec3,
     group: &[EdgeKey],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-) -> f32 {
+) -> Real {
     if group.len() <= 1 {
         if let Some(edge) = reg.edges.get(ek) {
-            let p_lo = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
-            let p_hi = reg.vertices.get(edge.v_high).map(|v| v.position).unwrap_or(Vec3::ZERO);
+            let p_lo = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(PVec3::ZERO);
+            let p_hi = reg.vertices.get(edge.v_high).map(|v| v.position).unwrap_or(PVec3::ZERO);
             let chord = p_hi - p_lo;
             let len2 = chord.length_squared();
             if len2 > 1e-20 {
@@ -173,10 +173,10 @@ pub fn max_equivalent_edge_gap(
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(EdgeKey, usize), usize>,
-    vertices: &[Vec3],
-    weld_tol: f32,
-) -> f32 {
-    let mut max_gap = 0.0f32;
+    vertices: &[PVec3],
+    weld_tol: Real,
+) -> Real {
+    let mut max_gap = 0.0_f64;
     for group in equivalent_edge_groups(reg) {
         if group.len() < 2 {
             continue;
@@ -222,8 +222,8 @@ pub fn max_equivalent_edge_gap(
 pub fn build_edge_boundary_pool(
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     vertex_mesh_idx: &HashMap<VertexKey, usize>,
 ) -> HashMap<(EdgeKey, usize), usize> {
@@ -310,8 +310,8 @@ pub fn build_face_boundary_pool(
     reg: &BRepStore,
     shell_key: ShellKey,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     vertex_mesh_idx: &HashMap<VertexKey, usize>,
 ) -> FaceEdgeBoundaryIdx {
@@ -393,10 +393,10 @@ fn boundary_point_on_face(
     surface: &SurfaceGeom,
     pi: usize,
     _n: usize,
-    t: f32,
+    t: Real,
     poly: &EdgePolygon,
     _reg: &BRepStore,
-) -> Vec3 {
+) -> PVec3 {
     if let Some(pts) = poly.params_2d.get(&face_key) {
         if let Some(&(_, (u, v))) = pts.get(pi) {
             return surface.d0_native(u, v);
@@ -411,13 +411,13 @@ pub fn measure_face_boundary_surface_gap(
     reg: &BRepStore,
     shell_key: ShellKey,
     config: &super::edge_disc::EdgeDiscConfig,
-) -> f32 {
+) -> Real {
     let edge_polygons = super::edge_disc::discretize_all_edges(reg, config);
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s,
         None => return 0.0,
     };
-    let mut max_gap = 0.0f32;
+    let mut max_gap = 0.0_f64;
 
     for &(face_key, _) in &shell.faces {
         let face = match reg.faces.get(face_key) {
@@ -459,11 +459,11 @@ pub fn measure_face_boundary_surface_gap(
     max_gap
 }
 
-fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &Curve2d, t: f32) -> f32 {
+fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: PVec3, pcurve: &Curve2d, t: Real) -> Real {
     let uv = pcurve.d0(t);
     let mut best = (pt - surface.d0_native(uv.0, uv.1)).length();
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
-        const TAU: f32 = std::f32::consts::TAU;
+        const TAU: Real = std::f64::consts::TAU;
         if uv.0 <= 1.0 + 1e-4 {
             best = best.min((pt - surface.d0_native(uv.0 * TAU, uv.1)).length());
         }
@@ -475,12 +475,12 @@ fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &Curve2d, t
         }
     }
     if let Some(pu) = surface.native_u_period() {
-        for shift in [-1.0f32, 1.0] {
+        for shift in [-1.0_f64, 1.0] {
             best = best.min((pt - surface.d0_native(uv.0 + shift * pu, uv.1)).length());
         }
     }
     if let Some(pv) = surface.native_v_period() {
-        for shift in [-1.0f32, 1.0] {
+        for shift in [-1.0_f64, 1.0] {
             best = best.min((pt - surface.d0_native(uv.0, uv.1 + shift * pv)).length());
         }
     }
@@ -491,10 +491,10 @@ fn surface_gap_at_pcurve_uv(surface: &SurfaceGeom, pt: Vec3, pcurve: &Curve2d, t
 pub fn measure_equivalent_edge_weld_gap(
     reg: &BRepStore,
     config: &super::edge_disc::EdgeDiscConfig,
-) -> f32 {
+) -> Real {
     let edge_polygons = super::edge_disc::discretize_all_edges(reg, config);
-    let mut global_vertices: Vec<Vec3> = Vec::new();
-    let mut global_normals: Vec<Vec3> = Vec::new();
+    let mut global_vertices: Vec<PVec3> = Vec::new();
+    let mut global_normals: Vec<PVec3> = Vec::new();
     let mut pos_to_idx =
         BoundaryPosIndex::with_cell_size(crate::mesh::boundary::BOUNDARY_DEDUP_TOLERANCE);
     let mut vertex_mesh_idx: HashMap<VertexKey, usize> = HashMap::new();
@@ -526,15 +526,15 @@ mod tests {
 
     fn build_two_face_shared_duplicate_edges() -> (BRepStore, crate::topo::FaceKey, crate::topo::FaceKey) {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
-        let _v2 = reg.find_or_add_vertex(Vec3::new(10.0, 10.0, 0.0), 1e-4);
-        let _v3 = reg.find_or_add_vertex(Vec3::new(0.0, 10.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(10.0, 0.0, 0.0), 1e-4);
+        let _v2 = reg.find_or_add_vertex(PVec3::new(10.0, 10.0, 0.0), 1e-4);
+        let _v3 = reg.find_or_add_vertex(PVec3::new(0.0, 10.0, 0.0), 1e-4);
 
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
 
         let make_face = |reg: &mut BRepStore| {
@@ -555,14 +555,14 @@ mod tests {
         let f1 = make_face(&mut reg);
 
         let curve_a = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::new(10.0, 0.0, 0.0),
+            origin: PVec3::ZERO,
+            direction: PVec3::new(10.0, 0.0, 0.0),
         };
         let curve_b = CurveGeom::Polyline {
             points: vec![
-                Vec3::ZERO,
-                Vec3::new(5.0, 0.0, 0.5),
-                Vec3::new(10.0, 0.0, 0.0),
+                PVec3::ZERO,
+                PVec3::new(5.0, 0.0, 0.5),
+                PVec3::new(10.0, 0.0, 0.0),
             ],
         };
         let pcurve_a = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };

@@ -7,6 +7,7 @@
 //! OCC alignment: BRepMesh_FastDiscret adaptive parameter sampling driven
 //! by the second fundamental form (via SurfaceGeom::min_curvature_radius).
 
+use rc3d_core::math::Real;
 use crate::geom::SurfaceGeom;
 
 /// Parameter domain subdivision driven by surface curvature and edge deviation.
@@ -22,10 +23,10 @@ use crate::geom::SurfaceGeom;
 /// will only subdivide U (the circular direction), not V (the linear axis).
 pub fn curvature_driven_divisions(
     surface: &SurfaceGeom,
-    range: (f32, f32, f32, f32),
-    deflection: f32,
+    range: (Real, Real, Real, Real),
+    deflection: Real,
     max_depth: usize,
-) -> (Vec<f32>, Vec<f32>) {
+) -> (Vec<Real>, Vec<Real>) {
     let (u_min, u_max, v_min, v_max) = range;
     if deflection <= 0.0 || max_depth == 0 {
         return (vec![u_min, u_max], vec![v_min, v_max]);
@@ -49,12 +50,12 @@ pub fn curvature_driven_divisions(
 /// Recursively subdivide the U parametric direction at native parameters.
 fn subdivide_u(
     surface: &SurfaceGeom,
-    u0: f32, u1: f32,
-    v0: f32, v1: f32,
-    deflection: f32,
+    u0: Real, u1: Real,
+    v0: Real, v1: Real,
+    deflection: Real,
     max_depth: usize,
     depth: usize,
-    divs: &mut Vec<f32>,
+    divs: &mut Vec<Real>,
 ) {
     if depth >= max_depth {
         return;
@@ -70,7 +71,7 @@ fn subdivide_u(
     // Curvature check at cell center (convert to normalized for min_curvature_radius)
     let (un, vn) = surface.native_uv_to_d0(um, vm);
     let min_k = surface.min_curvature_radius(un, vn);
-    let high_curv = min_k < deflection * 2.0 && min_k < f32::MAX;
+    let high_curv = min_k < deflection * 2.0 && min_k < f64::MAX;
 
     if max_dev > deflection || high_curv {
         divs.push(um);
@@ -82,12 +83,12 @@ fn subdivide_u(
 /// Recursively subdivide the V parametric direction at native parameters.
 fn subdivide_v(
     surface: &SurfaceGeom,
-    v0: f32, v1: f32,
-    u0: f32, u1: f32,
-    deflection: f32,
+    v0: Real, v1: Real,
+    u0: Real, u1: Real,
+    deflection: Real,
     max_depth: usize,
     depth: usize,
-    divs: &mut Vec<f32>,
+    divs: &mut Vec<Real>,
 ) {
     if depth >= max_depth {
         return;
@@ -103,7 +104,7 @@ fn subdivide_v(
     // Curvature check at cell center
     let (un, vn) = surface.native_uv_to_d0(um, vm);
     let min_k = surface.min_curvature_radius(un, vn);
-    let high_curv = min_k < deflection * 2.0 && min_k < f32::MAX;
+    let high_curv = min_k < deflection * 2.0 && min_k < f64::MAX;
 
     if max_dev > deflection || high_curv {
         divs.push(vm);
@@ -113,7 +114,7 @@ fn subdivide_v(
 }
 
 /// Deviation of surface from linear interpolation along a u-isoline at native v.
-fn native_edge_dev_u(surface: &SurfaceGeom, u0: f32, u1: f32, v: f32) -> f32 {
+fn native_edge_dev_u(surface: &SurfaceGeom, u0: Real, u1: Real, v: Real) -> Real {
     let um = (u0 + u1) * 0.5;
     let p0 = surface.d0_native(u0, v);
     let p1 = surface.d0_native(u1, v);
@@ -122,7 +123,7 @@ fn native_edge_dev_u(surface: &SurfaceGeom, u0: f32, u1: f32, v: f32) -> f32 {
 }
 
 /// Deviation of surface from linear interpolation along a v-isoline at native u.
-fn native_edge_dev_v(surface: &SurfaceGeom, u: f32, v0: f32, v1: f32) -> f32 {
+fn native_edge_dev_v(surface: &SurfaceGeom, u: Real, v0: Real, v1: Real) -> Real {
     let vm = (v0 + v1) * 0.5;
     let p0 = surface.d0_native(u, v0);
     let p1 = surface.d0_native(u, v1);
@@ -134,14 +135,14 @@ fn native_edge_dev_v(surface: &SurfaceGeom, u: f32, v0: f32, v1: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::geom::SurfaceGeom;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_plane_no_subdivision() {
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         // Plane: native = normalized, range in world units
         let (u_divs, v_divs) =
@@ -152,11 +153,11 @@ mod tests {
 
     #[test]
     fn test_small_cylinder_subdivision() {
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 0.5);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 0.5);
         // Cylinder native u: [0, TAU] (circle), native v: linear
         let (u_divs, v_divs) = curvature_driven_divisions(
             &cyl,
-            (0.0, std::f32::consts::TAU, 0.0, 1.0),
+            (0.0, std::f64::consts::TAU, 0.0, 1.0),
             0.01,
             4,
         );
@@ -167,10 +168,10 @@ mod tests {
 
     #[test]
     fn test_large_cylinder_u_subdivided_v_not() {
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 100.0);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 100.0);
         let (u_divs, v_divs) = curvature_driven_divisions(
             &cyl,
-            (0.0, std::f32::consts::TAU, 0.0, 1.0),
+            (0.0, std::f64::consts::TAU, 0.0, 1.0),
             0.01,
             4,
         );
@@ -182,27 +183,27 @@ mod tests {
 
     #[test]
     fn test_zero_deflection_returns_endpoints() {
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
         let (u_divs, v_divs) = curvature_driven_divisions(
             &cyl,
-            (0.0, std::f32::consts::TAU, 0.0, 1.0),
+            (0.0, std::f64::consts::TAU, 0.0, 1.0),
             0.0,
             4,
         );
-        assert_eq!(u_divs, vec![0.0, std::f32::consts::TAU]);
+        assert_eq!(u_divs, vec![0.0, std::f64::consts::TAU]);
         assert_eq!(v_divs, vec![0.0, 1.0]);
     }
 
     #[test]
     fn test_sphere_subdivides_both_directions() {
         let sphere = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 2.0,
         };
         // Sphere native u: [0, TAU], native v: [0, PI]
         let (u_divs, v_divs) = curvature_driven_divisions(
             &sphere,
-            (0.0, std::f32::consts::TAU, 0.3, 2.8),
+            (0.0, std::f64::consts::TAU, 0.3, 2.8),
             0.05,
             4,
         );

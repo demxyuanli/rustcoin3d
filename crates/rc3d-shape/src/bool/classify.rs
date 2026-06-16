@@ -1,6 +1,6 @@
 //! Point-in-solid classification via ray casting (B-Rep native).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{ShellKey, FaceKey, BRepFace};
 use crate::geom::SurfaceGeom;
@@ -17,10 +17,10 @@ pub enum PointClassification {
 /// Classify a 3D point as inside/outside/on a B-Rep solid using ray casting.
 /// Odd intersection count = inside, even = outside.
 pub fn classify_point_solid(
-    point: Vec3,
+    point: PVec3,
     shell_key: ShellKey,
     reg: &BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> PointClassification {
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s,
@@ -28,12 +28,12 @@ pub fn classify_point_solid(
     };
 
     let ray_dirs = [
-        Vec3::new(0.0, 0.0, 1.0),
-        Vec3::new(0.0, 1.0, 0.0),
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, -1.0),
-        Vec3::new(0.0, -1.0, 0.0),
-        Vec3::new(-1.0, 0.0, 0.0),
+        PVec3::new(0.0, 0.0, 1.0),
+        PVec3::new(0.0, 1.0, 0.0),
+        PVec3::new(1.0, 0.0, 0.0),
+        PVec3::new(0.0, 0.0, -1.0),
+        PVec3::new(0.0, -1.0, 0.0),
+        PVec3::new(-1.0, 0.0, 0.0),
     ];
 
     let mut confident_votes = Vec::new();
@@ -90,13 +90,13 @@ pub fn classify_point_solid(
 /// Approximate winding number via solid angle subtended by shell faces.
 /// OCC: BRepClass3d_SClassifier — solid angle integral over visible faces.
 fn winding_number_approximate(
-    point: Vec3, shell_key: ShellKey, reg: &BRepStore, _tolerance: f32,
-) -> f32 {
+    point: PVec3, shell_key: ShellKey, reg: &BRepStore, _tolerance: Real,
+) -> Real {
     let shell = match reg.shells.get(shell_key) {
         Some(s) => s,
         None => return 0.0,
     };
-    let mut wn = 0.0f32;
+    let mut wn = 0.0_f64;
     for &(face_key, _orient) in &shell.faces {
         let face = match reg.faces.get(face_key) {
             Some(f) => f,
@@ -123,18 +123,18 @@ fn winding_number_approximate(
             wn += 2.0 * triple.atan2(denom);
         }
     }
-    wn / (4.0 * std::f32::consts::PI)
+    wn / (4.0 * std::f64::consts::PI)
 }
 
 fn face_vertex_positions(
     _face_key: FaceKey, face: &BRepFace, reg: &BRepStore,
-) -> Option<Vec<Vec3>> {
+) -> Option<Vec<PVec3>> {
     let wire = reg.wires.get(face.outer_wire)?;
     let mut pts = Vec::new();
     for &(ek, _) in &wire.edges {
         let edge = reg.edges.get(ek)?;
         let v = reg.vertices.get(edge.v_low)?;
-        if pts.last().map(|p: &Vec3| (*p - v.position).length() > 1e-10).unwrap_or(true) {
+        if pts.last().map(|p: &PVec3| (*p - v.position).length() > 1e-10).unwrap_or(true) {
             pts.push(v.position);
         }
     }
@@ -145,8 +145,8 @@ fn face_vertex_positions(
 enum RayHit { Hit, Miss, Boundary }
 
 fn ray_surface_intersect(
-    origin: Vec3, dir: Vec3,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     match &face.surface {
         SurfaceGeom::Plane { origin: p0, normal, .. } => {
@@ -181,9 +181,9 @@ fn ray_surface_intersect(
 
 // Helper: given quadratic A*t^2 + B*t + C = 0, find ray hits
 fn solve_quadratic_ray(
-    a: f32, b: f32, c: f32,
-    origin: Vec3, dir: Vec3,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    a: Real, b: Real, c: Real,
+    origin: PVec3, dir: PVec3,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     if a.abs() < 1e-10 {
         if b.abs() < 1e-10 { return RayHit::Miss; }
@@ -209,9 +209,9 @@ fn solve_quadratic_ray(
 }
 
 fn ray_cone_intersect(
-    origin: Vec3, dir: Vec3,
-    apex: Vec3, axis: Vec3, semi_angle: f32,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    apex: PVec3, axis: PVec3, semi_angle: Real,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     let a = axis.normalize();
     let tan_a = semi_angle.tan();
@@ -232,9 +232,9 @@ fn ray_cone_intersect(
 }
 
 fn ray_torus_intersect(
-    origin: Vec3, dir: Vec3,
-    center: Vec3, axis: Vec3, major_r: f32, minor_r: f32,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    center: PVec3, axis: PVec3, major_r: Real, minor_r: Real,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     // Numerical approach: sample along ray, project to surface
     let a = axis.normalize();
@@ -267,8 +267,8 @@ fn ray_torus_intersect(
 }
 
 fn ray_general_intersect(
-    origin: Vec3, dir: Vec3,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     let ray_len = dir.length();
     if ray_len < 1e-10 { return RayHit::Miss; }
@@ -280,11 +280,11 @@ fn ray_general_intersect(
     let search_tol = tolerance.max(1e-3) * 100.0;
     let coarse_steps = 32;
     let max_t = 200.0;
-    let mut candidates: Vec<f32> = Vec::new();
-    let mut prev_dist = f32::MAX;
+    let mut candidates: Vec<Real> = Vec::new();
+    let mut prev_dist = f64::MAX;
 
     for i in 0..=coarse_steps {
-        let t = max_t * i as f32 / coarse_steps as f32;
+        let t = max_t * i as Real / coarse_steps as Real;
         let pt = origin + d * t;
         if let Some((u, v)) = surface.project(pt) {
             let surf_pt = surface.d0_native(u, v);
@@ -319,9 +319,9 @@ fn ray_general_intersect(
 /// Given an initial t where distance < search_tol, narrows down to the
 /// exact t where distance ≈ 0 using bisection.
 fn refine_ray_hit(
-    origin: Vec3, dir: Vec3, t_seed: f32,
-    surface: &SurfaceGeom, tolerance: f32, max_iter: usize,
-) -> Option<f32> {
+    origin: PVec3, dir: PVec3, t_seed: Real,
+    surface: &SurfaceGeom, tolerance: Real, max_iter: usize,
+) -> Option<Real> {
     let search_radius = tolerance * 50.0;
     let mut lo = (t_seed - search_radius).max(0.0);
     let mut hi = t_seed + search_radius;
@@ -329,7 +329,7 @@ fn refine_ray_hit(
     // Ensure lo has distance > 0 (ray is above surface) and hi has
     // a valid projection close to the surface.
     let mut best_t = t_seed;
-    let mut best_dist = f32::MAX;
+    let mut best_dist = f64::MAX;
 
     for _ in 0..max_iter {
         let mid = (lo + hi) * 0.5;
@@ -364,9 +364,9 @@ fn refine_ray_hit(
 }
 
 fn ray_cylinder_intersect(
-    origin: Vec3, dir: Vec3,
-    cyl_origin: Vec3, cyl_axis: Vec3, cyl_radius: f32,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    cyl_origin: PVec3, cyl_axis: PVec3, cyl_radius: Real,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     let a = cyl_axis.normalize();
     let d_perp = dir - a * dir.dot(a);
@@ -390,9 +390,9 @@ fn ray_cylinder_intersect(
 }
 
 fn ray_sphere_intersect(
-    origin: Vec3, dir: Vec3,
-    center: Vec3, radius: f32,
-    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: f32,
+    origin: PVec3, dir: PVec3,
+    center: PVec3, radius: Real,
+    face: &BRepFace, face_key: FaceKey, reg: &BRepStore, tolerance: Real,
 ) -> RayHit {
     let oc = origin - center;
     let a = dir.dot(dir);
@@ -411,7 +411,7 @@ fn ray_sphere_intersect(
     RayHit::Miss
 }
 
-fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepStore) -> bool {
+fn point_in_face_uv(point: PVec3, face: &BRepFace, face_key: FaceKey, reg: &BRepStore) -> bool {
     let uv = match face.surface.project(point) {
         Some(uv) => uv,
         None => return false,
@@ -421,7 +421,7 @@ fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepS
         None => return true,
     };
     if wire.edges.is_empty() { return true; }
-    let mut polygon_uv: Vec<(f32, f32)> = Vec::new();
+    let mut polygon_uv: Vec<(Real, Real)> = Vec::new();
     for &(edge_key, _orient) in &wire.edges {
         let edge = match reg.edges.get(edge_key) {
             Some(e) => e,
@@ -431,7 +431,7 @@ fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepS
             let start_uv = pcurve.d0(0.0);
             polygon_uv.push((start_uv.0, start_uv.1));
         } else {
-            let v_pos = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
+            let v_pos = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(PVec3::ZERO);
             if let Some(uv) = face.surface.project(v_pos) {
                 polygon_uv.push(uv);
             }
@@ -441,7 +441,7 @@ fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepS
     point_in_polygon_2d(uv, &polygon_uv)
 }
 
-fn point_in_polygon_2d(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
+fn point_in_polygon_2d(point: (Real, Real), polygon: &[(Real, Real)]) -> bool {
     let n = polygon.len();
     if n < 3 { return false; }
     let mut inside = false;
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn classify_returns_outside_for_default_shell() {
         let reg = BRepStore::new();
-        let result = classify_point_solid(Vec3::ZERO, ShellKey::default(), &reg, 1e-4);
+        let result = classify_point_solid(PVec3::ZERO, ShellKey::default(), &reg, 1e-4);
         assert_eq!(result, PointClassification::Outside);
     }
 

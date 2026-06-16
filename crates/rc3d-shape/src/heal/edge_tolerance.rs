@@ -6,6 +6,7 @@
 //!
 //! OCC alignment: ShapeFix_Edge::FixSameParameter + ShapeFix_Edge::FixVertexTolerance
 
+use rc3d_core::math::Real;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey};
 use crate::topo_iter;
@@ -16,7 +17,7 @@ pub struct EdgeToleranceReport {
     pub edges_checked: usize,
     pub tolerances_increased: usize,
     pub tolerances_decreased: usize,
-    pub max_adjustment: f32,
+    pub max_adjustment: Real,
 }
 
 /// Auto-fix a single edge's tolerance based on PCurve-to-3D deviation.
@@ -30,10 +31,10 @@ pub struct EdgeToleranceReport {
 pub fn auto_fix_edge_tolerance(
     ek: EdgeKey,
     reg: &mut BRepStore,
-    min_tolerance: f32,
-    max_tolerance: f32,
+    min_tolerance: Real,
+    max_tolerance: Real,
     n_samples: usize,
-) -> Option<f32> {
+) -> Option<Real> {
     let edge = reg.edges.get(ek)?;
     let face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
 
@@ -41,7 +42,7 @@ pub fn auto_fix_edge_tolerance(
         return None;
     }
 
-    let mut max_dev = 0.0f32;
+    let mut max_dev = 0.0_f64;
 
     for fk in &face_keys {
         let face = match reg.faces.get(*fk) {
@@ -54,7 +55,7 @@ pub fn auto_fix_edge_tolerance(
         };
 
         for i in 0..=n_samples {
-            let t = i as f32 / n_samples as f32;
+            let t = i as Real / n_samples as Real;
             let uv = pcurve.d0(t);
 
             // Evaluate surface at PCURVE UV to get 3D position
@@ -87,8 +88,8 @@ pub fn auto_fix_edge_tolerance(
 pub fn auto_fix_shell_edge_tolerances(
     shell_key: ShellKey,
     reg: &mut BRepStore,
-    min_tolerance: f32,
-    max_tolerance: f32,
+    min_tolerance: Real,
+    max_tolerance: Real,
 ) -> EdgeToleranceReport {
     let mut report = EdgeToleranceReport::default();
     let edges = topo_iter::iter_edges_of_shell(shell_key, reg);
@@ -144,22 +145,22 @@ mod tests {
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
     use crate::topo::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_auto_fix_increases_tolerance_for_mismatched_pcurve() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 0.0), 1e-6);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-6);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 0.0), 1e-6);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-6);
 
         let curve_3d = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // PCurve with intentional error: y=0.1 instead of y=0.0
         let pcurve = Curve2d::Line {
@@ -201,16 +202,16 @@ mod tests {
     fn test_auto_fix_exact_pcurve_preserves_tight_tolerance() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-6);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-6);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-6);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-6);
 
         let curve_3d = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // Exact PCurve matches 3D curve
         let pcurve = Curve2d::Line {

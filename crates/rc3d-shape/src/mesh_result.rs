@@ -1,7 +1,7 @@
 //! Mesh result type — output of all tessellation pipelines.
 
 use std::collections::{HashMap, HashSet};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 /// Convert MeshResult (i32 indices with -1 sentinel) to TriangleMesh (u32 contiguous).
 impl From<&MeshResult> for rc3d_mesh::TriangleMesh {
@@ -10,14 +10,18 @@ impl From<&MeshResult> for rc3d_mesh::TriangleMesh {
             .filter(|&&i| i >= 0)
             .map(|&i| i as u32)
             .collect();
-        rc3d_mesh::TriangleMesh::from_indexed(&mesh.vertices, &tri_indices)
+        // Cast f64→f32 at the rendering boundary
+        let f32_verts: Vec<rc3d_core::math::Vec3> = mesh.vertices.iter()
+            .map(|v| rc3d_core::math::Vec3::new(v.x as f32, v.y as f32, v.z as f32))
+            .collect();
+        rc3d_mesh::TriangleMesh::from_indexed(&f32_verts, &tri_indices)
     }
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct MeshResult {
-    pub vertices: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
+    pub vertices: Vec<PVec3>,
+    pub normals: Vec<PVec3>,
     pub indices: Vec<i32>,
 }
 
@@ -25,7 +29,7 @@ impl MeshResult {
     /// Compute per-vertex normals by averaging normals of adjacent triangles.
     pub fn compute_normals(&mut self) {
         if self.vertices.is_empty() || self.indices.is_empty() { return; }
-        let mut normals_acc = vec![Vec3::ZERO; self.vertices.len()];
+        let mut normals_acc = vec![PVec3::ZERO; self.vertices.len()];
         for chunk in self.indices.chunks(4) {
             if chunk.len() < 3 { continue; }
             let i0 = chunk[0] as usize;
@@ -40,7 +44,7 @@ impl MeshResult {
             normals_acc[i2] += n;
         }
         self.normals = normals_acc.into_iter()
-            .map(|n| if n.length() > 1e-10 { n * (1.0 / n.length()) } else { Vec3::Z })
+            .map(|n| if n.length() > 1e-10 { n * (1.0 / n.length()) } else { PVec3::Z })
             .collect();
     }
 
@@ -65,11 +69,11 @@ impl MeshResult {
         self.vertices.extend_from_slice(&other.vertices);
         if other.normals.len() == other.vertices.len() {
             if self.normals.len() < self.vertices.len() - other.vertices.len() {
-                self.normals.resize(self.vertices.len() - other.vertices.len(), Vec3::ZERO);
+                self.normals.resize(self.vertices.len() - other.vertices.len(), PVec3::ZERO);
             }
             self.normals.extend_from_slice(&other.normals);
         } else if !self.vertices.is_empty() && self.normals.len() != self.vertices.len() {
-            self.normals.resize(self.vertices.len(), Vec3::ZERO);
+            self.normals.resize(self.vertices.len(), PVec3::ZERO);
         }
         for chunk in other.indices.chunks(4) {
             if chunk.len() < 3 {
@@ -85,7 +89,7 @@ impl MeshResult {
     }
 
     /// Weld vertices within tolerance using spatial hash + union-find.
-    pub fn weld_vertices(&mut self, tolerance: f32) {
+    pub fn weld_vertices(&mut self, tolerance: Real) {
         if self.vertices.is_empty() { return; }
         let n = self.vertices.len();
         let cell_size = tolerance.max(1e-4);
@@ -134,15 +138,15 @@ impl MeshResult {
         let mut remap: Vec<usize> = vec![0; n];
         for members in root_to_group.values() {
             let new_idx = new_vertices.len();
-            let mut sum_pos = Vec3::ZERO;
-            let mut sum_norm = Vec3::ZERO;
+            let mut sum_pos = PVec3::ZERO;
+            let mut sum_norm = PVec3::ZERO;
             for &i in members {
                 sum_pos += self.vertices[i];
                 if i < self.normals.len() { sum_norm += self.normals[i]; }
             }
             let count = members.len();
-            new_vertices.push(sum_pos * (1.0 / count as f32));
-            new_normals.push(if sum_norm.length() > 1e-10 { sum_norm.normalize() } else { Vec3::Z });
+            new_vertices.push(sum_pos * (1.0 / count as Real));
+            new_normals.push(if sum_norm.length() > 1e-10 { sum_norm.normalize() } else { PVec3::Z });
             for &i in members { remap[i] = new_idx; }
         }
         let mut new_indices = Vec::with_capacity(self.indices.len());
@@ -163,7 +167,7 @@ impl MeshResult {
     ///
     /// OCC alignment: BRepMesh_FastDiscret locks discretized edge vertices;
     /// internal Steiner points can move but boundary vertices are fixed.
-    pub fn weld_vertices_protected(&mut self, tolerance: f32, protected: &HashSet<usize>) -> usize {
+    pub fn weld_vertices_protected(&mut self, tolerance: Real, protected: &HashSet<usize>) -> usize {
         if self.vertices.len() < 2 || tolerance <= 0.0 {
             return 0;
         }
@@ -250,12 +254,12 @@ impl MeshResult {
                 new_normals.push(if a < self.normals.len() {
                     self.normals[a]
                 } else {
-                    Vec3::Z
+                    PVec3::Z
                 });
             } else {
                 // No protected vertex: average all members
-                let mut sum_pos = Vec3::ZERO;
-                let mut sum_norm = Vec3::ZERO;
+                let mut sum_pos = PVec3::ZERO;
+                let mut sum_norm = PVec3::ZERO;
                 for &i in members {
                     sum_pos += self.vertices[i];
                     if i < self.normals.len() {
@@ -263,9 +267,9 @@ impl MeshResult {
                     }
                 }
                 let count = members.len();
-                new_vertices.push(sum_pos * (1.0 / count as f32));
+                new_vertices.push(sum_pos * (1.0 / count as Real));
                 new_normals.push(
-                    if sum_norm.length() > 1e-10 { sum_norm.normalize() } else { Vec3::Z }
+                    if sum_norm.length() > 1e-10 { sum_norm.normalize() } else { PVec3::Z }
                 );
             }
 
@@ -296,9 +300,9 @@ impl MeshResult {
     pub fn finalize_normals(&mut self) {
         if self.vertices.is_empty() || self.indices.is_empty() { return; }
         if self.normals.len() != self.vertices.len() {
-            self.normals = vec![Vec3::ZERO; self.vertices.len()];
+            self.normals = vec![PVec3::ZERO; self.vertices.len()];
         }
-        let mut face_normals = vec![Vec3::ZERO; self.vertices.len()];
+        let mut face_normals = vec![PVec3::ZERO; self.vertices.len()];
         for chunk in self.indices.chunks(4) {
             if chunk.len() < 3 { continue; }
             let i0 = chunk[0] as usize;
@@ -315,7 +319,7 @@ impl MeshResult {
             if ana.length() > 1e-10 { self.normals[i] = ana.normalize(); }
             else {
                 let n = face_normals[i];
-                self.normals[i] = if n.length() > 1e-10 { n.normalize() } else { Vec3::Z };
+                self.normals[i] = if n.length() > 1e-10 { n.normalize() } else { PVec3::Z };
             }
         }
     }
@@ -329,12 +333,12 @@ mod tests {
     fn test_weld_vertices_protected_preserves_boundary() {
         let mut mesh = MeshResult {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),       // boundary vertex 0
-                Vec3::new(1.0, 0.0, 0.0),       // boundary vertex 1
-                Vec3::new(0.001, 0.0, 0.0),     // near-duplicate interior (close to 0)
-                Vec3::new(0.5, 0.5, 0.0),       // interior
+                PVec3::new(0.0, 0.0, 0.0),       // boundary vertex 0
+                PVec3::new(1.0, 0.0, 0.0),       // boundary vertex 1
+                PVec3::new(0.001, 0.0, 0.0),     // near-duplicate interior (close to 0)
+                PVec3::new(0.5, 0.5, 0.0),       // interior
             ],
-            normals: vec![Vec3::Z; 4],
+            normals: vec![PVec3::Z; 4],
             indices: vec![0, 1, 3, -1, 0, 3, 2, -1],
         };
         let mut protected: HashSet<usize> = HashSet::new();
@@ -360,10 +364,10 @@ mod tests {
     fn test_weld_vertices_protected_does_not_merge_two_protected() {
         let mut mesh = MeshResult {
             vertices: vec![
-                Vec3::new(0.0, 0.0, 0.0),   // protected
-                Vec3::new(0.001, 0.0, 0.0), // also protected, close to 0
+                PVec3::new(0.0, 0.0, 0.0),   // protected
+                PVec3::new(0.001, 0.0, 0.0), // also protected, close to 0
             ],
-            normals: vec![Vec3::Z; 2],
+            normals: vec![PVec3::Z; 2],
             indices: vec![0, 1, 0, -1],
         };
         let mut protected: HashSet<usize> = HashSet::new();

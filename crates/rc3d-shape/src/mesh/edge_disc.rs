@@ -4,7 +4,7 @@
 //! BRep_Tool::Curve(E) is the fallback when no PCURVE is available.
 
 use std::collections::HashMap;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::topo::{EdgeKey, FaceKey, BRepEdge};
 use crate::store::BRepStore;
 use crate::geom::{CurveGeom, SurfaceGeom, normalize_edge_curve_to_vertices};
@@ -12,8 +12,8 @@ use crate::geom::{CurveGeom, SurfaceGeom, normalize_edge_curve_to_vertices};
 /// Configuration for edge discretization.
 #[derive(Debug, Clone)]
 pub struct EdgeDiscConfig {
-    pub deflection: f32,
-    pub angle_deflection: f32,
+    pub deflection: Real,
+    pub angle_deflection: Real,
     pub min_points: usize,
     pub max_points: usize,
     pub relative_deflection: bool,
@@ -34,8 +34,8 @@ impl Default for EdgeDiscConfig {
 /// A discretized edge polygon: 3D points + per-face 2D (UV) points.
 #[derive(Debug, Clone)]
 pub struct EdgePolygon {
-    pub params_3d: Vec<(f32, Vec3)>,
-    pub params_2d: HashMap<FaceKey, Vec<(f32, (f32, f32))>>,
+    pub params_3d: Vec<(Real, PVec3)>,
+    pub params_2d: HashMap<FaceKey, Vec<(Real, (Real, Real))>>,
 }
 
 impl EdgePolygon {
@@ -96,12 +96,12 @@ pub fn discretize_all_edges(
 
 /// Discretize a single edge: PCurve-on-surface (preferred) + per-face UV params.
 /// Estimate arc length of a curve by sampling.
-fn estimate_curve_length(curve: &crate::geom::CurveGeom) -> f32 {
+fn estimate_curve_length(curve: &crate::geom::CurveGeom) -> Real {
     let n = 64;
-    let mut total = 0.0f32;
+    let mut total = 0.0_f64;
     let mut prev = curve.d0(0.0);
     for i in 1..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let p = curve.d0(t);
         total += (p - prev).length();
         prev = p;
@@ -172,7 +172,7 @@ pub fn discretize_edge(
     let mut params_2d = HashMap::new();
     for (&face_key, pcurve) in &edge.pcurves {
         if reg.faces.get(face_key).is_some() {
-            let pts_2d: Vec<(f32, (f32, f32))> = params_3d
+            let pts_2d: Vec<(Real, (Real, Real))> = params_3d
                 .iter()
                 .map(|&(t, _)| {
                     let uv = pcurve.d0(t);
@@ -192,7 +192,7 @@ pub fn discretize_edge_overlay(
     ek: EdgeKey,
     reg: &BRepStore,
     config: &EdgeDiscConfig,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     let edge = match reg.edges.get(ek) {
         Some(e) => e,
         None => return Vec::new(),
@@ -240,7 +240,7 @@ fn is_seam_or_isoparam_edge(ek: EdgeKey, edge: &BRepEdge, reg: &BRepStore) -> bo
 }
 
 /// Uniformly subsample dense polylines (STEP POLYLINE / B-spline control nets).
-fn cap_polyline_params(params: Vec<(f32, Vec3)>, max_points: usize) -> Vec<(f32, Vec3)> {
+fn cap_polyline_params(params: Vec<(Real, PVec3)>, max_points: usize) -> Vec<(Real, PVec3)> {
     if params.len() <= max_points || max_points < 2 {
         return params;
     }
@@ -257,7 +257,7 @@ fn cap_polyline_params(params: Vec<(f32, Vec3)>, max_points: usize) -> Vec<(f32,
 fn sample_polyline_on_surface_exact(
     edge: &BRepEdge,
     reg: &BRepStore,
-) -> Option<Vec<(f32, Vec3)>> {
+) -> Option<Vec<(Real, PVec3)>> {
     let mut face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     face_keys.sort_unstable();
     let face_key = *face_keys.first()?;
@@ -271,7 +271,7 @@ fn sample_polyline_on_surface_exact(
     }
 
     let n = uv_pts.len();
-    let denom = (n - 1).max(1) as f32;
+    let denom = (n - 1).max(1) as Real;
 
     if let CurveGeom::Polyline { points: pts_3d } = &edge.curve {
         if pts_3d.len() == n {
@@ -279,7 +279,7 @@ fn sample_polyline_on_surface_exact(
                 pts_3d
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| (i as f32 / denom, *p))
+                    .map(|(i, p)| (i as Real / denom, *p))
                     .collect(),
             );
         }
@@ -290,7 +290,7 @@ fn sample_polyline_on_surface_exact(
             .iter()
             .enumerate()
             .map(|(i, uv)| {
-                let t = i as f32 / denom;
+                let t = i as Real / denom;
                 let (nu, nv) = reg.face_native_uv(face_key, uv.0, uv.1);
                 (t, face.surface.d0_native(nu, nv))
             })
@@ -338,14 +338,14 @@ fn pcurve_is_line(pcurve: &crate::geom::Curve2d) -> bool {
 fn sample_straight_pcurve(
     pcurve: &crate::geom::Curve2d,
     surface: &SurfaceGeom,
-) -> Vec<(f32, Vec3)> {
+) -> Vec<(Real, PVec3)> {
     vec![
         (0.0, eval_pcurve_on_surface(pcurve, surface, 0.0)),
         (1.0, eval_pcurve_on_surface(pcurve, surface, 1.0)),
     ]
 }
 
-fn eval_pcurve_on_surface_d1(pcurve: &crate::geom::Curve2d, surface: &SurfaceGeom, t: f32) -> Vec3 {
+fn eval_pcurve_on_surface_d1(pcurve: &crate::geom::Curve2d, surface: &SurfaceGeom, t: Real) -> PVec3 {
     let uv = pcurve.d0(t);
     let duv = pcurve.d1(t).1;
     let (su, sv) = surface.d1_native(uv.0, uv.1);
@@ -357,7 +357,7 @@ fn sample_pcurve_on_surface(
     pcurve: &crate::geom::Curve2d,
     surface: &SurfaceGeom,
     config: &EdgeDiscConfig,
-) -> Vec<(f32, Vec3)> {
+) -> Vec<(Real, PVec3)> {
     let mut params = Vec::new();
 
     let p0 = eval_pcurve_on_surface(pcurve, surface, 0.0);
@@ -365,7 +365,7 @@ fn sample_pcurve_on_surface(
     let is_closed = (p1 - p0).length() < 1e-6;
     let n_seed = if is_closed { config.min_points.max(4) } else { 1 };
     for i in 0..=n_seed {
-        let t = i as f32 / n_seed as f32;
+        let t = i as Real / n_seed as Real;
         params.push((t, eval_pcurve_on_surface(pcurve, surface, t)));
     }
 
@@ -438,8 +438,8 @@ fn mesh_curve_for_edge(edge: &BRepEdge, reg: &BRepStore) -> CurveGeom {
 
 /// Adaptive sampling of a 3D curve.
 fn sample_curve_adaptive(
-    curve: &CurveGeom, t0: f32, t1: f32, config: &EdgeDiscConfig,
-) -> Vec<(f32, Vec3)> {
+    curve: &CurveGeom, t0: Real, t1: Real, config: &EdgeDiscConfig,
+) -> Vec<(Real, PVec3)> {
     let mut params = Vec::new();
 
     let p0 = curve.d0(t0);
@@ -447,7 +447,7 @@ fn sample_curve_adaptive(
     let is_closed = (p1 - p0).length() < 1e-6;
     let n_seed = if is_closed { config.min_points.max(4) } else { 1 };
     for i in 0..=n_seed {
-        let t = t0 + (t1 - t0) * i as f32 / n_seed as f32;
+        let t = t0 + (t1 - t0) * i as Real / n_seed as Real;
         params.push((t, curve.d0(t)));
     }
 
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_discretize_line_minimal() {
-        let curve = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
+        let curve = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(10.0, 0.0, 0.0) };
         let config = EdgeDiscConfig::default();
         let pts = sample_curve_adaptive(&curve, 0.0, 1.0, &config);
         assert!(pts.len() >= 2, "line needs at least 2 pts, got {}", pts.len());
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_discretize_circle_needs_more_points() {
-        let curve = CurveGeom::circle(Vec3::ZERO, Vec3::Z, 1.0);
+        let curve = CurveGeom::circle(PVec3::ZERO, PVec3::Z, 1.0);
         let config = EdgeDiscConfig::default();
         let pts = sample_curve_adaptive(&curve, 0.0, 1.0, &config);
         assert!(pts.len() >= 4);
@@ -522,14 +522,14 @@ mod tests {
     #[test]
     fn test_pcurve_on_plane_matches_3d_line() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(10.0, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(10.0, 0.0, 0.0), 1e-4);
         let wire = reg.wires.insert(crate::topo::BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -540,7 +540,7 @@ mod tests {
             degenerated_edges: vec![],
         });
 
-        let curve_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
+        let curve_3d = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(10.0, 0.0, 0.0) };
         let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
         let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
 

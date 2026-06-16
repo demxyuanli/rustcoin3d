@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 use crate::store::BRepStore;
 use crate::topo::{BRepWire, FaceKey};
 
@@ -5,7 +6,7 @@ pub fn collect_wire_uv_polygon(
     wire: &BRepWire,
     face_key: FaceKey,
     reg: &BRepStore,
-) -> Vec<(f32, f32)> {
+) -> Vec<(Real, Real)> {
     let mut points = Vec::new();
     for &(ek, _) in &wire.edges {
         if let Some(edge) = reg.edges.get(ek) {
@@ -28,7 +29,7 @@ pub fn collect_wire_uv_polygon(
     points
 }
 
-pub fn point_in_polygon_winding(u: f32, v: f32, poly: &[(f32, f32)]) -> bool {
+pub fn point_in_polygon_winding(u: Real, v: Real, poly: &[(Real, Real)]) -> bool {
     let n = poly.len();
     let mut wn = 0i32;
     for i in 0..n {
@@ -47,11 +48,11 @@ pub fn point_in_polygon_winding(u: f32, v: f32, poly: &[(f32, f32)]) -> bool {
 }
 
 pub fn segment_intersection_strict(
-    a0: (f32, f32),
-    a1: (f32, f32),
-    b0: (f32, f32),
-    b1: (f32, f32),
-) -> Option<(f32, f32)> {
+    a0: (Real, Real),
+    a1: (Real, Real),
+    b0: (Real, Real),
+    b1: (Real, Real),
+) -> Option<(Real, Real)> {
     let da = (a1.0 - a0.0, a1.1 - a0.1);
     let db = (b1.0 - b0.0, b1.1 - b0.1);
     let det = da.0 * db.1 - da.1 * db.0;
@@ -68,6 +69,6 @@ pub fn segment_intersection_strict(
     }
 }
 
-fn cross_2d(x1: f32, y1: f32, x2: f32, y2: f32, u: f32, v: f32) -> f32 {
+fn cross_2d(x1: Real, y1: Real, x2: Real, y2: Real, u: Real, v: Real) -> Real {
     (x2 - x1) * (v - y1) - (u - x1) * (y2 - y1)
 }

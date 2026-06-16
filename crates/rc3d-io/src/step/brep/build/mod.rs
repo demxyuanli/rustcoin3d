@@ -12,6 +12,7 @@
 //! the face. Solution: insert a placeholder face first, build edges with PCURVEs
 //! using the real FaceKey, then update the face with correct wires.
 
+use rc3d_core::math::Real;
 mod shell;
 mod surface;
 mod pcurve;
@@ -34,7 +35,7 @@ use rc3d_shape::geom::curve2d::Curve2d;
 use super::geom::curve_eval::approx_chordal_length;
 use super::geom::normalize_edge_curve_to_vertices;
 use super::heal::curve_trim::add_degenerated_edge_at_pole;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 
 #[derive(Debug, Default, Clone)]
 pub struct BRepBuildReport {
@@ -81,8 +82,8 @@ pub fn build_brep(entities: &EntityIndex) -> Result<BRepBuildResult, StepError> 
 struct ShellBuildCtx<'a> {
     reg: &'a mut BRepStore,
     entities: &'a EntityIndex,
-    tol: f32,
-    face_colors: &'a std::collections::HashMap<u64, [f32; 3]>,
+    tol: Real,
+    face_colors: &'a std::collections::HashMap<u64, [Real; 3]>,
     options: &'a BRepBuildOptions,
     skipped_faces: &'a mut usize,
     skipped_edges: &'a mut usize,
@@ -97,7 +98,7 @@ fn resolve_face_surface(
     options: &BRepBuildOptions,
     skipped_faces: &mut usize,
     geometry_fallback_count: &mut usize,
-) -> Option<(SurfaceGeom, Option<(f32, f32, f32, f32)>)> {
+) -> Option<(SurfaceGeom, Option<(Real, Real, Real, Real)>)> {
     if let Some(sid) = face_data.surface_id {
         if let Some(surface) = build_surface(sid, entities) {
             let trim = surface::build_surface_trim_range(sid, entities);
@@ -129,7 +130,7 @@ fn resolve_face_surface(
 /// Build a fallback plane from face edge vertices when the original surface cannot be resolved.
 /// Uses Newell's method for an approximate normal and the vertex centroid as origin.
 fn fallback_plane_from_face(face_data: &topology::StepFace) -> SurfaceGeom {
-    let mut points: Vec<Vec3> = Vec::new();
+    let mut points: Vec<PVec3> = Vec::new();
     for bloop in &face_data.bounds {
         for edge in &bloop.edges {
             points.push(edge.start);
@@ -137,19 +138,19 @@ fn fallback_plane_from_face(face_data: &topology::StepFace) -> SurfaceGeom {
         }
     }
     if points.is_empty() {
-        return SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        return SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
     }
 
     // Centroid
-    let inv_n = 1.0 / points.len() as f32;
-    let origin = Vec3::new(
-        points.iter().map(|p| p.x).sum::<f32>() * inv_n,
-        points.iter().map(|p| p.y).sum::<f32>() * inv_n,
-        points.iter().map(|p| p.z).sum::<f32>() * inv_n,
+    let inv_n = 1.0 / points.len() as Real;
+    let origin = PVec3::new(
+        points.iter().map(|p| p.x).sum::<Real>() * inv_n,
+        points.iter().map(|p| p.y).sum::<Real>() * inv_n,
+        points.iter().map(|p| p.z).sum::<Real>() * inv_n,
     );
 
     // Approximate normal via Newell's method (robust for non-planar polygons)
-    let mut normal = Vec3::ZERO;
+    let mut normal = PVec3::ZERO;
     for i in 0..points.len() {
         let j = (i + 1) % points.len();
         normal.x += (points[i].y - points[j].y) * (points[i].z + points[j].z);
@@ -157,15 +158,15 @@ fn fallback_plane_from_face(face_data: &topology::StepFace) -> SurfaceGeom {
         normal.z += (points[i].x - points[j].x) * (points[i].y + points[j].y);
     }
     let normal_len = normal.length();
-    let normal = if normal_len > 1e-10 { normal / normal_len } else { Vec3::Z };
+    let normal = if normal_len > 1e-10 { normal / normal_len } else { PVec3::Z };
 
     // u_dir from first edge direction
     let u_dir = if points.len() >= 2 {
         let d = points[1] - points[0];
         let dl = d.length();
-        if dl > 1e-10 { d / dl } else { Vec3::X }
+        if dl > 1e-10 { d / dl } else { PVec3::X }
     } else {
-        Vec3::X
+        PVec3::X
     };
     let (u_dir, _v_dir) = plane_tangent_basis(normal, u_dir);
 
@@ -192,7 +193,7 @@ fn resolve_edge_curve(
     if options.allow_geometry_fallback {
         *geometry_fallback_count += 1;
         let dir = edge_data.end - edge_data.start;
-        let d = if dir.length() > 1e-10 { dir } else { Vec3::X };
+        let d = if dir.length() > 1e-10 { dir } else { PVec3::X };
         Some(CurveGeom::Line {
             origin: edge_data.start,
             direction: d,
@@ -293,7 +294,7 @@ fn upgrade_line_edges_to_circles(reg: &mut BRepStore) -> usize {
                         // Rebuild PCurve: fresh Line matching the Circle geometry
                         let fresh_pc = Curve2d::Line {
                             origin: (0.0, v),
-                            direction: (std::f32::consts::TAU, 0.0),
+                            direction: (std::f64::consts::TAU, 0.0),
                         };
                         if let Some(e) = reg.edges.get_mut(ek) {
                             e.curve = CurveGeom::Circle { center, axis: ax, radius: r, x_dir, y_dir };
@@ -311,16 +312,16 @@ fn upgrade_line_edges_to_circles(reg: &mut BRepStore) -> usize {
                     if !matches!(edge.curve, CurveGeom::Line { .. }) { continue; }
                     if let Some(pc) = edge.pcurves.get(&fk) {
                         let uv = pc.d0(0.5);
-                        let v_norm = uv.1 / std::f32::consts::PI;
+                        let v_norm = uv.1 / std::f64::consts::PI;
                         let z = r * (1.0 - 2.0 * v_norm).cos();
                         let circ_r = (r * r - z * z).sqrt().max(1e-6);
-                        let axis = Vec3::Z;
+                        let axis = PVec3::Z;
                         let c = *center + axis * z;
                         let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(axis);
                         // Rebuild PCurve: fresh Line for the latitude circle
                         let fresh_pc = Curve2d::Line {
                             origin: (0.0, uv.1),
-                            direction: (std::f32::consts::TAU, 0.0),
+                            direction: (std::f64::consts::TAU, 0.0),
                         };
                         if let Some(e) = reg.edges.get_mut(ek) {
                             e.curve = CurveGeom::Circle { center: c, axis, radius: circ_r, x_dir, y_dir };
@@ -564,9 +565,9 @@ fn build_tessellated_fallback(
             let wire_key = reg.wires.insert(BRepWire { edges: vec![] });
             let face_key = reg.faces.insert(BRepFace {
                 surface: SurfaceGeom::Plane {
-                    origin: Vec3::ZERO,
-                    normal: Vec3::Z,
-                    u_dir: Vec3::X,
+                    origin: PVec3::ZERO,
+                    normal: PVec3::Z,
+                    u_dir: PVec3::X,
                 },
                 outer_wire: wire_key,
                 inner_wires: vec![],

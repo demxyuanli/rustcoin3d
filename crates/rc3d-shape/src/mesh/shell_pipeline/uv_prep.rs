@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey};
 use crate::mesh::edge_disc::EdgePolygon;
@@ -13,7 +13,7 @@ pub(crate) fn precompute_face_uv_loops(
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &HashMap<(FaceKey, EdgeKey, usize), usize>,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> Vec<FaceLoopData> {
     face_infos
         .par_iter()

@@ -1,5 +1,6 @@
 //! Minimal BRepCheck topology validation (OCC BRepCheck_Analyzer subset).
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use crate::geom::signed_area_2d;
@@ -291,12 +292,12 @@ fn vertex_gap(
     a: crate::topo::VertexKey,
     b: crate::topo::VertexKey,
     reg: &BRepStore,
-) -> f32 {
+) -> Real {
     let pa = reg.vertices.get(a).map(|v| v.position);
     let pb = reg.vertices.get(b).map(|v| v.position);
     match (pa, pb) {
         (Some(a), Some(b)) => (a - b).length(),
-        _ => f32::MAX,
+        _ => f64::MAX,
     }
 }
 
@@ -330,7 +331,7 @@ pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepStore) -> Vec<Str
     let Some(wire) = reg.wires.get(face.outer_wire) else {
         return warnings;
     };
-    let mut segments: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    let mut segments: Vec<((Real, Real), (Real, Real))> = Vec::new();
     for &(ek, _) in &wire.edges {
         let Some(edge) = reg.edges.get(ek) else {
             continue;
@@ -360,12 +361,12 @@ pub fn check_uv_self_intersection(face_key: FaceKey, reg: &BRepStore) -> Vec<Str
 }
 
 fn segments_intersect_2d(
-    a: ((f32, f32), (f32, f32)),
-    b: ((f32, f32), (f32, f32)),
+    a: ((Real, Real), (Real, Real)),
+    b: ((Real, Real), (Real, Real)),
 ) -> bool {
     let ((ax0, ay0), (ax1, ay1)) = a;
     let ((bx0, by0), (bx1, by1)) = b;
-    // Scale epsilon to coordinate magnitude for f32 validity
+    // Scale epsilon to coordinate magnitude for Real validity
     let extent = (ax0.abs() + ax1.abs() + bx0.abs() + bx1.abs()
         + ay0.abs() + ay1.abs() + by0.abs() + by1.abs()) / 8.0;
     let eps = extent.max(1.0) * 1e-6;
@@ -436,7 +437,7 @@ fn check_surface_singularities(
                 if let Some(pc) = edge.pcurves.get(&face_key) {
                     for t in [0.0, 1.0] {
                         let uv = pc.d0(t);
-                        if (uv.1.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.01 {
+                        if (uv.1.abs() - std::f64::consts::FRAC_PI_2).abs() < 0.01 {
                             warnings.push(format!(
                                 "face {:?}: potential degeneracy near sphere pole at u={:.3}, v={:.3}",
                                 face_key, uv.0, uv.1
@@ -484,7 +485,7 @@ fn check_parameter_range(
         None => return warnings,
     };
 
-    let (u_range, v_range): ((f32, f32), (f32, f32)) = match &face.surface {
+    let (u_range, v_range): ((Real, Real), (Real, Real)) = match &face.surface {
         crate::geom::SurfaceGeom::BSpline(nurbs) => {
             let uk = &nurbs.knots_u;
             let vk = &nurbs.knots_v;
@@ -646,7 +647,7 @@ pub fn check_shell_closed(shell_key: ShellKey, reg: &BRepStore) -> ShellClosedRe
 /// Returns `Some(gap)` in 3D world units, or `None` if the wire is empty.
 ///
 /// OCC alignment: BRepCheck_Wire::Closed()
-pub fn check_wire_closed(wire_key: WireKey, reg: &BRepStore) -> Option<f32> {
+pub fn check_wire_closed(wire_key: WireKey, reg: &BRepStore) -> Option<Real> {
     let wire = reg.wires.get(wire_key)?;
     if wire.edges.is_empty() {
         return None;
@@ -678,8 +679,8 @@ pub fn check_wire_closed(wire_key: WireKey, reg: &BRepStore) -> Option<f32> {
 pub fn check_face_wire_gaps(
     face_key: FaceKey,
     reg: &BRepStore,
-    tolerance: f32,
-) -> Vec<(WireKey, f32)> {
+    tolerance: Real,
+) -> Vec<(WireKey, Real)> {
     let mut gaps = Vec::new();
     let face = match reg.faces.get(face_key) {
         Some(f) => f,
@@ -701,15 +702,15 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn closed_cube_shell(reg: &mut BRepStore) -> ShellKey {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -720,10 +721,10 @@ mod tests {
             degenerated_edges: vec![],
         });
         let edges_data = [
-            (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
-            (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
-            (Vec3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
-            (Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
+            (PVec3::ZERO, PVec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
+            (PVec3::new(10.0, 0.0, 0.0), PVec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
+            (PVec3::new(10.0, 10.0, 0.0), PVec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
+            (PVec3::new(0.0, 10.0, 0.0), PVec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
         ];
         let mut wire_edges = Vec::new();
         for (a, b, u0, u1) in edges_data {
@@ -768,9 +769,9 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -780,9 +781,9 @@ mod tests {
             color: None,
             degenerated_edges: vec![],
         });
-        let a = Vec3::ZERO;
-        let b = Vec3::new(10.0, 0.0, 0.0);
-        let c = Vec3::new(10.0, 10.0, 0.0);
+        let a = PVec3::ZERO;
+        let b = PVec3::new(10.0, 0.0, 0.0);
+        let c = PVec3::new(10.0, 10.0, 0.0);
         let va = reg.find_or_add_vertex(a, 1e-4);
         let vb = reg.find_or_add_vertex(b, 1e-4);
         let vc = reg.find_or_add_vertex(c, 1e-4);
@@ -831,9 +832,9 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -858,12 +859,12 @@ mod tests {
     #[test]
     fn test_check_edge_tolerance_oversized() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(0.01, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(0.01, 0.0, 0.0), 1e-4);
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -877,8 +878,8 @@ mod tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::new(0.01, 0.0, 0.0),
+            origin: PVec3::ZERO,
+            direction: PVec3::new(0.01, 0.0, 0.0),
         };
         let pc = Curve2d::Line {
             origin: (0.0, 0.0),
@@ -901,7 +902,7 @@ mod tests {
     fn test_check_surface_singularity_sphere_pole() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Sphere {
-            center: Vec3::ZERO,
+            center: PVec3::ZERO,
             radius: 1.0,
         };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
@@ -916,16 +917,16 @@ mod tests {
             degenerated_edges: vec![],
         });
         // Create an edge with a PCurve endpoint near the sphere north pole
-        let v0 = reg.find_or_add_vertex(Vec3::new(0.0, 0.0, 1.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(0.0, 0.0, 1.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         // PCurve from pole-adjacent UV to equator
         let pc = Curve2d::Line {
-            origin: (0.0, std::f32::consts::FRAC_PI_2 - 0.001),
-            direction: (1.0, -std::f32::consts::FRAC_PI_2 + 0.001),
+            origin: (0.0, std::f64::consts::FRAC_PI_2 - 0.001),
+            direction: (1.0, -std::f64::consts::FRAC_PI_2 + 0.001),
         };
         let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -939,11 +940,11 @@ mod tests {
     #[test]
     fn non_manifold_edge_yields_warning() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let curve = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0,
@@ -962,9 +963,9 @@ mod tests {
             });
             face_keys.push(reg.faces.insert(BRepFace {
                 surface: SurfaceGeom::Plane {
-                    origin: Vec3::ZERO,
-                    normal: Vec3::Z,
-                    u_dir: Vec3::X,
+                    origin: PVec3::ZERO,
+                    normal: PVec3::Z,
+                    u_dir: PVec3::X,
                 },
                 outer_wire: wire,
                 inner_wires: vec![],
@@ -995,12 +996,12 @@ mod tests {
     fn test_parameter_range_oob() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -1013,8 +1014,8 @@ mod tests {
             degenerated_edges: vec![],
         });
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let pc = Curve2d::Line {
             origin: (0.0, 0.0),
@@ -1056,13 +1057,13 @@ mod tests {
     fn test_wire_orientation_inconsistent() {
         let mut reg = BRepStore::new();
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(0.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(0.0, 1.0, 0.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -1076,8 +1077,8 @@ mod tests {
         });
         // Clockwise wire with same_sense=true should trigger orientation warning
         let line = CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let pc1 = Curve2d::Line {
             origin: (1.0, 0.0),
@@ -1107,7 +1108,7 @@ mod tests {
     fn test_check_shell_closed_plane_not_closed() {
         let mut reg = BRepStore::new();
         let surface = crate::geom::SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let wire = reg.wires.insert(crate::topo::BRepWire { edges: vec![] });
         let fk = reg.faces.insert(crate::topo::BRepFace {
@@ -1133,16 +1134,16 @@ mod tests {
     #[test]
     fn test_check_wire_closed_detects_open_wire() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
         let line = crate::geom::CurveGeom::Line {
-            origin: Vec3::ZERO,
-            direction: Vec3::X,
+            origin: PVec3::ZERO,
+            direction: PVec3::X,
         };
         let fk = reg.faces.insert(crate::topo::BRepFace {
             surface: crate::geom::SurfaceGeom::Plane {
-                origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+                origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
             },
             outer_wire: Default::default(),
             inner_wires: vec![],

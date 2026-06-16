@@ -1,6 +1,7 @@
 //! Level-of-detail generation via edge collapse simplification.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use rc3d_core::math::PVec3;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;
 
@@ -9,7 +10,7 @@ use std::cmp::Ordering;
 struct CollapseCandidate {
     v0: usize,
     v1: usize,
-    cost: f32,
+    cost: Real,
 }
 
 impl PartialEq for CollapseCandidate {
@@ -33,10 +34,10 @@ impl Ord for CollapseCandidate {
 /// Simplify a mesh to approximately `target_vertices` count using edge collapse.
 /// Returns simplified (vertices, indices) or None if already simple enough.
 pub fn simplify_mesh(
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     indices: &[i32],
     target_vertices: usize,
-) -> Option<(Vec<Vec3>, Vec<i32>)> {
+) -> Option<(Vec<PVec3>, Vec<i32>)> {
     if vertices.len() <= target_vertices || target_vertices < 3 {
         return None;
     }
@@ -133,8 +134,8 @@ fn find_root(parent: &[usize], x: usize) -> usize {
 /// A single LOD level mesh.
 #[derive(Debug, Clone)]
 pub struct LodLevel {
-    pub vertices: Vec<Vec3>,
-    pub normals: Vec<Vec3>,
+    pub vertices: Vec<PVec3>,
+    pub normals: Vec<PVec3>,
     pub indices: Vec<i32>,
     pub vertex_count: usize,
     pub triangle_count: usize,
@@ -146,7 +147,7 @@ pub struct LodMesh {
     /// Mesh levels from highest to lowest detail.
     pub levels: Vec<LodLevel>,
     /// Camera distances at which to transition between levels.
-    pub transitions: Vec<f32>,
+    pub transitions: Vec<Real>,
 }
 
 /// Generate multi-level LOD from a high-detail mesh.
@@ -157,10 +158,10 @@ pub struct LodMesh {
 /// * `levels` - Number of LOD levels (e.g., 3 = high/medium/low)
 /// * `reduction_ratios` - Vertex reduction ratio per level (e.g., [1.0, 0.5, 0.1])
 pub fn generate_lod(
-    vertices: &[Vec3],
+    vertices: &[PVec3],
     indices: &[i32],
     levels: usize,
-    reduction_ratios: &[f32],
+    reduction_ratios: &[Real],
 ) -> LodMesh {
     let levels = levels.max(1);
     let mut lod = LodMesh {
@@ -179,8 +180,8 @@ pub fn generate_lod(
 
     // Subsequent levels: progressively simplified
     for i in 1..levels {
-        let ratio = reduction_ratios.get(i).copied().unwrap_or(0.5f32.powi(i as i32));
-        let target = (vertices.len() as f32 * ratio) as usize;
+        let ratio = reduction_ratios.get(i).copied().unwrap_or(0.5_f64.powi(i as i32));
+        let target = (vertices.len() as Real * ratio) as usize;
         let target = target.max(12); // Minimum: 4 triangles
 
         if let Some((simplified_v, simplified_i)) = simplify_mesh(vertices, indices, target) {
@@ -202,7 +203,7 @@ pub fn generate_lod(
     // Compute transition distances based on bounding sphere
     let bbox_diag = compute_bbox_diagonal(vertices);
     for i in 0..levels.saturating_sub(1) {
-        let dist = bbox_diag * 2.0f32.powi(i as i32 + 1);
+        let dist = bbox_diag * 2.0_f64.powi(i as i32 + 1);
         lod.transitions.push(dist);
     }
 
@@ -210,13 +211,13 @@ pub fn generate_lod(
 }
 
 /// Compute the bounding box diagonal length for a vertex set.
-fn compute_bbox_diagonal(vertices: &[Vec3]) -> f32 {
+fn compute_bbox_diagonal(vertices: &[PVec3]) -> Real {
     if vertices.is_empty() { return 1.0; }
     let mut min = vertices[0];
     let mut max = vertices[0];
     for v in vertices {
-        min = Vec3::new(min.x.min(v.x), min.y.min(v.y), min.z.min(v.z));
-        max = Vec3::new(max.x.max(v.x), max.y.max(v.y), max.z.max(v.z));
+        min = PVec3::new(min.x.min(v.x), min.y.min(v.y), min.z.min(v.z));
+        max = PVec3::new(max.x.max(v.x), max.y.max(v.y), max.z.max(v.z));
     }
     (max - min).length()
 }
@@ -228,9 +229,9 @@ mod tests {
     #[test]
     fn test_simplify_already_small() {
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
         ];
         let indices = vec![0, 1, 2, -1];
         // Target >= current count → no simplification needed
@@ -239,8 +240,8 @@ mod tests {
 
     #[test]
     fn test_simplify_reduces_count() {
-        let verts: Vec<Vec3> = (0..20).map(|i| {
-            Vec3::new(i as f32, 0.0, 0.0)
+        let verts: Vec<PVec3> = (0..20).map(|i| {
+            PVec3::new(i as Real, 0.0, 0.0)
         }).collect();
         let mut indices = Vec::new();
         for i in 0..18 {
@@ -252,12 +253,12 @@ mod tests {
         assert!(new_v.len() <= 10);
     }
 
-    fn generate_test_mesh(n: usize) -> (Vec<Vec3>, Vec<i32>) {
-        let side = (n as f32).sqrt().ceil() as usize;
+    fn generate_test_mesh(n: usize) -> (Vec<PVec3>, Vec<i32>) {
+        let side = (n as Real).sqrt().ceil() as usize;
         let mut verts = Vec::new();
         for i in 0..=side {
             for j in 0..=side {
-                verts.push(Vec3::new(i as f32, j as f32, 0.0));
+                verts.push(PVec3::new(i as Real, j as Real, 0.0));
             }
         }
         let mut indices = Vec::new();
@@ -296,10 +297,10 @@ mod tests {
     #[test]
     fn test_compute_bbox_diagonal_unit_cube() {
         let verts = vec![
-            Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z,
-            Vec3::new(1.0, 1.0, 1.0),
+            PVec3::ZERO, PVec3::X, PVec3::Y, PVec3::Z,
+            PVec3::new(1.0, 1.0, 1.0),
         ];
         let diag = compute_bbox_diagonal(&verts);
-        assert!((diag - 3.0f32.sqrt()).abs() < 1e-5);
+        assert!((diag - 3.0_f64.sqrt()).abs() < 1e-5);
     }
 }

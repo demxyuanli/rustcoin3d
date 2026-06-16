@@ -8,7 +8,7 @@
 //!
 //! OCC alignment: IntPatch_TheIWalking + math_Gauss integration
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
 
 /// Refine UV parameters on both surfaces so that the 3D distance between
@@ -19,11 +19,11 @@ use crate::geom::SurfaceGeom;
 pub fn newton_refine_ssi(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
-    mut uv_a: (f32, f32),
-    mut uv_b: (f32, f32),
-    tol: f32,
+    mut uv_a: (Real, Real),
+    mut uv_b: (Real, Real),
+    tol: Real,
     max_iter: usize,
-) -> Option<((f32, f32), (f32, f32))> {
+) -> Option<((Real, Real), (Real, Real))> {
     for _ in 0..max_iter {
         // Current 3D positions
         let pa = surf_a.d0_native(uv_a.0, uv_a.1);
@@ -82,7 +82,7 @@ pub fn newton_refine_ssi(
         // Backtracking line search: try full step, 1/2, 1/4, 1/8.
         // Accept the first step that reduces the residual (OCC math_Gauss integration).
         let mut accepted = false;
-        for &scale in &[1.0f32, 0.5, 0.25, 0.125] {
+        for &scale in &[1.0_f64, 0.5, 0.25, 0.125] {
             let ua_try = uv_a.0 + du_a_dot * scale;
             let va_try = uv_a.1 + dv_a_dot * scale;
             let ub_try = uv_b.0 - du_b_dot * scale;
@@ -127,9 +127,9 @@ pub fn newton_refine_ssi(
 pub fn refine_seed_to_intersection(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
-    seed_3d: Vec3,
-    tol: f32,
-) -> Option<(Vec3, (f32, f32), (f32, f32))> {
+    seed_3d: PVec3,
+    tol: Real,
+) -> Option<(PVec3, (Real, Real), (Real, Real))> {
     // Initial projection to both surfaces
     let uv_a = surf_a.project(seed_3d)?;
     let uv_b = surf_b.project(seed_3d)?;
@@ -148,9 +148,9 @@ pub fn refine_seed_to_intersection(
 pub fn ssi_tangent(
     surf_a: &SurfaceGeom,
     surf_b: &SurfaceGeom,
-    uv_a: (f32, f32),
-    uv_b: (f32, f32),
-) -> Option<Vec3> {
+    uv_a: (Real, Real),
+    uv_b: (Real, Real),
+) -> Option<PVec3> {
     let (du_a, dv_a) = surf_a.d1_native(uv_a.0, uv_a.1);
     let (du_b, dv_b) = surf_b.d1_native(uv_b.0, uv_b.1);
     let normal_a = du_a.cross(dv_a);
@@ -173,19 +173,19 @@ pub fn ssi_tangent(
 mod tests {
     use super::*;
     use crate::geom::SurfaceGeom;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn test_newton_refine_ssi_planes_converges() {
         let s1 = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let s2 = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Y,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Y,
+            u_dir: PVec3::X,
         };
         // Start with slightly offset UV: point should be near the X-axis
         let result = newton_refine_ssi(
@@ -205,15 +205,15 @@ mod tests {
 
     #[test]
     fn test_newton_refine_ssi_cylinder_plane() {
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
         let plane = SurfaceGeom::Plane {
-            origin: Vec3::new(0.5, 0.0, 0.0),
-            normal: Vec3::X,
-            u_dir: Vec3::Y,
+            origin: PVec3::new(0.5, 0.0, 0.0),
+            normal: PVec3::X,
+            u_dir: PVec3::Y,
         };
         // Intersection: two vertical lines at x=0.5, y=±0.866.
         // Seed near the upper intersection: angle ~60° on cylinder gives x=cos(60°)=0.5
-        let angle_60 = std::f32::consts::FRAC_PI_3; // 60° in radians
+        let angle_60 = std::f64::consts::FRAC_PI_3; // 60° in radians
         let result = newton_refine_ssi(
             &cyl, &plane,
             (angle_60, 0.5),     // cylinder: angle 60°, z=0.5 → near (0.5, 0.866, 0.5)
@@ -231,10 +231,10 @@ mod tests {
     #[test]
     fn test_ssi_tangent_planes() {
         let s1 = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X,
         };
         let s2 = SurfaceGeom::Plane {
-            origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X,
+            origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X,
         };
         // Intersection is the X-axis; tangent should be ±X
         let tangent = ssi_tangent(&s1, &s2, (0.5, 0.0), (0.5, 0.0));

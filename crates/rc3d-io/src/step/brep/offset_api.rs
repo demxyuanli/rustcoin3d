@@ -9,6 +9,7 @@
 //! Current status: API skeleton with input validation.
 //! Full implementation requires robust NURBS offset support.
 
+use rc3d_core::math::Real;
 use rc3d_shape::BRepStore;
 use rc3d_shape::topo::{FaceKey, ShellKey, SolidKey};
 use crate::step::bool::{boolean_brep, BoolOp};
@@ -39,7 +40,7 @@ pub struct ShellResult {
 pub fn make_thick_solid(
     solid_key: SolidKey,
     _open_faces: &[FaceKey],
-    thickness: f32,
+    thickness: Real,
     reg: &mut BRepStore,
 ) -> ShellResult {
     // Validate inputs
@@ -128,7 +129,7 @@ pub fn make_thick_solid(
 /// Unsupported surface types are skipped.
 fn offset_solid_faces(
     shell_key: ShellKey,
-    distance: f32,
+    distance: Real,
     reg: &mut BRepStore,
 ) -> Vec<FaceKey> {
     let shell = match reg.shells.get(shell_key) {
@@ -210,14 +211,14 @@ fn offset_solid_faces(
 mod tests {
     use super::*;
     use rc3d_shape::topo::*;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn make_test_solid(reg: &mut BRepStore) -> SolidKey {
         // Create a simple solid with one planar face
         let surface = SurfaceGeom::Plane {
-            origin: Vec3::ZERO,
-            normal: Vec3::Z,
-            u_dir: Vec3::X,
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
         };
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
@@ -284,7 +285,7 @@ mod tests {
     #[test]
     fn test_offset_cylinder_face() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 5.0);
+        let surface = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -314,7 +315,7 @@ mod tests {
     #[test]
     fn test_offset_cylinder_inversion_skipped() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 0.5);
+        let surface = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 0.5);
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,

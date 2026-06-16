@@ -1,4 +1,4 @@
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use super::boundary::{
     register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
 };
@@ -15,24 +15,24 @@ pub fn parametric_grid_segs(face: &crate::topo::BRepFace, config: &FaceFillConfi
     match &face.surface {
         SurfaceGeom::Plane { .. } => 2,
         SurfaceGeom::Sphere { radius, .. } => {
-            let circ = 2.0 * std::f32::consts::PI * radius;
+            let circ = 2.0 * std::f64::consts::PI * radius;
             ((circ / defl).ceil() as u32).clamp(8, 64)
         }
         SurfaceGeom::Torus { major_r, minor_r, .. } => {
-            let circ = 2.0 * std::f32::consts::PI * (major_r + minor_r);
+            let circ = 2.0 * std::f64::consts::PI * (major_r + minor_r);
             ((circ / defl).ceil() as u32).clamp(8, 64)
         }
         SurfaceGeom::Cylinder { radius, .. } => {
-            let circ = 2.0 * std::f32::consts::PI * radius;
+            let circ = 2.0 * std::f64::consts::PI * radius;
             ((circ / defl).ceil() as u32).clamp(8, 64)
         }
         SurfaceGeom::Cone { radius_at_apex, .. } => {
-            let circ = 2.0 * std::f32::consts::PI * radius_at_apex.max(1e-6);
+            let circ = 2.0 * std::f64::consts::PI * radius_at_apex.max(1e-6);
             ((circ / defl).ceil() as u32).clamp(8, 64)
         }
         SurfaceGeom::Revolution { generatrix, .. } => {
             let max_r = generatrix_max_radius(generatrix);
-            let circ = 2.0 * std::f32::consts::PI * max_r;
+            let circ = 2.0 * std::f64::consts::PI * max_r;
             ((circ / defl).ceil() as u32).clamp(8, 48)
         }
         SurfaceGeom::BSpline(_) | SurfaceGeom::Offset { .. } => 24,
@@ -41,11 +41,11 @@ pub fn parametric_grid_segs(face: &crate::topo::BRepFace, config: &FaceFillConfi
 }
 
 /// Estimate max radius of a revolution generatrix curve.
-fn generatrix_max_radius(curve: &crate::geom::CurveGeom) -> f32 {
+fn generatrix_max_radius(curve: &crate::geom::CurveGeom) -> Real {
     let n = 16;
-    let mut max_r2 = 0.0f32;
+    let mut max_r2 = 0.0_f64;
     for i in 0..=n {
-        let t = i as f32 / n as f32;
+        let t = i as Real / n as Real;
         let p = curve.d0(t);
         max_r2 = max_r2.max(p.x * p.x + p.y * p.y);
     }
@@ -57,10 +57,10 @@ pub fn mesh_uv_bbox_grid(
     face: &crate::topo::BRepFace,
     face_key: FaceKey,
     reg: &BRepStore,
-    uv_bounds: (f32, f32, f32, f32),
+    uv_bounds: (Real, Real, Real, Real),
     fill_config: Option<&FaceFillConfig>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
 ) {
@@ -83,7 +83,7 @@ pub fn mesh_uv_bbox_grid(
 // -- Sutherland-Hodgman polygon clipping helpers for partial trim cells --
 
 /// Check if a 2D polygon is convex by verifying all cross products have the same sign.
-fn is_polygon_convex(poly: &[(f32, f32)]) -> bool {
+fn is_polygon_convex(poly: &[(Real, Real)]) -> bool {
     if poly.len() < 3 {
         return false;
     }
@@ -110,11 +110,11 @@ fn is_polygon_convex(poly: &[(f32, f32)]) -> bool {
 /// Find the intersection point of two 2D line segments (p1->p2) and (p3->p4).
 /// Returns the intersection point if the segments are not parallel and intersect.
 fn line_segment_intersection(
-    p1: (f32, f32),
-    p2: (f32, f32),
-    p3: (f32, f32),
-    p4: (f32, f32),
-) -> Option<(f32, f32)> {
+    p1: (Real, Real),
+    p2: (Real, Real),
+    p3: (Real, Real),
+    p4: (Real, Real),
+) -> Option<(Real, Real)> {
     let dx1 = p2.0 - p1.0;
     let dy1 = p2.1 - p1.1;
     let dx2 = p4.0 - p3.0;
@@ -135,9 +135,9 @@ fn line_segment_intersection(
 /// Clip a convex polygon (subject) against each edge of a clip polygon using
 /// the Sutherland-Hodgman algorithm. Returns the resulting polygon vertices.
 fn sutherland_hodgman_clip(
-    subject: &[(f32, f32)],
-    clip: &[(f32, f32)],
-) -> Vec<(f32, f32)> {
+    subject: &[(Real, Real)],
+    clip: &[(Real, Real)],
+) -> Vec<(Real, Real)> {
     if subject.is_empty() || clip.len() < 3 {
         return subject.to_vec();
     }
@@ -183,20 +183,20 @@ pub fn mesh_trimmed_uv_grid(
     face_key: FaceKey,
     reg: &BRepStore,
     loops: &FaceUvLoops,
-    uv_bounds: (f32, f32, f32, f32),
+    uv_bounds: (Real, Real, Real, Real),
     fill_config: Option<&FaceFillConfig>,
     grid_segs: Option<u32>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
     shared_boundary: Option<&SharedBoundaryPool>,
 ) {
-    let outer_uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    let outer_uv: Vec<(Real, Real)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
     if outer_uv.len() < 3 {
         return;
     }
-    let holes: Vec<Vec<(f32, f32)>> = loops
+    let holes: Vec<Vec<(Real, Real)>> = loops
         .inners
         .iter()
         .map(|l| l.boundary.iter().map(|v| v.uv).collect())
@@ -213,10 +213,10 @@ pub fn mesh_trimmed_uv_grid(
 
     for iu in 0..segs {
         for iv in 0..segs {
-            let u0 = u_min + (u_max - u_min) * iu as f32 / segs as f32;
-            let u1 = u_min + (u_max - u_min) * (iu + 1) as f32 / segs as f32;
-            let v0 = v_min + (v_max - v_min) * iv as f32 / segs as f32;
-            let v1 = v_min + (v_max - v_min) * (iv + 1) as f32 / segs as f32;
+            let u0 = u_min + (u_max - u_min) * iu as Real / segs as Real;
+            let u1 = u_min + (u_max - u_min) * (iu + 1) as Real / segs as Real;
+            let v0 = v_min + (v_max - v_min) * iv as Real / segs as Real;
+            let v1 = v_min + (v_max - v_min) * (iv + 1) as Real / segs as Real;
             let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
             let n_inside = corners
                 .iter()
@@ -265,7 +265,7 @@ pub fn mesh_trimmed_uv_grid(
                 // Partially inside: clip cell quad against outer trim boundary.
                 // NOTE: Sutherland-Hodgman requires a convex clip polygon. For non-convex
                 // UV boundaries, fall back to using only the corners that are inside the trim.
-                let cell_poly: Vec<(f32, f32)> = corners.to_vec();
+                let cell_poly: Vec<(Real, Real)> = corners.to_vec();
                 let clipped = if is_polygon_convex(&outer_uv) {
                     sutherland_hodgman_clip(&cell_poly, &outer_uv)
                 } else {
@@ -280,7 +280,7 @@ pub fn mesh_trimmed_uv_grid(
                     continue;
                 }
                 // Filter out points that fall inside a hole
-                let clipped: Vec<(f32, f32)> = clipped
+                let clipped: Vec<(Real, Real)> = clipped
                     .into_iter()
                     .filter(|&(u, v)| point_in_trim(u, v, &outer_uv, &holes))
                     .collect();
@@ -333,10 +333,10 @@ pub fn mesh_parametric_grid(
     face: &crate::topo::BRepFace,
     face_key: FaceKey,
     reg: &BRepStore,
-    uv_bounds: Option<(f32, f32, f32, f32)>,
+    uv_bounds: Option<(Real, Real, Real, Real)>,
     fill_config: Option<&FaceFillConfig>,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
     shared_boundary: Option<&SharedBoundaryPool>,
@@ -360,10 +360,10 @@ pub fn mesh_parametric_grid(
 
     for iu in 0..segs {
         for iv in 0..segs {
-            let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as f32 / segs as f32;
-            let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as f32 / segs as f32;
-            let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as f32 / segs as f32;
-            let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as f32 / segs as f32;
+            let u0 = pr.u_min + (pr.u_max - pr.u_min) * iu as Real / segs as Real;
+            let u1 = pr.u_min + (pr.u_max - pr.u_min) * (iu + 1) as Real / segs as Real;
+            let v0 = pr.v_min + (pr.v_max - pr.v_min) * iv as Real / segs as Real;
+            let v1 = pr.v_min + (pr.v_max - pr.v_min) * (iv + 1) as Real / segs as Real;
             let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
             let mut idx = [0i32; 4];
             for (k, &(u, v)) in corners.iter().enumerate() {
@@ -417,8 +417,8 @@ pub fn mesh_closed_surface(
     face_key: FaceKey,
     reg: &BRepStore,
     fill_config: &FaceFillConfig,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     pos_to_idx: &mut BoundaryPosIndex,
     all_indices: &mut Vec<i32>,
     shared_boundary: Option<&SharedBoundaryPool>,

@@ -1,7 +1,8 @@
 //! Curve geometry evaluation and surface parameterization.
 
-use std::f32::consts::PI;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use std::f64::consts::PI;
+use rc3d_core::math::PVec3;
 use super::parser::EntityIndex;
 use super::topology;
 use super::value::StepValue;
@@ -10,10 +11,10 @@ use super::value::StepValue;
 pub fn sample_curve(
     curve_id: u64,
     entities: &EntityIndex,
-    start: Vec3,
-    end: Vec3,
-    tolerance: f32,
-) -> Vec<Vec3> {
+    start: PVec3,
+    end: PVec3,
+    tolerance: Real,
+) -> Vec<PVec3> {
     let record = match entities.get(&curve_id) {
         Some(r) => r,
         None => return vec![start, end],
@@ -78,9 +79,9 @@ pub fn sample_curve(
 fn sample_line(
     params: &StepValue,
     entities: &EntityIndex,
-    start: Vec3,
-    end: Vec3,
-) -> Vec<Vec3> {
+    start: PVec3,
+    end: PVec3,
+) -> Vec<PVec3> {
     // LINE args: (name, #pnt, #dir)
     let pnt_id = nth_ref(params, 1);
     let dir_id = nth_ref(params, 2);
@@ -91,7 +92,7 @@ fn sample_line(
                 .unwrap_or_else(|| {
                     // Fallback: try as VECTOR or other direction-like entity
                     resolve_direction_fallback(did, entities)
-                        .unwrap_or(Vec3::Z)
+                        .unwrap_or(PVec3::Z)
                 });
             return vec![p, p + dir];
         }
@@ -103,7 +104,7 @@ fn sample_line(
 /// Compute adaptive sample count using chordal tolerance.
 /// For arc length `L`, radius `R`, and chordal tolerance `ε`:
 ///   n = max(2, min(128, ceil(L / sqrt(8 * ε * R))))
-fn chordal_sample_count(arc_length: f32, radius: f32, tolerance: f32) -> usize {
+fn chordal_sample_count(arc_length: Real, radius: Real, tolerance: Real) -> usize {
     if radius < 1e-6 || tolerance < 1e-10 {
         return 4;
     }
@@ -112,7 +113,7 @@ fn chordal_sample_count(arc_length: f32, radius: f32, tolerance: f32) -> usize {
     n.max(4).min(128)
 }
 
-fn resolve_direction_fallback(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+fn resolve_direction_fallback(dir_id: u64, entities: &EntityIndex) -> Option<PVec3> {
     let record = entities.get(&dir_id)?;
     match record.name.as_str() {
         "VECTOR" => {
@@ -127,23 +128,23 @@ fn resolve_direction_fallback(dir_id: u64, entities: &EntityIndex) -> Option<Vec
 fn sample_circle(
     params: &StepValue,
     entities: &EntityIndex,
-    _start: Vec3,
-    _end: Vec3,
-    tolerance: f32,
-) -> Vec<Vec3> {
+    _start: PVec3,
+    _end: PVec3,
+    tolerance: Real,
+) -> Vec<PVec3> {
     // CIRCLE args: (name, #position, radius)
     let pos_id = nth_ref(params, 1);
-    let radius = nth_real(params, 2).unwrap_or(1.0) as f32;
+    let radius = nth_real(params, 2).unwrap_or(1.0) as Real;
     let (origin, x_axis, z_axis) = pos_id
         .and_then(|id| topology::resolve_placement(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+        .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
 
     let circumference = radius.abs() * 2.0 * PI;
     let n = chordal_sample_count(circumference, radius.abs(), tolerance);
     let mut points = Vec::with_capacity(n + 1);
     let y_axis = z_axis.cross(x_axis).normalize();
     for i in 0..=n {
-        let angle = (i as f32) * 2.0 * PI / (n as f32);
+        let angle = (i as Real) * 2.0 * PI / (n as Real);
         let pt = origin + x_axis * (radius * angle.cos()) + y_axis * (radius * angle.sin());
         points.push(pt);
     }
@@ -153,17 +154,17 @@ fn sample_circle(
 fn sample_ellipse(
     params: &StepValue,
     entities: &EntityIndex,
-    _start: Vec3,
-    _end: Vec3,
-    tolerance: f32,
-) -> Vec<Vec3> {
+    _start: PVec3,
+    _end: PVec3,
+    tolerance: Real,
+) -> Vec<PVec3> {
     // ELLIPSE args: (name, #position, semi_axis_1, semi_axis_2)
     let pos_id = nth_ref(params, 1);
-    let a = nth_real(params, 2).unwrap_or(1.0) as f32;
-    let b = nth_real(params, 3).unwrap_or(1.0) as f32;
+    let a = nth_real(params, 2).unwrap_or(1.0) as Real;
+    let b = nth_real(params, 3).unwrap_or(1.0) as Real;
     let (origin, x_axis, z_axis) = pos_id
         .and_then(|id| topology::resolve_placement(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+        .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
 
     // Ramanujan approximation for ellipse circumference
     let circ = PI * (3.0 * (a.abs() + b.abs())
@@ -172,7 +173,7 @@ fn sample_ellipse(
     let mut points = Vec::with_capacity(n + 1);
     let y_axis = z_axis.cross(x_axis).normalize();
     for i in 0..=n {
-        let angle = (i as f32) * 2.0 * PI / (n as f32);
+        let angle = (i as Real) * 2.0 * PI / (n as Real);
         let pt = origin + x_axis * (a * angle.cos()) + y_axis * (b * angle.sin());
         points.push(pt);
     }
@@ -182,7 +183,7 @@ fn sample_ellipse(
 fn sample_polyline(
     params: &StepValue,
     entities: &EntityIndex,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     // POLYLINE args: (name, (#pnt1, #pnt2, ...))
     let pt_ids = nth_list_refs(params, 1).unwrap_or_default();
     pt_ids.iter().filter_map(|&id| topology::resolve_point(id, entities)).collect()
@@ -191,20 +192,20 @@ fn sample_polyline(
 fn sample_hyperbola(
     params: &StepValue,
     entities: &EntityIndex,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     // HYPERBOLA: (name, #position, semi_axis, semi_imag_axis)
     let pos_id = nth_ref(params, 1);
-    let a = nth_real(params, 2).unwrap_or(1.0) as f32;
-    let b = nth_real(params, 3).unwrap_or(1.0) as f32;
+    let a = nth_real(params, 2).unwrap_or(1.0) as Real;
+    let b = nth_real(params, 3).unwrap_or(1.0) as Real;
     let (origin, x_axis, z_axis) = pos_id
         .and_then(|id| topology::resolve_placement(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+        .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
     let y_axis = z_axis.cross(x_axis).normalize();
 
     let n = 64;
     let mut pts = Vec::with_capacity(n + 1);
     for i in 0..=n {
-        let t_val = -3.0 + 6.0 * (i as f32 / n as f32);
+        let t_val = -3.0 + 6.0 * (i as Real / n as Real);
         let x = a * t_val.cosh();
         let y = b * t_val.sinh();
         pts.push(origin + x_axis * x + y_axis * y);
@@ -215,19 +216,19 @@ fn sample_hyperbola(
 fn sample_parabola(
     params: &StepValue,
     entities: &EntityIndex,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     // PARABOLA: (name, #position, focal_dist)
     let pos_id = nth_ref(params, 1);
-    let f = nth_real(params, 2).unwrap_or(1.0) as f32;
+    let f = nth_real(params, 2).unwrap_or(1.0) as Real;
     let (origin, x_axis, z_axis) = pos_id
         .and_then(|id| topology::resolve_placement(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+        .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
     let y_axis = z_axis.cross(x_axis).normalize();
 
     let n = 64;
     let mut pts = Vec::with_capacity(n + 1);
     for i in 0..=n {
-        let t_val = -5.0 + 10.0 * (i as f32 / n as f32);
+        let t_val = -5.0 + 10.0 * (i as Real / n as Real);
         let x = t_val;
         let y = t_val * t_val / (4.0 * f);
         pts.push(origin + x_axis * x + y_axis * y);
@@ -242,7 +243,7 @@ pub fn evaluate_surface(
     entities: &EntityIndex,
     samples_u: usize,
     samples_v: usize,
-) -> Option<Vec<Vec<Vec3>>> {
+) -> Option<Vec<Vec<PVec3>>> {
     let record = entities.get(&surface_id)?;
     match record.name.as_str() {
         "SURFACE_OF_LINEAR_EXTRUSION" => eval_extrusion(&record.params, entities, samples_u, samples_v),
@@ -256,25 +257,25 @@ fn eval_extrusion(
     entities: &EntityIndex,
     _samples_u: usize,
     samples_v: usize,
-) -> Option<Vec<Vec<Vec3>>> {
+) -> Option<Vec<Vec<PVec3>>> {
     // SURFACE_OF_LINEAR_EXTRUSION: (name, #swept_curve, #extrusion_axis)
     let curve_id = nth_ref(params, 1)?;
     let axis_id = nth_ref(params, 2)?;
     let direction = resolve_direction(axis_id, entities)?;
 
     // Sample the generatrix curve
-    let curve_pts = sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.1);
+    let curve_pts = sample_curve(curve_id, entities, PVec3::ZERO, PVec3::ZERO, 0.1);
     if curve_pts.is_empty() {
         return None;
     }
 
     let n_curve = curve_pts.len();
     let n_sweep = samples_v;
-    let mut grid: Vec<Vec<Vec3>> = Vec::with_capacity(n_curve);
+    let mut grid: Vec<Vec<PVec3>> = Vec::with_capacity(n_curve);
     for i in 0..n_curve {
         let mut row = Vec::with_capacity(n_sweep);
         for j in 0..n_sweep {
-            let t = j as f32 / (n_sweep - 1).max(1) as f32;
+            let t = j as Real / (n_sweep - 1).max(1) as Real;
             row.push(curve_pts[i] + direction * t);
         }
         grid.push(row);
@@ -287,26 +288,26 @@ fn eval_revolution(
     entities: &EntityIndex,
     samples_u: usize,
     _samples_v: usize,
-) -> Option<Vec<Vec<Vec3>>> {
+) -> Option<Vec<Vec<PVec3>>> {
     // SURFACE_OF_REVOLUTION: (name, #swept_curve, #axis_position)
     let curve_id = nth_ref(params, 1)?;
     let axis_placement_id = nth_ref(params, 2);
 
     let (origin, axis) = axis_placement_id
         .and_then(|id| topology::resolve_sweep_axis(id, entities))
-        .unwrap_or((Vec3::ZERO, Vec3::Z));
+        .unwrap_or((PVec3::ZERO, PVec3::Z));
 
     // Sample the generatrix curve
-    let curve_pts = sample_curve(curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.1);
+    let curve_pts = sample_curve(curve_id, entities, PVec3::ZERO, PVec3::ZERO, 0.1);
     if curve_pts.is_empty() {
         return None;
     }
 
     let n_curve = curve_pts.len();
     let n_angle = samples_u;
-    let mut grid: Vec<Vec<Vec3>> = Vec::with_capacity(n_angle + 1);
+    let mut grid: Vec<Vec<PVec3>> = Vec::with_capacity(n_angle + 1);
     for i in 0..=n_angle {
-        let angle = (i as f32) * 2.0 * std::f32::consts::PI / n_angle as f32;
+        let angle = (i as Real) * 2.0 * std::f64::consts::PI / n_angle as Real;
         let mut row = Vec::with_capacity(n_curve);
         for pt in &curve_pts {
             // Rotate point around axis through origin
@@ -323,13 +324,13 @@ fn eval_revolution(
     Some(grid)
 }
 
-fn rotate_around_axis(v: Vec3, axis: Vec3, angle: f32) -> Vec3 {
+fn rotate_around_axis(v: PVec3, axis: PVec3, angle: Real) -> PVec3 {
     let cos_a = angle.cos();
     let sin_a = angle.sin();
     v * cos_a + axis.cross(v) * sin_a + axis * axis.dot(v) * (1.0 - cos_a)
 }
 
-fn resolve_direction(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+fn resolve_direction(dir_id: u64, entities: &EntityIndex) -> Option<PVec3> {
     let record = entities.get(&dir_id)?;
     if record.name != "DIRECTION" && record.name != "VECTOR" {
         return None;
@@ -341,14 +342,14 @@ fn resolve_direction(dir_id: u64, entities: &EntityIndex) -> Option<Vec3> {
     if coords.len() < 3 {
         return None;
     }
-    Some(Vec3::new(coords[0] as f32, coords[1] as f32, coords[2] as f32))
+    Some(PVec3::new(coords[0] as Real, coords[1] as Real, coords[2] as Real))
 }
 
 fn sample_bspline(
     params: &StepValue,
     entities: &EntityIndex,
-    _tolerance: f32,
-) -> Vec<Vec3> {
+    _tolerance: Real,
+) -> Vec<PVec3> {
     // B_SPLINE_CURVE_WITH_KNOTS args:
     // (name, degree, control_points, curve_form, closed, self_intersect,
     //  knot_multiplicities, knots, knot_spec)
@@ -366,12 +367,12 @@ fn sample_bspline(
 
     // Build the full knot vector from knot values and multiplicities
     // For PIECEWISE_BEZIER_KNOTS, all interior knots have multiplicity = degree
-    let mut knot_vec: Vec<f32> = Vec::new();
+    let mut knot_vec: Vec<Real> = Vec::new();
 
     if !multiplicities.is_empty() && !knots.is_empty() {
         for (i, &mult) in multiplicities.iter().enumerate() {
             if i < knots.len() {
-                let k = knots[i].as_real().unwrap_or(0.0) as f32;
+                let k = knots[i].as_real().unwrap_or(0.0) as Real;
                 for _ in 0..mult {
                     knot_vec.push(k);
                 }
@@ -384,9 +385,9 @@ fn sample_bspline(
     if knot_vec.len() < ctrl_pts.len() + degree + 1 {
         // Expand knots for piecewise bezier: the knot values define segments
         // Each segment corresponds to one bezier curve
-        let mut expanded: Vec<f32> = Vec::new();
+        let mut expanded: Vec<Real> = Vec::new();
         for (i, k) in knots.iter().enumerate() {
-            let kval = k.as_real().unwrap_or(i as f64) as f32;
+            let kval = k.as_real().unwrap_or(i as f64) as Real;
             let mult = if i < multiplicities.len() { multiplicities[i] as usize } else { degree };
             for _ in 0..mult {
                 expanded.push(kval);
@@ -398,7 +399,7 @@ fn sample_bspline(
             let max_k = *expanded.last().unwrap_or(&1.0);
             let needed = ctrl_pts.len() + degree + 1 - expanded.len();
             for i in 0..needed {
-                let t = (i + 1) as f32 / (needed + 1) as f32;
+                let t = (i + 1) as Real / (needed + 1) as Real;
                 expanded.push(min_k + (max_k - min_k) * t);
             }
         }
@@ -411,9 +412,9 @@ fn sample_bspline(
 
     // Extract rational weights — scan all params for a List of reals matching ctrl_pts count.
     // RATIONAL_B_SPLINE_CURVE entity has its weight list merged after the knot spec params.
-    let weights: Vec<f32> = find_weights_list(params, ctrl_pts.len())
+    let weights: Vec<Real> = find_weights_list(params, ctrl_pts.len())
         .unwrap_or_else(|| vec![1.0; ctrl_pts.len()]);
-    let pts: Vec<[f32; 4]> = ctrl_pts.iter().enumerate()
+    let pts: Vec<[Real; 4]> = ctrl_pts.iter().enumerate()
         .map(|(i, p)| [p.x, p.y, p.z, weights.get(i).copied().unwrap_or(1.0)])
         .collect();
 
@@ -427,9 +428,9 @@ fn sample_bspline(
     let actual_u_max = knot_vec.get(knot_max_idx).copied().unwrap_or(1.0);
 
     for i in 0..=n_pts {
-        let t = actual_u_min + (actual_u_max - actual_u_min) * (i as f32) / (n_pts as f32);
+        let t = actual_u_min + (actual_u_max - actual_u_min) * (i as Real) / (n_pts as Real);
         let pt = eval_bspline_curve(&pts, degree, &knot_vec, t);
-        result.push(Vec3::new(pt[0], pt[1], pt[2]));
+        result.push(PVec3::new(pt[0], pt[1], pt[2]));
     }
     result
 }
@@ -440,7 +441,7 @@ pub fn resolve_bspline_ctrl_pts(
     params: &StepValue,
     index: usize,
     entities: &EntityIndex,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     let list = match params.nth_param(index).and_then(|v| v.as_list()) {
         Some(l) => l,
         None => return vec![],
@@ -451,11 +452,11 @@ pub fn resolve_bspline_ctrl_pts(
         .collect()
 }
 
-fn eval_bspline_curve(ctrl: &[[f32; 4]], degree: usize, knots: &[f32], t: f32) -> [f32; 4] {
+fn eval_bspline_curve(ctrl: &[[Real; 4]], degree: usize, knots: &[Real], t: Real) -> [Real; 4] {
     let n = ctrl.len();
     let span = find_span(degree, knots, t);
     let basis = bspline_bases(span, degree, t, knots);
-    let mut pt = [0.0f32; 4];
+    let mut pt = [0.0_f64; 4];
     for (k, b) in &basis {
         let k = *k;
         if k < n {
@@ -476,7 +477,7 @@ fn eval_bspline_curve(ctrl: &[[f32; 4]], degree: usize, knots: &[f32], t: f32) -
 
 /// Scan all params for a List of real values matching the expected count.
 /// Used to extract rational B-spline weights that are appended after knot_spec.
-pub fn find_weights_list(params: &StepValue, expected_count: usize) -> Option<Vec<f32>> {
+pub fn find_weights_list(params: &StepValue, expected_count: usize) -> Option<Vec<Real>> {
     let list = params.as_list()?;
     // Distinguish non-rational B-splines (only knots list at index 7)
     // from rational B-splines (knots at 7 + weights at 9).
@@ -496,7 +497,7 @@ pub fn find_weights_list(params: &StepValue, expected_count: usize) -> Option<Ve
     if real_lists.len() >= 2 {
         let candidate = real_lists.last().unwrap();
         if candidate.len() == expected_count {
-            return Some(candidate.iter().map(|v| v.as_real().unwrap() as f32).collect());
+            return Some(candidate.iter().map(|v| v.as_real().unwrap() as Real).collect());
         }
     }
     None
@@ -567,7 +568,7 @@ mod tests {
 #10 = POLYLINE('', (#1, #2, #3));\
 ",
         );
-        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::ZERO, 0.1);
+        let pts = sample_curve(10, &entities, PVec3::ZERO, PVec3::ZERO, 0.1);
         assert_eq!(pts.len(), 3);
     }
 
@@ -580,7 +581,7 @@ mod tests {
 #10 = POLYLINE('', (#1, #2));\
 ",
         );
-        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::ZERO, 0.1);
+        let pts = sample_curve(10, &entities, PVec3::ZERO, PVec3::ZERO, 0.1);
         assert_eq!(pts.len(), 2);
     }
 
@@ -633,11 +634,11 @@ mod tests {
 ",
         );
         // TRIMMED_CURVE unwraps to the inner LINE — should produce start + direction
-        let pts = sample_curve(20, &entities, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), 0.1);
+        let pts = sample_curve(20, &entities, PVec3::ZERO, PVec3::new(1.0, 0.0, 0.0), 0.1);
         assert_eq!(pts.len(), 2, "trimmed line should produce 2 points");
-        assert!((pts[0] - Vec3::ZERO).length() < 1e-4);
+        assert!((pts[0] - PVec3::ZERO).length() < 1e-4);
         // LINE: pnt=(0,0,0) + dir=(1,0,0) = (1,0,0)
-        assert!((pts[1] - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
+        assert!((pts[1] - PVec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
     }
 
     #[test]
@@ -653,7 +654,7 @@ mod tests {
 #30 = COMPOSITE_CURVE('', (#20, #21), .F.);\
 ",
         );
-        let pts = sample_curve(30, &entities, Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0), 0.1);
+        let pts = sample_curve(30, &entities, PVec3::ZERO, PVec3::new(2.0, 0.0, 0.0), 0.1);
         assert!(pts.len() >= 3, "composite curve should sample points from both segments");
     }
 
@@ -671,7 +672,7 @@ mod tests {
 ",
         );
         // Should not panic and should produce sorted evaluation
-        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::new(3.0, 0.0, 0.0), 0.1);
+        let pts = sample_curve(10, &entities, PVec3::ZERO, PVec3::new(3.0, 0.0, 0.0), 0.1);
         assert!(!pts.is_empty(), "should produce points even with expanded knot vector");
         // Points should be monotonically increasing in x (knots are sorted)
         for w in pts.windows(2) {
@@ -692,7 +693,7 @@ mod tests {
 #10 = RATIONAL_B_SPLINE_CURVE('', 1, (#1, #2), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .UNSPECIFIED., (1.0, 0.5));\
 ",
         );
-        let pts = sample_curve(10, &entities, Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0), 0.1);
+        let pts = sample_curve(10, &entities, PVec3::ZERO, PVec3::new(2.0, 0.0, 0.0), 0.1);
         // With rational weights [1.0, 0.5], midpoint should be closer to pt1.
         // At t=0.5: w1*B1 = 1.0*0.5=0.5, w2*B2 = 0.5*0.5=0.25
         // x = (0*0.5 + 2*0.25)/(0.5+0.25) = 0.5/0.75 ≈ 0.667

@@ -4,7 +4,7 @@
 //! surfaces (B-spline, NURBS) are converted to this representation for uniform
 //! evaluation and derivative computation.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::geom::bspline::{bspline_bases, find_span};
 use rc3d_nurbs::NurbsCurve;
 
@@ -17,19 +17,20 @@ pub struct NurbsSurface {
     pub degree_u: usize,
     pub degree_v: usize,
     /// Control points [u_count][v_count]
-    pub control_points: Vec<Vec<Vec3>>,
+    pub control_points: Vec<Vec<PVec3>>,
     /// Weights [u_count][v_count], 1.0 for non-rational B-spline
-    pub weights: Vec<Vec<f32>>,
+    pub weights: Vec<Vec<Real>>,
     /// Knot vector for u direction, length = u_count + degree_u + 1
-    pub knots_u: Vec<f32>,
+    pub knots_u: Vec<Real>,
     /// Knot vector for v direction, length = v_count + degree_v + 1
-    pub knots_v: Vec<f32>,
+    pub knots_v: Vec<Real>,
 }
 
 // ── NURBS type conversions ──────────────────────────────────────
 
 impl From<NurbsSurface> for rc3d_nurbs::NurbsRenderSurface {
     /// Convert from separated control points + weights to homogeneous [x,y,z,w] format.
+    /// Casts f64 → f32 at the rendering boundary.
     fn from(s: NurbsSurface) -> Self {
         let control_points: Vec<Vec<[f32; 4]>> = s
             .control_points
@@ -39,14 +40,14 @@ impl From<NurbsSurface> for rc3d_nurbs::NurbsRenderSurface {
                 cp_row
                     .iter()
                     .zip(w_row.iter())
-                    .map(|(&cp, &w)| [cp.x * w, cp.y * w, cp.z * w, w])
+                    .map(|(&cp, &w)| [(cp.x * w) as f32, (cp.y * w) as f32, (cp.z * w) as f32, w as f32])
                     .collect()
             })
             .collect();
         rc3d_nurbs::NurbsRenderSurface {
             control_points,
-            u_knots: s.knots_u,
-            v_knots: s.knots_v,
+            u_knots: s.knots_u.iter().map(|&k| k as f32).collect(),
+            v_knots: s.knots_v.iter().map(|&k| k as f32).collect(),
             u_degree: s.degree_u,
             v_degree: s.degree_v,
         }
@@ -55,6 +56,7 @@ impl From<NurbsSurface> for rc3d_nurbs::NurbsRenderSurface {
 
 impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
     /// Convert from homogeneous [x,y,z,w] to separated control points + weights.
+    /// Casts f32 → f64 at the geometry boundary.
     fn from(s: rc3d_nurbs::NurbsRenderSurface) -> Self {
         let n_u = s.u_count();
         let n_v = s.v_count();
@@ -65,8 +67,12 @@ impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
             let mut w_row = Vec::with_capacity(n_v);
             for j in 0..n_v {
                 let [wx, wy, wz, w] = s.control_points[i][j];
+                let w = w as Real;
+                let wx = wx as Real;
+                let wy = wy as Real;
+                let wz = wz as Real;
                 let inv_w = if w.abs() > 1e-10 { 1.0 / w } else { 1.0 };
-                cp_row.push(Vec3::new(wx * inv_w, wy * inv_w, wz * inv_w));
+                cp_row.push(PVec3::new(wx * inv_w, wy * inv_w, wz * inv_w));
                 w_row.push(w);
             }
             control_points.push(cp_row);
@@ -77,8 +83,8 @@ impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
             degree_v: s.v_degree,
             control_points,
             weights,
-            knots_u: s.u_knots,
-            knots_v: s.v_knots,
+            knots_u: s.u_knots.iter().map(|&k| k as Real).collect(),
+            knots_v: s.v_knots.iter().map(|&k| k as Real).collect(),
         }
     }
 }
@@ -86,7 +92,7 @@ impl From<rc3d_nurbs::NurbsRenderSurface> for NurbsSurface {
 impl NurbsSurface {
     /// Number of control points in u direction.
     /// Find the knot span index in U direction: knots[i] <= t < knots[i+1].
-    pub fn find_span_u(&self, t: f32) -> usize {
+    pub fn find_span_u(&self, t: Real) -> usize {
         let n = self.knots_u.len() - self.degree_u - 2;
         for i in (self.degree_u..=n).rev() {
             if t >= self.knots_u[i] { return i; }
@@ -95,7 +101,7 @@ impl NurbsSurface {
     }
 
     /// Find the knot span index in V direction.
-    pub fn find_span_v(&self, t: f32) -> usize {
+    pub fn find_span_v(&self, t: Real) -> usize {
         let n = self.knots_v.len() - self.degree_v - 2;
         for i in (self.degree_v..=n).rev() {
             if t >= self.knots_v[i] { return i; }
@@ -113,7 +119,7 @@ impl NurbsSurface {
     }
 
     /// True when the surface is closed/periodic in the u direction (for UV unwrap).
-    pub fn is_u_closed(&self, tol: f32) -> bool {
+    pub fn is_u_closed(&self, tol: Real) -> bool {
         let n = self.u_count();
         if n < 2 {
             return false;
@@ -130,7 +136,7 @@ impl NurbsSurface {
     }
 
     /// True when the surface is closed/periodic in the v direction.
-    pub fn is_v_closed(&self, tol: f32) -> bool {
+    pub fn is_v_closed(&self, tol: Real) -> bool {
         let nv = self.v_count();
         if nv < 2 || self.u_count() == 0 {
             return false;
@@ -143,7 +149,7 @@ impl NurbsSurface {
     }
 
     /// Parametric period in u when the NURBS is closed in u.
-    pub fn u_period(&self) -> Option<f32> {
+    pub fn u_period(&self) -> Option<Real> {
         if !self.is_u_closed(1e-3) {
             return None;
         }
@@ -158,7 +164,7 @@ impl NurbsSurface {
     }
 
     /// Parametric period in v when the NURBS is closed in v.
-    pub fn v_period(&self) -> Option<f32> {
+    pub fn v_period(&self) -> Option<Real> {
         if !self.is_v_closed(1e-3) {
             return None;
         }
@@ -173,14 +179,14 @@ impl NurbsSurface {
     }
 
     /// Evaluate the surface at (u, v). Returns the 3D point.
-    pub fn evaluate(&self, u: f32, v: f32) -> Vec3 {
+    pub fn evaluate(&self, u: Real, v: Real) -> PVec3 {
         let span_u = find_span(self.degree_u, &self.knots_u, u);
         let span_v = find_span(self.degree_v, &self.knots_v, v);
         let basis_u = bspline_bases(span_u, self.degree_u, u, &self.knots_u);
         let basis_v = bspline_bases(span_v, self.degree_v, v, &self.knots_v);
 
-        let mut point = Vec3::ZERO;
-        let mut weight_sum = 0.0f32;
+        let mut point = PVec3::ZERO;
+        let mut weight_sum = 0.0_f64;
 
         for &(i, nu) in &basis_u {
             for &(j, nv) in &basis_v {
@@ -195,14 +201,14 @@ impl NurbsSurface {
         if weight_sum > 1e-10 {
             point * (1.0 / weight_sum)
         } else {
-            Vec3::ZERO
+            PVec3::ZERO
         }
     }
 
     /// Evaluate surface point and first-order partial derivatives together at (u, v).
     /// Returns (point, ∂S/∂u, ∂S/∂v). Shares span and basis computation between
     /// position and derivative evaluation for better performance.
-    pub fn evaluate_with_derivative(&self, u: f32, v: f32) -> (Vec3, Vec3, Vec3) {
+    pub fn evaluate_with_derivative(&self, u: Real, v: Real) -> (PVec3, PVec3, PVec3) {
         // Shared span + basis computation (computed once, used for both position and derivatives)
         let span_u = find_span(self.degree_u, &self.knots_u, u);
         let span_v = find_span(self.degree_v, &self.knots_v, v);
@@ -214,12 +220,12 @@ impl NurbsSurface {
         let dv_basis = analytical_basis_derivatives(span_v, self.degree_v, v, &self.knots_v);
 
         // Accumulate weighted position and partial derivatives in a single pass
-        let mut w_sum = 0.0f32;
-        let mut w_u = 0.0f32;
-        let mut w_v = 0.0f32;
-        let mut p = Vec3::ZERO;
-        let mut p_u = Vec3::ZERO;
-        let mut p_v = Vec3::ZERO;
+        let mut w_sum = 0.0_f64;
+        let mut w_u = 0.0_f64;
+        let mut w_v = 0.0_f64;
+        let mut p = PVec3::ZERO;
+        let mut p_u = PVec3::ZERO;
+        let mut p_v = PVec3::ZERO;
 
         for &(i, nu) in &basis_u {
             let dn_du = lookup_basis_value(&du_basis, i);
@@ -242,7 +248,7 @@ impl NurbsSurface {
         }
 
         if w_sum.abs() < 1e-10 {
-            return (Vec3::ZERO, Vec3::X, Vec3::Y);
+            return (PVec3::ZERO, PVec3::X, PVec3::Y);
         }
 
         let inv_w = 1.0 / w_sum;
@@ -261,8 +267,8 @@ impl NurbsSurface {
     /// that finite differences would require. The analytical path is both
     /// faster and more accurate (no numerical cancellation from eps steps).
     pub fn evaluate_with_hessian(
-        &self, u: f32, v: f32,
-    ) -> (Vec3, Vec3, Vec3, Vec3, Vec3, Vec3) {
+        &self, u: Real, v: Real,
+    ) -> (PVec3, PVec3, PVec3, PVec3, PVec3, PVec3) {
         // Shared span computation
         let span_u = find_span(self.degree_u, &self.knots_u, u);
         let span_v = find_span(self.degree_v, &self.knots_v, v);
@@ -276,13 +282,13 @@ impl NurbsSurface {
         let d2_v = analytical_basis_second_derivatives(span_v, self.degree_v, v, &self.knots_v);
 
         // Single-pass accumulation of weighted sums
-        let mut w_sum = 0.0f32;
-        let mut w_u = 0.0f32;    let mut w_v = 0.0f32;
-        let mut w_uu = 0.0f32;   let mut w_uv = 0.0f32;   let mut w_vv = 0.0f32;
+        let mut w_sum = 0.0_f64;
+        let mut w_u = 0.0_f64;    let mut w_v = 0.0_f64;
+        let mut w_uu = 0.0_f64;   let mut w_uv = 0.0_f64;   let mut w_vv = 0.0_f64;
 
-        let mut p = Vec3::ZERO;
-        let mut p_u = Vec3::ZERO;    let mut p_v = Vec3::ZERO;
-        let mut p_uu = Vec3::ZERO;   let mut p_uv = Vec3::ZERO;   let mut p_vv = Vec3::ZERO;
+        let mut p = PVec3::ZERO;
+        let mut p_u = PVec3::ZERO;    let mut p_v = PVec3::ZERO;
+        let mut p_uu = PVec3::ZERO;   let mut p_uv = PVec3::ZERO;   let mut p_vv = PVec3::ZERO;
 
         for &(i, nu) in &basis_u {
             let dn_du = lookup_basis_value(&d1_u, i);
@@ -326,7 +332,7 @@ impl NurbsSurface {
         }
 
         if w_sum.abs() < 1e-10 {
-            return (Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+            return (PVec3::ZERO, PVec3::X, PVec3::Y, PVec3::ZERO, PVec3::ZERO, PVec3::ZERO);
         }
 
         let inv_w = 1.0 / w_sum;
@@ -348,20 +354,20 @@ impl NurbsSurface {
                    + 2.0 * p * w_v * w_v * inv_w) * inv_w2;
 
         // NaN safety
-        let safe = |v: Vec3| if v.is_nan() { Vec3::ZERO } else { v };
+        let safe = |v: PVec3| if v.is_nan() { PVec3::ZERO } else { v };
         (safe(pos), safe(du), safe(dv), safe(duu), safe(duv), safe(dvv))
     }
 
     /// Compute first-order partial derivatives ∂S/∂u and ∂S/∂v at (u, v).
     /// Uses analytical B-spline derivative formulas for accuracy and efficiency.
-    pub fn derivative(&self, u: f32, v: f32) -> (Vec3, Vec3) {
+    pub fn derivative(&self, u: Real, v: Real) -> (PVec3, PVec3) {
         let (_, du, dv) = self.evaluate_with_derivative(u, v);
         (du, dv)
     }
 
     /// Compute surface normal at (u, v) = ∂S/∂u × ∂S/∂v (normalized).
     /// Uses analytical derivatives for accuracy.
-    pub fn normal(&self, u: f32, v: f32) -> Vec3 {
+    pub fn normal(&self, u: Real, v: Real) -> PVec3 {
         let (du, dv) = self.derivative(u, v);
         let n = du.cross(dv);
         let len = n.length();
@@ -370,7 +376,7 @@ impl NurbsSurface {
         }
 
         // Degenerate — sample a small cross around (u,v) inside valid domain.
-        let eps = 1e-3f32;
+        let eps = 1e-3_f64;
         let u_min = self.knots_u[self.degree_u];
         let u_max = self.knots_u[self.knots_u.len() - self.degree_u - 1];
         let v_min = self.knots_v[self.degree_v];
@@ -382,8 +388,8 @@ impl NurbsSurface {
             (u, v + eps),
             (u, v - eps),
         ];
-        let mut best = Vec3::Z;
-        let mut best_len = 0.0f32;
+        let mut best = PVec3::Z;
+        let mut best_len = 0.0_f64;
         for (uc, vc) in probes {
             if uc < u_min || uc > u_max || vc < v_min || vc > v_max {
                 continue;
@@ -403,7 +409,7 @@ impl NurbsSurface {
     ///
     /// The surface shape is invariant — only the representation changes
     /// (one additional control point per V column, refined knot vector).
-    pub fn insert_knot_u(&mut self, t: f32) {
+    pub fn insert_knot_u(&mut self, t: Real) {
         let n_u = self.u_count();
         let n_v = self.v_count();
         let p = self.degree_u;
@@ -470,7 +476,7 @@ impl NurbsSurface {
     ///
     /// The surface shape is invariant — only the representation changes
     /// (one additional control point per U row, refined knot vector).
-    pub fn insert_knot_v(&mut self, t: f32) {
+    pub fn insert_knot_v(&mut self, t: Real) {
         let p = self.degree_v;
 
         let span = find_span(p, &self.knots_v, t);
@@ -528,7 +534,7 @@ impl NurbsSurface {
     ///
     /// `points[i][j]` is row i (u direction), column j (v direction).
     /// Produces a non-rational surface (all weights = 1.0).
-    pub fn from_points_grid(points: &[Vec<Vec3>], u_degree: usize, v_degree: usize) -> Self {
+    pub fn from_points_grid(points: &[Vec<PVec3>], u_degree: usize, v_degree: usize) -> Self {
         let n_u = points.len();
         let n_v = points.first().map(|r| r.len()).unwrap_or(0);
 
@@ -536,7 +542,7 @@ impl NurbsSurface {
         let knots_u = clamped_uniform_knots(u_degree, n_u);
         let knots_v = clamped_uniform_knots(v_degree, n_v);
 
-        let weights = vec![vec![1.0f32; n_v]; n_u];
+        let weights = vec![vec![1.0_f64; n_v]; n_u];
 
         NurbsSurface {
             degree_u: u_degree,
@@ -560,29 +566,29 @@ impl NurbsSurface {
         let mut new_knots_u = None;
 
         for j in 0..n_v {
-            // Column j: collect control points along u direction
+            // Column j: collect control points along u direction, cast f64→f32 for NurbsCurve
             let cp: Vec<[f32; 4]> = (0..self.u_count()).map(|i| {
                 let pt = self.control_points[i][j];
                 let w = self.weights[i][j];
-                [pt.x * w, pt.y * w, pt.z * w, w]
+                [(pt.x * w) as f32, (pt.y * w) as f32, (pt.z * w) as f32, w as f32]
             }).collect();
             let curve = NurbsCurve {
                 control_points: cp,
-                knots: self.knots_u.clone(),
+                knots: self.knots_u.iter().map(|&k| k as f32).collect(),
                 degree: self.degree_u,
             };
             let elevated = curve.elevate_degree();
 
-            // Convert back from homogeneous
-            let pts: Vec<Vec3> = elevated.control_points.iter().map(|c| {
-                let w = c[3];
-                if w.abs() > 1e-10 { Vec3::new(c[0]/w, c[1]/w, c[2]/w) }
-                else { Vec3::new(c[0], c[1], c[2]) }
+            // Convert back from homogeneous: f32→f64
+            let pts: Vec<PVec3> = elevated.control_points.iter().map(|c| {
+                let w = c[3] as Real;
+                if w.abs() > 1e-10 { PVec3::new(c[0] as Real / w, c[1] as Real / w, c[2] as Real / w) }
+                else { PVec3::new(c[0] as Real, c[1] as Real, c[2] as Real) }
             }).collect();
-            let ws: Vec<f32> = elevated.control_points.iter().map(|c| c[3]).collect();
+            let ws: Vec<Real> = elevated.control_points.iter().map(|c| c[3] as Real).collect();
 
             if new_knots_u.is_none() {
-                new_knots_u = Some(elevated.knots);
+                new_knots_u = Some(elevated.knots.iter().map(|&k| k as Real).collect());
             }
 
             // First column initializes the rows; subsequent columns append to each row
@@ -614,33 +620,33 @@ impl NurbsSurface {
             let row_cp = &self.control_points[i];
             let row_w = &self.weights[i];
 
-            // Row i: collect control points along v direction
+            // Row i: collect control points along v direction, cast f64→f32 for NurbsCurve
             let cp: Vec<[f32; 4]> = (0..row_cp.len()).map(|j| {
                 let pt = row_cp[j];
                 let w = row_w[j];
-                [pt.x * w, pt.y * w, pt.z * w, w]
+                [(pt.x * w) as f32, (pt.y * w) as f32, (pt.z * w) as f32, w as f32]
             }).collect();
             let curve = NurbsCurve {
                 control_points: cp,
-                knots: self.knots_v.clone(),
+                knots: self.knots_v.iter().map(|&k| k as f32).collect(),
                 degree: self.degree_v,
             };
             let elevated = curve.elevate_degree();
 
-            // Convert back from homogeneous
-            let pts: Vec<Vec3> = elevated.control_points.iter().map(|c| {
-                let w = c[3];
-                if w.abs() > 1e-10 { Vec3::new(c[0]/w, c[1]/w, c[2]/w) }
-                else { Vec3::new(c[0], c[1], c[2]) }
+            // Convert back from homogeneous: f32→f64
+            let pts: Vec<PVec3> = elevated.control_points.iter().map(|c| {
+                let w = c[3] as Real;
+                if w.abs() > 1e-10 { PVec3::new(c[0] as Real / w, c[1] as Real / w, c[2] as Real / w) }
+                else { PVec3::new(c[0] as Real, c[1] as Real, c[2] as Real) }
             }).collect();
-            let ws: Vec<f32> = elevated.control_points.iter().map(|c| c[3]).collect();
+            let ws: Vec<Real> = elevated.control_points.iter().map(|c| c[3] as Real).collect();
 
             self.control_points[i] = pts;
             self.weights[i] = ws;
 
             // All rows produce the same knot vector — update on first iteration
             if i == 0 {
-                self.knots_v = elevated.knots;
+                self.knots_v = elevated.knots.iter().map(|&k| k as Real).collect();
             }
         }
 
@@ -650,7 +656,7 @@ impl NurbsSurface {
     /// Try to reduce degree in U by 1 using approximate inverse of elevation.
     /// Returns false if shape deviation exceeds tolerance.
     /// OCC: BSplCLib::ReduceDegree
-    pub fn reduce_degree_u(&mut self, tolerance: f32) -> bool {
+    pub fn reduce_degree_u(&mut self, tolerance: Real) -> bool {
         if self.degree_u <= 1 { return false; }
         let new_deg = self.degree_u - 1;
         let n_u = self.u_count();
@@ -671,7 +677,7 @@ impl NurbsSurface {
                 new_cps.push(self.control_points[n_u - 1].clone());
                 new_ws.push(self.weights[n_u - 1].clone());
             } else {
-                let alpha = i as f32 / self.degree_u as f32;
+                let alpha = i as Real / self.degree_u as Real;
                 let one_minus_a = 1.0 - alpha;
                 let prev_cp = &new_cps[new_cps.len() - 1];
                 let prev_w = &new_ws[new_ws.len() - 1];
@@ -701,15 +707,15 @@ impl NurbsSurface {
     }
 
     /// Try to reduce degree in V by 1.
-    pub fn reduce_degree_v(&mut self, tolerance: f32) -> bool {
+    pub fn reduce_degree_v(&mut self, tolerance: Real) -> bool {
         if self.degree_v <= 1 { return false; }
         let new_deg = self.degree_v - 1;
         let n_u = self.u_count();
         let n_v = self.v_count();
         if n_v < new_deg + 2 { return false; }
 
-        let mut new_cp_per_row: Vec<Vec<Vec3>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
-        let mut new_w_per_row: Vec<Vec<f32>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
+        let mut new_cp_per_row: Vec<Vec<PVec3>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
+        let mut new_w_per_row: Vec<Vec<Real>> = (0..n_u).map(|_| Vec::with_capacity(n_v - 1)).collect();
 
         for i_u in 0..n_u {
             let mut row_cps = Vec::with_capacity(n_v - 1);
@@ -722,7 +728,7 @@ impl NurbsSurface {
                     row_cps.push(self.control_points[i_u][n_v - 1]);
                     row_ws.push(self.weights[i_u][n_v - 1]);
                 } else {
-                    let alpha = j as f32 / self.degree_v as f32;
+                    let alpha = j as Real / self.degree_v as Real;
                     let one_minus_a = 1.0 - alpha;
                     let prev_cp = *row_cps.last().unwrap();
                     let prev_w = *row_ws.last().unwrap();
@@ -749,11 +755,11 @@ impl NurbsSurface {
     }
 
     /// Check deviation of proposed CPs/weights by sampling and comparing.
-    fn reduce_deviation_ok(&self, new_cps: &[Vec<Vec3>], new_ws: &[Vec<f32>], tol: f32) -> bool {
+    fn reduce_deviation_ok(&self, new_cps: &[Vec<PVec3>], new_ws: &[Vec<Real>], tol: Real) -> bool {
         for i in 0..=8 {
             for j in 0..=8 {
-                let u = i as f32 / 8.0;
-                let v = j as f32 / 8.0;
+                let u = i as Real / 8.0;
+                let v = j as Real / 8.0;
                 let orig = self.evaluate(u, v);
                 let new_val = self.evaluate_with_cps(new_cps, new_ws, u, v);
                 if (new_val - orig).length() > tol { return false; }
@@ -766,7 +772,7 @@ impl NurbsSurface {
 /// Linear scan lookup in a short basis derivative list (3-6 entries).
 /// Faster than HashMap for these small sizes.
 #[inline]
-fn lookup_basis_value(basis: &[(usize, f32)], idx: usize) -> f32 {
+fn lookup_basis_value(basis: &[(usize, Real)], idx: usize) -> Real {
     for &(i, v) in basis {
         if i == idx { return v; }
     }
@@ -776,7 +782,7 @@ fn lookup_basis_value(basis: &[(usize, f32)], idx: usize) -> f32 {
 /// Build a clamped uniform knot vector for `n` control points of given `degree`.
 /// E.g. degree=3, n=4 → [0,0,0,0, 1,1,1,1] (Bezier).
 /// degree=3, n=6 → [0,0,0,0, 0.333, 0.667, 1,1,1,1].
-fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<f32> {
+fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<Real> {
     let n_knots = n + degree + 1;
     let n_interior = n_knots.saturating_sub(2 * (degree + 1));
     let mut knots = Vec::with_capacity(n_knots);
@@ -784,7 +790,7 @@ fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<f32> {
         knots.push(0.0);
     }
     for i in 1..=n_interior {
-        knots.push(i as f32 / (n_interior + 1) as f32);
+        knots.push(i as Real / (n_interior + 1) as Real);
     }
     for _ in 0..=degree {
         knots.push(1.0);
@@ -796,7 +802,7 @@ fn clamped_uniform_knots(degree: usize, n: usize) -> Vec<f32> {
 
 impl NurbsSurface {
     /// Try to remove one copy of knot `t` in the U direction.
-    pub fn remove_knot_u(&mut self, t: f32, tolerance: f32) -> bool {
+    pub fn remove_knot_u(&mut self, t: Real, tolerance: Real) -> bool {
         let p = self.degree_u;
         let mult = knot_multiplicity(&self.knots_u, t);
         if mult == 0 { return false; }
@@ -809,8 +815,8 @@ impl NurbsSurface {
 
         let n_cp = self.u_count();
         let n_v = self.v_count();
-        let mut new_cps: Vec<Vec<Vec3>> = Vec::with_capacity(n_cp - 1);
-        let mut new_ws: Vec<Vec<f32>> = Vec::with_capacity(n_cp - 1);
+        let mut new_cps: Vec<Vec<PVec3>> = Vec::with_capacity(n_cp - 1);
+        let mut new_ws: Vec<Vec<Real>> = Vec::with_capacity(n_cp - 1);
 
         for i_u in 0..n_cp {
             let is_affected = i_u >= start && i_u < span;
@@ -851,7 +857,7 @@ impl NurbsSurface {
     }
 
     /// Try to remove one copy of knot `t` in the V direction.
-    pub fn remove_knot_v(&mut self, t: f32, tolerance: f32) -> bool {
+    pub fn remove_knot_v(&mut self, t: Real, tolerance: Real) -> bool {
         let p = self.degree_v;
         let mult = knot_multiplicity(&self.knots_v, t);
         if mult == 0 { return false; }
@@ -864,8 +870,8 @@ impl NurbsSurface {
         let n_u = self.u_count();
         let n_cp = self.v_count();
 
-        let mut new_cp_per_row: Vec<Vec<Vec3>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
-        let mut new_w_per_row: Vec<Vec<f32>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
+        let mut new_cp_per_row: Vec<Vec<PVec3>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
+        let mut new_w_per_row: Vec<Vec<Real>> = (0..n_u).map(|_| Vec::with_capacity(n_cp - 1)).collect();
 
         for i_u in 0..n_u {
             for j_v in 0..n_cp {
@@ -880,7 +886,7 @@ impl NurbsSurface {
                     if denom.abs() > 1e-10 { ((t - self.knots_v[j_v]) / denom).clamp(0.0, 1.0) } else { 0.0 }
                 };
                 let one_minus_a = 1.0 - alpha;
-                let prev_cp = new_cp_per_row[i_u].last().copied().unwrap_or(Vec3::ZERO);
+                let prev_cp = new_cp_per_row[i_u].last().copied().unwrap_or(PVec3::ZERO);
                 let prev_w = new_w_per_row[i_u].last().copied().unwrap_or(1.0);
                 let curr_cp = self.control_points[i_u][j_v];
                 let curr_w = self.weights[i_u][j_v];
@@ -904,12 +910,12 @@ impl NurbsSurface {
     }
 
     /// Check whether proposed new CPs/weights deviate within tolerance.
-    fn knot_removal_deviation_ok(&self, new_cps: &[Vec<Vec3>], new_ws: &[Vec<f32>], tol: f32) -> bool {
+    fn knot_removal_deviation_ok(&self, new_cps: &[Vec<PVec3>], new_ws: &[Vec<Real>], tol: Real) -> bool {
         let samples = 8usize;
         for i in 0..=samples {
             for j in 0..=samples {
-                let u = i as f32 / samples as f32;
-                let v = j as f32 / samples as f32;
+                let u = i as Real / samples as Real;
+                let v = j as Real / samples as Real;
                 let orig = self.evaluate_with_cps(&self.control_points, &self.weights, u, v);
                 let new_val = self.evaluate_with_cps(new_cps, new_ws, u, v);
                 if (new_val - orig).length() > tol { return false; }
@@ -919,14 +925,14 @@ impl NurbsSurface {
     }
 
     /// Evaluate surface with explicit control points and weights (for deviation checking).
-    fn evaluate_with_cps(&self, cps: &[Vec<Vec3>], ws: &[Vec<f32>], u: f32, v: f32) -> Vec3 {
+    fn evaluate_with_cps(&self, cps: &[Vec<PVec3>], ws: &[Vec<Real>], u: Real, v: Real) -> PVec3 {
         let span_u = self.find_span_u(u);
         let span_v = self.find_span_v(v);
         let basis_u = self.basis_funs(span_u, u, self.degree_u, &self.knots_u);
         let basis_v = self.basis_funs(span_v, v, self.degree_v, &self.knots_v);
 
-        let mut p = Vec3::ZERO;
-        let mut w_sum = 0.0f32;
+        let mut p = PVec3::ZERO;
+        let mut w_sum = 0.0_f64;
         for (iu, &nu) in basis_u.iter().enumerate() {
             let ci = span_u.saturating_sub(self.degree_u) + iu;
             if ci >= cps.len() { continue; }
@@ -942,15 +948,15 @@ impl NurbsSurface {
     }
 
     /// Compute B-spline basis functions for given span and parameter.
-    fn basis_funs(&self, span: usize, t: f32, degree: usize, knots: &[f32]) -> Vec<f32> {
-        let mut n = vec![0.0f32; degree + 1];
+    fn basis_funs(&self, span: usize, t: Real, degree: usize, knots: &[Real]) -> Vec<Real> {
+        let mut n = vec![0.0_f64; degree + 1];
         n[0] = 1.0;
-        let mut left = vec![0.0f32; degree + 1];
-        let mut right = vec![0.0f32; degree + 1];
+        let mut left = vec![0.0_f64; degree + 1];
+        let mut right = vec![0.0_f64; degree + 1];
         for j in 1..=degree {
             left[j] = t - knots[span + 1 - j];
             right[j] = knots[span + j] - t;
-            let mut saved = 0.0f32;
+            let mut saved = 0.0_f64;
             for r in 0..j {
                 let temp = n[r] / (right[r + 1] + left[j - r] + 1e-12);
                 n[r] = saved + right[r + 1] * temp;
@@ -962,7 +968,7 @@ impl NurbsSurface {
     }
 }
 
-fn knot_multiplicity(knots: &[f32], t: f32) -> usize {
+fn knot_multiplicity(knots: &[Real], t: Real) -> usize {
     knots.iter().filter(|&&k| (k - t).abs() < 1e-10).count()
 }
 
@@ -974,7 +980,7 @@ fn knot_multiplicity(knots: &[f32], t: f32) -> usize {
 ///
 /// Returns (index, derivative_value) pairs for the active basis functions
 /// at the given span. For degree 0, all derivatives are zero.
-fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
+fn analytical_basis_derivatives(span: usize, degree: usize, t: Real, knots: &[Real]) -> Vec<(usize, Real)> {
     if degree == 0 {
         return vec![(span, 0.0)];
     }
@@ -982,7 +988,7 @@ fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32
     // Degree p-1 basis functions: active for j = span-(p-1) to span (p functions)
     let lower_bases = bspline_bases(span, degree - 1, t, knots);
 
-    let p = degree as f32;
+    let p = degree as Real;
     let mut result = Vec::with_capacity(degree + 1);
 
     // Degree-p basis functions are active for i = span-p to span (p+1 functions)
@@ -1029,18 +1035,18 @@ fn analytical_basis_derivatives(span: usize, degree: usize, t: f32, knots: &[f32
 /// computed via `analytical_basis_derivatives`.
 ///
 /// Returns (index, second_derivative) pairs. For degree ≤ 1, all are zero.
-fn analytical_basis_second_derivatives(span: usize, degree: usize, t: f32, knots: &[f32]) -> Vec<(usize, f32)> {
+fn analytical_basis_second_derivatives(span: usize, degree: usize, t: Real, knots: &[Real]) -> Vec<(usize, Real)> {
     if degree <= 1 {
         // Degree 0: constant basis, derivatives = 0
         // Degree 1: linear basis, second derivative = 0
         let i_start = span.saturating_sub(degree);
-        return (i_start..=span).map(|i| (i, 0.0f32)).collect();
+        return (i_start..=span).map(|i| (i, 0.0_f64)).collect();
     }
 
     // First derivatives of degree (p-1) basis functions
     let d1_lower = analytical_basis_derivatives(span, degree - 1, t, knots);
 
-    let p = degree as f32;
+    let p = degree as Real;
     let mut result = Vec::with_capacity(degree + 1);
 
     let i_start = span.saturating_sub(degree);
@@ -1082,13 +1088,13 @@ fn analytical_basis_second_derivatives(span: usize, degree: usize, t: f32, knots
 
 impl NurbsSurface {
     /// Create a NURBS plane (degree 1×1) covering the given UV domain.
-    pub fn plane(u_min: f32, u_max: f32, v_min: f32, v_max: f32) -> Self {
+    pub fn plane(u_min: Real, u_max: Real, v_min: Real, v_max: Real) -> Self {
         NurbsSurface {
             degree_u: 1,
             degree_v: 1,
             control_points: vec![
-                vec![Vec3::new(u_min, v_min, 0.0), Vec3::new(u_min, v_max, 0.0)],
-                vec![Vec3::new(u_max, v_min, 0.0), Vec3::new(u_max, v_max, 0.0)],
+                vec![PVec3::new(u_min, v_min, 0.0), PVec3::new(u_min, v_max, 0.0)],
+                vec![PVec3::new(u_max, v_min, 0.0), PVec3::new(u_max, v_max, 0.0)],
             ],
             weights: vec![vec![1.0; 2]; 2],
             knots_u: vec![u_min, u_min, u_max, u_max],
@@ -1099,24 +1105,24 @@ impl NurbsSurface {
     /// Create a NURBS cylinder (degree 2×1) with given radius and height range.
     /// u is the circular direction (degree 2 rational circle), v is the axial direction.
     /// u ∈ [0, 1] maps to angle [0, 2π).
-    pub fn cylinder(radius: f32, v_min: f32, v_max: f32) -> Self {
+    pub fn cylinder(radius: Real, v_min: Real, v_max: Real) -> Self {
         // Rational circle as NURBS: 9 control points for full 360°
         // Control points arranged so that u=0 → angle=0 (+X axis)
-        let w = 0.5f32.sqrt(); // weight for 45° arc control points
+        let w = 0.5_f64.sqrt(); // weight for 45° arc control points
         let r = radius;
         NurbsSurface {
             degree_u: 2,
             degree_v: 1,
             control_points: vec![
-                vec![Vec3::new(r, 0.0, v_min), Vec3::new(r, 0.0, v_max)],   // u=0: angle 0
-                vec![Vec3::new(r, r, v_min), Vec3::new(r, r, v_max)],       // u=0.25: angle π/2
-                vec![Vec3::new(0.0, r, v_min), Vec3::new(0.0, r, v_max)],   // u=0.5: angle π
-                vec![Vec3::new(-r, r, v_min), Vec3::new(-r, r, v_max)],     // u=0.75: angle 3π/2
-                vec![Vec3::new(-r, 0.0, v_min), Vec3::new(-r, 0.0, v_max)],
-                vec![Vec3::new(-r, -r, v_min), Vec3::new(-r, -r, v_max)],
-                vec![Vec3::new(0.0, -r, v_min), Vec3::new(0.0, -r, v_max)],
-                vec![Vec3::new(r, -r, v_min), Vec3::new(r, -r, v_max)],
-                vec![Vec3::new(r, 0.0, v_min), Vec3::new(r, 0.0, v_max)],   // u=1: angle 2π (same as 0)
+                vec![PVec3::new(r, 0.0, v_min), PVec3::new(r, 0.0, v_max)],   // u=0: angle 0
+                vec![PVec3::new(r, r, v_min), PVec3::new(r, r, v_max)],       // u=0.25: angle π/2
+                vec![PVec3::new(0.0, r, v_min), PVec3::new(0.0, r, v_max)],   // u=0.5: angle π
+                vec![PVec3::new(-r, r, v_min), PVec3::new(-r, r, v_max)],     // u=0.75: angle 3π/2
+                vec![PVec3::new(-r, 0.0, v_min), PVec3::new(-r, 0.0, v_max)],
+                vec![PVec3::new(-r, -r, v_min), PVec3::new(-r, -r, v_max)],
+                vec![PVec3::new(0.0, -r, v_min), PVec3::new(0.0, -r, v_max)],
+                vec![PVec3::new(r, -r, v_min), PVec3::new(r, -r, v_max)],
+                vec![PVec3::new(r, 0.0, v_min), PVec3::new(r, 0.0, v_max)],   // u=1: angle 2π (same as 0)
             ],
             weights: vec![
                 vec![1.0, 1.0],
@@ -1137,8 +1143,8 @@ impl NurbsSurface {
     /// Create a NURBS cone (degree 2×1) with given base radius, semi-angle and height range.
     /// u is the circular direction, v is the axial direction.
     /// Radius varies linearly with v: r(v) = radius + v * tan(semi_angle).
-    pub fn cone(radius: f32, semi_angle: f32, v_min: f32, v_max: f32) -> Self {
-        let w = 0.5f32.sqrt();
+    pub fn cone(radius: Real, semi_angle: Real, v_min: Real, v_max: Real) -> Self {
+        let w = 0.5_f64.sqrt();
         let tan_a = semi_angle.tan();
         let r_min = radius + v_min * tan_a;
         let r_max = radius + v_max * tan_a;
@@ -1146,15 +1152,15 @@ impl NurbsSurface {
             degree_u: 2,
             degree_v: 1,
             control_points: vec![
-                vec![Vec3::new(r_min, 0.0, v_min), Vec3::new(r_max, 0.0, v_max)],
-                vec![Vec3::new(r_min, r_min, v_min), Vec3::new(r_max, r_max, v_max)],
-                vec![Vec3::new(0.0, r_min, v_min), Vec3::new(0.0, r_max, v_max)],
-                vec![Vec3::new(-r_min, r_min, v_min), Vec3::new(-r_max, r_max, v_max)],
-                vec![Vec3::new(-r_min, 0.0, v_min), Vec3::new(-r_max, 0.0, v_max)],
-                vec![Vec3::new(-r_min, -r_min, v_min), Vec3::new(-r_max, -r_max, v_max)],
-                vec![Vec3::new(0.0, -r_min, v_min), Vec3::new(0.0, -r_max, v_max)],
-                vec![Vec3::new(r_min, -r_min, v_min), Vec3::new(r_max, -r_max, v_max)],
-                vec![Vec3::new(r_min, 0.0, v_min), Vec3::new(r_max, 0.0, v_max)],
+                vec![PVec3::new(r_min, 0.0, v_min), PVec3::new(r_max, 0.0, v_max)],
+                vec![PVec3::new(r_min, r_min, v_min), PVec3::new(r_max, r_max, v_max)],
+                vec![PVec3::new(0.0, r_min, v_min), PVec3::new(0.0, r_max, v_max)],
+                vec![PVec3::new(-r_min, r_min, v_min), PVec3::new(-r_max, r_max, v_max)],
+                vec![PVec3::new(-r_min, 0.0, v_min), PVec3::new(-r_max, 0.0, v_max)],
+                vec![PVec3::new(-r_min, -r_min, v_min), PVec3::new(-r_max, -r_max, v_max)],
+                vec![PVec3::new(0.0, -r_min, v_min), PVec3::new(0.0, -r_max, v_max)],
+                vec![PVec3::new(r_min, -r_min, v_min), PVec3::new(r_max, -r_max, v_max)],
+                vec![PVec3::new(r_min, 0.0, v_min), PVec3::new(r_max, 0.0, v_max)],
             ],
             weights: vec![
                 vec![1.0, 1.0],
@@ -1174,10 +1180,10 @@ impl NurbsSurface {
 
     /// Create a NURBS torus (degree 2×2) with given major and minor radius.
     /// u is the major circular direction, v is the minor circular direction.
-    pub fn torus(major_r: f32, minor_r: f32) -> Self {
-        let w = 0.5f32.sqrt();
+    pub fn torus(major_r: Real, minor_r: Real) -> Self {
+        let w = 0.5_f64.sqrt();
         // Unit circle control points in XY (u direction) and YZ (v direction)
-        let u_cp: &[(f32, f32, f32)] = &[
+        let u_cp: &[(Real, Real, Real)] = &[
             (1.0, 0.0, 1.0),
             (1.0, 1.0, w),
             (0.0, 1.0, 1.0),
@@ -1188,7 +1194,7 @@ impl NurbsSurface {
             (1.0, -1.0, w),
             (1.0, 0.0, 1.0),
         ];
-        let v_cp: &[(f32, f32, f32)] = &[
+        let v_cp: &[(Real, Real, Real)] = &[
             (1.0, 0.0, 1.0),   // (y, z, w) — angle π/2 so v=0 → z=0
             (1.0, 1.0, w),     // angle π/4
             (0.0, 1.0, 1.0),   // angle 0
@@ -1208,7 +1214,7 @@ impl NurbsSurface {
             let mut row_w = Vec::with_capacity(9);
             for (vy, vz, vw) in v_cp.iter().copied() {
                 let r = major_r + minor_r * vy;
-                row_cp.push(Vec3::new(r * ux, r * uy, minor_r * vz));
+                row_cp.push(PVec3::new(r * ux, r * uy, minor_r * vz));
                 row_w.push(uw * vw);
             }
             control_points.push(row_cp);
@@ -1227,23 +1233,23 @@ impl NurbsSurface {
     }
 
     /// Create a NURBS sphere (degree 2×2) with given radius.
-    pub fn sphere(radius: f32) -> Self {
+    pub fn sphere(radius: Real) -> Self {
         // Approximate sphere using rational B-spline patches.
         // For simplicity, use a single bi-quadratic patch (approximate).
         let r = radius;
-        let w = 0.5f32.sqrt();
+        let w = 0.5_f64.sqrt();
         NurbsSurface {
             degree_u: 2,
             degree_v: 2,
             control_points: vec![
                 vec![
-                    Vec3::new(-r, -r, -r), Vec3::new(-r, -r, 0.0), Vec3::new(-r, -r, r),
+                    PVec3::new(-r, -r, -r), PVec3::new(-r, -r, 0.0), PVec3::new(-r, -r, r),
                 ],
                 vec![
-                    Vec3::new(0.0, -r, -r), Vec3::new(0.0, -r, 0.0), Vec3::new(0.0, -r, r),
+                    PVec3::new(0.0, -r, -r), PVec3::new(0.0, -r, 0.0), PVec3::new(0.0, -r, r),
                 ],
                 vec![
-                    Vec3::new(r, -r, -r), Vec3::new(r, -r, 0.0), Vec3::new(r, -r, r),
+                    PVec3::new(r, -r, -r), PVec3::new(r, -r, 0.0), PVec3::new(r, -r, r),
                 ],
             ],
             weights: vec![
@@ -1263,15 +1269,15 @@ impl NurbsSurface {
     /// control points projected to the sphere surface from a tangent plane.
     /// Using `half = r/3` keeps the control polygon close enough that the
     /// polynomial interior stays within 5% of the true radius.
-    pub fn sphere_six_patch(radius: f32) -> Vec<NurbsSurface> {
+    pub fn sphere_six_patch(radius: Real) -> Vec<NurbsSurface> {
         let r = radius;
         let faces = [
-            (Vec3::Z, Vec3::X, Vec3::Y),
-            (-Vec3::Z, Vec3::X, -Vec3::Y),
-            (Vec3::X, Vec3::Y, Vec3::Z),
-            (-Vec3::X, -Vec3::Y, Vec3::Z),
-            (Vec3::Y, Vec3::Z, Vec3::X),
-            (-Vec3::Y, -Vec3::Z, Vec3::X),
+            (PVec3::Z, PVec3::X, PVec3::Y),
+            (-PVec3::Z, PVec3::X, -PVec3::Y),
+            (PVec3::X, PVec3::Y, PVec3::Z),
+            (-PVec3::X, -PVec3::Y, PVec3::Z),
+            (PVec3::Y, PVec3::Z, PVec3::X),
+            (-PVec3::Y, -PVec3::Z, PVec3::X),
         ];
 
         let mut patches = Vec::with_capacity(6);
@@ -1282,10 +1288,10 @@ impl NurbsSurface {
             let center = nb * r;
             let half = r / 3.0;
 
-            let control_points: Vec<Vec<Vec3>> = (0..3).map(|i| {
+            let control_points: Vec<Vec<PVec3>> = (0..3).map(|i| {
                 (0..3).map(|j| {
-                    let u = (i as f32 - 1.0) * half;
-                    let v = (j as f32 - 1.0) * half;
+                    let u = (i as Real - 1.0) * half;
+                    let v = (j as Real - 1.0) * half;
                     let pt = center + ub * u + vb * v;
                     let len = pt.length();
                     if len > 1e-6 { pt * (r / len) } else { pt }
@@ -1294,7 +1300,7 @@ impl NurbsSurface {
 
             // Non-rational: all weights = 1. With tight tangent-plane spread,
             // the polynomial Bezier interior stays within 5% of true radius.
-            let weights: Vec<Vec<f32>> = vec![vec![1.0; 3]; 3];
+            let weights: Vec<Vec<Real>> = vec![vec![1.0; 3]; 3];
 
             patches.push(NurbsSurface {
                 degree_u: 2, degree_v: 2,
@@ -1316,17 +1322,17 @@ mod tests {
     #[test]
     fn test_plane_evaluate_corners() {
         let surf = NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
-        assert!((surf.evaluate(0.0, 0.0) - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-6);
-        assert!((surf.evaluate(1.0, 0.0) - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-6);
-        assert!((surf.evaluate(0.0, 1.0) - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6);
-        assert!((surf.evaluate(1.0, 1.0) - Vec3::new(1.0, 1.0, 0.0)).length() < 1e-6);
+        assert!((surf.evaluate(0.0, 0.0) - PVec3::new(0.0, 0.0, 0.0)).length() < 1e-6);
+        assert!((surf.evaluate(1.0, 0.0) - PVec3::new(1.0, 0.0, 0.0)).length() < 1e-6);
+        assert!((surf.evaluate(0.0, 1.0) - PVec3::new(0.0, 1.0, 0.0)).length() < 1e-6);
+        assert!((surf.evaluate(1.0, 1.0) - PVec3::new(1.0, 1.0, 0.0)).length() < 1e-6);
     }
 
     #[test]
     fn test_plane_normal() {
         let surf = NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
         let n = surf.normal(0.5, 0.5);
-        assert!((n - Vec3::Z).length() < 1e-6, "plane normal should be +Z, got {:?}", n);
+        assert!((n - PVec3::Z).length() < 1e-6, "plane normal should be +Z, got {:?}", n);
     }
 
     #[test]
@@ -1334,7 +1340,7 @@ mod tests {
         let surf = NurbsSurface::cylinder(1.0, 0.0, 1.0);
         let pt = surf.evaluate(0.0, 0.5);
         // At u=0 (angle 0), point should be on +X axis
-        assert!((pt - Vec3::new(1.0, 0.0, 0.5)).length() < 0.1,
+        assert!((pt - PVec3::new(1.0, 0.0, 0.5)).length() < 0.1,
             "cylinder point at u=0 should be near (1,0,0.5), got {:?}", pt);
     }
 
@@ -1343,13 +1349,13 @@ mod tests {
         let surf = NurbsSurface::cylinder(1.0, 0.0, 1.0);
         let n = surf.normal(0.0, 0.5);
         // At u=0, normal should point outward in +X direction
-        assert!((n - Vec3::X).length() < 0.1,
+        assert!((n - PVec3::X).length() < 0.1,
             "cylinder normal at u=0 should be near +X, got {:?}", n);
     }
 
     #[test]
     fn test_cone_evaluate_radius_increases() {
-        let surf = NurbsSurface::cone(1.0, std::f32::consts::FRAC_PI_6, 0.0, 1.0);
+        let surf = NurbsSurface::cone(1.0, std::f64::consts::FRAC_PI_6, 0.0, 1.0);
         // At v=0 (base), radius should be ~1.0
         let pt_base = surf.evaluate(0.0, 0.0);
         let r_base = (pt_base.x * pt_base.x + pt_base.y * pt_base.y).sqrt();
@@ -1358,15 +1364,15 @@ mod tests {
         // At v=1 (top), radius should be larger
         let pt_top = surf.evaluate(0.0, 1.0);
         let r_top = (pt_top.x * pt_top.x + pt_top.y * pt_top.y).sqrt();
-        let expected_top_r = 1.0 + 1.0 * (std::f32::consts::FRAC_PI_6).tan();
+        let expected_top_r = 1.0 + 1.0 * (std::f64::consts::FRAC_PI_6).tan();
         assert!((r_top - expected_top_r).abs() < 0.1,
             "cone top radius should be ~{}, got {}", expected_top_r, r_top);
     }
 
     #[test]
     fn test_torus_evaluate_major_minor_radius() {
-        let major = 3.0f32;
-        let minor = 1.0f32;
+        let major = 3.0_f64;
+        let minor = 1.0_f64;
         let surf = NurbsSurface::torus(major, minor);
         // At u=0, v=0: should be at (major+minor, 0, 0) - outer top
         let pt = surf.evaluate(0.0, 0.0);
@@ -1388,8 +1394,8 @@ mod tests {
     fn test_evaluate_with_derivative() {
         // Test with cylinder: position matches evaluate(), derivatives match derivative()
         let surf = NurbsSurface::cylinder(1.0, 0.0, 1.0);
-        let u = 0.25f32;
-        let v = 0.5f32;
+        let u = 0.25_f64;
+        let v = 0.5_f64;
 
         let (pos_evd, du_evd, dv_evd) = surf.evaluate_with_derivative(u, v);
         let pos_eval = surf.evaluate(u, v);
@@ -1405,20 +1411,20 @@ mod tests {
         // Test with plane: du should be +X, dv should be +Y
         let plane = NurbsSurface::plane(0.0, 1.0, 0.0, 1.0);
         let (_, du, dv) = plane.evaluate_with_derivative(0.5, 0.5);
-        assert!((du - Vec3::X).length() < 1e-5, "plane du should be +X, got {:?}", du);
-        assert!((dv - Vec3::Y).length() < 1e-5, "plane dv should be +Y, got {:?}", dv);
+        assert!((du - PVec3::X).length() < 1e-5, "plane du should be +X, got {:?}", du);
+        assert!((dv - PVec3::Y).length() < 1e-5, "plane dv should be +Y, got {:?}", dv);
 
         // Test degree-0 surface (degenerate): derivatives should still be computed without panic
         let deg0 = NurbsSurface {
             degree_u: 0,
             degree_v: 0,
-            control_points: vec![vec![Vec3::new(1.0, 2.0, 3.0)]],
+            control_points: vec![vec![PVec3::new(1.0, 2.0, 3.0)]],
             weights: vec![vec![1.0]],
             knots_u: vec![0.0, 1.0],
             knots_v: vec![0.0, 1.0],
         };
         let (pos, _, _) = deg0.evaluate_with_derivative(0.5, 0.5);
-        assert!((pos - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+        assert!((pos - PVec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
 
         // Test with torus: derivatives should produce a non-degenerate normal
         let torus = NurbsSurface::torus(3.0, 1.0);
@@ -1447,10 +1453,10 @@ mod tests {
     #[test]
     fn test_insert_knot_u_shape_invariance() {
         let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
-        let test_pts: Vec<(f32, f32)> = vec![
+        let test_pts: Vec<(Real, Real)> = vec![
             (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
         ];
-        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        let before: Vec<PVec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
         surf.insert_knot_u(0.5);
         for (i, &(u, v)) in test_pts.iter().enumerate() {
             let after = surf.evaluate(u, v);
@@ -1462,10 +1468,10 @@ mod tests {
     #[test]
     fn test_insert_knot_v_shape_invariance() {
         let mut surf = NurbsSurface::cylinder(1.0, 0.0, 2.0);
-        let test_pts: Vec<(f32, f32)> = vec![
+        let test_pts: Vec<(Real, Real)> = vec![
             (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
         ];
-        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        let before: Vec<PVec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
         surf.insert_knot_v(0.5);
         for (i, &(u, v)) in test_pts.iter().enumerate() {
             let after = surf.evaluate(u, v);
@@ -1494,10 +1500,10 @@ mod tests {
     fn test_insert_knot_multiple() {
         // Use a non-rational plane for tighter numerical tolerance
         let mut surf = NurbsSurface::plane(-1.0, 1.0, -1.0, 1.0);
-        let test_pts: Vec<(f32, f32)> = vec![
+        let test_pts: Vec<(Real, Real)> = vec![
             (0.0, 0.0), (0.3, 0.4), (0.6, 0.7), (1.0, 1.0),
         ];
-        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        let before: Vec<PVec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
         let orig_u = surf.u_count();
 
         surf.insert_knot_u(0.3);
@@ -1525,14 +1531,14 @@ mod tests {
 
     #[test]
     fn test_elevate_degree_u_shape_invariance() {
-        let grid: Vec<Vec<Vec3>> = (0..4)
-            .map(|i| (0..4).map(|j| Vec3::new(i as f32, j as f32, (i*j) as f32 * 0.3)).collect())
+        let grid: Vec<Vec<PVec3>> = (0..4)
+            .map(|i| (0..4).map(|j| PVec3::new(i as Real, j as Real, (i*j) as Real * 0.3)).collect())
             .collect();
         let mut surface = NurbsSurface::from_points_grid(&grid, 3, 3);
         let mut before = Vec::new();
         for iu in 0..=5 {
             for iv in 0..=5 {
-                before.push(surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0));
+                before.push(surface.evaluate(iu as Real / 5.0, iv as Real / 5.0));
             }
         }
         surface.elevate_degree_u();
@@ -1540,7 +1546,7 @@ mod tests {
         assert_eq!(surface.degree_v, 3);
         for iu in 0..=5 {
             for iv in 0..=5 {
-                let p = surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0);
+                let p = surface.evaluate(iu as Real / 5.0, iv as Real / 5.0);
                 let diff = (before[iu * 6 + iv] - p).length();
                 assert!(diff < 1e-3, "shape changed at iu={iu}, iv={iv}: diff={diff}");
             }
@@ -1549,15 +1555,15 @@ mod tests {
 
     #[test]
     fn test_elevate_degree_v_shape_invariance() {
-        let grid: Vec<Vec<Vec3>> = (0..4)
-            .map(|i| (0..4).map(|j| Vec3::new(i as f32, j as f32, (i*j) as f32 * 0.3)).collect())
+        let grid: Vec<Vec<PVec3>> = (0..4)
+            .map(|i| (0..4).map(|j| PVec3::new(i as Real, j as Real, (i*j) as Real * 0.3)).collect())
             .collect();
         let mut surface = NurbsSurface::from_points_grid(&grid, 3, 3);
         let mut before = Vec::new();
         for iu in 0..=5 {
             let mut row = Vec::new();
             for iv in 0..=5 {
-                row.push(surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0));
+                row.push(surface.evaluate(iu as Real / 5.0, iv as Real / 5.0));
             }
             before.push(row);
         }
@@ -1566,7 +1572,7 @@ mod tests {
         assert_eq!(surface.degree_u, 3);
         for iu in 0..=5 {
             for iv in 0..=5 {
-                let p = surface.evaluate(iu as f32 / 5.0, iv as f32 / 5.0);
+                let p = surface.evaluate(iu as Real / 5.0, iv as Real / 5.0);
                 let diff = (before[iu][iv] - p).length();
                 assert!(diff < 1e-3, "shape changed at iu={iu}, iv={iv}: diff={diff}");
             }
@@ -1575,8 +1581,8 @@ mod tests {
 
     #[test]
     fn test_elevate_degree_both_directions() {
-        let grid: Vec<Vec<Vec3>> = (0..3)
-            .map(|i| (0..3).map(|j| Vec3::new(i as f32, j as f32, 0.0)).collect())
+        let grid: Vec<Vec<PVec3>> = (0..3)
+            .map(|i| (0..3).map(|j| PVec3::new(i as Real, j as Real, 0.0)).collect())
             .collect();
         let mut surface = NurbsSurface::from_points_grid(&grid, 2, 2);
         let p_center = surface.evaluate(0.5, 0.5);
@@ -1591,10 +1597,10 @@ mod tests {
     #[test]
     fn test_nurbs_type_roundtrip() {
         let surf = NurbsSurface::cylinder(2.0, 0.0, 3.0);
-        let test_pts: Vec<(f32, f32)> = vec![
+        let test_pts: Vec<(Real, Real)> = vec![
             (0.0, 0.0), (0.25, 0.5), (0.5, 0.3), (0.75, 0.8), (1.0, 1.0),
         ];
-        let before: Vec<Vec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
+        let before: Vec<PVec3> = test_pts.iter().map(|&(u, v)| surf.evaluate(u, v)).collect();
 
         // Convert to render surface and back
         let render: rc3d_nurbs::NurbsRenderSurface = surf.into();

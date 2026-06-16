@@ -4,7 +4,7 @@ use crate::geom::{Curve2d, CurveGeom};
 use crate::geom::SurfaceGeom;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 // ── Period-shift detection ─────────────────────────────────────────
 
@@ -100,7 +100,7 @@ pub(crate) fn fix_shifted_pcurves(
 
         if shift_u != 0.0 || shift_v != 0.0 {
             if let Some(pc) = reg.pcurve_mut(ek, face_key) {
-                let new_curve = shift_pcurve(pc, shift_u as f32, shift_v as f32);
+                let new_curve = shift_pcurve(pc, shift_u as Real, shift_v as Real);
                 *pc = new_curve;
                 report.shifts_applied += 1;
             }
@@ -111,7 +111,7 @@ pub(crate) fn fix_shifted_pcurves(
 }
 
 fn surface_periods(surface: &SurfaceGeom) -> (f64, f64) {
-    use std::f32::consts::TAU;
+    use std::f64::consts::TAU;
     match surface {
         SurfaceGeom::Cylinder { .. } => (TAU as f64, 0.0),
         SurfaceGeom::Torus { .. } => (TAU as f64, TAU as f64),
@@ -122,7 +122,7 @@ fn surface_periods(surface: &SurfaceGeom) -> (f64, f64) {
     }
 }
 
-fn shift_pcurve(pc: &Curve2d, du: f32, dv: f32) -> Curve2d {
+fn shift_pcurve(pc: &Curve2d, du: Real, dv: Real) -> Curve2d {
     match pc {
         Curve2d::Line { origin, direction } => Curve2d::Line {
             origin: (origin.0 + du, origin.1 + dv),
@@ -148,7 +148,7 @@ pub(crate) fn fix_edge_curves_wire(
     wire_key: WireKey,
     _face_key: FaceKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> usize {
     let edges: Vec<(EdgeKey, Orientation)> = {
         let Some(wire) = reg.wires.get(wire_key) else {
@@ -198,7 +198,7 @@ pub(crate) fn fix_edge_curves_wire(
 pub(crate) fn fix_edge_curves(
     shell_key: crate::topo::ShellKey,
     reg: &mut BRepStore,
-    tolerance: f32,
+    tolerance: Real,
 ) -> usize {
     let face_keys: Vec<_> = {
         let Some(shell) = reg.shells.get(shell_key) else {
@@ -224,12 +224,12 @@ pub(crate) fn fix_edge_curves(
     adjusted
 }
 
-fn circle_angle(center: Vec3, axis: Vec3, radius: f32, point: Vec3) -> Option<f32> {
+fn circle_angle(center: PVec3, axis: PVec3, radius: Real, point: PVec3) -> Option<Real> {
     let a = axis.normalize();
     let ref_dir = if a.x.abs() < 0.9 {
-        Vec3::X
+        PVec3::X
     } else {
-        Vec3::Y
+        PVec3::Y
     };
     let y_dir = a.cross(ref_dir).normalize();
     let x_dir = y_dir.cross(a);
@@ -243,17 +243,17 @@ fn circle_angle(center: Vec3, axis: Vec3, radius: f32, point: Vec3) -> Option<f3
     Some(v.atan2(u))
 }
 
-fn normalize_arc_params(t0: f32, mut t1: f32) -> (f32, f32) {
+fn normalize_arc_params(t0: Real, mut t1: Real) -> (Real, Real) {
     while t1 < t0 {
-        t1 += std::f32::consts::TAU;
+        t1 += std::f64::consts::TAU;
     }
-    if t1 - t0 > std::f32::consts::TAU {
-        t1 = t0 + std::f32::consts::TAU;
+    if t1 - t0 > std::f64::consts::TAU {
+        t1 = t0 + std::f64::consts::TAU;
     }
     (t0, t1)
 }
 
-fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) -> CurveGeom {
+fn adjust_curve(curve: &CurveGeom, v_start: PVec3, v_end: PVec3, _tolerance: Real) -> CurveGeom {
     match curve {
         CurveGeom::Line { .. } => CurveGeom::Line {
             origin: v_start,
@@ -299,7 +299,7 @@ fn adjust_curve(curve: &CurveGeom, v_start: Vec3, v_end: Vec3, _tolerance: f32) 
             let mut new_cp = control_points.clone();
             let n = new_cp.len();
             for (i, cp) in new_cp.iter_mut().enumerate() {
-                let t = i as f32 / (n - 1) as f32;
+                let t = i as Real / (n - 1) as Real;
                 let delta = delta_start * (1.0 - t) + delta_end * t;
                 *cp += delta;
             }
@@ -332,14 +332,14 @@ mod tests {
     use crate::geom::curve2d::Curve2d;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::topo::{BRepEdge, BRepFace, BRepShell, BRepWire, Orientation, WireKey};
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use std::collections::HashMap;
 
     // ── shifted tests ──
 
     #[test]
     fn test_cylinder_periods() {
-        let s = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let s = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
         let (pu, pv) = surface_periods(&s);
         assert!(pu > 0.0);
         assert_eq!(pv, 0.0);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_torus_periods() {
-        let s = SurfaceGeom::torus(Vec3::ZERO, Vec3::Z, 3.0, 1.0);
+        let s = SurfaceGeom::torus(PVec3::ZERO, PVec3::Z, 3.0, 1.0);
         let (pu, pv) = surface_periods(&s);
         assert!(pu > 0.0);
         assert!(pv > 0.0);
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_plane_no_period() {
-        let s = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let s = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let (pu, pv) = surface_periods(&s);
         assert_eq!(pu, 0.0);
         assert_eq!(pv, 0.0);
@@ -364,9 +364,9 @@ mod tests {
     #[test]
     fn test_shifted_cylinder_pcurve() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
-        let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let surface = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
+        let v0 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 1.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -379,15 +379,15 @@ mod tests {
             degenerated_edges: vec![],
         });
         let curve_3d = CurveGeom::Line {
-            origin: Vec3::new(1.0, 0.0, 0.0),
-            direction: Vec3::new(0.0, 0.0, 1.0),
+            origin: PVec3::new(1.0, 0.0, 0.0),
+            direction: PVec3::new(0.0, 0.0, 1.0),
         };
         let pc_normal = Curve2d::Line {
             origin: (0.0, 0.0),
             direction: (1.0, 0.0),
         };
         let pc_shifted = Curve2d::Line {
-            origin: (std::f32::consts::TAU, 0.0),
+            origin: (std::f64::consts::TAU, 0.0),
             direction: (1.0, 0.0),
         };
         let e1 = reg.edges.insert(BRepEdge {
@@ -423,9 +423,9 @@ mod tests {
     #[test]
     fn test_no_false_positive() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
-        let v0 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
+        let surface = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
+        let v0 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 1.0), 1e-4);
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -435,8 +435,8 @@ mod tests {
             seam_edges: vec![], color: None, degenerated_edges: vec![],
         });
         let line = CurveGeom::Line {
-            origin: Vec3::new(1.0, 0.0, 0.0),
-            direction: Vec3::new(0.0, 0.0, 1.0),
+            origin: PVec3::new(1.0, 0.0, 0.0),
+            direction: PVec3::new(0.0, 0.0, 1.0),
         };
         let pc = Curve2d::Line {
             origin: (0.1, 0.0),
@@ -454,14 +454,14 @@ mod tests {
 
     // ── edge_curve tests ──
 
-    fn make_shell_with_line_edge(reg: &mut BRepStore, endpoint_offset: f32) -> crate::topo::ShellKey {
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 0.0), 1e-4);
+    fn make_shell_with_line_edge(reg: &mut BRepStore, endpoint_offset: Real) -> crate::topo::ShellKey {
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 0.0), 1e-4);
         let curve = CurveGeom::Line {
-            origin: Vec3::new(0.0, endpoint_offset, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
+            origin: PVec3::new(0.0, endpoint_offset, 0.0),
+            direction: PVec3::new(1.0, 0.0, 0.0),
         };
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let fk = reg.faces.insert(BRepFace {
             surface,
             outer_wire: WireKey::default(),
@@ -510,11 +510,11 @@ mod tests {
     #[test]
     fn test_fix_circle_arc() {
         let mut reg = BRepStore::new();
-        let center = Vec3::ZERO;
-        let v0 = reg.find_or_add_vertex(Vec3::X, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::Y, 1e-4);
-        let circle = CurveGeom::circle(center, Vec3::Z, 1.0);
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let center = PVec3::ZERO;
+        let v0 = reg.find_or_add_vertex(PVec3::X, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::Y, 1e-4);
+        let circle = CurveGeom::circle(center, PVec3::Z, 1.0);
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -542,26 +542,26 @@ mod tests {
         assert!(adjusted > 0);
         let edge = reg.edges.get(ek).unwrap();
         let tol = 1e-3;
-        assert!((edge.curve.d0(0.0) - Vec3::X).length() < tol, "curve start should match vertex");
-        assert!((edge.curve.d0(1.0) - Vec3::Y).length() < tol, "curve end should match vertex");
+        assert!((edge.curve.d0(0.0) - PVec3::X).length() < tol, "curve start should match vertex");
+        assert!((edge.curve.d0(1.0) - PVec3::Y).length() < tol, "curve end should match vertex");
     }
 
     #[test]
     fn test_fix_bspline_translate() {
         let mut reg = BRepStore::new();
-        let v0 = reg.find_or_add_vertex(Vec3::ZERO, 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, 0.5, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, 0.5, 0.0), 1e-4);
         let bspline = CurveGeom::BSpline {
             degree: 2,
             control_points: vec![
-                Vec3::new(0.0, 0.1, 0.0),
-                Vec3::new(0.5, 0.3, 0.0),
-                Vec3::new(1.0, 0.6, 0.0),
+                PVec3::new(0.0, 0.1, 0.0),
+                PVec3::new(0.5, 0.3, 0.0),
+                PVec3::new(1.0, 0.6, 0.0),
             ],
             knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             weights: None,
         };
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let wk = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,

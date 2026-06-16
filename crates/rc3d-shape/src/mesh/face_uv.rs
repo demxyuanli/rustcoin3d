@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 
 use super::edge_disc::EdgePolygon;
 use crate::topo::{EdgeKey, FaceKey, Orientation, WireKey};
@@ -21,7 +21,7 @@ pub enum UvSource {
 #[derive(Debug, Clone)]
 pub struct UvVertex {
     pub global_idx: usize,
-    pub uv: (f32, f32),
+    pub uv: (Real, Real),
 }
 
 #[derive(Debug, Clone)]
@@ -38,9 +38,9 @@ pub struct FaceUvLoops {
 
 impl FaceUvLoops {
     pub fn is_valid(&self) -> bool {
-        let outer_uv: Vec<Option<(f32, f32)>> =
+        let outer_uv: Vec<Option<(Real, Real)>> =
             self.outer.boundary.iter().map(|v| Some(v.uv)).collect();
-        let inner_uv: Vec<Vec<(f32, f32)>> = self
+        let inner_uv: Vec<Vec<(Real, Real)>> = self
             .inners
             .iter()
             .map(|l| l.boundary.iter().map(|v| v.uv).collect())
@@ -66,15 +66,15 @@ pub fn uv_loop_is_degenerate(loops: &FaceUvLoops) -> bool {
     if loops.outer.boundary.len() < 3 {
         return true;
     }
-    let uv: Vec<(f32, f32)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
+    let uv: Vec<(Real, Real)> = loops.outer.boundary.iter().map(|v| v.uv).collect();
     signed_area_2d(&uv).abs() <= 1e-6
 }
 
-pub fn loops_uv_valid(outer: &[Option<(f32, f32)>], inners: &[Vec<(f32, f32)>]) -> bool {
+pub fn loops_uv_valid(outer: &[Option<(Real, Real)>], inners: &[Vec<(Real, Real)>]) -> bool {
     if outer.len() < 3 || !outer.iter().all(|uv| uv.is_some()) {
         return false;
     }
-    let flat: Vec<(f32, f32)> = outer.iter().map(|uv| uv.unwrap()).collect();
+    let flat: Vec<(Real, Real)> = outer.iter().map(|uv| uv.unwrap()).collect();
     if signed_area_2d(&flat).abs() <= 1e-10 {
         return false;
     }
@@ -88,10 +88,10 @@ pub fn loops_uv_valid(outer: &[Option<(f32, f32)>], inners: &[Vec<(f32, f32)>]) 
 
 impl FaceUvLoops {
     pub fn revolution_native_uv_bounds_from_boundary(
-        &self, face: &BRepFace, global_vertices: &[Vec3],
-    ) -> Option<(f32, f32, f32, f32)> {
+        &self, face: &BRepFace, global_vertices: &[PVec3],
+    ) -> Option<(Real, Real, Real, Real)> {
         if !matches!(face.surface, SurfaceGeom::Revolution { .. }) { return None; }
-        let mut um = f32::MAX; let mut u_max = f32::MIN; let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut n = 0usize;
+        let mut um = f64::MAX; let mut u_max = f64::MIN; let mut vm = f64::MAX; let mut v_max = f64::MIN; let mut n = 0usize;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = global_vertices.get(v.global_idx) else { continue; };
             let Some((u, vn)) = face.surface.revolution_native_uv_at(*p) else { continue; };
@@ -108,9 +108,9 @@ impl FaceUvLoops {
         Some((um, u_max, vm, v_max))
     }
 
-    pub fn native_uv_bounds(&self) -> Option<(f32, f32, f32, f32)> {
-        let mut u_min = f32::MAX; let mut u_max = f32::MIN;
-        let mut v_min = f32::MAX; let mut v_max = f32::MIN; let mut c = 0usize;
+    pub fn native_uv_bounds(&self) -> Option<(Real, Real, Real, Real)> {
+        let mut u_min = f64::MAX; let mut u_max = f64::MIN;
+        let mut v_min = f64::MAX; let mut v_max = f64::MIN; let mut c = 0usize;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             u_min = u_min.min(v.uv.0); u_max = u_max.max(v.uv.0);
             v_min = v_min.min(v.uv.1); v_max = v_max.max(v.uv.1); c += 1;
@@ -120,9 +120,9 @@ impl FaceUvLoops {
         if du < 1e-12 && dv < 1e-12 { return None; }
         Some((u_min, u_max, v_min, v_max))
     }
-    pub fn uv_bounds_from_projection(&self, face: &BRepFace, vertices: &[Vec3]) -> Option<(f32, f32, f32, f32)> {
+    pub fn uv_bounds_from_projection(&self, face: &BRepFace, vertices: &[PVec3]) -> Option<(Real, Real, Real, Real)> {
         let inv_tol = face.tolerance.max(1e-3);
-        let mut um = f32::MAX; let mut u_max = f32::MIN; let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut n = 0usize;
+        let mut um = f64::MAX; let mut u_max = f64::MIN; let mut vm = f64::MAX; let mut v_max = f64::MIN; let mut n = 0usize;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = vertices.get(v.global_idx) else { continue; };
             let Some(uv) = face.surface.project(*p).or_else(|| face.surface.inverse_native_uv(*p, inv_tol)) else { continue; };
@@ -130,16 +130,16 @@ impl FaceUvLoops {
         }
         if n < 2 { None } else { Some((um, u_max, vm, v_max)) }
     }
-    pub fn revolution_v_bounds_from_3d(&self, face: &BRepFace, vertices: &[Vec3]) -> Option<(f32, f32)> {
+    pub fn revolution_v_bounds_from_3d(&self, face: &BRepFace, vertices: &[PVec3]) -> Option<(Real, Real)> {
         let SurfaceGeom::Revolution { axis_origin, axis_dir, .. } = &face.surface else { return None; };
         let axis = axis_dir.normalize(); let (x_dir, y_dir) = build_ortho_axes(axis);
-        let mut vm = f32::MAX; let mut v_max = f32::MIN; let mut any = false;
+        let mut vm = f64::MAX; let mut v_max = f64::MIN; let mut any = false;
         for v in self.outer.boundary.iter().chain(self.inners.iter().flat_map(|l| l.boundary.iter())) {
             let Some(p) = vertices.get(v.global_idx) else { continue; };
             let rel = *p - *axis_origin; let radial = rel - axis * rel.dot(axis);
             if radial.length_squared() < face.tolerance * face.tolerance { continue; }
-            let u = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
-            let a = if u < 0.0 { u + std::f32::consts::TAU } else { u };
+            let u = Real::atan2(radial.dot(y_dir), radial.dot(x_dir));
+            let a = if u < 0.0 { u + std::f64::consts::TAU } else { u };
             vm = vm.min(a); v_max = v_max.max(a); any = true;
         }
         if any && v_max > vm + 1e-4 { Some((vm, v_max)) } else { None }
@@ -147,7 +147,7 @@ impl FaceUvLoops {
 }
 
 /// True when stored revolution U span is too small for valid trim.
-pub fn revolution_u_span_collapsed(du: f32) -> bool { du < std::f32::consts::TAU * 0.15 }
+pub fn revolution_u_span_collapsed(du: Real) -> bool { du < std::f64::consts::TAU * 0.15 }
 
 /// True when revolution boundary samples collapse in native V (axis angle).
 pub fn revolution_boundary_v_collapsed(loops: &FaceUvLoops) -> bool {
@@ -158,7 +158,7 @@ pub fn revolution_boundary_v_collapsed(loops: &FaceUvLoops) -> bool {
 }
 
 /// Even-odd point-in-trim test (BRepClass_FaceClassifier equivalent, UV only).
-pub fn point_in_trim(u: f32, v: f32, outer: &[(f32, f32)], holes: &[Vec<(f32, f32)>]) -> bool {
+pub fn point_in_trim(u: Real, v: Real, outer: &[(Real, Real)], holes: &[Vec<(Real, Real)>]) -> bool {
     if !pip_even_odd(u, v, outer) {
         return false;
     }
@@ -170,7 +170,7 @@ pub fn point_in_trim(u: f32, v: f32, outer: &[(f32, f32)], holes: &[Vec<(f32, f3
     true
 }
 
-fn pip_even_odd(x: f32, y: f32, poly: &[(f32, f32)]) -> bool {
+fn pip_even_odd(x: Real, y: Real, poly: &[(Real, Real)]) -> bool {
     let mut inside = false;
     let n = poly.len();
     for i in 0..n {
@@ -191,7 +191,7 @@ pub fn collect_face_loops(
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> FaceUvLoops {
     let (mut outer, outer_pcurve) = collect_wire_loop(
         face_key,
@@ -258,7 +258,7 @@ pub fn collect_face_loops(
     }
 
     let uv_source = if outer.boundary.len() >= 3 {
-        let outer_uv: Vec<(f32, f32)> = outer.boundary.iter().map(|v| v.uv).collect();
+        let outer_uv: Vec<(Real, Real)> = outer.boundary.iter().map(|v| v.uv).collect();
         if signed_area_2d(&outer_uv).abs() > 1e-10 {
             if any_pcurve {
                 UvSource::Pcurve
@@ -287,11 +287,11 @@ pub(crate) fn collect_wire_loop(
     face_key: FaceKey,
     wire_key: WireKey,
     surface: &SurfaceGeom,
-    inv_tol: f32,
+    inv_tol: Real,
     reg: &BRepStore,
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
     is_hole: bool,
 ) -> (UvLoop, bool) {
     let mut boundary = Vec::new();
@@ -352,7 +352,7 @@ pub(crate) fn collect_wire_loop(
     ensure_loop_orientation(&mut boundary, is_hole);
 
     if boundary.len() >= 3 {
-        let uv_flat: Vec<(f32, f32)> = boundary.iter().map(|v| v.uv).collect();
+        let uv_flat: Vec<(Real, Real)> = boundary.iter().map(|v| v.uv).collect();
         if signed_area_2d(&uv_flat).abs() <= 1e-10 {
             all_pcurve = false;
             let mut loop_data = UvLoop { boundary };
@@ -380,7 +380,7 @@ pub(crate) fn collect_wire_loop(
 pub(crate) fn assign_revolution_native_uv_along_wire(
     loop_data: &mut UvLoop,
     surface: &SurfaceGeom,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) {
     let SurfaceGeom::Revolution {
         axis_origin,
@@ -396,9 +396,9 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
     }
     let axis = axis_dir.normalize();
     let (x_dir, y_dir) = build_ortho_axes(axis);
-    const TAU: f32 = std::f32::consts::TAU;
+    const TAU: Real = std::f64::consts::TAU;
 
-    let mut raw: Vec<(f32, f32)> = Vec::with_capacity(n);
+    let mut raw: Vec<(Real, Real)> = Vec::with_capacity(n);
     for v in &loop_data.boundary {
         let Some(pt) = global_vertices.get(v.global_idx) else {
             // SAFETY: This fallback should rarely trigger since boundary indices
@@ -414,9 +414,9 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
         let angle = if radial.length_squared() < 1e-10 {
             // Point lies on revolution axis — angle is undefined, mark as NaN
             // for later interpolation from neighbors.
-            f32::NAN
+            f64::NAN
         } else {
-            let a = f32::atan2(radial.dot(y_dir), radial.dot(x_dir));
+            let a = Real::atan2(radial.dot(y_dir), radial.dot(x_dir));
             if a < 0.0 { a + TAU } else { a }
         };
         raw.push((u, angle));
@@ -465,8 +465,8 @@ pub(crate) fn assign_revolution_native_uv_along_wire(
 fn rebuild_loop_uv_from_3d(
     loop_data: &mut UvLoop,
     surface: &SurfaceGeom,
-    global_vertices: &[Vec3],
-    inv_tol: f32,
+    global_vertices: &[PVec3],
+    inv_tol: Real,
 ) {
     if matches!(surface, SurfaceGeom::Revolution { .. }) {
         assign_revolution_native_uv_along_wire(loop_data, surface, global_vertices);
@@ -503,7 +503,7 @@ fn rebuild_loop_uv_from_3d(
 pub fn loops_native_surface_uv(
     loops: &FaceUvLoops,
     face: &BRepFace,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> FaceUvLoops {
     let inv_tol = face.tolerance.max(1e-3);
     let mut out = loops.clone();
@@ -529,7 +529,7 @@ pub fn loops_native_surface_uv(
 /// Fallback UV from a 3D orthonormal frame fitted to the loop (trim-only; not surface params).
 pub(crate) fn rebuild_loop_uv_local_frame(
     loop_data: &mut UvLoop,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
     surface: Option<&SurfaceGeom>,
 ) {
     if let Some(SurfaceGeom::Plane {
@@ -549,7 +549,7 @@ pub(crate) fn rebuild_loop_uv_local_frame(
         return;
     }
 
-    let pts: Vec<Vec3> = loop_data
+    let pts: Vec<PVec3> = loop_data
         .boundary
         .iter()
         .filter_map(|v| global_vertices.get(v.global_idx).copied())
@@ -558,7 +558,7 @@ pub(crate) fn rebuild_loop_uv_local_frame(
         return;
     }
 
-    let mut normal = Vec3::ZERO;
+    let mut normal = PVec3::ZERO;
     for i in 0..pts.len() {
         let p0 = pts[i];
         let p1 = pts[(i + 1) % pts.len()];
@@ -574,8 +574,8 @@ pub(crate) fn rebuild_loop_uv_local_frame(
     let normal = normal.normalize();
     let origin = pts[0];
 
-    let mut tangent = Vec3::ZERO;
-    let mut best_len = 0.0f32;
+    let mut tangent = PVec3::ZERO;
+    let mut best_len = 0.0_f64;
     for i in 0..pts.len() {
         let edge = pts[(i + 1) % pts.len()] - pts[i];
         let proj = edge - normal * edge.dot(normal);
@@ -587,9 +587,9 @@ pub(crate) fn rebuild_loop_uv_local_frame(
     }
     if best_len < 1e-20 {
         let ref_dir = if normal.x.abs() < 0.9 {
-            Vec3::X
+            PVec3::X
         } else {
-            Vec3::Y
+            PVec3::Y
         };
         tangent = ref_dir - normal * ref_dir.dot(normal);
     }
@@ -613,7 +613,7 @@ pub(crate) fn ensure_loop_orientation(boundary: &mut Vec<UvVertex>, is_hole: boo
     if boundary.len() < 3 {
         return;
     }
-    let uv: Vec<(f32, f32)> = boundary.iter().map(|v| v.uv).collect();
+    let uv: Vec<(Real, Real)> = boundary.iter().map(|v| v.uv).collect();
     let area = signed_area_2d(&uv);
     let want_positive = !is_hole;
     if (area > 0.0) != want_positive {
@@ -624,8 +624,8 @@ pub(crate) fn ensure_loop_orientation(boundary: &mut Vec<UvVertex>, is_hole: boo
 /// Split outer boundary into open chains at large 3D edge jumps (cap/spiral junctions).
 pub fn split_boundary_chains_at_3d_jumps(
     boundary: &[UvVertex],
-    verts: &[Vec3],
-    jump_ratio: f32,
+    verts: &[PVec3],
+    jump_ratio: Real,
 ) -> (Vec<Vec<UvVertex>>, usize) {
     let n = boundary.len();
     if n < 3 {
@@ -680,26 +680,26 @@ pub fn split_boundary_chains_at_3d_jumps(
     (chains, long_count)
 }
 
-pub fn boundary_has_3d_jumps(boundary: &[UvVertex], verts: &[Vec3], jump_ratio: f32) -> bool {
+pub fn boundary_has_3d_jumps(boundary: &[UvVertex], verts: &[PVec3], jump_ratio: Real) -> bool {
     let (_, long_count) = split_boundary_chains_at_3d_jumps(boundary, verts, jump_ratio);
     long_count >= 2
 }
 
 /// Mixed cap+side topology: at least two large 3D jumps on the outer wire.
-pub fn boundary_is_mixed(boundary: &[UvVertex], verts: &[Vec3]) -> bool {
+pub fn boundary_is_mixed(boundary: &[UvVertex], verts: &[PVec3]) -> bool {
     boundary_has_3d_jumps(boundary, verts, 8.0)
 }
 
 // ── Periodic UV Loop Unwrap ──────────────────────────────────
 
-fn get_mindiff(u: f32, u0: f32, period: f32) -> f32 {
+fn get_mindiff(u: Real, u0: Real, period: Real) -> Real {
     (-4..=4)
-        .map(|i| u + i as f32 * period)
+        .map(|i| u + i as Real * period)
         .min_by(|a, b| (a - u0).abs().partial_cmp(&(b - u0).abs()).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(u)
 }
 
-fn unwrap_loop_periodic(boundary: &mut [UvVertex], u_period: Option<f32>, v_period: Option<f32>) {
+fn unwrap_loop_periodic(boundary: &mut [UvVertex], u_period: Option<Real>, v_period: Option<Real>) {
     if boundary.len() < 2 { return; }
     for i in 1..boundary.len() {
         let prev = boundary[i - 1].uv;
@@ -720,7 +720,7 @@ pub fn unwrap_periodic_uv_loops(loops: &mut FaceUvLoops, surface: &SurfaceGeom) 
 }
 
 /// True when consecutive UV samples jump more than half a native u period (seam not unwrapped).
-pub fn uv_loop_has_u_seam_jump(boundary: &[UvVertex], u_period: f32) -> bool {
+pub fn uv_loop_has_u_seam_jump(boundary: &[UvVertex], u_period: Real) -> bool {
     if boundary.len() < 2 || u_period <= 1e-6 {
         return false;
     }
@@ -755,8 +755,8 @@ pub fn cylinder_loop_needs_uv_rebuild(loops: &FaceUvLoops, surface: &SurfaceGeom
 fn reproject_analytic_loop_uv(
     loop_data: &mut UvLoop,
     surface: &SurfaceGeom,
-    global_vertices: &[Vec3],
-    inv_tol: f32,
+    global_vertices: &[PVec3],
+    inv_tol: Real,
 ) {
     for v in &mut loop_data.boundary {
         let Some(pt) = global_vertices.get(v.global_idx) else {
@@ -778,7 +778,7 @@ fn reproject_analytic_loop_uv(
 pub fn repair_cylinder_uv_loops(
     loops: &FaceUvLoops,
     face: &BRepFace,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> FaceUvLoops {
     let inv_tol = face.tolerance.max(1e-3);
     let mut out = loops.clone();
@@ -804,12 +804,12 @@ pub fn repair_cylinder_uv_loops(
 
 // ── Plane Cap UV Repair ──────────────────────────────────────
 
-pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vertices: &[Vec3]) {
+pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vertices: &[PVec3]) {
     let SurfaceGeom::Plane { origin, normal, .. } = &face.surface else { return; };
     if loop_data.boundary.len() < 3 { return; }
     let n = normal.normalize();
     let p0 = global_vertices.get(loop_data.boundary[0].global_idx).copied().unwrap_or(*origin);
-    let mut u_axis = Vec3::ZERO;
+    let mut u_axis = PVec3::ZERO;
     for v in loop_data.boundary.iter().skip(1) {
         let Some(pt) = global_vertices.get(v.global_idx) else { continue; };
         let d = *pt - p0;
@@ -817,7 +817,7 @@ pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vert
         if d_plane.length_squared() > u_axis.length_squared() { u_axis = d_plane; }
     }
     if u_axis.length_squared() < 1e-12 {
-        let (ua, va) = plane_tangent_basis(n, Vec3::X);
+        let (ua, va) = plane_tangent_basis(n, PVec3::X);
         u_axis = ua;
         let v_axis = va;
         for v in &mut loop_data.boundary {
@@ -839,11 +839,11 @@ pub fn repair_plane_loop_uv(loop_data: &mut UvLoop, face: &BRepFace, global_vert
 // ── UV Loops from Wire Edges ─────────────────────────────────
 
 pub fn loops_from_wire_edges(
-    face_key: FaceKey, surface: &SurfaceGeom, inv_tol: f32,
+    face_key: FaceKey, surface: &SurfaceGeom, inv_tol: Real,
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> Option<FaceUvLoops> {
     let mut boundary = Vec::new();
     let mut any_pcurve = true;
@@ -879,7 +879,7 @@ pub fn revolution_loops_from_wire_edges(
     wire_edges: &[(EdgeKey, Vec<usize>)],
     edge_polygons: &HashMap<EdgeKey, EdgePolygon>,
     edge_boundary_idx: &super::edge_pool::FaceEdgeBoundaryIdx,
-    global_vertices: &[Vec3],
+    global_vertices: &[PVec3],
 ) -> Option<FaceUvLoops> {
     let mut boundary = Vec::new();
     let mut fail_reason: Option<&str> = None;
@@ -916,7 +916,7 @@ pub fn revolution_loops_from_wire_edges(
 }
 
 pub fn loops_from_boundary_indices(
-    indices: &[usize], face: &BRepFace, global_vertices: &[Vec3],
+    indices: &[usize], face: &BRepFace, global_vertices: &[PVec3],
 ) -> Option<FaceUvLoops> {
     let inv_tol = face.tolerance.max(1e-3);
     let mut boundary = Vec::new();
@@ -983,9 +983,9 @@ mod tests {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let face_key = reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
@@ -998,10 +998,10 @@ mod tests {
 
         let mut edge_keys = Vec::new();
         let edges = [
-            (Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
-            (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
-            (Vec3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
-            (Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
+            (PVec3::new(0.0, 0.0, 0.0), PVec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
+            (PVec3::new(10.0, 0.0, 0.0), PVec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
+            (PVec3::new(10.0, 10.0, 0.0), PVec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
+            (PVec3::new(0.0, 10.0, 0.0), PVec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
         ];
         for (a, b, u0, u1) in edges {
             let v0 = reg.find_or_add_vertex(a, 1e-4);
@@ -1053,14 +1053,14 @@ mod tests {
 
     #[test]
     fn cylinder_seam_jump_detected() {
-        let tau = std::f32::consts::TAU;
+        let tau = std::f64::consts::TAU;
         let boundary = vec![
             UvVertex { global_idx: 0, uv: (0.1, 0.0) },
             UvVertex { global_idx: 1, uv: (tau - 0.1, 1.0) },
             UvVertex { global_idx: 2, uv: (0.2, 2.0) },
         ];
         assert!(uv_loop_has_u_seam_jump(&boundary, tau));
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
         let loops = FaceUvLoops {
             outer: UvLoop { boundary },
             inners: vec![],

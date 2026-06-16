@@ -1,9 +1,10 @@
 //! Topology collection and face/edge resolution.
+use rc3d_core::math::Real;
 use super::super::parser::EntityIndex;
 use super::super::value::StepValue;
 use super::helpers::*;
 use super::placement::resolve_point;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 
 #[derive(Debug, Clone)]
 pub struct StepFace {
@@ -21,19 +22,19 @@ pub struct StepFace {
 pub struct StepLoop {
     pub edges: Vec<StepEdge>,
     /// Set for STEP `VERTEX_LOOP`: anchor point (OCC degenerated-edge wire).
-    pub vertex_loop_point: Option<Vec3>,
+    pub vertex_loop_point: Option<PVec3>,
     /// FACE_BOUND / FACE_OUTER_BOUND orientation (.T. = same direction as face).
     pub bound_forward: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct StepEdge {
-    pub start: Vec3,
-    pub end: Vec3,
+    pub start: PVec3,
+    pub end: PVec3,
     pub curve_id: u64,
     pub curve_type: String,
     pub reversed: bool,
-    pub tolerance: f32,
+    pub tolerance: Real,
 }
 
 /// A shell with its entity ID and extracted faces.
@@ -160,14 +161,14 @@ pub fn collect_solid_models(entities: &EntityIndex) -> Vec<StepSolidModel> {
 }
 
 /// Extract global distance tolerance from UNCERTAINTY_MEASURE_WITH_UNIT entities.
-pub fn global_tolerance(entities: &EntityIndex) -> f32 {
+pub fn global_tolerance(entities: &EntityIndex) -> Real {
     for (_id, record) in entities.iter() {
         if record.name == "UNCERTAINTY_MEASURE_WITH_UNIT" {
             if let Some(typed) = record.params.nth_param(0) {
                 if let StepValue::Typed(tag, inner) = typed {
                     if tag == "LENGTH_MEASURE" {
                         if let StepValue::Real(v) = inner.as_ref() {
-                            return rc3d_shape::ToleranceContext::from_model(*v as f32).model;
+                            return rc3d_shape::ToleranceContext::from_model(*v as Real).model;
                         }
                     }
                 }
@@ -180,7 +181,7 @@ pub fn global_tolerance(entities: &EntityIndex) -> f32 {
 /// Extract length unit scale factor from STEP header SI_UNIT / LENGTH_UNIT entities.
 /// Returns the multiplier to convert file coordinates to meters.
 /// Common prefixes: .MILLI.=0.001, .CENTI.=0.01, .MICRO.=1e-6, .NANO.=1e-9, .KILO.=1000.
-pub fn length_unit_scale(entities: &EntityIndex) -> f32 {
+pub fn length_unit_scale(entities: &EntityIndex) -> Real {
     for (_id, record) in entities.iter() {
         if record.name == "SI_UNIT" {
             // SI_UNIT($, prefix_enum, .METRE.) — position 1 = prefix
@@ -373,7 +374,7 @@ fn resolve_poly_loop(loop_id: u64, entities: &EntityIndex) -> Option<StepLoop> {
     let record = entities.get(&loop_id)?;
     let tol = global_tolerance(entities);
     let pt_ids = nth_list_refs(&record.params, 1)?;
-    let points: Vec<Vec3> = pt_ids.iter()
+    let points: Vec<PVec3> = pt_ids.iter()
         .filter_map(|&id| resolve_point(id, entities))
         .collect();
 

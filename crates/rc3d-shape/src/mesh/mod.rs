@@ -42,7 +42,7 @@ pub(crate) use param_div::curvature_driven_divisions;
 mod mesh_integration {
     use super::*;
     use crate::geom::curve2d::Curve2d;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
     use crate::geom::{CurveGeom, SurfaceGeom};
     use crate::store::BRepStore;
     use crate::topo::{BRepFace, BRepShell, BRepWire, BRepSolid, Orientation, ShellKey};
@@ -53,9 +53,9 @@ mod mesh_integration {
             let wire = reg.wires.insert(BRepWire { edges: vec![] });
             reg.faces.insert(BRepFace {
                 surface: SurfaceGeom::Plane {
-                    origin: Vec3::ZERO,
-                    normal: Vec3::Z,
-                    u_dir: Vec3::X,
+                    origin: PVec3::ZERO,
+                    normal: PVec3::Z,
+                    u_dir: PVec3::X,
                 },
                 outer_wire: wire,
                 inner_wires: vec![],
@@ -67,10 +67,10 @@ mod mesh_integration {
             })
         };
         let edges_data = [
-            (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
-            (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
-            (Vec3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
-            (Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
+            (PVec3::ZERO, PVec3::new(10.0, 0.0, 0.0), (0.0, 0.0), (10.0, 0.0)),
+            (PVec3::new(10.0, 0.0, 0.0), PVec3::new(10.0, 10.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
+            (PVec3::new(10.0, 10.0, 0.0), PVec3::new(0.0, 10.0, 0.0), (10.0, 10.0), (0.0, 10.0)),
+            (PVec3::new(0.0, 10.0, 0.0), PVec3::ZERO, (0.0, 10.0), (0.0, 0.0)),
         ];
         let mut wire_edges = Vec::new();
         for (a, b, u0, u1) in edges_data {

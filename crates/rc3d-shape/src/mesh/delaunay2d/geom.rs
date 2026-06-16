@@ -1,5 +1,6 @@
 //! Robust 2D geometric predicates for Delaunay triangulation.
 
+use rc3d_core::math::Real;
 /// A lightweight 2D point using f64 for robust arithmetic.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point2d {
@@ -14,7 +15,7 @@ impl Point2d {
     }
 
     #[inline]
-    pub fn from_f32(x: f32, y: f32) -> Self {
+    pub fn from_f32(x: Real, y: Real) -> Self {
         Self {
             x: x as f64,
             y: y as f64,
@@ -22,8 +23,8 @@ impl Point2d {
     }
 
     #[inline]
-    pub fn to_f32(self) -> (f32, f32) {
-        (self.x as f32, self.y as f32)
+    pub fn to_f32(self) -> (Real, Real) {
+        (self.x as Real, self.y as Real)
     }
 
     #[inline]

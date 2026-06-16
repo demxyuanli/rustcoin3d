@@ -7,24 +7,25 @@
 //! as a fallback when precise B-Rep surfaces are unavailable. We convert
 //! them directly to TriangleMesh data.
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use crate::step::parser::EntityIndex;
 
 /// Raw triangle mesh extracted from tessellated STEP geometry.
 #[derive(Debug, Clone)]
 pub struct TessellatedMesh {
-    pub positions: Vec<Vec3>,
+    pub positions: Vec<PVec3>,
     pub indices: Vec<u32>,
-    pub normals: Option<Vec<Vec3>>,
-    pub color: Option<[f32; 3]>,
+    pub normals: Option<Vec<PVec3>>,
+    pub color: Option<[Real; 3]>,
 }
 
-/// Read a COORDINATES_LIST entity into a flat Vec<Vec3>.
+/// Read a COORDINATES_LIST entity into a flat Vec<PVec3>.
 ///
 /// STEP structure: COORDINATES_LIST('name', (x1,y1,z1, x2,y2,z2, ...))
 /// Each coordinate is 3 consecutive real values; total count is n/3.
-fn read_coordinates_list(coords_id: u64, entities: &EntityIndex) -> Option<Vec<Vec3>> {
+fn read_coordinates_list(coords_id: u64, entities: &EntityIndex) -> Option<Vec<PVec3>> {
     let record = entities.get(&coords_id)?;
     let list = record.params.nth_param(1)?.as_list()?;
     if list.len() < 3 || list.len() % 3 != 0 {
@@ -37,10 +38,10 @@ fn read_coordinates_list(coords_id: u64, entities: &EntityIndex) -> Option<Vec<V
     let n = list.len() / 3;
     let mut positions = Vec::with_capacity(n);
     for i in 0..n {
-        let x = list[i * 3].as_real()? as f32;
-        let y = list[i * 3 + 1].as_real()? as f32;
-        let z = list[i * 3 + 2].as_real()? as f32;
-        positions.push(Vec3::new(x, y, z));
+        let x = list[i * 3].as_real()? as Real;
+        let y = list[i * 3 + 1].as_real()? as Real;
+        let z = list[i * 3 + 2].as_real()? as Real;
+        positions.push(PVec3::new(x, y, z));
     }
     Some(positions)
 }

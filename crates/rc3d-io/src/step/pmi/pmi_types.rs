@@ -1,18 +1,19 @@
 //! PMI data types for AP242 annotations — surface finishes and extended data sets.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use rc3d_core::math::PVec3;
 
 /// Surface finish / roughness annotation (ISO 1302).
 #[derive(Debug, Clone)]
 pub struct PmiSurfaceFinish {
     /// Ra (arithmetic average roughness) in micrometers.
-    pub ra_value: Option<f32>,
+    pub ra_value: Option<Real>,
     /// Rz (average maximum height) in micrometers.
-    pub rz_value: Option<f32>,
+    pub rz_value: Option<Real>,
     /// Symbol type indicating the machining requirement.
     pub symbol: FinishSymbol,
     /// 3D anchor point on the surface.
-    pub anchor_point: Vec3,
+    pub anchor_point: PVec3,
     /// Optional additional note text (e.g. machining method).
     pub note: Option<String>,
 }
@@ -59,7 +60,7 @@ mod tests {
             ra_value: Some(3.2),
             rz_value: Some(12.5),
             symbol: FinishSymbol::MaterialRemoval,
-            anchor_point: Vec3::new(10.0, 20.0, 0.0),
+            anchor_point: PVec3::new(10.0, 20.0, 0.0),
             note: Some("Milled".to_string()),
         };
         assert_eq!(finish.symbol, FinishSymbol::MaterialRemoval);

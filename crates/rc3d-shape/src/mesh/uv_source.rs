@@ -51,31 +51,31 @@ mod tests {
 
     #[test]
     fn cylinder_gets_native_uv() {
-        let face = test_face(SurfaceGeom::cylinder(rc3d_core::math::Vec3::ZERO, rc3d_core::math::Vec3::Z, 1.0));
+        let face = test_face(SurfaceGeom::cylinder(rc3d_core::math::PVec3::ZERO, rc3d_core::math::PVec3::Z, 1.0));
         assert_eq!(select_uv_source(&face), UvSourceKind::NativeUv);
     }
 
     #[test]
     fn cone_gets_native_uv() {
-        let face = test_face(SurfaceGeom::cone(rc3d_core::math::Vec3::ZERO, rc3d_core::math::Vec3::Z, 0.5, 0.0));
+        let face = test_face(SurfaceGeom::cone(rc3d_core::math::PVec3::ZERO, rc3d_core::math::PVec3::Z, 0.5, 0.0));
         assert_eq!(select_uv_source(&face), UvSourceKind::NativeUv);
     }
 
     #[test]
     fn sphere_gets_native_uv() {
-        let face = test_face(SurfaceGeom::Sphere { center: rc3d_core::math::Vec3::ZERO, radius: 1.0 });
+        let face = test_face(SurfaceGeom::Sphere { center: rc3d_core::math::PVec3::ZERO, radius: 1.0 });
         assert_eq!(select_uv_source(&face), UvSourceKind::NativeUv);
     }
 
     #[test]
     fn torus_gets_native_uv() {
-        let face = test_face(SurfaceGeom::torus(rc3d_core::math::Vec3::ZERO, rc3d_core::math::Vec3::Z, 2.0, 0.5));
+        let face = test_face(SurfaceGeom::torus(rc3d_core::math::PVec3::ZERO, rc3d_core::math::PVec3::Z, 2.0, 0.5));
         assert_eq!(select_uv_source(&face), UvSourceKind::NativeUv);
     }
 
     #[test]
     fn plane_gets_plane_local() {
-        let face = test_face(SurfaceGeom::Plane { origin: rc3d_core::math::Vec3::ZERO, normal: rc3d_core::math::Vec3::Z, u_dir: rc3d_core::math::Vec3::X });
+        let face = test_face(SurfaceGeom::Plane { origin: rc3d_core::math::PVec3::ZERO, normal: rc3d_core::math::PVec3::Z, u_dir: rc3d_core::math::PVec3::X });
         assert_eq!(select_uv_source(&face), UvSourceKind::PlaneLocal);
     }
 }

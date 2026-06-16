@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 use super::*;
 use super::surface::resolve_vector_magnitude;
 
@@ -17,30 +18,30 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
         }
         "CIRCLE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::circle(center, axis, radius))
         }
         "ELLIPSE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
-            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as f32;
+            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
+            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::ellipse(center, axis, semi_major, semi_minor))
         }
         "HYPERBOLA" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
-            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(1.0) as f32;
+            let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
+            let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::hyperbola(center, axis, semi_major, semi_minor))
         }
         "PARABOLA" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
-            let focal_dist = geom::nth_real(&record.params, 2).unwrap_or(1.0) as f32;
+            let focal_dist = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
                 .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
             Some(CurveGeom::parabola(center, axis, focal_dist))
@@ -87,7 +88,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             } else {
                 // Precompute segment lengths once at construction to avoid
                 // O(N×32) recomputation on every parameter evaluation.
-                let cached_lengths: Vec<f32> = segments.iter()
+                let cached_lengths: Vec<Real> = segments.iter()
                     .map(|(seg, _)| approx_chordal_length(seg).max(1e-10))
                     .collect();
                 Some(CurveGeom::Composite { segments, cached_lengths: Some(cached_lengths) })
@@ -103,7 +104,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let basis = build_curve(basis_id, entities)?;
             let dir_id = geom::nth_ref(&record.params, 2)?;
             let offset_dir = topology::resolve_direction(dir_id, entities)?;
-            let distance = geom::nth_real(&record.params, 3).unwrap_or(0.0) as f32;
+            let distance = geom::nth_real(&record.params, 3).unwrap_or(0.0) as Real;
             Some(CurveGeom::Offset {
                 basis: Box::new(basis),
                 offset_dir,
@@ -154,7 +155,7 @@ fn build_bspline_3d(
             for (i, &m) in mults.iter().enumerate() {
                 let k = knot_vals.get(i)
                     .and_then(|v| v.as_real())
-                    .unwrap_or(0.0) as f32;
+                    .unwrap_or(0.0) as Real;
                 for _ in 0..m.max(1) {
                     knots.push(k);
                 }
@@ -170,11 +171,11 @@ fn build_bspline_3d(
     } else {
         // Build uniform knot vector
         let mut k = Vec::with_capacity(cp_count + degree + 1);
-        for _ in 0..=degree { k.push(0.0f32); }
+        for _ in 0..=degree { k.push(0.0_f64); }
         for i in 1..(cp_count - degree) {
-            k.push(i as f32 / (cp_count - degree) as f32);
+            k.push(i as Real / (cp_count - degree) as Real);
         }
-        for _ in 0..=degree { k.push(1.0f32); }
+        for _ in 0..=degree { k.push(1.0_f64); }
         k
     };
 
@@ -230,7 +231,7 @@ pub(crate) fn build_bspline_2d(
                 let k = knot_vals
                     .get(i)
                     .and_then(|v| v.as_real())
-                    .unwrap_or(0.0) as f32;
+                    .unwrap_or(0.0) as Real;
                 for _ in 0..m.max(1) {
                     knots.push(k);
                 }
@@ -246,13 +247,13 @@ pub(crate) fn build_bspline_2d(
     } else {
         let mut k = Vec::with_capacity(cp_count + degree + 1);
         for _ in 0..=degree {
-            k.push(0.0f32);
+            k.push(0.0_f64);
         }
         for i in 1..(cp_count - degree) {
-            k.push(i as f32 / (cp_count - degree) as f32);
+            k.push(i as Real / (cp_count - degree) as Real);
         }
         for _ in 0..=degree {
-            k.push(1.0f32);
+            k.push(1.0_f64);
         }
         k
     };
@@ -273,16 +274,16 @@ pub(crate) fn build_bspline_2d(
     })
 }
 
-pub(crate) fn parse_trim_bound(params: &StepValue, index: usize) -> Option<f32> {
+pub(crate) fn parse_trim_bound(params: &StepValue, index: usize) -> Option<Real> {
     params
         .nth_param(index)?
         .as_list()?
         .first()?
         .as_real()
-        .map(|v| v as f32)
+        .map(|v| v as Real)
 }
 
-pub(crate) fn resolve_cartesian_2d(pt_id: u64, entities: &EntityIndex) -> Option<(f32, f32)> {
+pub(crate) fn resolve_cartesian_2d(pt_id: u64, entities: &EntityIndex) -> Option<(Real, Real)> {
     let record = entities.get(&pt_id)?;
     if record.name != "CARTESIAN_POINT" {
         return None;
@@ -292,17 +293,17 @@ pub(crate) fn resolve_cartesian_2d(pt_id: u64, entities: &EntityIndex) -> Option
         return None;
     }
     Some((
-        coords[0].as_real()? as f32,
-        coords[1].as_real()? as f32,
+        coords[0].as_real()? as Real,
+        coords[1].as_real()? as Real,
     ))
 }
 
 /// Extract weights from a RATIONAL_B_SPLINE_CURVE weight param.
-fn find_curve_weights(weight_val: &StepValue, expected_count: usize) -> Option<Vec<f32>> {
+fn find_curve_weights(weight_val: &StepValue, expected_count: usize) -> Option<Vec<Real>> {
     if let StepValue::List(items) = weight_val {
-        let weights: Vec<f32> = items.iter()
+        let weights: Vec<Real> = items.iter()
             .filter_map(|v| v.as_real())
-            .map(|r| r as f32)
+            .map(|r| r as Real)
             .collect();
         if weights.len() == expected_count {
             return Some(weights);

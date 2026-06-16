@@ -8,7 +8,7 @@
 //! 5. Emit STEP entities → ISO 10303-21 text
 
 use std::collections::HashMap;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3;
 use rc3d_scene::{NodeData, SceneGraph};
 use super::format::format_header;
 
@@ -17,7 +17,7 @@ type Triangle = [usize; 3];
 
 /// A merged face: boundary polygon as vertex indices, plus normal.
 struct MergedFace {
-    normal: Vec3,
+    normal: PVec3,
     boundary: Vec<usize>, // CCW vertex indices around outer loop
 }
 
@@ -28,7 +28,7 @@ fn edge_key(a: usize, b: usize) -> (usize, usize) {
 
 pub fn write_scene(graph: &SceneGraph) -> Result<String, String> {
     // ── Phase 1: Collect all mesh data ──
-    let mut all_verts: Vec<Vec3> = Vec::new();
+    let mut all_verts: Vec<PVec3> = Vec::new();
     let mut all_tris: Vec<Triangle> = Vec::new();
     // Track per-component vertex ranges for assembly hierarchy
     let mut components: Vec<(Option<String>, usize, usize)> = Vec::new();
@@ -87,7 +87,7 @@ pub fn write_scene(graph: &SceneGraph) -> Result<String, String> {
     let mut vert_ids: Vec<u64> = Vec::with_capacity(all_verts.len());
     let mut vert_map: HashMap<[u32; 3], u64> = HashMap::new();
     for v in &all_verts {
-        let key = rc3d_core::utils::hash::f32x3_quantized_bits([v.x, v.y, v.z]);
+        let key = rc3d_core::utils::hash::f64x3_quantized_bits([v.x, v.y, v.z]);
         if let Some(&id) = vert_map.get(&key) {
             vert_ids.push(id);
         } else {
@@ -162,16 +162,16 @@ pub fn write_scene(graph: &SceneGraph) -> Result<String, String> {
 }
 
 /// Allocate a DIRECTION entity ID and return (id, formatted entity text).
-fn make_dir(next_id: &mut u64, v: Vec3) -> (u64, String) {
+fn make_dir(next_id: &mut u64, v: PVec3) -> (u64, String) {
     let id = *next_id;
     *next_id += 1;
     (id, format!("#{} = DIRECTION('',({:.6},{:.6},{:.6}));\n", id, v.x, v.y, v.z))
 }
 
 /// Merge coplanar triangles into polygonal faces.
-fn merge_coplanar_triangles(verts: &[Vec3], tris: &[Triangle]) -> Vec<MergedFace> {
+fn merge_coplanar_triangles(verts: &[PVec3], tris: &[Triangle]) -> Vec<MergedFace> {
     // Step 1: Compute per-triangle normal, group by quantized normal
-    let mut normals: Vec<Vec3> = Vec::with_capacity(tris.len());
+    let mut normals: Vec<PVec3> = Vec::with_capacity(tris.len());
     let mut groups: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
 
     for (ti, tri) in tris.iter().enumerate() {
@@ -247,7 +247,7 @@ fn merge_coplanar_triangles(verts: &[Vec3], tris: &[Triangle]) -> Vec<MergedFace
 
 /// Extract the outer boundary polygon from a set of connected triangles.
 /// Uses the edge-count method: interior edges appear twice, boundary edges appear once.
-fn extract_boundary(_verts: &[Vec3], tris: &[Triangle], tri_indices: &[usize]) -> Vec<usize> {
+fn extract_boundary(_verts: &[PVec3], tris: &[Triangle], tri_indices: &[usize]) -> Vec<usize> {
     let mut edge_count: HashMap<(usize, usize), u32> = HashMap::new();
     for &ti in tri_indices {
         let tri = tris[ti];
@@ -305,7 +305,7 @@ fn extract_boundary(_verts: &[Vec3], tris: &[Triangle], tri_indices: &[usize]) -
 fn collect_mesh_data(
     graph: &SceneGraph,
     node_id: rc3d_core::NodeId,
-    vertices: &mut Vec<Vec3>,
+    vertices: &mut Vec<PVec3>,
     triangles: &mut Vec<Triangle>,
     _components: &mut Vec<(Option<String>, usize, usize)>,
 ) {
@@ -358,10 +358,10 @@ mod tests {
     fn test_merge_coplanar_quad() {
         // Two coplanar triangles forming a square
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
         ];
         let tris = vec![
             [0, 1, 2],
@@ -376,10 +376,10 @@ mod tests {
     fn test_merge_non_coplanar() {
         // Two non-coplanar triangles (different normals)
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 1.0),
         ];
         let tris = vec![
             [0, 1, 2],  // XY plane
@@ -392,10 +392,10 @@ mod tests {
     #[test]
     fn test_extract_boundary_square() {
         let verts = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0),
+            PVec3::new(0.0, 1.0, 0.0),
         ];
         let tris = vec![[0, 1, 2], [0, 2, 3]];
         let boundary = extract_boundary(&verts, &tris, &[0, 1]);

@@ -1,15 +1,15 @@
 //! Face splitting along intersection curves (B-Rep native).
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, ShellKey, BRepFace};
 
 /// A curve where two faces intersect, parameterized on both surfaces.
 #[derive(Debug, Clone)]
 pub struct BRepIntersectionCurve {
-    pub points_3d: Vec<Vec3>,
-    pub params_a: Vec<(f32, f32)>,
-    pub params_b: Vec<(f32, f32)>,
+    pub points_3d: Vec<PVec3>,
+    pub params_a: Vec<(Real, Real)>,
+    pub params_b: Vec<(Real, Real)>,
     pub face_a: FaceKey,
     pub face_b: FaceKey,
 }
@@ -22,9 +22,9 @@ pub struct SplitFaceRegion {
 
 #[derive(Debug, Clone)]
 pub struct SubFaceRegion {
-    pub uv_boundary: Vec<Vec<(f32, f32)>>,
-    pub interior_point: (f32, f32),
-    pub interior_point_3d: Vec3,
+    pub uv_boundary: Vec<Vec<(Real, Real)>>,
+    pub interior_point: (Real, Real),
+    pub interior_point_3d: PVec3,
     pub original_face: FaceKey,
 }
 
@@ -58,13 +58,13 @@ pub fn compute_brep_intersection_curves(
 
             if let (Some(pc_a), Some(pc_b)) = (pcurve_a, pcurve_b) {
                 // Extract UV point pairs from the pre-computed PCurves
-                // PCurves are polylines in UV space: d0(t) returns Vec3(u, v, 0)
+                // PCurves are polylines in UV space: d0(t) returns PVec3(u, v, 0)
                 let n_samples = 64;
                 pts_3d.reserve(n_samples);
                 params_a.reserve(n_samples);
                 params_b.reserve(n_samples);
                 for j in 0..n_samples {
-                    let t = j as f32 / (n_samples - 1).max(1) as f32;
+                    let t = j as Real / (n_samples - 1).max(1) as Real;
                     let uva = pc_a.d0(t);
                     let uvb = pc_b.d0(t);
                     pts_3d.push(curve.d0(t));
@@ -113,11 +113,11 @@ pub fn compute_brep_intersection_curves(
     out
 }
 
-fn sample_intersection_curve(curve: &crate::geom::CurveGeom, n: usize) -> Vec<Vec3> {
+fn sample_intersection_curve(curve: &crate::geom::CurveGeom, n: usize) -> Vec<PVec3> {
     // All CurveGeom variants are parameterized over t in [0, 1].
     // Use the universal d0(t) evaluator to support every curve type.
     (0..n).map(|i| {
-        let t = i as f32 / (n - 1).max(1) as f32;
+        let t = i as Real / (n - 1).max(1) as Real;
         curve.d0(t)
     }).collect()
 }
@@ -140,13 +140,13 @@ pub fn split_faces_from_bopds(
 
             // Collect all InterfPoint UVs on this face from BOPDS
             let interfs = bopds.interfs_for_face(face_key);
-            let mut uv_points: Vec<(f32, f32)> = Vec::new();
-            let mut uv_boundary_hint: Vec<Vec<(f32, f32)>> = Vec::new();
+            let mut uv_points: Vec<(Real, Real)> = Vec::new();
+            let mut uv_boundary_hint: Vec<Vec<(Real, Real)>> = Vec::new();
 
             for interf in &interfs {
                 let is_face_a = interf.face_a == face_key;
                 // Build UV boundary from intersection points on this face
-                let pts_on_face: Vec<(f32, f32)> = interf.points.iter().map(|p| {
+                let pts_on_face: Vec<(Real, Real)> = interf.points.iter().map(|p| {
                     if is_face_a { p.uv_a } else { p.uv_b }
                 }).collect();
                 if pts_on_face.len() >= 2 {
@@ -313,7 +313,7 @@ fn split_face_single_curve(
 /// Adds vertices, edges, and a wire. The new face shares the original surface geometry.
 pub fn create_sub_face(
     original_face: FaceKey,
-    uv_boundary: &[(f32, f32)],
+    uv_boundary: &[(Real, Real)],
     reg: &mut BRepStore,
 ) -> Option<FaceKey> {
     let original = reg.faces.get(original_face)?;
@@ -365,7 +365,7 @@ mod tests {
         let mut reg = BRepStore::new();
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            surface: SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X },
             outer_wire: wire, inner_wires: vec![],
             same_sense: true, tolerance: 1e-6, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn create_sub_face_from_triangle_uv() {
         let mut reg = BRepStore::new();
-        let surface = SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X };
+        let surface = SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X };
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         let fk = reg.faces.insert(BRepFace {
             surface,
@@ -405,19 +405,19 @@ mod tests {
         let curve = CurveGeom::BSpline {
             degree: 3,
             control_points: vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(1.0, 2.0, 0.0),
-                Vec3::new(2.0, 2.0, 0.0),
-                Vec3::new(3.0, 0.0, 0.0),
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 2.0, 0.0),
+                PVec3::new(2.0, 2.0, 0.0),
+                PVec3::new(3.0, 0.0, 0.0),
             ],
             knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
             weights: None,
         };
         let samples = sample_intersection_curve(&curve, 32);
         assert_eq!(samples.len(), 32, "should produce exactly 32 samples");
-        assert!((samples[0] - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-4,
+        assert!((samples[0] - PVec3::new(0.0, 0.0, 0.0)).length() < 1e-4,
             "first sample should be near start control point");
-        assert!((samples[31] - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-4,
+        assert!((samples[31] - PVec3::new(3.0, 0.0, 0.0)).length() < 1e-4,
             "last sample should be near end control point");
     }
 
@@ -425,7 +425,7 @@ mod tests {
     fn test_sample_polyline_intersection_curve() {
         use crate::geom::CurveGeom;
         let curve = CurveGeom::Polyline {
-            points: vec![Vec3::ZERO, Vec3::X, Vec3::new(1.0, 1.0, 0.0)],
+            points: vec![PVec3::ZERO, PVec3::X, PVec3::new(1.0, 1.0, 0.0)],
         };
         let samples = sample_intersection_curve(&curve, 10);
         assert_eq!(samples.len(), 10, "should produce 10 samples for polyline");

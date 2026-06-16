@@ -2,7 +2,8 @@
 //!
 //! Estimates curve arc length by adaptive sampling and chord length summation.
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::Real;
+use rc3d_core::math::PVec3;
 use super::super::parser::EntityIndex;
 use super::super::entity_geom as geom;
 
@@ -14,10 +15,10 @@ use super::super::entity_geom as geom;
 pub fn curve_arc_length(
     curve_id: u64,
     entities: &EntityIndex,
-    t0: f32,
-    t1: f32,
-    tolerance: f32,
-) -> f32 {
+    t0: Real,
+    t1: Real,
+    tolerance: Real,
+) -> Real {
     let (low, high) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
 
     // Determine sample count: start with a reasonable base and increase
@@ -36,7 +37,7 @@ pub fn curve_arc_length(
         return 0.0;
     }
 
-    let mut arc = 0.0f32;
+    let mut arc = 0.0_f64;
     for w in pts.windows(2) {
         arc += (w[1] - w[0]).length();
     }
@@ -50,10 +51,10 @@ pub fn curve_arc_length(
 fn sample_curve_range(
     curve_id: u64,
     entities: &EntityIndex,
-    t0: f32,
-    t1: f32,
+    t0: Real,
+    t1: Real,
     n: usize,
-) -> Vec<Vec3> {
+) -> Vec<PVec3> {
     let record = match entities.get(&curve_id) {
         Some(r) => r,
         None => return vec![],
@@ -64,7 +65,7 @@ fn sample_curve_range(
             // For lines, sample_curve returns [start, end].
             // Interpolate between t0 and t1.
             let full = geom::sample_curve(
-                curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.01,
+                curve_id, entities, PVec3::ZERO, PVec3::ZERO, 0.01,
             );
             if full.len() < 2 {
                 return vec![];
@@ -73,7 +74,7 @@ fn sample_curve_range(
             let p1 = full[1];
             let mut result = Vec::with_capacity(n + 1);
             for i in 0..=n {
-                let t = t0 + (t1 - t0) * (i as f32) / (n as f32);
+                let t = t0 + (t1 - t0) * (i as Real) / (n as Real);
                 result.push(p0 + (p1 - p0) * t);
             }
             result
@@ -82,14 +83,14 @@ fn sample_curve_range(
             // sample_curve returns n points around the full circle/ellipse.
             // We need to restrict to [t0, t1].
             let full = geom::sample_curve(
-                curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.001,
+                curve_id, entities, PVec3::ZERO, PVec3::ZERO, 0.001,
             );
             if full.is_empty() {
                 return vec![];
             }
             let total = full.len().saturating_sub(1); // full curve has n+1 points (closed)
-            let i0 = (t0 * total as f32) as usize;
-            let i1 = ((t1 * total as f32) as usize + 1).min(full.len());
+            let i0 = (t0 * total as Real) as usize;
+            let i1 = ((t1 * total as Real) as usize + 1).min(full.len());
             if i0 < i1 && i1 <= full.len() {
                 full[i0..i1].to_vec()
             } else {
@@ -99,14 +100,14 @@ fn sample_curve_range(
         _ => {
             // Generic: sample the full curve and map t to point indices
             let full = geom::sample_curve(
-                curve_id, entities, Vec3::ZERO, Vec3::ZERO, 0.01,
+                curve_id, entities, PVec3::ZERO, PVec3::ZERO, 0.01,
             );
             if full.len() < 2 {
                 return vec![];
             }
             let total = full.len().saturating_sub(1);
-            let i0 = (t0 * total as f32) as usize;
-            let i1 = ((t1 * total as f32) as usize + 1).min(full.len());
+            let i0 = (t0 * total as Real) as usize;
+            let i1 = ((t1 * total as Real) as usize + 1).min(full.len());
             if i0 < i1 && i1 <= full.len() {
                 full[i0..i1].to_vec()
             } else {
@@ -161,7 +162,7 @@ mod tests {
         // Full unit circle arc length ≈ 2π
         let len = curve_arc_length(10, &entities, 0.0, 1.0, 0.001);
         assert!(len > 0.0, "circle arc length should be positive");
-        assert!((len - 2.0 * std::f32::consts::PI).abs() < 0.2,
+        assert!((len - 2.0 * std::f64::consts::PI).abs() < 0.2,
             "circle arc length should be ≈2π, got {}", len);
     }
 

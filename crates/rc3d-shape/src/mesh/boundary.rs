@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use rc3d_core::math::Vec3;
-use rc3d_core::utils::spatial::SpatialIndex;
+use rc3d_core::math::{Real, PVec3};
+use rc3d_core::utils::spatial::SpatialIndexF64;
 
 /// Spatial index for boundary mesh vertex deduplication.
-pub type BoundaryPosIndex = SpatialIndex<usize>;
+pub type BoundaryPosIndex = SpatialIndexF64<usize>;
 
 /// Default positional dedup tolerance for boundary pool construction.
 pub use crate::tolerance::DEFAULT_MODEL_TOLERANCE as BOUNDARY_DEDUP_TOLERANCE;
@@ -13,15 +13,15 @@ pub use crate::tolerance::DEFAULT_MODEL_TOLERANCE as BOUNDARY_DEDUP_TOLERANCE;
 /// Read-only boundary vertex pool shared across parallel mesh chunks.
 #[derive(Debug, Clone)]
 pub struct SharedBoundaryPool {
-    pub vertices: Arc<[Vec3]>,
-    pub normals: Arc<[Vec3]>,
+    pub vertices: Arc<[PVec3]>,
+    pub normals: Arc<[PVec3]>,
     pub index: Arc<BoundaryPosIndex>,
     pub count: usize,
-    cell_size: f32,
+    cell_size: Real,
 }
 
 impl SharedBoundaryPool {
-    pub fn new(vertices: Vec<Vec3>, normals: Vec<Vec3>, index: BoundaryPosIndex) -> Self {
+    pub fn new(vertices: Vec<PVec3>, normals: Vec<PVec3>, index: BoundaryPosIndex) -> Self {
         let count = vertices.len();
         let cell_size = index.cell_size();
         Self {
@@ -41,9 +41,9 @@ impl SharedBoundaryPool {
 /// Contiguous vertex slice for read-only mesh algorithms (boundary + optional interior).
 #[allow(dead_code)]
 pub fn mesh_vertices_view<'a>(
-    interior_vertices: &'a [Vec3],
+    interior_vertices: &'a [PVec3],
     shared: Option<&'a SharedBoundaryPool>,
-) -> Cow<'a, [Vec3]> {
+) -> Cow<'a, [PVec3]> {
     match shared {
         None => Cow::Borrowed(interior_vertices),
         Some(pool) if interior_vertices.is_empty() => Cow::Borrowed(&pool.vertices),
@@ -58,9 +58,9 @@ pub fn mesh_vertices_view<'a>(
 
 /// Find an existing boundary vertex index within tolerance, if any.
 pub fn find_boundary_index(
-    pt: Vec3,
-    tolerance: f32,
-    global_vertices: &[Vec3],
+    pt: PVec3,
+    tolerance: Real,
+    global_vertices: &[PVec3],
     index: &BoundaryPosIndex,
 ) -> Option<usize> {
     index.find_near([pt.x, pt.y, pt.z], tolerance, |i| {
@@ -70,16 +70,16 @@ pub fn find_boundary_index(
 }
 
 fn register_boundary_point_inner<F>(
-    pt: Vec3,
-    tolerance: f32,
-    interior_vertices: &mut Vec<Vec3>,
-    interior_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    tolerance: Real,
+    interior_vertices: &mut Vec<PVec3>,
+    interior_normals: &mut Vec<PVec3>,
     interior_index: &mut BoundaryPosIndex,
     shared_boundary: Option<&SharedBoundaryPool>,
     normal_on_insert: F,
 ) -> usize
 where
-    F: FnOnce() -> Vec3,
+    F: FnOnce() -> PVec3,
 {
     if let Some(pool) = shared_boundary {
         if let Some(idx) = find_boundary_index(pt, tolerance, &pool.vertices, &pool.index) {
@@ -108,10 +108,10 @@ where
 
 /// Register a boundary point in the shared pool (tolerance-aware dedup).
 pub fn register_boundary_point(
-    pt: Vec3,
-    tolerance: f32,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    tolerance: Real,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     index: &mut BoundaryPosIndex,
 ) -> usize {
     register_boundary_point_inner(
@@ -121,15 +121,15 @@ pub fn register_boundary_point(
         global_normals,
         index,
         None,
-        || Vec3::ZERO,
+        || PVec3::ZERO,
     )
 }
 
 /// Like [`register_boundary_point`] using the index cell size as tolerance.
 pub fn register_boundary_point_indexed(
-    pt: Vec3,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     index: &mut BoundaryPosIndex,
 ) -> usize {
     let tolerance = index.cell_size();
@@ -139,15 +139,15 @@ pub fn register_boundary_point_indexed(
 /// Register a boundary point, computing the normal only when inserting a new vertex.
 #[allow(dead_code)]
 pub fn register_boundary_point_with_normal<F>(
-    pt: Vec3,
-    tolerance: f32,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    tolerance: Real,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     index: &mut BoundaryPosIndex,
     normal_on_insert: F,
 ) -> usize
 where
-    F: FnOnce() -> Vec3,
+    F: FnOnce() -> PVec3,
 {
     register_boundary_point_with_normal_shared(
         pt,
@@ -162,16 +162,16 @@ where
 
 /// Layered register when tessellating over a shared read-only boundary pool.
 pub fn register_boundary_point_with_normal_shared<F>(
-    pt: Vec3,
-    tolerance: f32,
-    interior_vertices: &mut Vec<Vec3>,
-    interior_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    tolerance: Real,
+    interior_vertices: &mut Vec<PVec3>,
+    interior_normals: &mut Vec<PVec3>,
     interior_index: &mut BoundaryPosIndex,
     shared_boundary: Option<&SharedBoundaryPool>,
     normal_on_insert: F,
 ) -> usize
 where
-    F: FnOnce() -> Vec3,
+    F: FnOnce() -> PVec3,
 {
     register_boundary_point_inner(
         pt,
@@ -187,14 +187,14 @@ where
 /// Like [`register_boundary_point_with_normal`] using the index cell size as tolerance.
 #[allow(dead_code)]
 pub fn register_boundary_point_with_normal_indexed<F>(
-    pt: Vec3,
-    global_vertices: &mut Vec<Vec3>,
-    global_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    global_vertices: &mut Vec<PVec3>,
+    global_normals: &mut Vec<PVec3>,
     index: &mut BoundaryPosIndex,
     normal_on_insert: F,
 ) -> usize
 where
-    F: FnOnce() -> Vec3,
+    F: FnOnce() -> PVec3,
 {
     register_boundary_point_with_normal_indexed_shared(
         pt,
@@ -208,15 +208,15 @@ where
 
 /// Indexed layered register for parallel chunk meshing.
 pub fn register_boundary_point_with_normal_indexed_shared<F>(
-    pt: Vec3,
-    interior_vertices: &mut Vec<Vec3>,
-    interior_normals: &mut Vec<Vec3>,
+    pt: PVec3,
+    interior_vertices: &mut Vec<PVec3>,
+    interior_normals: &mut Vec<PVec3>,
     interior_index: &mut BoundaryPosIndex,
     shared_boundary: Option<&SharedBoundaryPool>,
     normal_on_insert: F,
 ) -> usize
 where
-    F: FnOnce() -> Vec3,
+    F: FnOnce() -> PVec3,
 {
     let tolerance = interior_index.cell_size();
     register_boundary_point_with_normal_shared(
@@ -240,14 +240,14 @@ mod tests {
         let mut norms = Vec::new();
         let mut index = BoundaryPosIndex::with_cell_size(BOUNDARY_DEDUP_TOLERANCE);
         let a = register_boundary_point(
-            Vec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
             BOUNDARY_DEDUP_TOLERANCE,
             &mut verts,
             &mut norms,
             &mut index,
         );
         let b = register_boundary_point(
-            Vec3::new(1.0 + 5e-5, 0.0, 0.0),
+            PVec3::new(1.0 + 5e-5, 0.0, 0.0),
             BOUNDARY_DEDUP_TOLERANCE,
             &mut verts,
             &mut norms,
@@ -263,14 +263,14 @@ mod tests {
         let mut norms = Vec::new();
         let mut index = BoundaryPosIndex::with_cell_size(1e-5);
         let a = register_boundary_point(
-            Vec3::ZERO,
+            PVec3::ZERO,
             1e-5,
             &mut verts,
             &mut norms,
             &mut index,
         );
         let b = register_boundary_point(
-            Vec3::new(1e-4, 0.0, 0.0),
+            PVec3::new(1e-4, 0.0, 0.0),
             1e-5,
             &mut verts,
             &mut norms,

@@ -107,7 +107,7 @@ mod tests {
     fn make_dummy_sub_face(reg: &mut BRepStore) -> FaceKey {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane { origin: rc3d_core::math::Vec3::ZERO, normal: rc3d_core::math::Vec3::Z, u_dir: rc3d_core::math::Vec3::X },
+            surface: SurfaceGeom::Plane { origin: rc3d_core::math::PVec3::ZERO, normal: rc3d_core::math::PVec3::Z, u_dir: rc3d_core::math::PVec3::X },
             outer_wire: wire,
             inner_wires: vec![],
             same_sense: true,
@@ -129,7 +129,7 @@ mod tests {
             sub_faces: vec![SubFaceRegion {
                 uv_boundary: vec![],
                 interior_point: (0.5, 0.5),
-                interior_point_3d: rc3d_core::math::Vec3::ZERO,
+                interior_point_3d: rc3d_core::math::PVec3::ZERO,
                 original_face: fk_a,
             }],
         }];
@@ -138,7 +138,7 @@ mod tests {
             sub_faces: vec![SubFaceRegion {
                 uv_boundary: vec![],
                 interior_point: (0.5, 0.5),
-                interior_point_3d: rc3d_core::math::Vec3::ZERO,
+                interior_point_3d: rc3d_core::math::PVec3::ZERO,
                 original_face: fk_b,
             }],
         }];
@@ -161,7 +161,7 @@ mod tests {
             sub_faces: vec![SubFaceRegion {
                 uv_boundary: vec![],
                 interior_point: (0.5, 0.5),
-                interior_point_3d: rc3d_core::math::Vec3::ZERO,
+                interior_point_3d: rc3d_core::math::PVec3::ZERO,
                 original_face: fk_a,
             }],
         }];
@@ -170,7 +170,7 @@ mod tests {
             sub_faces: vec![SubFaceRegion {
                 uv_boundary: vec![],
                 interior_point: (0.5, 0.5),
-                interior_point_3d: rc3d_core::math::Vec3::ZERO,
+                interior_point_3d: rc3d_core::math::PVec3::ZERO,
                 original_face: fk_b,
             }],
         }];

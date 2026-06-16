@@ -35,7 +35,7 @@ pub use scene_emit::{apply_plan, emit_plan_options_from_step, SceneEmitOptions};
 pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3;
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{MaterialNode, SeparatorNode};
@@ -375,8 +375,8 @@ fn exchange_to_import_result(
     graph.add_child(
         root,
         NodeData::Material(MaterialNode {
-            diffuse_color: Vec3::new(default_color[0], default_color[1], default_color[2]),
-            base_color: Vec3::new(default_color[0], default_color[1], default_color[2]),
+            diffuse_color: PVec3::new(default_color[0], default_color[1], default_color[2]),
+            base_color: PVec3::new(default_color[0], default_color[1], default_color[2]),
             roughness: 0.35,
             opacity: 1.0,
             ..Default::default()
@@ -392,7 +392,7 @@ fn exchange_to_import_result(
     )?;
 
     if !options.skip_visualization {
-        let mut props_vertices: Vec<Vec3> = Vec::new();
+        let mut props_vertices: Vec<PVec3> = Vec::new();
         let mut props_indices: Vec<i32> = Vec::new();
         for cached in plan.mesh_table.values() {
             import_pipeline::append_props_mesh_public(&cached.mesh, &mut props_vertices, &mut props_indices);

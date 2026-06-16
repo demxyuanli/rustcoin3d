@@ -1,3 +1,4 @@
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 use crate::store::BRepStore;
@@ -12,7 +13,7 @@ pub(crate) fn init_shell_mesh(
     shell_key: ShellKey,
     reg: &BRepStore,
     config: &BRepMeshConfig,
-) -> Option<(BRepMeshConfig, f32, ShellMeshReport, HashMap<EdgeKey, EdgePolygon>)> {
+) -> Option<(BRepMeshConfig, Real, ShellMeshReport, HashMap<EdgeKey, EdgePolygon>)> {
     let shell_diag = shell_bbox_diagonal(shell_key, reg);
     let mut scaled_config = config.clone();
     apply_relative_deflection(&mut scaled_config, shell_diag);

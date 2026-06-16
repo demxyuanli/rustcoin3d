@@ -11,7 +11,7 @@
 //! ✅ Cylinder×Cone → sampled space curve
 //! ⏳ NURBS×NURBS → deferred to marching (P3)
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{ShellKey, FaceKey, BRepFace};
 use crate::geom::{CurveGeom, SurfaceGeom};
@@ -35,12 +35,12 @@ pub fn project_curve_to_face_pcurve(
     surface: &SurfaceGeom,
     n_samples: usize,
 ) -> Option<CurveGeom> {
-    let mut uv_points: Vec<rc3d_core::math::Vec3> = Vec::with_capacity(n_samples);
+    let mut uv_points: Vec<rc3d_core::math::PVec3> = Vec::with_capacity(n_samples);
     for i in 0..n_samples {
-        let t = i as f32 / (n_samples - 1).max(1) as f32;
+        let t = i as Real / (n_samples - 1).max(1) as Real;
         let pt = curve_3d.d0(t);
         if let Some((u, v)) = surface.project(pt) {
-            uv_points.push(rc3d_core::math::Vec3::new(u, v, 0.0));
+            uv_points.push(rc3d_core::math::PVec3::new(u, v, 0.0));
         }
     }
     if uv_points.len() < 2 {
@@ -220,20 +220,20 @@ pub fn intersect_surfaces_brep(
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Convert a sampled polyline to a degree-3 B-spline curve using chord-length parameterization.
-fn polyline_to_bspline(points: &[Vec3], degree: usize) -> CurveGeom {
+fn polyline_to_bspline(points: &[PVec3], degree: usize) -> CurveGeom {
     let n = points.len();
     if n == 0 {
-        return CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::ZERO };
+        return CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::ZERO };
     }
     if n < 2 {
-        return CurveGeom::Line { origin: points[0], direction: Vec3::ZERO };
+        return CurveGeom::Line { origin: points[0], direction: PVec3::ZERO };
     }
     if n <= 3 {
         // Not enough points for cubic — use degree 2
         let cps = points.to_vec();
         let n_cp = cps.len();
         let knot_count = n_cp + 2 + 1; // degree 2
-        let knots: Vec<f32> = (0..knot_count).map(|i| i as f32).collect();
+        let knots: Vec<Real> = (0..knot_count).map(|i| i as Real).collect();
         return CurveGeom::BSpline {
             degree: 2,
             control_points: cps,
@@ -243,7 +243,7 @@ fn polyline_to_bspline(points: &[Vec3], degree: usize) -> CurveGeom {
     }
 
     // Chord-length parameterization
-    let mut chord_lengths = vec![0.0f32];
+    let mut chord_lengths = vec![0.0_f64];
     for i in 1..n {
         let d = (points[i] - points[i-1]).length();
         chord_lengths.push(chord_lengths[i-1] + d);
@@ -261,7 +261,7 @@ fn polyline_to_bspline(points: &[Vec3], degree: usize) -> CurveGeom {
     for _ in 0..=deg { knots.push(0.0); }
     let internal = n_knots.saturating_sub(2 * (deg + 1));
     for i in 1..=internal {
-        knots.push(i as f32 / (internal + 1) as f32);
+        knots.push(i as Real / (internal + 1) as Real);
     }
     for _ in 0..=deg { knots.push(1.0); }
 
@@ -280,7 +280,7 @@ fn polyline_to_bspline(points: &[Vec3], degree: usize) -> CurveGeom {
 /// Fallback intersection using marching for any unsupported surface pair.
 /// Uses `find_seeds` to locate intersection points, then `trace_curve_bidirectional`
 /// to trace the full intersection curve.
-fn marching_fallback(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom, tolerance: f32) -> Option<Vec<CurveGeom>> {
+fn marching_fallback(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom, tolerance: Real) -> Option<Vec<CurveGeom>> {
     use crate::bool::marching::{find_seeds, trace_curve_bidirectional, SeedPoint};
 
     // Find seeds on both surfaces (try both orientations, merge results)
@@ -299,7 +299,7 @@ fn marching_fallback(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom, tolerance: f32)
 
     // Compute step size from surface parameter ranges (clamped to avoid huge steps)
     let range_a = surf_a.param_range();
-    let u_span = (range_a.u_max - range_a.u_min).min(std::f32::consts::TAU);
+    let u_span = (range_a.u_max - range_a.u_min).min(std::f64::consts::TAU);
     let v_span = (range_a.v_max - range_a.v_min).min(10.0);
     let step = (u_span + v_span) * 0.01;
 
@@ -318,11 +318,11 @@ fn marching_fallback(surf_a: &SurfaceGeom, surf_b: &SurfaceGeom, tolerance: f32)
 //  Analytic SSI functions
 // ═══════════════════════════════════════════════════════════════════════
 
-fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
+fn build_ortho_axes(axis: PVec3) -> (PVec3, PVec3) {
     let x_dir = if axis.x.abs() < 0.9 {
-        axis.cross(Vec3::X).normalize()
+        axis.cross(PVec3::X).normalize()
     } else {
-        axis.cross(Vec3::Y).normalize()
+        axis.cross(PVec3::Y).normalize()
     };
     let y_dir = axis.cross(x_dir).normalize();
     (x_dir, y_dir)
@@ -330,7 +330,7 @@ fn build_ortho_axes(axis: Vec3) -> (Vec3, Vec3) {
 
 // ── Plane × Plane ─────────────────────────────────────────────────────
 
-fn plane_plane(o1: Vec3, n1: Vec3, o2: Vec3, n2: Vec3) -> Option<Vec<CurveGeom>> {
+fn plane_plane(o1: PVec3, n1: PVec3, o2: PVec3, n2: PVec3) -> Option<Vec<CurveGeom>> {
     let cross = n1.cross(n2);
     if cross.length() < 1e-10 { return None; }
     let dir = cross.normalize();
@@ -338,7 +338,7 @@ fn plane_plane(o1: Vec3, n1: Vec3, o2: Vec3, n2: Vec3) -> Option<Vec<CurveGeom>>
     let d2 = n2.dot(o2);
     let det = n1.x * n2.y - n1.y * n2.x;
     let origin = if det.abs() > 1e-10 {
-        Vec3::new((d1 * n2.y - d2 * n1.y) / det, (n1.x * d2 - n2.x * d1) / det, 0.0)
+        PVec3::new((d1 * n2.y - d2 * n1.y) / det, (n1.x * d2 - n2.x * d1) / det, 0.0)
     } else {
         o1
     };
@@ -348,8 +348,8 @@ fn plane_plane(o1: Vec3, n1: Vec3, o2: Vec3, n2: Vec3) -> Option<Vec<CurveGeom>>
 // ── Plane × Cylinder ──────────────────────────────────────────────────
 
 fn plane_cylinder(
-    plane_o: Vec3, plane_n: Vec3,
-    cyl_o: Vec3, cyl_axis: Vec3, cyl_r: f32,
+    plane_o: PVec3, plane_n: PVec3,
+    cyl_o: PVec3, cyl_axis: PVec3, cyl_r: Real,
 ) -> Option<Vec<CurveGeom>> {
     let axis = cyl_axis.normalize();
     let cos_angle = plane_n.dot(axis).abs();
@@ -379,7 +379,7 @@ fn plane_cylinder(
 
 // ── Plane × Sphere ────────────────────────────────────────────────────
 
-fn plane_sphere(plane_o: Vec3, plane_n: Vec3, center: Vec3, radius: f32) -> Option<Vec<CurveGeom>> {
+fn plane_sphere(plane_o: PVec3, plane_n: PVec3, center: PVec3, radius: Real) -> Option<Vec<CurveGeom>> {
     let dist = (plane_n.dot(center - plane_o)).abs();
     if dist > radius { return None; }
     let circle_r = (radius * radius - dist * dist).sqrt();
@@ -391,8 +391,8 @@ fn plane_sphere(plane_o: Vec3, plane_n: Vec3, center: Vec3, radius: f32) -> Opti
 // ── Plane × Cone ──────────────────────────────────────────────────────
 
 fn plane_cone(
-    plane_o: Vec3, plane_n: Vec3,
-    apex: Vec3, axis: Vec3, semi_angle: f32,
+    plane_o: PVec3, plane_n: PVec3,
+    apex: PVec3, axis: PVec3, semi_angle: Real,
 ) -> Option<Vec<CurveGeom>> {
     let ax = axis.normalize();
     let tan_a = semi_angle.tan();
@@ -402,7 +402,7 @@ fn plane_cone(
     let n = 48;
     let mut pts = Vec::with_capacity(n + 1);
     for i in 0..=n {
-        let angle = std::f32::consts::TAU * i as f32 / n as f32;
+        let angle = std::f64::consts::TAU * i as Real / n as Real;
         let dir = u * angle.cos() + v * angle.sin();
         let ray_dir = (ax + dir * tan_a).normalize();
         let denom = plane_n.dot(ray_dir);
@@ -417,15 +417,15 @@ fn plane_cone(
 // ── Plane × Torus ─────────────────────────────────────────────────────
 
 fn plane_torus(
-    plane_o: Vec3, plane_n: Vec3,
-    torus_center: Vec3, torus_axis: Vec3, major_r: f32, minor_r: f32,
+    plane_o: PVec3, plane_n: PVec3,
+    torus_center: PVec3, torus_axis: PVec3, major_r: Real, minor_r: Real,
 ) -> Option<Vec<CurveGeom>> {
     let axis = torus_axis.normalize();
     let (u, v) = build_ortho_axes(axis);
     let n = 64;
-    let mut pts: Vec<Vec3> = Vec::new();
+    let mut pts: Vec<PVec3> = Vec::new();
     for i in 0..=n {
-        let angle = std::f32::consts::TAU * i as f32 / n as f32;
+        let angle = std::f64::consts::TAU * i as Real / n as Real;
         let tube_center = torus_center + u * major_r * angle.cos() + v * major_r * angle.sin();
         let d = plane_n.dot(tube_center - plane_o);
         if d.abs() > minor_r + 1e-6 { continue; }
@@ -443,7 +443,7 @@ fn plane_torus(
 // ── Cylinder × Cylinder ───────────────────────────────────────────────
 
 fn cylinder_cylinder(
-    o1: Vec3, a1: Vec3, r1: f32, o2: Vec3, a2: Vec3, r2: f32,
+    o1: PVec3, a1: PVec3, r1: Real, o2: PVec3, a2: PVec3, r2: Real,
 ) -> Option<Vec<CurveGeom>> {
     let ax1 = a1.normalize();
     let ax2 = a2.normalize();
@@ -485,7 +485,7 @@ fn cylinder_cylinder(
     let n = 64;
     let mut pts = Vec::with_capacity(n * 2);
     for i in 0..=n {
-        let angle = std::f32::consts::TAU * i as f32 / n as f32;
+        let angle = std::f64::consts::TAU * i as Real / n as Real;
         let dir = u * angle.cos() + v * angle.sin();
         let surface_pt = o1 + dir * r1;
         let d = surface_pt - o2;
@@ -517,8 +517,8 @@ fn cylinder_cylinder(
 /// At each angle θ, solving |cyl(θ, t) - center|² = r² gives a quadratic
 /// in t; valid roots produce intersection points.
 fn cylinder_sphere(
-    cyl_origin: Vec3, cyl_axis: Vec3, cyl_radius: f32,
-    sph_center: Vec3, sph_radius: f32,
+    cyl_origin: PVec3, cyl_axis: PVec3, cyl_radius: Real,
+    sph_center: PVec3, sph_radius: Real,
 ) -> Option<Vec<CurveGeom>> {
     let ax = cyl_axis.normalize();
     let (u, v) = build_ortho_axes(ax);
@@ -529,10 +529,10 @@ fn cylinder_sphere(
     let _d_radial = d - ax * d_axial; // component perpendicular to axis
 
     let n_samples = 64;
-    let mut pts: Vec<Vec3> = Vec::with_capacity(n_samples * 2);
+    let mut pts: Vec<PVec3> = Vec::with_capacity(n_samples * 2);
 
     for i in 0..n_samples {
-        let theta = std::f32::consts::TAU * i as f32 / n_samples as f32;
+        let theta = std::f64::consts::TAU * i as Real / n_samples as Real;
         let radial_dir = u * theta.cos() + v * theta.sin();
 
         // Point on cylinder surface (before solving for t):
@@ -572,7 +572,7 @@ fn cylinder_sphere(
 
 // ── Sphere × Sphere ───────────────────────────────────────────────────
 
-fn sphere_sphere(c1: Vec3, r1: f32, c2: Vec3, r2: f32) -> Option<Vec<CurveGeom>> {
+fn sphere_sphere(c1: PVec3, r1: Real, c2: PVec3, r2: Real) -> Option<Vec<CurveGeom>> {
     let d_vec = c2 - c1;
     let d = d_vec.length();
     if d < 1e-10 { return None; }
@@ -588,17 +588,17 @@ fn sphere_sphere(c1: Vec3, r1: f32, c2: Vec3, r2: f32) -> Option<Vec<CurveGeom>>
 // ── Cylinder × Cone ───────────────────────────────────────────────────
 
 fn cylinder_cone(
-    cyl_o: Vec3, cyl_a: Vec3, cyl_r: f32,
-    apex: Vec3, cone_a: Vec3, semi_angle: f32,
+    cyl_o: PVec3, cyl_a: PVec3, cyl_r: Real,
+    apex: PVec3, cone_a: PVec3, semi_angle: Real,
 ) -> Option<Vec<CurveGeom>> {
     let c_ax = cyl_a.normalize();
     let k_ax = cone_a.normalize();
     let tan_a = semi_angle.tan();
     let (u, v) = build_ortho_axes(c_ax);
     let n = 64;
-    let mut pts: Vec<Vec3> = Vec::new();
+    let mut pts: Vec<PVec3> = Vec::new();
     for i in 0..=n {
-        let angle = std::f32::consts::TAU * i as f32 / n as f32;
+        let angle = std::f64::consts::TAU * i as Real / n as Real;
         let dir = u * angle.cos() + v * angle.sin();
         let cyl_pt = cyl_o + dir * cyl_r;
         let d = cyl_pt - apex;
@@ -625,7 +625,7 @@ fn cylinder_cone(
 //  Coplanar / tangent detection (P2)
 // ═══════════════════════════════════════════════════════════════════════
 
-pub fn faces_are_coplanar(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -> bool {
+pub fn faces_are_coplanar(face_a: &BRepFace, face_b: &BRepFace, tol: Real) -> bool {
     match (&face_a.surface, &face_b.surface) {
         (SurfaceGeom::Plane { origin: o1, normal: n1, .. },
          SurfaceGeom::Plane { origin: o2, normal: n2, .. }) => {
@@ -641,7 +641,7 @@ pub fn faces_are_coplanar(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -> boo
     }
 }
 
-pub fn is_tangent_intersection(face_a: &BRepFace, face_b: &BRepFace, tol: f32) -> bool {
+pub fn is_tangent_intersection(face_a: &BRepFace, face_b: &BRepFace, tol: Real) -> bool {
     match (&face_a.surface, &face_b.surface) {
         (SurfaceGeom::Plane { origin, normal, .. }, SurfaceGeom::Sphere { center, radius }) => {
             (normal.dot(*center - *origin).abs() - radius).abs() < tol
@@ -683,8 +683,8 @@ mod tests {
 
     #[test]
     fn plane_plane_intersecting() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X });
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X });
         let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
         assert!(curves.is_some());
         assert!(matches!(&curves.unwrap()[0], CurveGeom::Line { .. }));
@@ -692,15 +692,15 @@ mod tests {
 
     #[test]
     fn plane_plane_parallel() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::Plane { origin: Vec3::new(0.0, 0.0, 5.0), normal: Vec3::Z, u_dir: Vec3::X });
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::Plane { origin: PVec3::new(0.0, 0.0, 5.0), normal: PVec3::Z, u_dir: PVec3::X });
         assert!(intersect_surfaces_brep(&fa, &fb, &BRepStore::new()).is_none());
     }
 
     #[test]
     fn plane_cylinder_perpendicular_circle() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 3.0));
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 3.0));
         let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
         assert!(curves.is_some());
         if let Some(cs) = curves {
@@ -710,8 +710,8 @@ mod tests {
 
     #[test]
     fn plane_cylinder_parallel_two_lines() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::X, u_dir: Vec3::Y });
-        let fb = make_test_face(SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 2.0));
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::X, u_dir: PVec3::Y });
+        let fb = make_test_face(SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 2.0));
         let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
         assert!(curves.is_some());
         if let Some(cs) = curves {
@@ -721,16 +721,16 @@ mod tests {
 
     #[test]
     fn plane_sphere_circle() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::Sphere { center: Vec3::new(0.0, 0.0, 1.0), radius: 2.0 });
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::Sphere { center: PVec3::new(0.0, 0.0, 1.0), radius: 2.0 });
         let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
         assert!(curves.is_some());
     }
 
     #[test]
     fn sphere_sphere_intersect() {
-        let fa = make_test_face(SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 2.0 });
-        let fb = make_test_face(SurfaceGeom::Sphere { center: Vec3::new(2.0, 0.0, 0.0), radius: 2.0 });
+        let fa = make_test_face(SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 2.0 });
+        let fb = make_test_face(SurfaceGeom::Sphere { center: PVec3::new(2.0, 0.0, 0.0), radius: 2.0 });
         let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
         assert!(curves.is_some());
         assert!(matches!(&curves.unwrap()[0], CurveGeom::Circle { .. }));
@@ -738,22 +738,22 @@ mod tests {
 
     #[test]
     fn sphere_sphere_disjoint() {
-        let fa = make_test_face(SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.0 });
-        let fb = make_test_face(SurfaceGeom::Sphere { center: Vec3::new(10.0, 0.0, 0.0), radius: 1.0 });
+        let fa = make_test_face(SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.0 });
+        let fb = make_test_face(SurfaceGeom::Sphere { center: PVec3::new(10.0, 0.0, 0.0), radius: 1.0 });
         assert!(intersect_surfaces_brep(&fa, &fb, &BRepStore::new()).is_none());
     }
 
     #[test]
     fn coplanar_planes_detected() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::Plane { origin: Vec3::new(0.0, 0.0, 1e-8), normal: Vec3::Z, u_dir: Vec3::X });
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::Plane { origin: PVec3::new(0.0, 0.0, 1e-8), normal: PVec3::Z, u_dir: PVec3::X });
         assert!(faces_are_coplanar(&fa, &fb, 1e-4));
     }
 
     #[test]
     fn tangent_sphere_plane() {
-        let fa = make_test_face(SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X });
-        let fb = make_test_face(SurfaceGeom::Sphere { center: Vec3::new(0.0, 0.0, 2.0), radius: 2.0 });
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::Sphere { center: PVec3::new(0.0, 0.0, 2.0), radius: 2.0 });
         assert!(is_tangent_intersection(&fa, &fb, 1e-4));
     }
 
@@ -763,47 +763,47 @@ mod tests {
         let mut reg = BRepStore::new();
 
         // Plane A: z=0, rectangle near origin
-        let v0 = reg.find_or_add_vertex(Vec3::new(-1.0, -1.0, 0.0), 1e-4);
-        let v1 = reg.find_or_add_vertex(Vec3::new(1.0, -1.0, 0.0), 1e-4);
-        let v2 = reg.find_or_add_vertex(Vec3::new(1.0, 1.0, 0.0), 1e-4);
-        let v3 = reg.find_or_add_vertex(Vec3::new(-1.0, 1.0, 0.0), 1e-4);
+        let v0 = reg.find_or_add_vertex(PVec3::new(-1.0, -1.0, 0.0), 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(1.0, -1.0, 0.0), 1e-4);
+        let v2 = reg.find_or_add_vertex(PVec3::new(1.0, 1.0, 0.0), 1e-4);
+        let v3 = reg.find_or_add_vertex(PVec3::new(-1.0, 1.0, 0.0), 1e-4);
 
         let (lo01, hi01) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
         let (lo12, hi12) = if v1 < v2 { (v1, v2) } else { (v2, v1) };
         let (lo23, hi23) = if v2 < v3 { (v2, v3) } else { (v3, v2) };
         let (lo30, hi30) = if v3 < v0 { (v3, v0) } else { (v0, v3) };
 
-        let e01 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, -1.0, 0.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo01, v_high: hi01, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e12 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, -1.0, 0.0), direction: Vec3::new(0.0, 2.0, 0.0) }, tolerance: 1e-4, v_low: lo12, v_high: hi12, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e23 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 1.0, 0.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo23, v_high: hi23, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e30 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 1.0, 0.0), direction: Vec3::new(0.0, -2.0, 0.0) }, tolerance: 1e-4, v_low: lo30, v_high: hi30, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e01 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(-1.0, -1.0, 0.0), direction: PVec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo01, v_high: hi01, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e12 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(1.0, -1.0, 0.0), direction: PVec3::new(0.0, 2.0, 0.0) }, tolerance: 1e-4, v_low: lo12, v_high: hi12, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e23 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(1.0, 1.0, 0.0), direction: PVec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo23, v_high: hi23, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e30 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(-1.0, 1.0, 0.0), direction: PVec3::new(0.0, -2.0, 0.0) }, tolerance: 1e-4, v_low: lo30, v_high: hi30, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
 
         let w_a = reg.wires.insert(BRepWire { edges: vec![(e01, Orientation::Forward), (e12, Orientation::Forward), (e23, Orientation::Forward), (e30, Orientation::Forward)] });
         let f_a = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Z, u_dir: Vec3::X },
+            surface: SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Z, u_dir: PVec3::X },
             outer_wire: w_a, inner_wires: vec![], same_sense: true, tolerance: 1e-4,
             seam_edges: vec![], color: None, degenerated_edges: vec![],
         });
 
         // Plane B: y=0, rectangle crossing Plane A
-        let v4 = reg.find_or_add_vertex(Vec3::new(-1.0, 0.0, -1.0), 1e-4);
-        let v5 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, -1.0), 1e-4);
-        let v6 = reg.find_or_add_vertex(Vec3::new(1.0, 0.0, 1.0), 1e-4);
-        let v7 = reg.find_or_add_vertex(Vec3::new(-1.0, 0.0, 1.0), 1e-4);
+        let v4 = reg.find_or_add_vertex(PVec3::new(-1.0, 0.0, -1.0), 1e-4);
+        let v5 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, -1.0), 1e-4);
+        let v6 = reg.find_or_add_vertex(PVec3::new(1.0, 0.0, 1.0), 1e-4);
+        let v7 = reg.find_or_add_vertex(PVec3::new(-1.0, 0.0, 1.0), 1e-4);
 
         let (lo45, hi45) = if v4 < v5 { (v4, v5) } else { (v5, v4) };
         let (lo56, hi56) = if v5 < v6 { (v5, v6) } else { (v6, v5) };
         let (lo67, hi67) = if v6 < v7 { (v6, v7) } else { (v7, v6) };
         let (lo74, hi74) = if v7 < v4 { (v7, v4) } else { (v4, v7) };
 
-        let e45 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, -1.0), direction: Vec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo45, v_high: hi45, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e56 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, -1.0), direction: Vec3::new(0.0, 0.0, 2.0) }, tolerance: 1e-4, v_low: lo56, v_high: hi56, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e67 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(1.0, 0.0, 1.0), direction: Vec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo67, v_high: hi67, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
-        let e74 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: Vec3::new(-1.0, 0.0, 1.0), direction: Vec3::new(0.0, 0.0, -2.0) }, tolerance: 1e-4, v_low: lo74, v_high: hi74, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e45 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(-1.0, 0.0, -1.0), direction: PVec3::new(2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo45, v_high: hi45, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e56 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(1.0, 0.0, -1.0), direction: PVec3::new(0.0, 0.0, 2.0) }, tolerance: 1e-4, v_low: lo56, v_high: hi56, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e67 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(1.0, 0.0, 1.0), direction: PVec3::new(-2.0, 0.0, 0.0) }, tolerance: 1e-4, v_low: lo67, v_high: hi67, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
+        let e74 = reg.edges.insert(BRepEdge { curve: CurveGeom::Line { origin: PVec3::new(-1.0, 0.0, 1.0), direction: PVec3::new(0.0, 0.0, -2.0) }, tolerance: 1e-4, v_low: lo74, v_high: hi74, t_min: 0.0, t_max: 1.0, pcurves: HashMap::new() });
 
         let w_b = reg.wires.insert(BRepWire { edges: vec![(e45, Orientation::Forward), (e56, Orientation::Forward), (e67, Orientation::Forward), (e74, Orientation::Forward)] });
         let f_b = reg.faces.insert(BRepFace {
-            surface: SurfaceGeom::Plane { origin: Vec3::ZERO, normal: Vec3::Y, u_dir: Vec3::X },
+            surface: SurfaceGeom::Plane { origin: PVec3::ZERO, normal: PVec3::Y, u_dir: PVec3::X },
             outer_wire: w_b, inner_wires: vec![], same_sense: true, tolerance: 1e-4,
             seam_edges: vec![], color: None, degenerated_edges: vec![],
         });
@@ -820,12 +820,12 @@ mod tests {
     fn test_marching_fallback_sphere_torus() {
         let mut reg = BRepStore::new();
         // Sphere radius 1.5 at origin
-        let surface_a = SurfaceGeom::Sphere { center: Vec3::ZERO, radius: 1.5 };
+        let surface_a = SurfaceGeom::Sphere { center: PVec3::ZERO, radius: 1.5 };
         // Torus major_r=3.0, minor_r=1.0 — sphere passes through the tube
         let surface_b = SurfaceGeom::Torus {
-            center: Vec3::ZERO, axis: Vec3::Z,
+            center: PVec3::ZERO, axis: PVec3::Z,
             major_r: 3.0, minor_r: 1.0,
-            x_dir: Vec3::X, y_dir: Vec3::Y,
+            x_dir: PVec3::X, y_dir: PVec3::Y,
         };
 
         let w_a = reg.wires.insert(BRepWire { edges: vec![] });
@@ -856,8 +856,8 @@ mod tests {
         // Two intersecting spheres — already handled analytically,
         // so this tests that marching works alongside the analytic path.
         // Use the marching module directly to verify it finds seeds.
-        let surf_a = SurfaceGeom::Sphere { center: Vec3::new(-0.5, 0.0, 0.0), radius: 1.0 };
-        let surf_b = SurfaceGeom::Sphere { center: Vec3::new(0.5, 0.0, 0.0), radius: 1.0 };
+        let surf_a = SurfaceGeom::Sphere { center: PVec3::new(-0.5, 0.0, 0.0), radius: 1.0 };
+        let surf_b = SurfaceGeom::Sphere { center: PVec3::new(0.5, 0.0, 0.0), radius: 1.0 };
 
         let seeds = crate::bool::marching::find_seeds(&surf_a, &surf_b, 16, 0.5);
         assert!(!seeds.is_empty(), "Two intersecting spheres should produce marching seeds");
@@ -866,8 +866,8 @@ mod tests {
     #[test]
     fn test_cylinder_sphere_intersection() {
         let mut reg = BRepStore::new();
-        let cyl = SurfaceGeom::cylinder(Vec3::ZERO, Vec3::Z, 1.0);
-        let sphere = SurfaceGeom::Sphere { center: Vec3::new(0.5, 0.0, 0.0), radius: 1.5 };
+        let cyl = SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0);
+        let sphere = SurfaceGeom::Sphere { center: PVec3::new(0.5, 0.0, 0.0), radius: 1.5 };
 
         // Build faces
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
@@ -893,11 +893,11 @@ mod tests {
     #[test]
     fn test_parallel_cylinder_intersection() {
         // Two parallel cylinders with same radius, axes separated by < 2*radius
-        let cyl1 = SurfaceGeom::cylinder(Vec3::new(-0.5, 0.0, 0.0), Vec3::Z, 1.0);
-        let cyl2 = SurfaceGeom::cylinder(Vec3::new(0.5, 0.0, 0.0), Vec3::Z, 1.0);
+        let cyl1 = SurfaceGeom::cylinder(PVec3::new(-0.5, 0.0, 0.0), PVec3::Z, 1.0);
+        let cyl2 = SurfaceGeom::cylinder(PVec3::new(0.5, 0.0, 0.0), PVec3::Z, 1.0);
         let curves = cylinder_cylinder(
-            Vec3::new(-0.5, 0.0, 0.0), Vec3::Z, 1.0,
-            Vec3::new(0.5, 0.0, 0.0), Vec3::Z, 1.0,
+            PVec3::new(-0.5, 0.0, 0.0), PVec3::Z, 1.0,
+            PVec3::new(0.5, 0.0, 0.0), PVec3::Z, 1.0,
         );
         assert!(curves.is_some(), "parallel intersecting cylinders should produce lines");
         let c = curves.unwrap();
@@ -911,8 +911,8 @@ mod tests {
     fn test_parallel_cylinder_no_intersection() {
         // Two parallel cylinders too far apart
         let curves = cylinder_cylinder(
-            Vec3::ZERO, Vec3::Z, 1.0,
-            Vec3::new(10.0, 0.0, 0.0), Vec3::Z, 1.0,
+            PVec3::ZERO, PVec3::Z, 1.0,
+            PVec3::new(10.0, 0.0, 0.0), PVec3::Z, 1.0,
         );
         assert!(curves.is_none(), "widely separated parallel cylinders should not intersect");
     }

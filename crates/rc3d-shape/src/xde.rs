@@ -1,5 +1,6 @@
 //! XDE-style label tree and attributes.
 
+use rc3d_core::math::Real;
 use slotmap::new_key_type;
 
 use crate::shape::ShapeId;
@@ -10,8 +11,8 @@ new_key_type! { pub struct LabelId; }
 pub struct AttributeBag {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub color: Option<[f32; 3]>,
-    pub opacity: Option<f32>,
+    pub color: Option<[Real; 3]>,
+    pub opacity: Option<Real>,
     pub layer: Option<String>,
     pub step_entity_id: Option<u64>,
 }
@@ -64,7 +65,7 @@ impl XdeLabelForest {
         }
     }
 
-    pub fn resolved_color(&self, label_id: LabelId) -> Option<[f32; 3]> {
+    pub fn resolved_color(&self, label_id: LabelId) -> Option<[Real; 3]> {
         let mut current = Some(label_id);
         while let Some(id) = current {
             let label = self.labels.get(id)?;
@@ -76,7 +77,7 @@ impl XdeLabelForest {
         None
     }
 
-    pub fn resolved_opacity(&self, label_id: LabelId) -> Option<f32> {
+    pub fn resolved_opacity(&self, label_id: LabelId) -> Option<Real> {
         let mut current = Some(label_id);
         while let Some(id) = current {
             let label = self.labels.get(id)?;

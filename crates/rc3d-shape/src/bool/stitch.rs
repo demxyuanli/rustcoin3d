@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey, BRepShell, Orientation};
 
@@ -57,14 +57,14 @@ pub fn stitch_faces_into_shell(
 
 /// Weld coincident vertices across faces in a shell.
 /// Returns number of vertex pairs merged.
-pub fn weld_shell_vertices(shell_key: ShellKey, reg: &mut BRepStore, tolerance: f32) -> usize {
+pub fn weld_shell_vertices(shell_key: ShellKey, reg: &mut BRepStore, tolerance: Real) -> usize {
     let face_keys: Vec<FaceKey> = {
         let Some(shell) = reg.shells.get(shell_key) else { return 0; };
         shell.faces.iter().map(|&(fk, _)| fk).collect()
     };
 
     // Collect all vertices and their positions
-    let mut vert_positions: Vec<(VertexKey, Vec3)> = Vec::new();
+    let mut vert_positions: Vec<(VertexKey, PVec3)> = Vec::new();
     for fk in &face_keys {
         let Some(face) = reg.faces.get(*fk) else { continue };
         for wk in std::iter::once(&face.outer_wire).chain(face.inner_wires.iter()) {
@@ -216,15 +216,15 @@ mod tests {
     use super::*;
     use crate::topo::*;
     use crate::geom::SurfaceGeom;
-    use rc3d_core::math::Vec3;
+    use rc3d_core::math::PVec3;
 
     fn make_test_face(reg: &mut BRepStore) -> FaceKey {
         let wire = reg.wires.insert(BRepWire { edges: vec![] });
         reg.faces.insert(BRepFace {
             surface: SurfaceGeom::Plane {
-                origin: Vec3::ZERO,
-                normal: Vec3::Z,
-                u_dir: Vec3::X,
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
             },
             outer_wire: wire,
             inner_wires: vec![],
