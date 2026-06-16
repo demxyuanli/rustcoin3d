@@ -35,7 +35,7 @@ pub use scene_emit::{apply_plan, emit_plan_options_from_step, SceneEmitOptions};
 pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::{Real, PVec3;
+use rc3d_core::math::{Real, PVec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{MaterialNode, SeparatorNode};

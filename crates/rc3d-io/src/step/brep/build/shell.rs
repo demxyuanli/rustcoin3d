@@ -148,7 +148,7 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
 
 /// OCC StepToTopoDS_TranslateVertexLoop: wire with one degenerated edge at the loop vertex.
 pub(crate) fn build_vertex_loop_wire(
-    anchor: Vec3,
+    anchor: PVec3,
     surface: &SurfaceGeom,
     face_key: FaceKey,
     ctx: &mut ShellBuildCtx<'_>,

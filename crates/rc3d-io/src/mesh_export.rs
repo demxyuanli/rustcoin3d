@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{Mat4, PMat4, PVec3, Vec3};
 use rc3d_shape::{EmitPlanOptions, SceneEmitPlan, ShapeDocument};
 
 use crate::step::brep::geom::SurfaceGeom;
@@ -17,6 +17,10 @@ use crate::step::import_options::StepImportOptions;
 use crate::step::import_step_file_with_options;
 use crate::step::mesh_result::MeshResult;
 use crate::{parse_stl_triangles, write_ascii_stl, StlError};
+/// Convert f64 mesh vertices to f32 for STL output (rendering boundary).
+fn verts_f64_to_f32(verts: &[PVec3]) -> Vec<Vec3> {
+    verts.iter().map(|v| Vec3::new(v.x as f32, v.y as f32, v.z as f32)).collect()
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MeshExportError {
@@ -76,15 +80,21 @@ pub fn default_stl_output(input: &Path) -> PathBuf {
 }
 
 /// Append a tessellated solid mesh under an assembly instance transform.
+/// Converts f32 world transform to f64 for geometry computation (rendering boundary).
 pub fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: Mat4) {
+    // Convert scene-graph f32 Mat4 → f64 PMat4 for geometry math
+    let world_f64 = PMat4::from_cols(
+        world.x_axis.as_dvec4(), world.y_axis.as_dvec4(),
+        world.z_axis.as_dvec4(), world.w_axis.as_dvec4(),
+    );
+    let normal_mat = world_f64.inverse().transpose();
     let offset = dst.vertices.len() as i32;
     for &v in &src.vertices {
-        let p = world * v.extend(1.0);
-        dst.vertices.push(Vec3::new(p.x, p.y, p.z));
+        let p = world_f64 * v.extend(1.0);
+        dst.vertices.push(PVec3::new(p.x, p.y, p.z));
     }
     // Normal transform: use inverse-transpose for correct handling of non-uniform scaling.
     // OCC: gp_Trsf — applies rotation + scale correctly via inv-transpose 3x3.
-    let normal_mat = world.inverse().transpose();
     for &n in &src.normals {
         let t = (normal_mat * n.extend(0.0)).truncate();
         dst.normals.push(t.normalize_or_zero());
@@ -122,7 +132,7 @@ pub fn export_step_to_ascii_stl(
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_ascii_stl(output, &meshed.mesh.vertices, &meshed.mesh.indices)?;
+    { let tmp_v = verts_f64_to_f32(&meshed.mesh.vertices); write_ascii_stl(output, &tmp_v, &meshed.mesh.indices) }?;
 
     Ok(summary_from_mesh(input, output, &meshed.mesh, &meshed.report, 0))
 }
@@ -163,16 +173,19 @@ pub fn convert_stl_to_ascii(input: &Path, output: &Path) -> Result<ExportSummary
     let mut mesh = MeshResult::default();
     for tri in tris {
         let base = mesh.vertices.len() as i32;
-        mesh.vertices.push(Vec3::from(tri.vertices[0]));
-        mesh.vertices.push(Vec3::from(tri.vertices[1]));
-        mesh.vertices.push(Vec3::from(tri.vertices[2]));
+        let v0: [f32; 3] = tri.vertices[0].into();
+        let v1: [f32; 3] = tri.vertices[1].into();
+        let v2: [f32; 3] = tri.vertices[2].into();
+        mesh.vertices.push(PVec3::new(v0[0] as f64, v0[1] as f64, v0[2] as f64));
+        mesh.vertices.push(PVec3::new(v1[0] as f64, v1[1] as f64, v1[2] as f64));
+        mesh.vertices.push(PVec3::new(v2[0] as f64, v2[1] as f64, v2[2] as f64));
         mesh.indices
             .extend_from_slice(&[base, base + 1, base + 2, -1]);
     }
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_ascii_stl(output, &mesh.vertices, &mesh.indices)?;
+    { let tmp_v = verts_f64_to_f32(&mesh.vertices); write_ascii_stl(output, &tmp_v, &mesh.indices) }?;
     Ok(ExportSummary {
         input: input.to_path_buf(),
         output: output.to_path_buf(),
@@ -205,7 +218,7 @@ pub fn export_file_to_ascii_stl(
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            write_ascii_stl(output, &combined.vertices, &combined.indices)?;
+            { let tmp_v = verts_f64_to_f32(&combined.vertices); write_ascii_stl(output, &tmp_v, &combined.indices) }?;
 
             let mut summary = summary_from_mesh(
                 input, output, &combined, &report, 0,
@@ -282,7 +295,13 @@ fn merge_emit_plan_meshes(plan: &SceneEmitPlan) -> (MeshResult, ShellMeshReport)
         let Some(cached) = plan.mesh_table.get(&inst.mesh_slot) else {
             continue;
         };
-        append_mesh_with_transform(&mut combined, &cached.mesh, inst.world_transform);
+        let world_f32 = Mat4::from_cols(
+            inst.world_transform.x_axis.as_vec4(),
+            inst.world_transform.y_axis.as_vec4(),
+            inst.world_transform.z_axis.as_vec4(),
+            inst.world_transform.w_axis.as_vec4(),
+        );
+        append_mesh_with_transform(&mut combined, &cached.mesh, world_f32);
         if reported_slots.insert(inst.mesh_slot) {
             report = merge_reports(&report, &cached.report);
         }
@@ -304,7 +323,7 @@ fn summary_from_mesh(
         vert_count: mesh.vertices.len(),
         meshed_faces: report.meshed_faces,
         total_faces: report.face_count,
-        grid_fallback_rate: report.grid_fallback_rate(),
+        grid_fallback_rate: report.grid_fallback_rate() as f32,
         per_face_files,
     }
 }
@@ -369,7 +388,7 @@ fn write_per_face_stl(
         let face = reg.faces.get(fs.face_key).expect("face");
         let name = face_stl_name(fs.face_key, face, fs);
         let path = output_dir.join(name);
-        write_ascii_stl(&path, &out.mesh.vertices, &face_idx)?;
+        let tmp_v = verts_f64_to_f32(&out.mesh.vertices); write_ascii_stl(&path, &tmp_v, &face_idx)?;
         *file_count += 1;
     }
     Ok(())

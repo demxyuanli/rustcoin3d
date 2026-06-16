@@ -8,7 +8,7 @@
 //! 5. Emit STEP entities → ISO 10303-21 text
 
 use std::collections::HashMap;
-use rc3d_core::math::{Real, PVec3;
+use rc3d_core::math::{Real, PVec3};
 use rc3d_scene::{NodeData, SceneGraph};
 use super::format::format_header;
 

@@ -112,8 +112,8 @@ fn pcurve_uv_native_candidates(surface: &SurfaceGeom, u: Real, v: Real) -> Vec<(
 
 fn pcurve_uv_matches_3d(
     surface: &SurfaceGeom,
-    p3: Vec3,
-    uv: Vec3,
+    p3: PVec3,
+    uv: PVec3,
     match_tol: Real,
 ) -> bool {
     for (u, v) in pcurve_uv_native_candidates(surface, uv.x, uv.y) {
@@ -139,7 +139,7 @@ fn pcurve_uv_matches_3d(
 }
 
 /// Map a 3D edge sample to native surface UV (Revolution uses analytic inverse).
-fn sample_3d_to_native_uv(surface: &SurfaceGeom, p3: Vec3, inv_tol: Real) -> (Real, Real) {
+fn sample_3d_to_native_uv(surface: &SurfaceGeom, p3: PVec3, inv_tol: Real) -> (Real, Real) {
     if let SurfaceGeom::Revolution { .. } = surface {
         if let Some(uv) = surface.revolution_native_uv_at(p3) {
             return uv;
@@ -187,7 +187,7 @@ fn build_parametric_fallback_pcurve(
         let t = i as Real / n as Real;
         let p3 = curve.d0(t);
         let (u, v) = sample_3d_to_native_uv(surface, p3, inv_tol);
-        uv_points.push(Vec3::new(u, v, 0.0));
+        uv_points.push(PVec3::new(u, v, 0.0));
     }
     CurveGeom::Polyline { points: uv_points }
 }
@@ -297,22 +297,22 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
             let pnt = resolve_cartesian_2d(pnt_id, entities)?;
             let dir = resolve_vector_2d(dir_id, entities)?;
             Some(CurveGeom::Line {
-                origin: Vec3::new(pnt.0, pnt.1, 0.0),
-                direction: Vec3::new(dir.0, dir.1, 0.0),
+                origin: PVec3::new(pnt.0, pnt.1, 0.0),
+                direction: PVec3::new(dir.0, dir.1, 0.0),
             })
         }
         "CIRCLE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let center = resolve_placement_2d(placement_id, entities)?;
-            Some(CurveGeom::circle(Vec3::new(center.0, center.1, 0.0), Vec3::Z, radius))
+            Some(CurveGeom::circle(PVec3::new(center.0, center.1, 0.0), PVec3::Z, radius))
         }
         "ELLIPSE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let center = resolve_placement_2d(placement_id, entities)?;
-            Some(CurveGeom::ellipse(Vec3::new(center.0, center.1, 0.0), Vec3::Z, semi_major, semi_minor))
+            Some(CurveGeom::ellipse(PVec3::new(center.0, center.1, 0.0), PVec3::Z, semi_major, semi_minor))
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
             build_bspline_2d(record, entities)
@@ -335,10 +335,10 @@ pub fn build_2d_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom
         }
         "POLYLINE" => {
             let pt_ids = geom::nth_list_refs(&record.params, 1).unwrap_or_default();
-            let points: Vec<Vec3> = pt_ids
+            let points: Vec<PVec3> = pt_ids
                 .iter()
                 .filter_map(|&id| {
-                    resolve_cartesian_2d(id, entities).map(|(u, v)| Vec3::new(u, v, 0.0))
+                    resolve_cartesian_2d(id, entities).map(|(u, v)| PVec3::new(u, v, 0.0))
                 })
                 .collect();
             if points.len() < 2 {
@@ -424,7 +424,7 @@ fn build_synthetic_pcurve(
                     let t = i as Real / n as Real;
                     let u = uv0.0 + du * t;
                     let v = uv0.1 + dv * t;
-                    uv_points.push(Vec3::new(u, v, 0.0));
+                    uv_points.push(PVec3::new(u, v, 0.0));
                 }
                 return Some(CurveGeom::Polyline { points: uv_points });
             }
@@ -445,7 +445,7 @@ fn build_synthetic_pcurve(
                             .revolution_native_uv_at(p3)
                             .map(|(_, v)| v)
                             .unwrap_or(v0 + (v1 - v0) * t);
-                        uv_points.push(Vec3::new(u, v, 0.0));
+                        uv_points.push(PVec3::new(u, v, 0.0));
                     }
                     return Some(CurveGeom::Polyline { points: uv_points });
                 }
@@ -453,7 +453,7 @@ fn build_synthetic_pcurve(
         }
         let mut uv_points = Vec::with_capacity(n as usize + 1);
         let mut all_same = true;
-        let mut first: Option<Vec3> = None;
+        let mut first: Option<PVec3> = None;
         for i in 0..=n {
             let t = i as Real / n as Real;
             let p3 = curve.d0(t);
@@ -462,7 +462,7 @@ fn build_synthetic_pcurve(
                 .revolution_native_uv_at(p3)
                 .map(|(_, v)| v)
                 .unwrap_or(0.0);
-            let uv = Vec3::new(u, v, 0.0);
+            let uv = PVec3::new(u, v, 0.0);
             if let Some(f) = first {
                 if (uv - f).length_squared() > 1e-12 {
                     all_same = false;
@@ -488,7 +488,7 @@ fn build_synthetic_pcurve(
             let mut uv_points = Vec::with_capacity(n as usize + 1);
             for i in 0..=n {
                 let t = i as Real / n as Real;
-                uv_points.push(Vec3::new(t, v0 + (v1 - v0) * t, 0.0));
+                uv_points.push(PVec3::new(t, v0 + (v1 - v0) * t, 0.0));
             }
             return Some(CurveGeom::Polyline { points: uv_points });
         }
@@ -506,7 +506,7 @@ fn build_synthetic_pcurve(
             map_failures += 1;
         }
         let (u, v) = sample_3d_to_native_uv(surface, p3, inv_tol);
-        uv_points.push(Vec3::new(u, v, 0.0));
+        uv_points.push(PVec3::new(u, v, 0.0));
     }
     if uv_points.len() < 2 {
         return None;
@@ -600,8 +600,8 @@ mod tests {
         let curve = build_curve(10, &entities).unwrap();
         match curve {
             CurveGeom::Line { origin, direction } => {
-                assert!((origin - Vec3::ZERO).length() < 1e-6);
-                assert!((direction - Vec3::X).length() < 1e-6);
+                assert!((origin - PVec3::ZERO).length() < 1e-6);
+                assert!((direction - PVec3::X).length() < 1e-6);
             }
             _ => panic!("expected Line"),
         }
@@ -621,9 +621,9 @@ mod tests {
         let curve = build_curve(10, &entities).unwrap();
         match curve {
             CurveGeom::Circle { center, axis, radius, .. } => {
-                assert!((center - Vec3::ZERO).length() < 1e-6);
+                assert!((center - PVec3::ZERO).length() < 1e-6);
                 assert!(radius - 5.0 < 1e-4);
-                assert!((axis - Vec3::Z).length() < 1e-6);
+                assert!((axis - PVec3::Z).length() < 1e-6);
             }
             _ => panic!("expected Circle"),
         }
@@ -705,8 +705,8 @@ mod tests {
         let surface = build_surface(10, &entities).unwrap();
         match surface {
             SurfaceGeom::Plane { origin, normal, .. } => {
-                assert!((origin - Vec3::ZERO).length() < 1e-6);
-                assert!((normal - Vec3::Z).length() < 1e-6);
+                assert!((origin - PVec3::ZERO).length() < 1e-6);
+                assert!((normal - PVec3::Z).length() < 1e-6);
             }
             _ => panic!("expected Plane"),
         }
@@ -726,8 +726,8 @@ mod tests {
         let surface = build_surface(10, &entities).unwrap();
         match surface {
             SurfaceGeom::Cylinder { origin, axis, radius, .. } => {
-                assert!((origin - Vec3::ZERO).length() < 1e-6);
-                assert!((axis - Vec3::Z).length() < 1e-6);
+                assert!((origin - PVec3::ZERO).length() < 1e-6);
+                assert!((axis - PVec3::Z).length() < 1e-6);
                 assert!((radius - 2.5).abs() < 1e-4);
             }
             _ => panic!("expected Cylinder"),
@@ -748,10 +748,10 @@ mod tests {
         let surface = build_surface(10, &entities).unwrap();
         match surface {
             SurfaceGeom::Cone { apex, axis, radius_at_apex, semi_angle, .. } => {
-                assert!((apex - Vec3::ZERO).length() < 1e-6);
+                assert!((apex - PVec3::ZERO).length() < 1e-6);
                 assert!((radius_at_apex - 1.0).abs() < 1e-4);
                 assert!((semi_angle - 0.5).abs() < 1e-4);
-                assert!((axis - Vec3::Z).length() < 1e-6);
+                assert!((axis - PVec3::Z).length() < 1e-6);
             }
             _ => panic!("expected Cone"),
         }
@@ -771,7 +771,7 @@ mod tests {
         let surface = build_surface(10, &entities).unwrap();
         match surface {
             SurfaceGeom::Sphere { center, radius } => {
-                assert!((center - Vec3::ZERO).length() < 1e-6);
+                assert!((center - PVec3::ZERO).length() < 1e-6);
                 assert!((radius - 3.0).abs() < 1e-4);
             }
             _ => panic!("expected Sphere"),
@@ -792,10 +792,10 @@ mod tests {
         let surface = build_surface(10, &entities).unwrap();
         match surface {
             SurfaceGeom::Torus { center, axis, major_r, minor_r, .. } => {
-                assert!((center - Vec3::ZERO).length() < 1e-6);
+                assert!((center - PVec3::ZERO).length() < 1e-6);
                 assert!((major_r - 5.0).abs() < 1e-4);
                 assert!((minor_r - 1.0).abs() < 1e-4);
-                assert!((axis - Vec3::Z).length() < 1e-6);
+                assert!((axis - PVec3::Z).length() < 1e-6);
             }
             _ => panic!("expected Torus"),
         }
@@ -819,7 +819,7 @@ mod tests {
                     CurveGeom::Line { .. } => {}
                     _ => panic!("expected Line generatrix"),
                 }
-                assert!((direction - Vec3::Z).length() < 1e-6);
+                assert!((direction - PVec3::Z).length() < 1e-6);
             }
             _ => panic!("expected Extrusion"),
         }
@@ -850,9 +850,9 @@ mod tests {
                 assert!((axis_dir.z - 1.0).abs() < 1e-4);
                 // Native (u,v): u = generatrix parameter, v = axis angle in radians.
                 let p0 = surface.d0_native(0.0, 0.0);
-                assert!((p0 - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-3);
+                assert!((p0 - PVec3::new(5.0, 0.0, 0.0)).length() < 1e-3);
                 let p90 = surface.d0_native(0.0, std::f64::consts::FRAC_PI_2);
-                assert!((p90 - Vec3::new(0.0, 5.0, 0.0)).length() < 1e-2);
+                assert!((p90 - PVec3::new(0.0, 5.0, 0.0)).length() < 1e-2);
             }
             _ => panic!("expected Revolution"),
         }

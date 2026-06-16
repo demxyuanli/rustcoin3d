@@ -13,14 +13,14 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let dir_id = geom::nth_ref(&record.params, 2)?;
             let origin = topology::resolve_point(pnt_id, entities)?;
             // Resolve the full VECTOR (direction × magnitude), not just the unit direction.
-            let direction = resolve_vector_magnitude(dir_id, entities).unwrap_or(Vec3::X);
+            let direction = resolve_vector_magnitude(dir_id, entities).unwrap_or(PVec3::X);
             Some(CurveGeom::Line { origin, direction })
         }
         "CIRCLE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(CurveGeom::circle(center, axis, radius))
         }
         "ELLIPSE" => {
@@ -28,7 +28,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(CurveGeom::ellipse(center, axis, semi_major, semi_minor))
         }
         "HYPERBOLA" => {
@@ -36,14 +36,14 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
             let semi_major = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let semi_minor = geom::nth_real(&record.params, 3).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(CurveGeom::hyperbola(center, axis, semi_major, semi_minor))
         }
         "PARABOLA" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let focal_dist = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (center, _, axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(CurveGeom::parabola(center, axis, focal_dist))
         }
         "B_SPLINE_CURVE" | "B_SPLINE_CURVE_WITH_KNOTS" | "RATIONAL_B_SPLINE_CURVE" => {
@@ -63,7 +63,7 @@ pub fn build_curve(curve_id: u64, entities: &EntityIndex) -> Option<CurveGeom> {
         }
         "POLYLINE" => {
             let pt_ids = geom::nth_list_refs(&record.params, 1).unwrap_or_default();
-            let points: Vec<Vec3> = pt_ids.iter()
+            let points: Vec<PVec3> = pt_ids.iter()
                 .filter_map(|&id| topology::resolve_point(id, entities))
                 .collect();
             if points.len() < 2 { None } else { Some(CurveGeom::Polyline { points }) }
@@ -131,7 +131,7 @@ fn build_bspline_3d(
     let degree = geom::nth_int(&record.params, off).unwrap_or(2) as usize;
     let cp_ids = geom::nth_list_refs(&record.params, off + 1)?;
 
-    let control_points: Vec<Vec3> = cp_ids.iter()
+    let control_points: Vec<PVec3> = cp_ids.iter()
         .filter_map(|&id| topology::resolve_point(id, entities))
         .collect();
 
@@ -207,10 +207,10 @@ pub(crate) fn build_bspline_2d(
     let degree = geom::nth_int(&record.params, off).unwrap_or(2) as usize;
     let cp_ids = geom::nth_list_refs(&record.params, off + 1)?;
 
-    let control_points: Vec<Vec3> = cp_ids
+    let control_points: Vec<PVec3> = cp_ids
         .iter()
         .filter_map(|&id| {
-            resolve_cartesian_2d(id, entities).map(|(u, v)| Vec3::new(u, v, 0.0))
+            resolve_cartesian_2d(id, entities).map(|(u, v)| PVec3::new(u, v, 0.0))
         })
         .collect();
 

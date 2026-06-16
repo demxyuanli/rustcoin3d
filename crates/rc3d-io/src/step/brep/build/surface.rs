@@ -23,7 +23,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
         "PLANE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let (origin, x_axis, z_axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(SurfaceGeom::Plane {
                 origin,
                 normal: z_axis.normalize(),
@@ -34,7 +34,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(SurfaceGeom::cylinder(origin, z_axis.normalize(), radius))
         }
         "CONICAL_SURFACE" => {
@@ -43,14 +43,14 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let radius = geom::nth_real(&record.params, 2).unwrap_or(0.0) as Real;
             let semi_angle = geom::nth_real(&record.params, 3).unwrap_or(0.7854) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(SurfaceGeom::cone(origin, z_axis.normalize(), semi_angle, radius))
         }
         "SPHERICAL_SURFACE" => {
             let placement_id = geom::nth_ref(&record.params, 1)?;
             let radius = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let (origin, _, _) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(SurfaceGeom::Sphere { center: origin, radius })
         }
         "TOROIDAL_SURFACE" => {
@@ -59,7 +59,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let major_r = geom::nth_real(&record.params, 2).unwrap_or(1.0) as Real;
             let minor_r = geom::nth_real(&record.params, 3).unwrap_or(0.5) as Real;
             let (origin, _, z_axis) = topology::resolve_placement(placement_id, entities)
-                .unwrap_or((Vec3::ZERO, Vec3::X, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::X, PVec3::Z));
             Some(SurfaceGeom::torus(origin, z_axis.normalize(), major_r, minor_r))
         }
         "B_SPLINE_SURFACE" | "B_SPLINE_SURFACE_WITH_KNOTS" | "RATIONAL_B_SPLINE_SURFACE" => {
@@ -71,7 +71,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let curve_id = geom::nth_ref(&record.params, 1)?;
             let dir_id = geom::nth_ref(&record.params, 2)?;
             let generatrix = build_curve(curve_id, entities)?;
-            let direction = topology::resolve_direction(dir_id, entities).unwrap_or(Vec3::Z);
+            let direction = topology::resolve_direction(dir_id, entities).unwrap_or(PVec3::Z);
             Some(SurfaceGeom::Extrusion {
                 generatrix: Box::new(generatrix),
                 direction,
@@ -84,7 +84,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
             let generatrix = build_curve(curve_id, entities)?;
             let (axis_origin, axis_dir) = axis_id
                 .and_then(|id| topology::resolve_sweep_axis(id, entities))
-                .unwrap_or((Vec3::ZERO, Vec3::Z));
+                .unwrap_or((PVec3::ZERO, PVec3::Z));
             Some(SurfaceGeom::Revolution {
                 generatrix: Box::new(generatrix),
                 axis_origin,
@@ -140,7 +140,7 @@ pub fn build_surface(surface_id: u64, entities: &EntityIndex) -> Option<SurfaceG
 
 
 /// Resolve a VECTOR entity to its full 3D vector (direction × magnitude).
-pub(crate) fn resolve_vector_magnitude(vec_id: u64, entities: &EntityIndex) -> Option<Vec3> {
+pub(crate) fn resolve_vector_magnitude(vec_id: u64, entities: &EntityIndex) -> Option<PVec3> {
     let record = entities.get(&vec_id)?;
     match record.name.as_str() {
         "VECTOR" => {
