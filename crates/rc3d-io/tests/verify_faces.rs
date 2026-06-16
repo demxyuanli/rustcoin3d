@@ -1,7 +1,7 @@
-use rc3d_core::math::Real;
 //! Verify per-face STL exports: bbox, degeneracy, vertex sanity
 //! Run: cargo test -p rc3d-io --test verify_faces --release -- --nocapture
 
+use rc3d_core::math::Real;
 use rc3d_core::math::PVec3;
 use rc3d_io::parse_stl_triangles;
 use std::path::Path;
@@ -51,14 +51,14 @@ fn verify_face_stls() {
         let mut max_edge = 0.0_f64;
 
         for tri in &tris {
-            let a = PVec3::new(tri.vertices[0][0], tri.vertices[0][1], tri.vertices[0][2]);
-            let b = PVec3::new(tri.vertices[1][0], tri.vertices[1][1], tri.vertices[1][2]);
-            let c = PVec3::new(tri.vertices[2][0], tri.vertices[2][1], tri.vertices[2][2]);
+            let a = PVec3::new(tri.vertices[0][0] as f64, tri.vertices[0][1] as f64, tri.vertices[0][2] as f64);
+            let b = PVec3::new(tri.vertices[1][0] as f64, tri.vertices[1][1] as f64, tri.vertices[1][2] as f64);
+            let c = PVec3::new(tri.vertices[2][0] as f64, tri.vertices[2][1] as f64, tri.vertices[2][2] as f64);
             mn = mn.min(a).min(b).min(c);
             mx = mx.max(a).max(b).max(c);
-            vert_keys.insert(vhash(&tri.vertices[0]));
-            vert_keys.insert(vhash(&tri.vertices[1]));
-            vert_keys.insert(vhash(&tri.vertices[2]));
+            vert_keys.insert({let v = [tri.vertices[0][0] as f64, tri.vertices[0][1] as f64, tri.vertices[0][2] as f64]; vhash(&v)});
+            vert_keys.insert({let v = [tri.vertices[1][0] as f64, tri.vertices[1][1] as f64, tri.vertices[1][2] as f64]; vhash(&v)});
+            vert_keys.insert({let v = [tri.vertices[2][0] as f64, tri.vertices[2][1] as f64, tri.vertices[2][2] as f64]; vhash(&v)});
             let area = (b - a).cross(c - a).length() * 0.5;
             if area < 1e-12 { degens += 1; }
             max_edge = max_edge.max((a-b).length()).max((b-c).length()).max((c-a).length());
@@ -85,7 +85,7 @@ fn verify_face_stls() {
         let mut mx = PVec3::splat(f64::MIN);
         for tri in &tris {
             for v in &tri.vertices {
-                let p = PVec3::new(v[0], v[1], v[2]);
+                let p = PVec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
                 mn = mn.min(p); mx = mx.max(p);
             }
         }

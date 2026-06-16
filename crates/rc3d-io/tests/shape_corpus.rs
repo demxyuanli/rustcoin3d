@@ -1,7 +1,7 @@
-use rc3d_core::math::Real;
 //! Tier-2 freeform acceptance: Shape / Shape-1 / Shape-2 (T2 progress gate).
 //! Run: cargo test -p rc3d-io --test shape_corpus --release -- --test-threads=1
 
+use rc3d_core::math::Real;
 use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
@@ -177,7 +177,7 @@ fn run_corpus_brep_adapter_inner(
         total_faces,
         grid_fallback_rate: rate,
         deflection,
-        secs: start.elapsed().as_secs_f32(),
+        secs: start.elapsed().as_secs_f64(),
     }
 }
 
@@ -195,9 +195,9 @@ fn try_hausdorff_vs_reference(step_file: &str, engine: &MeshResult) {
     let mut ref_mesh = MeshResult::default();
     for tri in tris {
         let base = ref_mesh.vertices.len() as i32;
-        ref_mesh.vertices.push(PVec3::from(tri.vertices[0]));
-        ref_mesh.vertices.push(PVec3::from(tri.vertices[1]));
-        ref_mesh.vertices.push(PVec3::from(tri.vertices[2]));
+        ref_mesh.vertices.push(PVec3::new(tri.vertices[0][0] as f64, tri.vertices[0][1] as f64, tri.vertices[0][2] as f64));
+        ref_mesh.vertices.push(PVec3::new(tri.vertices[1][0] as f64, tri.vertices[1][1] as f64, tri.vertices[1][2] as f64));
+        ref_mesh.vertices.push(PVec3::new(tri.vertices[2][0] as f64, tri.vertices[2][1] as f64, tri.vertices[2][2] as f64));
         ref_mesh.indices.extend_from_slice(&[base, base + 1, base + 2, -1]);
     }
     let h = hausdorff_meshes(engine, &ref_mesh, 512);

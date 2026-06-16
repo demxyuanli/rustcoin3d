@@ -1,7 +1,7 @@
-use rc3d_core::math::Real;
 //! BREP format self-validation: parse classic OCC BREP, check reference integrity.
 //! Closed-loop test: write .brep → validate → report broken refs.
 
+use rc3d_core::math::Real;
 use std::collections::HashSet;
 
 /// Parsed TShape reference from reverse-index notation.

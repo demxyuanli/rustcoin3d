@@ -1,7 +1,7 @@
-use rc3d_core::math::Real;
 //! Mesh quality stats for Shape corpus.
 //! Run: cargo test -p rc3d-io --test shape_mesh_diag --release -- --nocapture
 
+use rc3d_core::math::Real;
 use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::geom::SurfaceGeom;

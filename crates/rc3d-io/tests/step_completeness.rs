@@ -2,7 +2,7 @@
 //!
 //! Run: cargo test -p rc3d-io --test step_completeness -- --nocapture
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_io::step::import_options::{StepImportMode, StepImportOptions};
 use rc3d_io::import_step_file_with_options;
 use rc3d_io::step::write::write_step_from_graph;

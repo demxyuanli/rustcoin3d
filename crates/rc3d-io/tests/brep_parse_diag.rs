@@ -1,7 +1,7 @@
-use rc3d_core::math::Real;
 //! BREP diagnostic parser — validates OCC BREP ASCII format.
 //! Run: cargo test -p rc3d-io --test brep_parse_diag -- --nocapture
 
+use rc3d_core::math::Real;
 use std::fs;
 use std::path::Path;
 

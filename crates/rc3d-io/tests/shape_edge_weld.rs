@@ -1,9 +1,9 @@
-use rc3d_core::math::Real;
 //! Regression: duplicate EdgeKeys (same vertex pair) must weld boundary samples.
 //! Run: cargo test -p rc3d-io --test shape_edge_weld --release -- --nocapture
 //!
 //! Uses B-Rep parse + heal only (no scene emit / shell mesh) so small STEP files finish in seconds.
 
+use rc3d_core::math::Real;
 use rc3d_io::step::brep::build_brep;
 use rc3d_io::step::brep::heal::{auto_heal_shell, HealLevel};
 use rc3d_io::step::parser;

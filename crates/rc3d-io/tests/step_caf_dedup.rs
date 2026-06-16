@@ -1,7 +1,8 @@
 //! CAF transfer dedup integration (CDSR / MAPPED_ITEM -> shared mesh slots).
 //! Run: rtk cargo test -p rc3d-io --test step_caf_dedup -- --nocapture
 
-use rc3d_core::math::Mat4;
+use rc3d_core::math::PVec3;
+use rc3d_core::math::PMat4;
 use rc3d_io::step::assembly::AssemblyContext;
 use rc3d_io::step::brep::BRepBuildOptions;
 use rc3d_io::step::parser::parse_exchange;
@@ -326,7 +327,7 @@ fn p0_3_cube_twin_instances_share_one_mesh_slot() {
         .into_iter()
         .next()
         .expect("Cube.step should yield one SolidKey");
-    let shape_id = doc.add_solid_instance(sk, Mat4::from_translation([10., 0., 0.].into()), None);
+    let shape_id = doc.add_solid_instance(sk, PMat4::from_translation([10., 0., 0.].into()), None);
     doc.roots.retain(|&id| id != shape_id);
     let twin_label = doc.labels.add_label(XdeLabel {
         parent: None,
@@ -420,13 +421,13 @@ fn pmi_refs_bind_to_nearest_part_label_on_twin_cube_assembly() {
         .iter()
         .filter_map(|(label_id, label)| label.shape.map(|shape_id| (label_id, shape_id)))
         .collect();
-    let mut shaped: Vec<(rc3d_shape::LabelId, rc3d_core::math::Vec3)> = shaped_pairs
+    let mut shaped: Vec<(rc3d_shape::LabelId, rc3d_core::math::PVec3)> = shaped_pairs
         .iter()
         .map(|(label_id, shape_id)| {
             let world = doc.world_transform(*shape_id);
             (
                 *label_id,
-                rc3d_core::math::Vec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z),
+                rc3d_core::math::PVec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z),
             )
         })
         .collect();
@@ -465,20 +466,20 @@ fn pmi_refs_bind_to_nearest_part_label_on_twin_cube_assembly() {
     assert_eq!(plan.pmi_refs[1].label_id, right_label);
 }
 
-fn shaped_labels_with_world(doc: &mut rc3d_shape::ShapeDocument) -> Vec<(rc3d_shape::LabelId, rc3d_core::math::Vec3)> {
+fn shaped_labels_with_world(doc: &mut rc3d_shape::ShapeDocument) -> Vec<(rc3d_shape::LabelId, rc3d_core::math::PVec3)> {
     let shaped_pairs: Vec<(rc3d_shape::LabelId, rc3d_shape::ShapeId)> = doc
         .labels
         .labels
         .iter()
         .filter_map(|(label_id, label)| label.shape.map(|shape_id| (label_id, shape_id)))
         .collect();
-    let mut shaped: Vec<(rc3d_shape::LabelId, rc3d_core::math::Vec3)> = shaped_pairs
+    let mut shaped: Vec<(rc3d_shape::LabelId, rc3d_core::math::PVec3)> = shaped_pairs
         .iter()
         .map(|(label_id, shape_id)| {
             let world = doc.world_transform(*shape_id);
             (
                 *label_id,
-                rc3d_core::math::Vec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z),
+                rc3d_core::math::PVec3::new(world.w_axis.x, world.w_axis.y, world.w_axis.z),
             )
         })
         .collect();

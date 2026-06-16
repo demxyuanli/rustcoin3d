@@ -10,7 +10,7 @@
 //! Layout: set RC3D_EXPORT_LAYOUT=merged|per_instance (default: CI->merged, local->per_instance)
 //! Format: set RC3D_EXPORT_STL=ascii|binary (default: ascii)
 
-use rc3d_core::math::Vec3;
+use rc3d_core::math::PVec3;
 use rc3d_shape::ToleranceContext;
 use rc3d_io::step::brep::heal::HealLevel;
 use rc3d_io::step::{emit_plan_options_from_step, import_step_file_with_options, StepImportOptions};
@@ -88,11 +88,11 @@ fn import_options_for(profile: ExportProfile) -> StepImportOptions {
     import_options
 }
 
-fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: rc3d_core::math::Mat4) {
+fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: rc3d_core::math::PMat4) {
     let offset = dst.vertices.len() as i32;
     for &v in &src.vertices {
         let p = world * v.extend(1.0);
-        dst.vertices.push(Vec3::new(p.x, p.y, p.z));
+        dst.vertices.push(PVec3::new(p.x, p.y, p.z));
     }
     for &n in &src.normals {
         dst.normals.push(n);
@@ -107,9 +107,11 @@ fn append_mesh_with_transform(dst: &mut MeshResult, src: &MeshResult, world: rc3
 }
 
 fn write_mesh_stl(path: &Path, mesh: &MeshResult) -> Result<(), StlError> {
+    let f32_verts: Vec<rc3d_core::math::Vec3> = mesh.vertices.iter()
+        .map(|v| rc3d_core::math::Vec3::new(v.x as f32, v.y as f32, v.z as f32)).collect();
     match export_stl_format() {
-        StlFormat::Ascii => write_ascii_stl(path, &mesh.vertices, &mesh.indices),
-        StlFormat::Binary => write_binary_stl(path, &mesh.vertices, &mesh.indices),
+        StlFormat::Ascii => write_ascii_stl(path, &f32_verts, &mesh.indices),
+        StlFormat::Binary => write_binary_stl(path, &f32_verts, &mesh.indices),
     }
 }
 

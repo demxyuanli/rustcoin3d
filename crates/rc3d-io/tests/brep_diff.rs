@@ -1,10 +1,10 @@
-use rc3d_core::math::Real;
 //! BREP structure and geometry diff tools for OCC alignment verification.
 //!
 //! To use with OCC ground truth:
 //! 1. Generate OCC .brep file: `DRAWEXE test.brep box b 10 10 10 ; brepsave box`
 //! 2. Parse the OCC .brep sections and compare with our output.
 
+use rc3d_core::math::Real;
 use std::collections::HashMap;
 
 // ── Task 8: Structure diff ──────────────────────────────────────────────

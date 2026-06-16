@@ -1,7 +1,7 @@
 //! Assembly tree and hierarchical SceneGraph import (cs.step: Cube + Sphere).
 //! Run: cargo test -p rc3d-io --test step_assembly_tree --release -- --nocapture
 
-use rc3d_core::math::{PMat4, PVec3};
+use rc3d_core::math::{Mat4, PMat4, PVec3};
 use rc3d_core::NodeId;
 use rc3d_io::step::assembly;
 use rc3d_io::step::brep::build_brep;
@@ -52,12 +52,12 @@ fn bbox_from_subtree(graph: &SceneGraph, id: NodeId) -> Option<(PVec3, PVec3)> {
         };
         if let NodeData::Coordinate3(Coordinate3Node { point }) = &entry.data {
             for &p in point {
-                mn.x = mn.x.min(p.x);
-                mn.y = mn.y.min(p.y);
-                mn.z = mn.z.min(p.z);
-                mx.x = mx.x.max(p.x);
-                mx.y = mx.y.max(p.y);
-                mx.z = mx.z.max(p.z);
+                mn.x = mn.x.min(p.x as f64);
+                mn.y = mn.y.min(p.y as f64);
+                mn.z = mn.z.min(p.z as f64);
+                mx.x = mx.x.max(p.x as f64);
+                mx.y = mx.y.max(p.y as f64);
+                mx.z = mx.z.max(p.z as f64);
                 *any = true;
             }
         }
@@ -221,9 +221,13 @@ fn subtree_transforms(graph: &SceneGraph, id: NodeId) -> Vec<PMat4> {
         };
         let local = match &entry.data {
             NodeData::Transform(TransformNode { rotation, .. }) => *rotation,
-            _ => PMat4::IDENTITY,
+            _ => Mat4::IDENTITY,
         };
-        let world = parent * local;
+        let local_f64 = PMat4::from_cols(
+            local.x_axis.as_dvec4(), local.y_axis.as_dvec4(),
+            local.z_axis.as_dvec4(), local.w_axis.as_dvec4(),
+        );
+        let world = parent * local_f64;
         if matches!(entry.data, NodeData::Transform(_)) {
             out.push(world);
         }

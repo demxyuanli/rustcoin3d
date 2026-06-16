@@ -1,10 +1,11 @@
-use rc3d_core::math::Real;
 //! Multi-hole plate STEP solid test: square hole + circular hole + hexagonal hole.
 //!
 //! Reads `steps/HoledPlate.step` (hand-written closed-shell BRep) and verifies
 //! top/bottom face triangles do not fall inside the holes after meshing.
 
+use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::heal::HealLevel;
+use rc3d_core::math::Real;
 use rc3d_io::step::{
     emit_plan_options_from_step, import_step_file_with_options, StepImportOptions,
 };
