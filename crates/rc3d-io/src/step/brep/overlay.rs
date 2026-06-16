@@ -93,7 +93,7 @@ pub fn build_edge_curves(
     );
     graph.add_child(
         annot,
-        rc3d_scene::NodeData::Coordinate3(Coordinate3Node { point: points }),
+        rc3d_scene::NodeData::Coordinate3(Coordinate3Node { point: points.iter().map(|v| Vec3::new(v.x as f32, v.y as f32, v.z as f32)).collect() }),
     );
     graph.add_child(
         annot,
@@ -333,7 +333,7 @@ pub fn build_mesh_wireframe(
     );
     graph.add_child(
         annot,
-        rc3d_scene::NodeData::Coordinate3(Coordinate3Node { point: line_points }),
+        rc3d_scene::NodeData::Coordinate3(Coordinate3Node { point: line_points.iter().map(|v| Vec3::new(v.x as f32, v.y as f32, v.z as f32)).collect() }),
     );
     graph.add_child(
         annot,

@@ -286,7 +286,7 @@ fn build_xde_labels(
         tree.flatten_shells()
     };
 
-    let mut seen_placements: HashSet<(SolidKey, [u32; 16])> = HashSet::new();
+    let mut seen_placements: HashSet<(SolidKey, [u64; 16])> = HashSet::new();
 
     for (shell_step_id, world) in placements {
         let Some(sk) = dedup.resolve_solid(shell_step_id, shell_to_solid)? else {

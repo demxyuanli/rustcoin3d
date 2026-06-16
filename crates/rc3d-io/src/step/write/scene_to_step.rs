@@ -317,7 +317,7 @@ fn collect_mesh_data(
     if let NodeData::Coordinate3(coord) = &entry.data {
         let base_idx = vertices.len();
         for pt in &coord.point {
-            vertices.push(*pt);
+            vertices.push(PVec3::new(pt.x as f64, pt.y as f64, pt.z as f64));
         }
         // Look for sibling IndexedFaceSet
         for &child in &entry.children {

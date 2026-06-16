@@ -257,7 +257,7 @@ fn pmi_elements_for_label(
 
 fn pmi_entry_to_element(entry: &PmiEntry) -> AnnotationElement {
     AnnotationElement::Leader {
-        anchor: AnnotationPoint::local(entry.origin),
+        anchor: AnnotationPoint::local([entry.origin[0] as f32, entry.origin[1] as f32, entry.origin[2] as f32]),
         label_offset: [40.0, -20.0],
         text: entry.label.clone(),
         color: [1.0, 1.0, 0.0, 1.0],
