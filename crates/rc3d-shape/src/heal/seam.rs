@@ -168,7 +168,7 @@ fn fix_trimmed_periodic_seam(
             Some(e) => e,
             None => continue,
         };
-        let (pcurve, _) = match edge.pcurves.get(&face_key) {
+        let pcurve = match edge.pcurves.get(&face_key) {
             Some(c) => c,
             None => continue,
         };
@@ -181,13 +181,15 @@ fn fix_trimmed_periodic_seam(
         }
     }
 
-    if !has_uv {
-        return 0;
-    }
-
     let seam_tol = tol.max(1e-3);
-    let touches_low = min_u <= pr.u_min + seam_tol;
-    let touches_high = max_u >= pr.u_max - seam_tol;
+    let (touches_low, touches_high) = if has_uv {
+        let tl = min_u <= pr.u_min + seam_tol;
+        let th = max_u >= pr.u_max - seam_tol;
+        (tl, th)
+    } else {
+        // No PCurves available — conservatively assume it doesn't touch both bounds
+        (false, false)
+    };
     if touches_low && touches_high {
         return 0;
     }
@@ -222,7 +224,7 @@ fn face_native_uv_bounds(reg: &BRepStore, face_key: FaceKey) -> Option<SurfacePa
                 Some(e) => e,
                 None => continue,
             };
-            let (pcurve, _) = match edge.pcurves.get(&face_key) {
+            let pcurve = match edge.pcurves.get(&face_key) {
                 Some(c) => c,
                 None => continue,
             };
@@ -301,7 +303,16 @@ fn build_u_isoparam_seam(
     if pts_3d.len() < 2 {
         return None;
     }
-    if !seam_polyline_within_face(reg, face_key, &pts_3d, tol) {
+    // Only reject if the seam polyline is definitively outside the face trim region
+    // AND the face has non-seam boundary edges that define that region.
+    let has_boundary = reg.wires.get(reg.faces.get(face_key)?.outer_wire)
+        .map(|w| w.edges.iter().any(|&(ek, _)| {
+            !reg.faces.get(face_key)
+                .map(|f| f.seam_edges.contains(&ek) || f.degenerated_edges.contains(&ek))
+                .unwrap_or(false)
+        }))
+        .unwrap_or(false);
+    if has_boundary && !seam_polyline_within_face(reg, face_key, &pts_3d, tol) {
         return None;
     }
 
@@ -315,11 +326,11 @@ fn build_u_isoparam_seam(
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
-        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, (pcurve, true)))
+        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, pcurve, true))
     } else {
         let v0 = reg.find_or_add_vertex(p_lo, tol);
         let v1 = reg.find_or_add_vertex(p_hi, tol);
-        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, (pcurve, true)))
+        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, pcurve, true))
     }
 }
 
@@ -341,7 +352,16 @@ fn build_v_isoparam_seam(
     if pts_3d.len() < 2 {
         return None;
     }
-    if !seam_polyline_within_face(reg, face_key, &pts_3d, tol) {
+    // Only reject if the seam polyline is definitively outside the face trim region
+    // AND the face has non-seam boundary edges that define that region.
+    let has_boundary = reg.wires.get(reg.faces.get(face_key)?.outer_wire)
+        .map(|w| w.edges.iter().any(|&(ek, _)| {
+            !reg.faces.get(face_key)
+                .map(|f| f.seam_edges.contains(&ek) || f.degenerated_edges.contains(&ek))
+                .unwrap_or(false)
+        }))
+        .unwrap_or(false);
+    if has_boundary && !seam_polyline_within_face(reg, face_key, &pts_3d, tol) {
         return None;
     }
 
@@ -355,11 +375,11 @@ fn build_v_isoparam_seam(
 
     if closed {
         let vk = reg.find_or_add_vertex(p_lo, tol);
-        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, (pcurve, true)))
+        Some(reg.add_seam_edge(vk, vk, curve_3d, tol, face_key, pcurve, true))
     } else {
         let v0 = reg.find_or_add_vertex(p_lo, tol);
         let v1 = reg.find_or_add_vertex(p_hi, tol);
-        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, (pcurve, true)))
+        Some(reg.add_seam_edge(v0, v1, curve_3d, tol, face_key, pcurve, true))
     }
 }
 
@@ -402,7 +422,7 @@ fn seam_polyline_within_face(
             mx = mx.max(v1.position);
             has_pts = true;
         }
-        if let Some((pcurve, _)) = edge.pcurves.get(&face_key) {
+        if let Some(pcurve) = edge.pcurves.get(&face_key) {
             for i in 0..=16 {
                 let t = i as f32 / 16.0;
                 let uv = pcurve.d0(t);
@@ -517,7 +537,7 @@ mod tests {
                 origin: (ua, va),
                 direction: (ub - ua, vb - va),
             };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer = reg.wires.insert(BRepWire { edges: wire_edges });
@@ -568,7 +588,7 @@ mod tests {
                 origin: (ua, va),
                 direction: (ub - ua, vb - va),
             };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer = reg.wires.insert(BRepWire { edges: wire_edges });

@@ -122,6 +122,73 @@ fn sample_intersection_curve(curve: &crate::geom::CurveGeom, n: usize) -> Vec<Ve
     }).collect()
 }
 
+/// Build SplitFaceRegions from BopDS intersection data (PaveBlock-driven).
+///
+/// OCC: BOPAlgo_BuilderFace region construction — uses InterfPoint UVs
+/// from face-face intersections as interior points for sub-regions,
+/// instead of UV geometric marching.
+pub fn split_faces_from_bopds(
+    shells: &[ShellKey],
+    bopds: &super::bopds::BopDS,
+    reg: &BRepStore,
+) -> Vec<SplitFaceRegion> {
+    let mut results = Vec::new();
+    for &sk in shells {
+        let shell = match reg.shells.get(sk) { Some(s) => s, None => continue };
+        for &(face_key, _) in &shell.faces {
+            let face = match reg.faces.get(face_key) { Some(f) => f, None => continue };
+
+            // Collect all InterfPoint UVs on this face from BOPDS
+            let interfs = bopds.interfs_for_face(face_key);
+            let mut uv_points: Vec<(f32, f32)> = Vec::new();
+            let mut uv_boundary_hint: Vec<Vec<(f32, f32)>> = Vec::new();
+
+            for interf in &interfs {
+                let is_face_a = interf.face_a == face_key;
+                // Build UV boundary from intersection points on this face
+                let pts_on_face: Vec<(f32, f32)> = interf.points.iter().map(|p| {
+                    if is_face_a { p.uv_a } else { p.uv_b }
+                }).collect();
+                if pts_on_face.len() >= 2 {
+                    uv_boundary_hint.push(pts_on_face.clone());
+                }
+                uv_points.extend(pts_on_face);
+            }
+
+            if uv_points.is_empty() {
+                // No intersection on this face — whole face region
+                results.push(SplitFaceRegion {
+                    original_face: face_key,
+                    sub_faces: vec![whole_face_region(face_key, face)],
+                });
+                continue;
+            }
+
+            // Use intersection UV boundary as the sub-region descriptor
+            let sub_faces = if uv_boundary_hint.is_empty() {
+                vec![whole_face_region(face_key, face)]
+            } else {
+                uv_boundary_hint.iter().map(|boundary| {
+                    let interior = boundary.get(boundary.len() / 2).copied().unwrap_or((0.0, 0.0));
+                    let (un, vn) = face.surface.native_uv_to_d0(interior.0, interior.1);
+                    SubFaceRegion {
+                        uv_boundary: vec![boundary.clone()],
+                        interior_point: interior,
+                        interior_point_3d: face.surface.d0(un, vn),
+                        original_face: face_key,
+                    }
+                }).collect()
+            };
+
+            results.push(SplitFaceRegion {
+                original_face: face_key,
+                sub_faces,
+            });
+        }
+    }
+    results
+}
+
 pub fn split_all_faces_brep(
     shells: &[ShellKey],
     curves: &[BRepIntersectionCurve],

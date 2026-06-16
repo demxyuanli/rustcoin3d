@@ -81,7 +81,7 @@ pub fn fix_lacking_edges(
                 origin: (u1, v1),
                 direction: (u2 - u1, v2 - v1),
             };
-            let ek_new = reg.add_edge_with_pcurve(vk_i, vk_j, new_curve, tolerance, face_key, (new_pc, true));
+            let ek_new = reg.add_edge_with_pcurve(vk_i, vk_j, new_curve, tolerance, face_key, new_pc, true);
             if let Some(wire) = reg.wires.get_mut(wire_key) {
                 let insert_pos = (i + 1) % wire.edges.len();
                 wire.edges.insert(insert_pos, (ek_new, Orientation::Forward));
@@ -113,7 +113,7 @@ fn get_junction_vertex(ek: EdgeKey, orient: Orientation, is_end: bool, reg: &BRe
 
 fn pcurve_endpoint(ek: EdgeKey, orient: Orientation, is_start: bool, face_key: FaceKey, reg: &BRepStore) -> Option<(f32, f32)> {
     let edge = reg.edges.get(ek)?;
-    let (pc, _same_sense) = edge.pcurves.get(&face_key)?;
+    let pc = edge.pcurves.get(&face_key)?;
     let t = if (orient == Orientation::Forward) == is_start { 0.0 } else { 1.0 };
     let uv = pc.d0(t);
     Some((uv.0, uv.1))
@@ -142,10 +142,10 @@ mod tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc1 = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         // Edge 1: UV (0,0)->(1,0), 3D (0,0,0)->(1,0,0)
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc1, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1, true);
         // Edge 2: UV (1+gap,0)->(2+gap,0), 3D (1,0,0)->(2,0,0) -- UV gap at junction
         let pc2 = Curve2d::Line { origin: (1.0 + uv_gap, 0.0), direction: (1.0, 0.0) };
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc2, true));
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2, true);
         let wk = reg.wires.insert(BRepWire {
             edges: vec![(e1, Orientation::Forward), (e2, Orientation::Forward)],
         });

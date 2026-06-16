@@ -142,11 +142,11 @@ pub fn discretize_edge(
     let params_3d = if is_seam_or_isoparam_edge(ek, edge, reg) {
         if let Some(exact) = sample_polyline_on_surface_exact(edge, reg) {
             cap_polyline_params(exact, config.max_points)
-        } else if let Some((pcurve, surface, ss)) = primary_pcurve_on_surface(edge, reg) {
+        } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
             if matches!(&edge.curve, CurveGeom::Line { .. }) && pcurve_is_line(pcurve) {
-                sample_straight_pcurve(pcurve, surface, ss)
+                sample_straight_pcurve(pcurve, surface)
             } else if is_usable_pcurve(pcurve) {
-                sample_pcurve_on_surface(pcurve, surface, &ec, ss)
+                sample_pcurve_on_surface(pcurve, surface, &ec)
             } else {
                 let mesh_curve = mesh_curve_for_edge(edge, reg);
                 sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
@@ -155,11 +155,11 @@ pub fn discretize_edge(
             let mesh_curve = mesh_curve_for_edge(edge, reg);
             sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
         }
-    } else if let Some((pcurve, surface, ss)) = primary_pcurve_on_surface(edge, reg) {
+    } else if let Some((pcurve, surface)) = primary_pcurve_on_surface(edge, reg) {
         if matches!(&edge.curve, CurveGeom::Line { .. }) && pcurve_is_line(pcurve) {
-            sample_straight_pcurve(pcurve, surface, ss)
+            sample_straight_pcurve(pcurve, surface)
         } else if is_usable_pcurve(pcurve) {
-            sample_pcurve_on_surface(pcurve, surface, &ec, ss)
+            sample_pcurve_on_surface(pcurve, surface, &ec)
         } else {
             let mesh_curve = mesh_curve_for_edge(edge, reg);
             sample_curve_adaptive(&mesh_curve, 0.0, 1.0, &ec)
@@ -170,13 +170,12 @@ pub fn discretize_edge(
     };
 
     let mut params_2d = HashMap::new();
-    for (&face_key, (pcurve, same_sense)) in &edge.pcurves {
+    for (&face_key, pcurve) in &edge.pcurves {
         if reg.faces.get(face_key).is_some() {
             let pts_2d: Vec<(f32, (f32, f32))> = params_3d
                 .iter()
                 .map(|&(t, _)| {
-                    let pc_t = if *same_sense { t } else { 1.0 - t };
-                    let uv = pcurve.d0(pc_t);
+                    let uv = pcurve.d0(t);
                     (t, (uv.0, uv.1))
                 })
                 .collect();
@@ -262,7 +261,7 @@ fn sample_polyline_on_surface_exact(
     let mut face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     face_keys.sort_unstable();
     let face_key = *face_keys.first()?;
-    let (pcurve, _same_sense) = edge.pcurves.get(&face_key)?;
+    let pcurve = edge.pcurves.get(&face_key)?;
     let face = reg.faces.get(face_key)?;
     let crate::geom::Curve2d::Polyline { points: uv_pts } = pcurve else {
         return None;
@@ -292,7 +291,8 @@ fn sample_polyline_on_surface_exact(
             .enumerate()
             .map(|(i, uv)| {
                 let t = i as f32 / denom;
-                (t, face.surface.d0_native(uv.0, uv.1))
+                let (nu, nv) = reg.face_native_uv(face_key, uv.0, uv.1);
+                (t, face.surface.d0_native(nu, nv))
             })
             .collect(),
     )
@@ -302,13 +302,13 @@ fn sample_polyline_on_surface_exact(
 fn primary_pcurve_on_surface<'a>(
     edge: &'a BRepEdge,
     reg: &'a BRepStore,
-) -> Option<(&'a crate::geom::Curve2d, &'a SurfaceGeom, bool)> {
+) -> Option<(&'a crate::geom::Curve2d, &'a SurfaceGeom)> {
     let mut keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
     keys.sort_unstable();
     let face_key = keys.first()?;
-    let (pcurve, same_sense) = edge.pcurves.get(face_key)?;
+    let pcurve = edge.pcurves.get(face_key)?;
     let face = reg.faces.get(*face_key)?;
-    Some((pcurve, &face.surface, *same_sense))
+    Some((pcurve, &face.surface))
 }
 
 fn is_usable_pcurve(pcurve: &crate::geom::Curve2d) -> bool {
@@ -338,13 +338,10 @@ fn pcurve_is_line(pcurve: &crate::geom::Curve2d) -> bool {
 fn sample_straight_pcurve(
     pcurve: &crate::geom::Curve2d,
     surface: &SurfaceGeom,
-    same_sense: bool,
 ) -> Vec<(f32, Vec3)> {
-    let t0 = if same_sense { 0.0 } else { 1.0 };
-    let t1 = if same_sense { 1.0 } else { 0.0 };
     vec![
-        (0.0, eval_pcurve_on_surface(pcurve, surface, t0)),
-        (1.0, eval_pcurve_on_surface(pcurve, surface, t1)),
+        (0.0, eval_pcurve_on_surface(pcurve, surface, 0.0)),
+        (1.0, eval_pcurve_on_surface(pcurve, surface, 1.0)),
     ]
 }
 
@@ -360,18 +357,16 @@ fn sample_pcurve_on_surface(
     pcurve: &crate::geom::Curve2d,
     surface: &SurfaceGeom,
     config: &EdgeDiscConfig,
-    same_sense: bool,
 ) -> Vec<(f32, Vec3)> {
-    let pc_t = |t: f32| if same_sense { t } else { 1.0 - t };
     let mut params = Vec::new();
 
-    let p0 = eval_pcurve_on_surface(pcurve, surface, pc_t(0.0));
-    let p1 = eval_pcurve_on_surface(pcurve, surface, pc_t(1.0));
+    let p0 = eval_pcurve_on_surface(pcurve, surface, 0.0);
+    let p1 = eval_pcurve_on_surface(pcurve, surface, 1.0);
     let is_closed = (p1 - p0).length() < 1e-6;
     let n_seed = if is_closed { config.min_points.max(4) } else { 1 };
     for i in 0..=n_seed {
         let t = i as f32 / n_seed as f32;
-        params.push((t, eval_pcurve_on_surface(pcurve, surface, pc_t(t))));
+        params.push((t, eval_pcurve_on_surface(pcurve, surface, t)));
     }
 
     let mut iterations = 0;
@@ -386,12 +381,12 @@ fn sample_pcurve_on_surface(
             new_params.push((t_a, p_a));
 
             let t_mid = (t_a + t_b) * 0.5;
-            let p_mid = eval_pcurve_on_surface(pcurve, surface, pc_t(t_mid));
+            let p_mid = eval_pcurve_on_surface(pcurve, surface, t_mid);
             let chordal_dev = (p_mid - (p_a + p_b) * 0.5).length();
             let seg_len = (p_b - p_a).length();
 
-            let d1_a = eval_pcurve_on_surface_d1(pcurve, surface, pc_t(t_a));
-            let d1_b = eval_pcurve_on_surface_d1(pcurve, surface, pc_t(t_b));
+            let d1_a = eval_pcurve_on_surface_d1(pcurve, surface, t_a);
+            let d1_b = eval_pcurve_on_surface_d1(pcurve, surface, t_b);
             let angle_dev = if d1_a.length() > 1e-10 && d1_b.length() > 1e-10 {
                 (d1_a.normalize().dot(d1_b.normalize())).acos().abs()
             } else {
@@ -547,7 +542,7 @@ mod tests {
 
         let curve_3d = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::new(10.0, 0.0, 0.0) };
         let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
 
         let config = EdgeDiscConfig::default();
         let poly = discretize_edge(ek, &reg, &config);

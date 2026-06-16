@@ -3,17 +3,27 @@
 use std::collections::HashSet;
 
 use rc3d_shape::BRepStore;
-use rc3d_shape::topo::{EdgeKey, ShellKey};
+use rc3d_shape::topo::{EdgeKey, FaceKey, ShellKey};
 
 const SAMPLE_COUNT: usize = 32;
 
 /// Recompute edge tolerances from PCurve vs 3D curve deviation for every edge in a shell.
+///
+/// Delegates to [`BRepStore::ensure_same_parameter`] for each edge-face pair.
 pub fn same_parameter_shell(reg: &mut BRepStore, shell_key: ShellKey, base_tol: f32) -> usize {
     let edges = shell_edge_keys(reg, shell_key);
     let mut updated = 0usize;
     for ek in edges {
-        if update_edge_tolerance(reg, ek, base_tol) {
-            updated += 1;
+        if let Some(edge) = reg.edges.get(ek) {
+            if edge.v_low == edge.v_high {
+                continue;
+            }
+            let face_keys: Vec<FaceKey> = edge.pcurves.keys().copied().collect();
+            for fk in face_keys {
+                if reg.ensure_same_parameter(ek, fk, base_tol, 3).is_some() {
+                    updated += 1;
+                }
+            }
         }
     }
     updated
@@ -55,43 +65,6 @@ fn shell_edge_keys(reg: &BRepStore, shell_key: ShellKey) -> Vec<EdgeKey> {
     out
 }
 
-fn update_edge_tolerance(reg: &mut BRepStore, ek: EdgeKey, base_tol: f32) -> bool {
-    let edge = match reg.edges.get(ek) {
-        Some(e) => e,
-        None => return false,
-    };
-    if edge.pcurves.is_empty() || edge.v_low == edge.v_high {
-        return false;
-    }
-
-    let mut max_dev = 0.0f32;
-    for i in 0..=SAMPLE_COUNT {
-        let t = i as f32 / SAMPLE_COUNT as f32;
-        let p3d = edge.curve.d0(t);
-        for (&face_key, (pcurve, same_sense)) in &edge.pcurves {
-            let face = match reg.faces.get(face_key) {
-                Some(f) => f,
-                None => continue,
-            };
-            let pc_t = if *same_sense { t } else { 1.0 - t };
-            let uv = pcurve.d0(pc_t);
-            let on_surf = face.surface.d0_native(uv.0, uv.1);
-            max_dev = max_dev.max((on_surf - p3d).length());
-        }
-    }
-
-    let new_tol = max_dev.max(base_tol);
-    let prev = edge.tolerance;
-    if (new_tol - prev).abs() > base_tol * 0.01 {
-        if let Some(e) = reg.edges.get_mut(ek) {
-            e.tolerance = new_tol;
-        }
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,10 +97,10 @@ mod tests {
         let mut pcurves = HashMap::new();
         pcurves.insert(
             face_key,
-            (Curve2d::Line {
+            Curve2d::Line {
                 origin: (0.0, 0.0),
                 direction: (1.0, 0.0),
-            }, true),
+            },
         );
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0,

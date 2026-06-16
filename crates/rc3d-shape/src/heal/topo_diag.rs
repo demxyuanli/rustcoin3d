@@ -169,7 +169,7 @@ fn measure_pcurve_drift(
 ) -> Option<PcurveDrift> {
     let edge = reg.edges.get(ek)?;
     let face = reg.faces.get(face_key)?;
-    let (pcurve, _same_sense) = edge.pcurves.get(&face_key)?;
+    let pcurve = edge.pcurves.get(&face_key)?;
     let surface = &face.surface;
     let match_tol = pcurve_match_tol(&edge.curve, tol);
 

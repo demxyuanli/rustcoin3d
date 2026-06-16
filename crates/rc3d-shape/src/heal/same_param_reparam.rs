@@ -59,7 +59,7 @@ fn reparam_one_edge(
     max_iterations: usize,
 ) -> Option<ReparamResult> {
     let edge = reg.edges.get(ek)?;
-    let (pcurve, same_sense) = edge.pcurves.get(&fk)?.clone();
+    let pcurve = edge.pcurves.get(&fk)?.clone();
     let face = reg.faces.get(fk)?;
     let surface = &face.surface;
     let curve_3d = &edge.curve;
@@ -96,7 +96,7 @@ fn reparam_one_edge(
 
     let after = max_deviation(curve_3d, &current_pc, surface, sample_count);
     if let Some(edge_mut) = reg.edges.get_mut(ek) {
-        edge_mut.pcurves.insert(fk, (current_pc, same_sense));
+        edge_mut.pcurves.insert(fk, current_pc);
     }
 
     Some(ReparamResult {
@@ -242,7 +242,7 @@ mod tests {
         let mut pcurves = HashMap::new();
         // PCurve is shifted: UV(uv_shift, 0) instead of UV(0, 0)
         // surface.d0_native(uv_shift, 0) = (uv_shift, 0, 0) ≠ curve3d.d0(0) = (0, 0, 0)
-        pcurves.insert(fk, (Curve2d::Line { origin: (uv_shift, 0.0), direction: (1.0, 0.0) }, true));
+        pcurves.insert(fk, Curve2d::Line { origin: (uv_shift, 0.0), direction: (1.0, 0.0) });
         let ek = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1,
             curve: CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X },

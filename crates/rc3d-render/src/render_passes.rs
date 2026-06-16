@@ -181,7 +181,10 @@ pub(super) fn execute_passes(
         if let (Some(ref cull_pass), Some(ref bg)) =
             (&renderer.gpu.gpu_cull_pass, &renderer.gpu.gpu_cull_bg)
         {
-            let obj_count = ctx.visible.len().min(renderer.gpu.max_gpu_cull_objects as usize);
+            // Must match the transform upload count (the cull replaces CPU
+            // culling, so it runs over ALL uploaded draw calls, not just the
+            // CPU-visible subset).
+            let obj_count = renderer.frame.gpu_cull_object_count as usize;
             if obj_count > 0 {
                 #[cfg(feature = "profiler")]
                 let _span_cull = tracy_client::span!("gpu_cull");
@@ -610,16 +613,46 @@ pub(super) fn execute_passes(
     // Markup overlay
     #[cfg(feature = "profiler")]
     let _span_markup = tracy_client::span!("markup");
-    // Read depth from previous frame, capture depth for next frame.
-    let occlusion: Option<(Vec<f32>, u32, u32)> = renderer.frame.occlusion_data.clone();
-    let depth_tex = renderer.gpu.depth_texture.as_ref().map(|t| &t.0);
-    // Create capture buffer if needed
+    // Annotation occlusion depth: harvest last frame's async readback (if any),
+    // then encode a fresh whole-screen downsample + copy for the next frame.
     const ALIGN: u32 = 256; // COPY_BYTES_PER_ROW_ALIGNMENT
     let ds = 4u32;
     let dw = ew.div_ceil(ds);
     let dh = eh.div_ceil(ds);
     let row_bytes = (dw * 4).div_ceil(ALIGN) * ALIGN;
-    if renderer.frame.occlusion_capture_buf.is_none() || renderer.frame.occlusion_dims.0 != dw || renderer.frame.occlusion_dims.1 != dh {
+    let dims_changed = renderer.frame.occlusion_dims.0 != dw || renderer.frame.occlusion_dims.1 != dh;
+
+    // 1) Harvest a completed (non-blocking) readback from a previous frame.
+    if let Some(pending) = renderer.frame.occlusion_map_pending.take() {
+        match pending.load(std::sync::atomic::Ordering::Acquire) {
+            1 => {
+                if let Some(ref buf) = renderer.frame.occlusion_capture_buf {
+                    let (bw, bh, brow) = renderer.frame.occlusion_dims;
+                    let padded_w = (brow / 4) as usize;
+                    {
+                        let mapped = buf.slice(..).get_mapped_range();
+                        let raw: &[f32] = bytemuck::cast_slice(&mapped);
+                        let mut data = Vec::with_capacity((bw * bh) as usize);
+                        for row in 0..bh as usize {
+                            let start = row * padded_w;
+                            data.extend_from_slice(&raw[start..start + bw as usize]);
+                        }
+                        renderer.frame.occlusion_data = Some((data, bw, bh));
+                    }
+                    buf.unmap();
+                }
+            }
+            2 => {} // mapping failed; buffer is back to unmapped state, retry below
+            _ => {
+                // Mapping still in flight: keep waiting and skip this frame's
+                // capture (the buffer must not be written while mapped).
+                renderer.frame.occlusion_map_pending = Some(pending);
+            }
+        }
+    }
+
+    let occlusion_buf_free = renderer.frame.occlusion_map_pending.is_none();
+    if dims_changed && occlusion_buf_free {
         let size = (row_bytes * dh) as u64;
         renderer.frame.occlusion_capture_buf = Some(renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("occlusion depth capture"),
@@ -629,9 +662,54 @@ pub(super) fn execute_passes(
         }));
         renderer.frame.occlusion_dims = (dw, dh, row_bytes);
     }
-    if let Some(ref buf) = renderer.frame.occlusion_capture_buf {
-        capture_depth_for_occlusion(&mut encoder, depth_tex, buf, dw, dh, row_bytes);
+
+    // 2) Downsample the full depth buffer into a small R32Float grid covering
+    //    the WHOLE screen, then copy it into the staging buffer. A direct
+    //    depth-to-buffer copy would only capture the top-left dw×dh pixels.
+    let mut occlusion_captured = false;
+    if occlusion_buf_free && !(dims_changed && renderer.frame.occlusion_capture_buf.is_none()) {
+        ensure_occlusion_downsample_resources(renderer, dw, dh);
+        if let (Some(pipeline), Some(bgl), Some((ds_tex, ds_view)), Some(buf)) = (
+            renderer.gpu.occlusion_downsample_pipeline.as_ref(),
+            renderer.gpu.occlusion_downsample_bgl.as_ref(),
+            renderer.gpu.occlusion_downsample_tex.as_ref(),
+            renderer.frame.occlusion_capture_buf.as_ref(),
+        ) {
+            let bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Occlusion Downsample BG"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_read_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(ds_view) },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Occlusion Downsample"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
+            }
+            encoder.copy_texture_to_buffer(
+                ds_tex.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: buf,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row_bytes),
+                        rows_per_image: Some(dh),
+                    },
+                },
+                wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            );
+            occlusion_captured = true;
+        }
     }
+
+    // Borrow occlusion data without cloning (~0.5 MB/frame at 1080p).
+    let occlusion = renderer.frame.occlusion_data.take();
     // Static frame: reuse cached projection output.
     let is_static = renderer.frame.bvh_fully_static && renderer.frame.static_frame_count >= 2;
     if !is_static {
@@ -647,6 +725,7 @@ pub(super) fn execute_passes(
         renderer.frame.cached_projected_markup = projected;
         renderer.frame.cached_projected_labels = wl;
     }
+    renderer.frame.occlusion_data = occlusion;
     // Take cached fields to avoid borrow conflict with pass_markup's &mut renderer.
     let cache_markup = std::mem::take(&mut renderer.frame.cached_projected_markup);
     let cache_labels = std::mem::take(&mut renderer.frame.cached_projected_labels);
@@ -684,6 +763,22 @@ pub(super) fn execute_passes(
     let t0 = std::time::Instant::now();
     renderer.queue.submit(std::iter::once(encoder.finish()));
     let t_submit = t0.elapsed().as_secs_f64() * 1000.0;
+
+    // Kick off the async occlusion-depth readback (harvested non-blockingly
+    // at the start of a later frame's markup pass — no GPU stall here).
+    if occlusion_captured {
+        if let Some(ref buf) = renderer.frame.occlusion_capture_buf {
+            let status = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let status_cb = std::sync::Arc::clone(&status);
+            buf.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                let v = if result.is_ok() { 1 } else { 2 };
+                status_cb.store(v, std::sync::atomic::Ordering::Release);
+            });
+            renderer.frame.occlusion_map_pending = Some(status);
+            renderer.device.poll(wgpu::Maintain::Poll);
+        }
+    }
+
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
         drop(vw);
         surface_tex.present();
@@ -927,60 +1022,79 @@ pub(super) fn render_overlay_only_frame(
     }
 }
 
-/// Copy depth buffer to a staging buffer. The data will be read back
-/// next frame (after GPU submission) when `try_read_occlusion_depth` is called.
-fn capture_depth_for_occlusion(
-    encoder: &mut wgpu::CommandEncoder,
-    depth_tex: Option<&wgpu::Texture>,
-    dst_buf: &wgpu::Buffer,
-    dst_w: u32,
-    dst_h: u32,
-    dst_row_bytes: u32,
+/// Lazily create the occlusion downsample compute pipeline and (re)create its
+/// small R32Float output texture when the target dimensions change.
+fn ensure_occlusion_downsample_resources(
+    renderer: &mut crate::renderer::Renderer,
+    dw: u32,
+    dh: u32,
 ) {
-    let Some(depth_tex) = depth_tex else { return };
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: depth_tex,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::DepthOnly,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: dst_buf,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(dst_row_bytes),
-                rows_per_image: Some(dst_h),
-            },
-        },
-        wgpu::Extent3d { width: dst_w, height: dst_h, depth_or_array_layers: 1 },
-    );
-}
-
-/// Try to read back occlusion depth data from a previously-submitted buffer.
-/// Returns (data, width, height) with dense layout (padding removed).
-pub fn try_read_occlusion_depth(
-    buf: &wgpu::Buffer,
-    device: &wgpu::Device,
-    w: u32,
-    h: u32,
-    padded_w: u32, // row stride in f32 units (including alignment padding)
-) -> Option<(Vec<f32>, u32, u32)> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    device.poll(wgpu::Maintain::Wait);
-    if rx.recv().ok()?.is_err() { return None; }
-    let mapped = buf.slice(..).get_mapped_range();
-    let raw: &[f32] = bytemuck::cast_slice(&mapped);
-    // Densify: remove alignment padding from each row
-    let mut data = Vec::with_capacity((w * h) as usize);
-    for row in 0..h as usize {
-        let start = row * padded_w as usize;
-        data.extend_from_slice(&raw[start..start + w as usize]);
+    if renderer.gpu.occlusion_downsample_pipeline.is_none() {
+        let shader = renderer.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("occlusion_downsample.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shaders/occlusion_downsample.wgsl").into(),
+            ),
+        });
+        let bgl = renderer.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Occlusion Downsample BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pll = renderer.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Occlusion Downsample PLL"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = renderer.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Occlusion Downsample Pipe"),
+            layout: Some(&pll),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        renderer.gpu.occlusion_downsample_pipeline = Some(pipeline);
+        renderer.gpu.occlusion_downsample_bgl = Some(bgl);
     }
-    drop(mapped);
-    buf.unmap();
-    Some((data, w, h))
+
+    let needs_tex = renderer
+        .gpu
+        .occlusion_downsample_tex
+        .as_ref()
+        .map_or(true, |(t, _)| t.width() != dw || t.height() != dh);
+    if needs_tex {
+        let tex = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Occlusion Downsample"),
+            size: wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer.gpu.occlusion_downsample_tex = Some((tex, view));
+    }
 }

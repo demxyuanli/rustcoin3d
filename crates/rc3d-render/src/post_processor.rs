@@ -628,11 +628,12 @@ pub fn ensure_post_fx_textures(
     });
     let taa_view = taa_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Scratch texture for passes that read from and write to HDR within one dispatch
+    // Scratch texture for passes that read from and write to HDR within one dispatch.
+    // COPY_SRC: TAA copies its resolved output (which may live here) into its history.
     let scratch_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("PostFX scratch"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[],
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
     });
     let scratch_view = scratch_tex.create_view(&wgpu::TextureViewDescriptor::default());
 

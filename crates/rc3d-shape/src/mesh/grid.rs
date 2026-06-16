@@ -3,6 +3,8 @@ use super::boundary::{
     register_boundary_point_with_normal_indexed_shared, BoundaryPosIndex, SharedBoundaryPool,
 };
 use crate::geom::{SurfaceGeom, SurfaceParamRange};
+use crate::topo::FaceKey;
+use crate::store::BRepStore;
 use super::config::MESH_CLOSED_SURFACE_SEGS;
 use super::face_fill::{fix_tri_winding, FaceFillConfig};
 use super::face_uv::{point_in_trim, FaceUvLoops};
@@ -53,6 +55,8 @@ fn generatrix_max_radius(curve: &crate::geom::CurveGeom) -> f32 {
 /// Parametric grid over the boundary UV bounding box (no trim test; for 2-edge revolution patches).
 pub fn mesh_uv_bbox_grid(
     face: &crate::topo::BRepFace,
+    face_key: FaceKey,
+    reg: &BRepStore,
     uv_bounds: (f32, f32, f32, f32),
     fill_config: Option<&FaceFillConfig>,
     global_vertices: &mut Vec<Vec3>,
@@ -62,6 +66,8 @@ pub fn mesh_uv_bbox_grid(
 ) {
     mesh_parametric_grid(
         face,
+        face_key,
+        reg,
         Some(uv_bounds),
         fill_config,
         global_vertices,
@@ -174,6 +180,8 @@ fn sutherland_hodgman_clip(
 
 pub fn mesh_trimmed_uv_grid(
     face: &crate::topo::BRepFace,
+    face_key: FaceKey,
+    reg: &BRepStore,
     loops: &FaceUvLoops,
     uv_bounds: (f32, f32, f32, f32),
     fill_config: Option<&FaceFillConfig>,
@@ -223,8 +231,9 @@ pub fn mesh_trimmed_uv_grid(
                 // Fully inside: emit quad as two triangles
                 let mut idx = [0i32; 4];
                 for (k, &(u, v)) in corners.iter().enumerate() {
-                    let pt = face.surface.d0_native(u, v);
-                    let mut n = face.surface.normal_native(u, v);
+                    let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                    let pt = face.surface.d0_native(nu, nv);
+                    let mut n = face.surface.normal_native(nu, nv);
                     if !face.same_sense {
                         n = -n;
                     }
@@ -281,8 +290,9 @@ pub fn mesh_trimmed_uv_grid(
                 // Fan triangulation from first vertex
                 let mut tri_idx = Vec::new();
                 for &(u, v) in &clipped {
-                    let pt = face.surface.d0_native(u, v);
-                    let mut n = face.surface.normal_native(u, v);
+                    let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                    let pt = face.surface.d0_native(nu, nv);
+                    let mut n = face.surface.normal_native(nu, nv);
                     if !face.same_sense {
                         n = -n;
                     }
@@ -321,6 +331,8 @@ pub fn mesh_trimmed_uv_grid(
 /// UV parametric grid tessellation for any surface type (last-resort / closed faces).
 pub fn mesh_parametric_grid(
     face: &crate::topo::BRepFace,
+    face_key: FaceKey,
+    reg: &BRepStore,
     uv_bounds: Option<(f32, f32, f32, f32)>,
     fill_config: Option<&FaceFillConfig>,
     global_vertices: &mut Vec<Vec3>,
@@ -343,7 +355,7 @@ pub fn mesh_parametric_grid(
             v_max,
         }
     } else {
-        face.surface.param_range()
+        reg.face_param_range(face_key, &face.surface)
     };
 
     for iu in 0..segs {
@@ -355,8 +367,9 @@ pub fn mesh_parametric_grid(
             let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
             let mut idx = [0i32; 4];
             for (k, &(u, v)) in corners.iter().enumerate() {
-                let pt = face.surface.d0_native(u, v);
-                let mut n = face.surface.normal_native(u, v);
+                let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                let pt = face.surface.d0_native(nu, nv);
+                let mut n = face.surface.normal_native(nu, nv);
                 if !face.same_sense {
                     n = -n;
                 }
@@ -401,6 +414,8 @@ pub fn mesh_parametric_grid(
 /// Tessellate a closed analytic surface face (VERTEX_LOOP fallback when CDT cannot run).
 pub fn mesh_closed_surface(
     face: &crate::topo::BRepFace,
+    face_key: FaceKey,
+    reg: &BRepStore,
     fill_config: &FaceFillConfig,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
@@ -410,6 +425,8 @@ pub fn mesh_closed_surface(
 ) {
     mesh_parametric_grid(
         face,
+        face_key,
+        reg,
         None,
         Some(fill_config),
         global_vertices,

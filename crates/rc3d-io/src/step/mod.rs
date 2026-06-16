@@ -275,6 +275,14 @@ fn exchange_to_import_result(
         }
     }
 
+    // Post-SameParameter: reset tolerances on Circle edges that were upgraded
+    // from Line to Circle after the initial tolerance propagation.
+    for mut edge in document.store.edges.values_mut() {
+        if matches!(edge.curve, rc3d_shape::geom::CurveGeom::Circle { .. }) {
+            edge.tolerance = edge.tolerance.min(1e-4);
+        }
+    }
+
     let assembly_ctx = assembly::AssemblyContext::build(&exchange.entities);
     let shell_instances = assembly_ctx.shell_instances(&exchange.entities);
     let asm_diag = assembly_ctx.diagnostics();

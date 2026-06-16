@@ -19,6 +19,12 @@ use crate::geom::{CurveGeom, SurfaceGeom};
 use crate::store::BRepStore;
 use crate::topo::*;
 
+/// Round a float for BREP output to avoid tiny FP artifacts that confuse OCC.
+/// Values below 1e-7 are snapped to zero.
+fn rnd(x: f32) -> f32 {
+    if x.abs() < 1e-7 { 0.0 } else { (x * 1e7).round() / 1e7 }
+}
+
 /// Write the full BRepStore as OCC BREP ASCII (classic format).
 pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> {
     let mut w = BrepWriter::new(store);
@@ -29,7 +35,6 @@ struct PCurveEntry {
     edge_abs_pos: usize,  // 1-based edge position in TShapes
     face_abs_pos: usize,  // 1-based face position in TShapes
     curve: Curve2d,
-    same_sense: bool,
 }
 
 struct BrepWriter<'a> {
@@ -88,47 +93,27 @@ impl<'a> BrepWriter<'a> {
         // referencing all solids (matching OCC convention).
         let needs_default_compound = !has_compounds && !store.solids.is_empty();
 
-        // Pre-collect PCurve entries only for non-planar faces (planar faces don't need them)
+        // Pre-collect all PCurve entries from edges.
+        // Stored PCurves were validated and normalized during STEP import.
         let mut pcurve_entries = Vec::new();
         for (i, entry) in shapes.iter().enumerate() {
             if let ShapeEntry::Edge(ek) = entry {
                 if let Some(edge) = store.edges.get(*ek) {
-                    for (fk, (_pc, same_sense)) in &edge.pcurves {
-                        // Only include PCurves for non-planar faces (expand Offset to check)
-                        let is_non_planar = store.faces.get(*fk)
-                            .map(|f| !is_planar_surface(&f.surface))
-                            .unwrap_or(false);
-                        // Skip PCurves with unhandled types (Polyline/Composite)
-                        if is_non_planar {
-                            let face_pos = shapes.iter()
-                                .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
-                                .map(|p| p + 1).unwrap_or(0);
-                            // Generate projected PCurve from 3D edge points
-                            let projected = if let (Some(edge), Some(face)) =
-                                (store.edges.get(*ek), store.faces.get(*fk))
-                            {
-                                generate_projected_pcurve(&edge.curve, &face.surface)
-                            } else {
-                                Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }
-                            };
+                    for (fk, pc) in &edge.pcurves {
+                        let face_pos = shapes.iter()
+                            .position(|s| matches!(s, ShapeEntry::Face(k) if k == fk))
+                            .map(|p| p + 1).unwrap_or(0);
+                        if face_pos > 0 {
                             pcurve_entries.push(PCurveEntry {
                                 edge_abs_pos: i + 1,
                                 face_abs_pos: face_pos,
-                                curve: projected,
-                                same_sense: *same_sense,
+                                curve: pc.clone(),
                             });
                         }
                     }
                 }
             }
         }
-        // Write PCurves only for shapes with exclusively planar surfaces.
-        // For non-planar shapes, write Curve2ds 0 and let OCC auto-compute.
-        let _all_planar = shapes.iter().filter(|s| matches!(s, ShapeEntry::Face(_))).all(|s| {
-            if let ShapeEntry::Face(fk) = s {
-                store.faces.get(*fk).map(|f| is_planar_surface(&f.surface)).unwrap_or(true)
-            } else { true }
-        });
         let pcurve_count = pcurve_entries.len();
 
         let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
@@ -209,15 +194,10 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Curve2ds {}", self.pcurve_count)?;
         for entry in &self.pcurve_entries {
             match &entry.curve {
-                Curve2d::Line { direction, .. } => {
-                    let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
-                    let range = len.max(0.01);
-                    let (dx, dy) = if len > 1e-12 {
-                        (direction.0 / len, direction.1 / len)
-                    } else {
-                        (1.0, 0.0)
-                    };
-                    writeln!(output, "1 0 {} {} {}", range, dx, dy)?;
+                Curve2d::Line { origin, direction } => {
+                    writeln!(output, "1 {} {} {} {}",
+                        rnd(origin.0), rnd(origin.1),
+                        rnd(direction.0), rnd(direction.1))?;
                 }
                 Curve2d::Circle { center, radius } => {
                     let r = radius.max(1e-6);
@@ -230,21 +210,17 @@ impl<'a> BrepWriter<'a> {
                 }
                 Curve2d::BSpline { control_points, .. } => {
                     if let (Some(f), Some(l)) = (control_points.first(), control_points.last()) {
-                        let dx = l.0 - f.0; let dy = l.1 - f.1;
-                        let len = (dx*dx + dy*dy).sqrt().max(0.01);
-                        let (nx, ny) = if len > 0.01 { (dx/len, dy/len) } else { (1.0, 0.0) };
-                        writeln!(output, "1 0 {} {} {}", len, nx, ny)?;
+                        writeln!(output, "1 {} {} {} {}",
+                            rnd(f.0), rnd(f.1),
+                            rnd(l.0 - f.0), rnd(l.1 - f.1))?;
                     } else { writeln!(output, "1 0 1 1 0")?; }
                 }
                 Curve2d::Trimmed { basis, .. } => {
                     match basis.as_ref() {
-                        Curve2d::Line { direction, .. } => {
-                            let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt().max(0.01);
-                            let (dx, dy) = if direction.0.abs() + direction.1.abs() > 1e-12 {
-                                let l = (direction.0 * direction.0 + direction.1 * direction.1).sqrt().max(1e-12);
-                                (direction.0 / l, direction.1 / l)
-                            } else { (1.0, 0.0) };
-                            writeln!(output, "1 0 {} {} {}", len, dx, dy)?;
+                        Curve2d::Line { origin, direction } => {
+                            writeln!(output, "1 {} {} {} {}",
+                                rnd(origin.0), rnd(origin.1),
+                                rnd(direction.0), rnd(direction.1))?;
                         }
                         Curve2d::Circle { center, radius } => {
                             let r = radius.max(1e-6);
@@ -254,7 +230,19 @@ impl<'a> BrepWriter<'a> {
                     }
                 }
                 Curve2d::Polyline { points } => {
-                    write_polyline2d_as_bspline(output, points)?;
+                    // Simplify collinear polylines to Line for compact OCC-compatible output
+                    if let Some(line) = crate::geom::curve2d::simplify_polyline_to_line(points) {
+                        match &line {
+                            Curve2d::Line { origin, direction } => {
+                                writeln!(output, "1 {} {} {} {}",
+                                    rnd(origin.0), rnd(origin.1),
+                                    rnd(direction.0), rnd(direction.1))?;
+                            }
+                            _ => write_polyline2d_as_bspline(output, points)?,
+                        }
+                    } else {
+                        write_polyline2d_as_bspline(output, points)?;
+                    }
                 }
                 Curve2d::Composite { .. } => {
                     writeln!(output, "1 0 1 1 0")?;
@@ -283,8 +271,8 @@ impl<'a> BrepWriter<'a> {
                     let len = direction.length();
                     let dir = if len > 1e-12 { *direction / len } else { Vec3::X };
                     writeln!(output, "1 {} {} {} {} {} {}",
-                        origin.x, origin.y, origin.z,
-                        dir.x, dir.y, dir.z)?;
+                        rnd(origin.x), rnd(origin.y), rnd(origin.z),
+                        rnd(dir.x), rnd(dir.y), rnd(dir.z))?;
                 }
                 CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
                     writeln!(output, "2 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {}",
@@ -397,10 +385,10 @@ impl<'a> BrepWriter<'a> {
                     let v = n.cross(u);
                     // OCC Plane: 1 ox oy oz nx ny nz ux uy uz vx vy vz (13 numbers)
                     writeln!(output, "1 {} {} {} {} {} {} {} {} {} {} {} {}",
-                        origin.x, origin.y, origin.z,
-                        n.x, n.y, n.z,
-                        u.x, u.y, u.z,
-                        v.x, v.y, v.z)?;
+                        rnd(origin.x), rnd(origin.y), rnd(origin.z),
+                        rnd(n.x), rnd(n.y), rnd(n.z),
+                        rnd(u.x), rnd(u.y), rnd(u.z),
+                        rnd(v.x), rnd(v.y), rnd(v.z))?;
                 }
                 SurfaceGeom::Cylinder { origin, axis, radius, x_dir, y_dir } => {
                     writeln!(output, "2 {} {} {} {} {} {} {} {} {} {} {} {} {}",
@@ -419,7 +407,17 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output, "{}", radius_at_apex)?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
-                    writeln!(output, "4 {} {} {}  {}", center.x, center.y, center.z, radius)?;
+                    // OCC Sphere format: 4 cx cy cz nx ny nz ux uy uz vx vy vz r
+                    // nx,ny,nz = polar axis (Z), u_dir = (1,0,0), v_dir = (0,1,0)
+                    let u = Vec3::X;
+                    let v = Vec3::Y;
+                    let n = Vec3::Z;
+                    writeln!(output, "4 {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                        rnd(center.x), rnd(center.y), rnd(center.z),
+                        rnd(n.x), rnd(n.y), rnd(n.z),
+                        rnd(u.x), rnd(u.y), rnd(u.z),
+                        rnd(v.x), rnd(v.y), rnd(v.z),
+                        radius)?;
                 }
                 SurfaceGeom::Torus { center, axis, major_r, minor_r, x_dir, y_dir } => {
                     writeln!(output, "5 {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
@@ -516,7 +514,7 @@ impl<'a> BrepWriter<'a> {
             .unwrap_or((Vec3::ZERO, 1e-7));
         writeln!(output, "Ve")?;
         writeln!(output, "{}", v.1)?;
-        writeln!(output, "{} {} {}", v.0.x, v.0.y, v.0.z)?;
+        writeln!(output, "{} {} {}", rnd(v.0.x), rnd(v.0.y), rnd(v.0.z))?;
         writeln!(output, "0 0")?;
         writeln!(output)?;
         writeln!(output, "0101101")?; // free, modified, checked, orientable, closed, infinite, convex
@@ -559,17 +557,18 @@ impl<'a> BrepWriter<'a> {
             writeln!(output, "0")?;
         } else {
             let edge_abs = self.edge_pos(ek);
-            let mut pc_lines: Vec<(usize, usize, f32)> = Vec::new(); // (curve2d_idx, face_abs_pos, param)
+            let mut pc_lines: Vec<usize> = Vec::new(); // curve2d_index (1-based)
             for (idx, entry) in self.pcurve_entries.iter().enumerate() {
                 if entry.edge_abs_pos == edge_abs {
-                    pc_lines.push((idx + 1, entry.face_abs_pos, param_range));
+                    pc_lines.push(idx + 1);
                 }
             }
             if pc_lines.is_empty() {
                 writeln!(output, "0")?;
             } else {
-                for (pc_idx, face_pos, param) in &pc_lines {
-                    writeln!(output, "2  {} {} 0 0 {}", pc_idx, face_pos, param)?;
+                for pc_idx in &pc_lines {
+                    // OCC format: 4 C0 {curve2d_idx} {location} 0 0
+                    writeln!(output, "4 C0 {} 0 0 0", pc_idx)?;
                 }
                 writeln!(output, "0")?;
             }
@@ -631,8 +630,10 @@ impl<'a> BrepWriter<'a> {
             .map(|p| p + 1).unwrap_or(0);
 
         writeln!(output, "Fa")?;
-        // Face format: location_index  tolerance  surface_index(1-based)  orientation
-        writeln!(output, "0  {}  {} 1", face.tolerance, surf_idx)?;
+        // OCC format: location_index  tolerance  surface_index  natural_restriction
+        // natural_restriction = 0: use wire boundaries (standard)
+        let natural = 0i32;
+        writeln!(output, "0  {}  {} {}", face.tolerance, surf_idx, natural)?;
         writeln!(output)?;
         writeln!(output, "0101000")?;
         // Outer wire reference (reverse-indexed, forward orientation)
@@ -665,13 +666,17 @@ impl<'a> BrepWriter<'a> {
         writeln!(output, "Sh")?;
         writeln!(output)?;
         writeln!(output, "0101100")?;
-        for (fk, orient) in &shell.faces {
+        // Compute solid center for face-orientation heuristic
+        let center = shell_center(&shell.faces, self.store);
+        for (fk, _orient) in &shell.faces {
             let fp = self.face_pos(*fk);
             let rp = self.rev_idx(fp);
-            match orient {
-                Orientation::Forward => write!(output, "+{} 0 ", rp)?,
-                Orientation::Reversed => write!(output, "-{} 0 ", rp)?,
-                _ => write!(output, "+{} 0 ", rp)?,
+            // Determine if face normal (with same_sense) points outward from solid center
+            let outward = face_normal_points_outward(*fk, center, self.store);
+            if outward {
+                write!(output, "+{} 0 ", rp)?;
+            } else {
+                write!(output, "-{} 0 ", rp)?;
             }
         }
         writeln!(output, "*")?;
@@ -823,8 +828,14 @@ fn write_expanded_offset_surface(
                 y_dir.x, y_dir.y, y_dir.z)?;
         }
         SurfaceGeom::Sphere { center, radius } => {
-            writeln!(output, "4 {} {} {}  {}",
+            let n = Vec3::Z;
+            let u = Vec3::X;
+            let v = Vec3::Y;
+            writeln!(output, "4 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 center.x, center.y, center.z,
+                n.x, n.y, n.z,
+                u.x, u.y, u.z,
+                v.x, v.y, v.z,
                 radius + distance)?;
         }
         _ => {
@@ -991,36 +1002,59 @@ fn project_point_to_uv(point: Vec3, surface: &SurfaceGeom) -> Option<(f32, f32)>
         _ => None,
     }
 }
-
-/// Generate a 2D PCurve by projecting 3D edge curve onto the surface UV space.
-fn generate_projected_pcurve(curve: &CurveGeom, surface: &SurfaceGeom) -> Curve2d {
-    let n = 17usize; // sample points
-    let mut uv_points: Vec<(f32, f32)> = Vec::new();
-    for i in 0..n {
-        let t = i as f32 / (n - 1) as f32;
-        let p3d = curve.d0(t);
-        if let Some(uv) = project_point_to_uv(p3d, surface) {
-            uv_points.push(uv);
+/// Estimate the center of a shell by averaging all vertex positions of its faces.
+fn shell_center(faces: &[(FaceKey, Orientation)], store: &BRepStore) -> Vec3 {
+    let mut sum = Vec3::ZERO;
+    let mut count = 0usize;
+    for &(fk, _) in faces {
+        if let Some(face) = store.faces.get(fk) {
+            if let Some(wire) = store.wires.get(face.outer_wire) {
+                for &(ek, _) in &wire.edges {
+                    if let Some(edge) = store.edges.get(ek) {
+                        if let Some(v) = store.vertices.get(edge.v_low) {
+                            sum = sum + v.position;
+                            count += 1;
+                        }
+                        if let Some(v) = store.vertices.get(edge.v_high) {
+                            sum = sum + v.position;
+                            count += 1;
+                        }
+                    }
+                }
+            }
         }
     }
-    if uv_points.len() < 2 {
-        return Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
+    if count > 0 { sum / count as f32 } else { Vec3::ZERO }
+}
+
+/// Check whether the face normal (accounting for same_sense) points away
+/// from the given reference point (typically the solid center).
+fn face_normal_points_outward(fk: FaceKey, ref_point: Vec3, store: &BRepStore) -> bool {
+    if let Some(face) = store.faces.get(fk) {
+        // Sample a point near the face center from the outer wire
+        if let Some(wire) = store.wires.get(face.outer_wire) {
+            if let Some(&(ek, _)) = wire.edges.first() {
+                if let Some(edge) = store.edges.get(ek) {
+                    let mid_t = (edge.t_min + edge.t_max) * 0.5;
+                    let p3d = edge.curve.d0(mid_t);
+                    // Get surface normal at the projected UV of this point
+                    let uv = if let Some(pc) = edge.pcurves.get(&fk) {
+                        pc.d0(mid_t)
+                    } else {
+                        return true; // no PCurve, assume outward
+                    };
+                    let (su, sv) = face.surface.d1_native(uv.0, uv.1);
+                    let n = su.cross(sv);
+                    let n = if n.length_squared() > 1e-12 { n.normalize() } else { n };
+                    // Use surface normal (not face normal with same_sense).
+                    // The shell orientation sign encodes the face flip for outward pointing.
+                    let to_center = ref_point - p3d;
+                    return n.dot(to_center) < 0.0;
+                }
+            }
+        }
     }
-    // Create 2D BSpline degree 1 from projected points
-    let n_pts = uv_points.len();
-    let knots: Vec<f32> = {
-        let mut k = vec![0.0f32, 0.0];
-        for i in 1..n_pts-1 { k.push(i as f32); }
-        k.push((n_pts - 1) as f32);
-        k.push((n_pts - 1) as f32);
-        k
-    };
-    Curve2d::BSpline {
-        degree: 1,
-        control_points: uv_points,
-        knots,
-        weights: None,
-    }
+    true // default: assume outward
 }
 
 fn expand_curve(curve: &CurveGeom) -> &CurveGeom {

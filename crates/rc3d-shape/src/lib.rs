@@ -27,7 +27,7 @@ pub use emit_plan::{
 pub use error::ShapeError;
 pub use mesh_result::MeshResult;
 pub use shape::{Shape, ShapeId, ShapeKind, ShapeNode, ShapeType};
-pub use store::{BRepStore, PCurveEdit};
+pub use store::{BRepStore, PCurveEdit, SameParamResult};
 pub use tolerance::{
     ToleranceContext, DEFAULT_MODEL_TOLERANCE, MAX_MODEL_TOLERANCE, TOLERANCE_FLOOR,
 };

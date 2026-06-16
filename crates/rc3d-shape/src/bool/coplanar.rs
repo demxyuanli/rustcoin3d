@@ -500,7 +500,7 @@ fn build_face_from_uv_polygon(
             direction: (ub - ua, vb_uv - va_uv),
         };
 
-        let ek = reg.add_edge_with_pcurve(va, vb, curve_3d, tolerance, fk, (pcurve, true));
+        let ek = reg.add_edge_with_pcurve(va, vb, curve_3d, tolerance, fk, pcurve, true);
         wire_edges.push((ek, Orientation::Forward));
     }
 
@@ -637,7 +637,7 @@ mod tests {
                     origin: (ua, va_uv),
                     direction: (ub - ua, vb_uv - va_uv),
                 };
-                let ek = reg.add_edge_with_pcurve(va, vb, curve, 1e-4, fk, (pcurve, true));
+                let ek = reg.add_edge_with_pcurve(va, vb, curve, 1e-4, fk, pcurve, true);
                 wire_edges.push((ek, Orientation::Forward));
             }
             reg.wires.get_mut(wk).unwrap().edges = wire_edges;

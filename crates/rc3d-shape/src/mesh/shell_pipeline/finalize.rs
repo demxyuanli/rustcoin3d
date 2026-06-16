@@ -80,6 +80,8 @@ pub(crate) fn finalize_shell_mesh(
                 face,
                 &local_boundary,
                 &scaled_config.refine,
+                range.face_key,
+                reg,
             );
             let new_tri_count = merge_refined_face(
                 &mut global_vertices,

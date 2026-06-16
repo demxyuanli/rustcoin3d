@@ -1,7 +1,8 @@
 // GPU compute: frustum-cull per-object transforms, write visible instance indices.
 //
 // Dispatch: workgroup_count = ceil(object_count / 256), 1, 1
-// Push constants: object_count (u32), frustum_plane_count (u32), _pad (u32, u32)
+// object_count lives in the FrustumUniforms uniform (no push constants:
+// the device is created without the PUSH_CONSTANTS feature).
 
 struct GpuObjectTransform {
     model_matrix: array<array<f32, 4>, 4>,
@@ -15,21 +16,25 @@ struct GpuObjectTransform {
 
 struct FrustumUniforms {
     planes: array<vec4<f32>, 6>,
-};
-
-struct PushConstants {
     object_count: u32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
 };
 
+// Matches wgpu::util::DrawIndirectArgs; instance_count is atomically
+// incremented by visible objects.
+struct DrawIndirectArgs {
+    vertex_count: u32,
+    instance_count: atomic<u32>,
+    first_vertex: u32,
+    first_instance: u32,
+};
+
 @group(0) @binding(0) var<storage, read> transforms: array<GpuObjectTransform>;
 @group(0) @binding(1) var<storage, read_write> indirect_args: array<DrawIndirectArgs>;
 @group(0) @binding(2) var<uniform> frustum: FrustumUniforms;
 @group(0) @binding(3) var<storage, read_write> instance_indices: array<u32>;
-
-var<push_constant> pc: PushConstants;
 
 // Test one AABB corner against a frustum plane.
 // Returns true if the corner is on the positive side of the plane.
@@ -54,12 +59,14 @@ fn aabb_visible(aabb_min: vec3<f32>, aabb_max: vec3<f32>) -> bool {
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
-    if idx >= pc.object_count { return; }
+    if idx >= frustum.object_count { return; }
 
     let obj = transforms[idx];
     if aabb_visible(obj.aabb_min, obj.aabb_max) {
         // Atomically append instance index to the draw's instance list
         let slot = atomicAdd(&indirect_args[obj.mesh_id].instance_count, 1u);
-        instance_indices[slot] = idx;
+        if slot < arrayLength(&instance_indices) {
+            instance_indices[slot] = idx;
+        }
     }
 }

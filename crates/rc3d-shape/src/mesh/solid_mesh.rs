@@ -94,7 +94,7 @@ fn project_void_face_as_inner_wire(
     for &(ek, _orient) in &void_wire.edges {
         let edge = store.edges.get(ek)?;
         // Get PCurve for the void face — this gives us the void wire UV on the void surface.
-        let (pc, _same_sense) = edge.pcurves.get(&void_face_key)?;
+        let pc = edge.pcurves.get(&void_face_key)?;
         // Sample the PCurve midpoint in UV space.
         let uv_mid = pc.d0(0.5);
         // Map UV→3D on the void surface, then project 3D→UV on the outer surface.
@@ -206,10 +206,10 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![],
             color: None, degenerated_edges: vec![],
         });
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward), (e2, Orientation::Forward),
             (e3, Orientation::Forward), (e4, Orientation::Forward),

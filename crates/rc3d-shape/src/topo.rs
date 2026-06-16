@@ -34,7 +34,10 @@ pub struct BRepEdge {
     pub t_max: f32,
     /// PCurves: 2D curves in UV space of each referencing face.
     /// OCC alignment: BRep_CurveOnSurface (Geom2d_Curve per face).
-    pub pcurves: HashMap<FaceKey, (Curve2d, bool)>,  // (curve, same_sense)
+    ///
+    /// Every stored PCurve is normalized to run in the same direction
+    /// as the 3D edge curve (same_sense applied at insertion time).
+    pub pcurves: HashMap<FaceKey, Curve2d>,
 }
 
 #[derive(Debug, Clone)]

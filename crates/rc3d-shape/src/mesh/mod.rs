@@ -31,7 +31,7 @@ mod ruled;
 mod shell_pipeline;
 mod shell_impl;
 
-pub use config::{BRepMeshConfig, MESH_CLOSED_SURFACE_SEGS};
+pub use config::{BRepMeshConfig, FallbackAllowlist, TessellationPolicy, TessellationTier, MESH_CLOSED_SURFACE_SEGS};
 pub use edge_pool::{measure_equivalent_edge_weld_gap, measure_face_boundary_surface_gap};
 pub use solid_mesh::mesh_solid_with_voids;
 pub use face_dispatch::{algo_from_plan, FaceMeshPlan, SurfaceFillReason, plan_face_mesh};
@@ -78,7 +78,7 @@ mod mesh_integration {
             let v1 = reg.find_or_add_vertex(b, 1e-4);
             let curve_3d = CurveGeom::Line { origin: a, direction: b - a };
             let pcurve = Curve2d::Line { origin: (u0.0, u0.1), direction: (u1.0 - u0.0, u1.1 - u0.1) };
-            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, (pcurve, true));
+            let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
             wire_edges.push((ek, Orientation::Forward));
         }
         let outer_wire = reg.wires.insert(BRepWire { edges: wire_edges });

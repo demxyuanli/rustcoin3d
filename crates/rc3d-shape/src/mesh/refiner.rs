@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::Vec3;
 use crate::geom::SurfaceGeom;
-use crate::topo::BRepFace;
+use crate::store::BRepStore;
+use crate::topo::{BRepFace, FaceKey};
 use crate::mesh_result::MeshResult;
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,8 @@ pub fn refine_mesh(
     surface: &SurfaceGeom,
     same_sense: bool,
     config: &RefineConfig,
+    face_key: FaceKey,
+    reg: &BRepStore,
 ) -> MeshResult {
     let mut verts = mesh.vertices.clone();
     let mut idx = mesh.indices.clone();
@@ -71,7 +74,8 @@ pub fn refine_mesh(
                 let mid_3d = (verts[a] + verts[b]) * 0.5;
                 // Project to UV (use surface.project for available types)
                 if let Some((u, v)) = surface.project(mid_3d) {
-                    let surface_pt = surface.d0_native(u, v);
+                    let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                    let surface_pt = surface.d0_native(nu, nv);
                     let dev = (mid_3d - surface_pt).length();
                     max_dev = max_dev.max(dev);
                 }
@@ -85,7 +89,8 @@ pub fn refine_mesh(
 
                 let mut mid_n = Vec3::Z;
                 if let Some((u, v)) = surface.project(mid_pt) {
-                    mid_n = surface.normal_native(u, v);
+                    let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                    mid_n = surface.normal_native(nu, nv);
                     if !same_sense { mid_n = -mid_n; }
                 }
                 norms.push(mid_n);
@@ -114,6 +119,8 @@ pub fn refine_mesh_interior(
     face: &BRepFace,
     local_boundary: &HashSet<usize>,
     config: &RefineConfig,
+    face_key: FaceKey,
+    reg: &BRepStore,
 ) -> MeshResult {
     let tri_count = mesh.indices.len() / 4;
     if tri_count == 0 || tri_count >= config.skip_refine_above {
@@ -152,7 +159,8 @@ pub fn refine_mesh_interior(
             for (a, b) in [(i0, i1), (i1, i2), (i2, i0)] {
                 let mid_3d = (refined.vertices[a] + refined.vertices[b]) * 0.5;
                 if let Some((u, v)) = face.surface.project(mid_3d) {
-                    let surface_pt = face.surface.d0_native(u, v);
+                    let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                    let surface_pt = face.surface.d0_native(nu, nv);
                     max_dev = max_dev.max((mid_3d - surface_pt).length());
                 }
             }
@@ -163,13 +171,15 @@ pub fn refine_mesh_interior(
 
             let mut mid_pt = (v0 + v1 + v2) * (1.0 / 3.0);
             if let Some((u, v)) = face.surface.project(mid_pt) {
-                mid_pt = face.surface.d0_native(u, v);
+                let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                mid_pt = face.surface.d0_native(nu, nv);
             }
             let mid_idx = refined.vertices.len() as i32;
             refined.vertices.push(mid_pt);
             let mut mid_n = Vec3::Z;
             if let Some((u, v)) = face.surface.project(mid_pt) {
-                mid_n = face.surface.normal_native(u, v);
+                let (nu, nv) = reg.face_native_uv(face_key, u, v);
+                mid_n = face.surface.normal_native(nu, nv);
                 if !face.same_sense {
                     mid_n = -mid_n;
                 }
@@ -288,6 +298,8 @@ mod tests {
             indices: vec![0, 1, 2, -1],
             normals: vec![Vec3::Z, Vec3::Z, Vec3::Z],
         };
+        let mut reg = BRepStore::new();
+        let face_key = reg.add_face(surface.clone(), 1e-4);
         let result = refine_mesh(
             &mesh,
             &surface,
@@ -297,6 +309,8 @@ mod tests {
                 max_iterations: 4,
                 ..Default::default()
             },
+            face_key,
+            &reg,
         );
         // Plane should not need refinement (exact representation)
         assert_eq!(result.vertices.len(), 3);

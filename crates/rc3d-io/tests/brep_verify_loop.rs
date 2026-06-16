@@ -16,6 +16,7 @@ const CORPUS: &[&str] = &[
     "Cube.step",
     "cs.step",
     "OffsetPlaneHoleEdge.step",
+    "rev.step",
     "asse.step",
     "HoledPlate.step",
 ];

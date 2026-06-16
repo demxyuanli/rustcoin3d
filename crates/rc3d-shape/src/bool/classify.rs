@@ -427,7 +427,7 @@ fn point_in_face_uv(point: Vec3, face: &BRepFace, face_key: FaceKey, reg: &BRepS
             Some(e) => e,
             None => continue,
         };
-        if let Some((pcurve, _same_sense)) = edge.pcurves.get(&face_key) {
+        if let Some(pcurve) = edge.pcurves.get(&face_key) {
             let start_uv = pcurve.d0(0.0);
             polygon_uv.push((start_uv.0, start_uv.1));
         } else {

@@ -28,7 +28,7 @@ pub(crate) struct SameParamReport {
 
 /// Fix a single (edge, face) pair so the PCurve satisfies SameParameter.
 ///
-/// Returns a report with before/after max deviation.
+/// Delegates to [`BRepStore::ensure_same_parameter`].
 pub(crate) fn fix_same_parameter_edge(
     ek: EdgeKey,
     face_key: FaceKey,
@@ -36,124 +36,13 @@ pub(crate) fn fix_same_parameter_edge(
     tolerance: f32,
     max_iterations: usize,
 ) -> SameParamReport {
-    let (curve_3d, pcurve_entry, surface) = {
-        let edge = match reg.edges.get(ek) {
-            Some(e) => e,
-            None => return SameParamReport::default(),
-        };
-        // Skip degenerate edges
-        if edge.v_low == edge.v_high {
-            return SameParamReport::default();
-        }
-        let pcurve_entry = match edge.pcurves.get(&face_key) {
-            Some(pc) => pc.clone(),
-            None => return SameParamReport::default(),
-        };
-        let face = match reg.faces.get(face_key) {
-            Some(f) => f,
-            None => return SameParamReport::default(),
-        };
-        (edge.curve.clone(), pcurve_entry, face.surface.clone())
-    };
-    let (mut best_pcurve, same_sense) = pcurve_entry;
-
-    // Initial deviation
-    let (mut best_max_dev, _samples) = sample_deviation(&curve_3d, &best_pcurve, &surface, tolerance);
-    if best_max_dev < tolerance {
-        return SameParamReport {
-            max_deviation_before: best_max_dev,
-            max_deviation_after: best_max_dev,
-            ..Default::default()
-        };
-    }
-
-    let before_max_dev = best_max_dev;
-    let mut fixed_count = 0usize;
-    let mut no_improve_streak = 0usize;
-
-    for _iter in 0..max_iterations {
-        // Adaptive samples from 3D curve
-        let curve_samples = curve_3d.sample_adaptive(0.0, 1.0, tolerance * 0.1);
-        if curve_samples.len() < 2 {
-            break;
-        }
-
-        // Ensure endpoints are included
-        let mut t_points: Vec<(f32, Vec3)> = Vec::with_capacity(curve_samples.len());
-        let has_t0 = curve_samples.first().map(|(t, _)| *t).unwrap_or(-1.0).abs() < 1e-9;
-        let has_t1 = curve_samples
-            .last()
-            .map(|(t, _)| (*t - 1.0).abs())
-            .unwrap_or(1.0)
-            < 1e-9;
-        if !has_t0 {
-            t_points.push((0.0, curve_3d.d0(0.0)));
-        }
-        t_points.extend_from_slice(&curve_samples);
-        if !has_t1 {
-            t_points.push((1.0, curve_3d.d0(1.0)));
-        }
-
-        // Project each 3D point onto the surface to get corrected UV
-        let mut uv_pairs: Vec<(f32, Vec3)> = Vec::with_capacity(t_points.len());
-        for (t_i, p3d) in &t_points {
-            let current_uv = best_pcurve.d0(*t_i);
-            let current_uv_v3 = Vec3::new(current_uv.0, current_uv.1, 0.0);
-            let corrected_uv = match project_to_uv(&surface, *p3d, current_uv_v3, tolerance) {
-                Some(uv) => uv,
-                None => {
-                    log::debug!(
-                        "[SameParam] edge {:?} face {:?}: projection failed at t={:.4}",
-                        ek,
-                        face_key,
-                        t_i
-                    );
-                    uv_pairs.push((*t_i, current_uv_v3));
-                    continue;
-                }
-            };
-            let wrapped = normalize_periodic_uv(corrected_uv, current_uv_v3, &surface);
-            uv_pairs.push((*t_i, wrapped));
-        }
-
-        if uv_pairs.len() < 2 {
-            break;
-        }
-
-        // Fit new PCurve
-        let new_pcurve = fit_new_pcurve(&uv_pairs, tolerance);
-
-        // Verify improvement
-        let (new_max_dev, _) = sample_deviation(&curve_3d, &new_pcurve, &surface, tolerance);
-
-        if new_max_dev < best_max_dev {
-            best_max_dev = new_max_dev;
-            best_pcurve = new_pcurve;
-            fixed_count += 1;
-            no_improve_streak = 0;
-        } else {
-            no_improve_streak += 1;
-            // Stop early if two consecutive iterations show no improvement —
-            // the projection + fit cycle has converged or cannot improve further.
-            if no_improve_streak >= 2 {
-                break;
-            }
-        }
-
-        if new_max_dev < tolerance {
-            break;
-        }
-    }
-
-    // Replace pcurve only if improved
-    if fixed_count > 0 {
-        reg.set_pcurve(ek, face_key, (best_pcurve, same_sense));
-    }
-
-    SameParamReport {
-        pcurves_fixed: if fixed_count > 0 { 1 } else { 0 },
-        max_deviation_before: before_max_dev,
-        max_deviation_after: best_max_dev,
+    match reg.ensure_same_parameter(ek, face_key, tolerance, max_iterations) {
+        Some(r) => SameParamReport {
+            pcurves_fixed: if r.deviation_after < r.deviation_before { 1 } else { 0 },
+            max_deviation_before: r.deviation_before,
+            max_deviation_after: r.deviation_after,
+        },
+        None => SameParamReport::default(),
     }
 }
 
@@ -579,7 +468,7 @@ mod tests {
             tolerance: 1e-4,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, (pcurve, true))]),
+            pcurves: HashMap::from([(fk, pcurve)]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         (reg, ek, fk, wk)
@@ -738,7 +627,7 @@ mod tests {
             tolerance: 1e-4,
             t_min: 0.0,
             t_max: 1.0,
-            pcurves: HashMap::from([(fk, (bad_pcurve, true))]),
+            pcurves: HashMap::from([(fk, bad_pcurve)]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 

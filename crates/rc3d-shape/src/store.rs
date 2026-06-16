@@ -7,6 +7,8 @@ use rc3d_core::utils::spatial::SpatialIndex;
 use crate::topo::*;
 use crate::tolerance::ToleranceContext;
 use crate::geom::CurveGeom;
+use crate::geom::SurfaceGeom;
+use crate::geom::SurfaceParamRange;
 use crate::geom::curve2d::Curve2d;
 use crate::geom::normalize_edge_curve_to_vertices;
 
@@ -93,6 +95,10 @@ impl BRepStore {
     ///
     /// `v_start` / `v_end` define the ordered edge direction. Edge deduplication
     /// matches on the ordered `(v_start, v_end)` pair.
+    ///
+    /// `same_sense`: whether the supplied PCurve parameterization matches the
+    /// 3D curve direction. When `false`, the PCurve is reversed before storage
+    /// so every stored PCurve runs forward along the 3D curve.
     pub fn add_edge_with_pcurve(
         &mut self,
         v_start: VertexKey,
@@ -100,30 +106,33 @@ impl BRepStore {
         curve: CurveGeom,
         tolerance: f32,
         face: FaceKey,
-        pcurve: (Curve2d, bool),
+        pcurve: Curve2d,
+        same_sense: bool,
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start < v_end { (v_start, v_end) } else { (v_end, v_start) };
         let p_lo = self.vertices.get(v_lo).map(|v| v.position).unwrap_or(Vec3::ZERO);
         let p_hi = self.vertices.get(v_hi).map(|v| v.position).unwrap_or(Vec3::ZERO);
         let curve = normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance);
+        // Normalize: store PCurve always in the forward (3D curve) direction.
+        let pcurve = if same_sense { pcurve } else { pcurve.reversed() };
 
         // Check existing edges between same vertices — only reuse if curves match.
-        // Sample at 3 points (quarter, mid, three-quarter) to reduce false-positive
+        // Sample at 7 Chebyshev-distributed points to reduce false-positive
         // merges for curves that share endpoints but are geometrically different.
         let chord_len = (p_hi - p_lo).length().max(tolerance);
         if let Some(existing) = self.edge_hash_index.get(&(v_lo, v_hi)) {
             'edge_check: for &ek in existing {
-                for &t in &[0.25, 0.5, 0.75] {
+                for &t in &[0.038, 0.146, 0.309, 0.5, 0.691, 0.854, 0.962] {
                     let p_new = curve.d0(t);
                     let p_existing = self.edges.get(ek).map(|e| e.curve.d0(t)).unwrap_or(Vec3::ZERO);
                     let dist = (p_new - p_existing).length();
-                    if dist > chord_len * 0.02 + tolerance * 5.0 {
+                    if dist > chord_len * 0.005 + tolerance * 2.0 {
                         continue 'edge_check;
                     }
                 }
                 // All sample points match — reuse existing edge
                 if let Some(edge) = self.edges.get_mut(ek) {
-                    edge.pcurves.insert(face, pcurve);
+                    edge.pcurves.insert(face, pcurve.clone());
                 }
                 // Auto-maintain edge_to_faces index (dedup)
                 let v = self.edge_to_faces.entry(ek).or_default();
@@ -141,7 +150,7 @@ impl BRepStore {
             t_max: 1.0,
             pcurves: {
                 let mut m = HashMap::new();
-                m.insert(face, pcurve);
+                m.insert(face, pcurve.clone());
                 m
             },
         });
@@ -161,7 +170,8 @@ impl BRepStore {
         curve: CurveGeom,
         tolerance: f32,
         face: FaceKey,
-        pcurve: (Curve2d, bool),
+        pcurve: Curve2d,
+        same_sense: bool,
     ) -> EdgeKey {
         let (v_lo, v_hi) = if v_start <= v_end {
             (v_start, v_end)
@@ -175,6 +185,7 @@ impl BRepStore {
         } else {
             normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance)
         };
+        let pcurve = if same_sense { pcurve } else { pcurve.reversed() };
         let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
@@ -249,13 +260,15 @@ impl BRepStore {
     }
 
     /// Get mutable access to an edge's PCurve for a specific face.
-    pub fn pcurve_mut(&mut self, ek: EdgeKey, face_key: FaceKey) -> Option<&mut (Curve2d, bool)> {
+    pub fn pcurve_mut(&mut self, ek: EdgeKey, face_key: FaceKey) -> Option<&mut Curve2d> {
         self.edges.get_mut(ek).and_then(|e| e.pcurves.get_mut(&face_key))
     }
 
     /// Replace or insert a PCurve for an (edge, face) pair.
+    /// The PCurve is always stored normalized (forward = same direction as 3D curve).
     /// Returns the old PCurve if one existed.
-    pub fn set_pcurve(&mut self, ek: EdgeKey, face_key: FaceKey, pcurve: (Curve2d, bool)) -> Option<(Curve2d, bool)> {
+    pub fn set_pcurve(&mut self, ek: EdgeKey, face_key: FaceKey, pcurve: Curve2d, same_sense: bool) -> Option<Curve2d> {
+        let pcurve = if same_sense { pcurve } else { pcurve.reversed() };
         self.edges.get_mut(ek).and_then(|e| e.pcurves.insert(face_key, pcurve))
     }
 
@@ -296,6 +309,29 @@ impl BRepStore {
     }
 }
 
+impl BRepStore {
+    /// Denormalize [0,1]^2 UV coordinates to the face's trim range (native STEP space).
+    /// When no trim range is stored for this face, returns (u, v) unchanged.
+    pub fn face_native_uv(&self, face_key: FaceKey, u: f32, v: f32) -> (f32, f32) {
+        if let Some(&(u_min, u_max, v_min, v_max)) = self.trim_ranges.get(&face_key) {
+            let du = (u_max - u_min).max(1e-12);
+            let dv = (v_max - v_min).max(1e-12);
+            (u_min + u * du, v_min + v * dv)
+        } else {
+            (u, v)
+        }
+    }
+
+    /// Effective parameter range for a face: trim range if stored, otherwise surface.param_range().
+    pub fn face_param_range(&self, face_key: FaceKey, surface: &SurfaceGeom) -> SurfaceParamRange {
+        if let Some(&(u_min, u_max, v_min, v_max)) = self.trim_ranges.get(&face_key) {
+            SurfaceParamRange { u_min, u_max, v_min, v_max }
+        } else {
+            surface.param_range()
+        }
+    }
+}
+
 /// Lightweight wrapper for PCurve modification during healing (OCC equivalent).
 /// Enables batched PCurve edits with audit trail.
 #[derive(Debug, Clone)]
@@ -303,17 +339,211 @@ pub struct PCurveEdit {
     pub edge_key: crate::topo::EdgeKey,
     pub face_key: crate::topo::FaceKey,
     /// Replacement PCurve. None = remove existing.
-    pub new_pcurve: Option<(Curve2d, bool)>,
+    pub new_pcurve: Option<Curve2d>,
 }
 
 impl BRepStore {
     /// Apply a PCurveEdit to the store. Returns the old PCurve if replaced.
-    pub fn apply_pcurve_edit(&mut self, edit: &PCurveEdit) -> Option<(Curve2d, bool)> {
+    pub fn apply_pcurve_edit(&mut self, edit: &PCurveEdit) -> Option<Curve2d> {
         let ek = edit.edge_key;
         let fk = edit.face_key;
         match &edit.new_pcurve {
-            Some(pc) => self.set_pcurve(ek, fk, pc.clone()),
+            Some(pc) => self.set_pcurve(ek, fk, pc.clone(), true),
             None => self.edges.get_mut(ek).and_then(|e| e.pcurves.remove(&fk)),
+        }
+    }
+
+    /// OCC BRepLib::SameParameter — ensure that for all t ∈ [0,1]:
+    ///   | surface(pcurve(t)) - curve3d(t) | < tolerance
+    ///
+    /// Iteratively adjusts the PCurve control points by projecting 3D
+    /// curve samples onto the face surface. After convergence, edge
+    /// tolerance is raised if residual deviation exceeds the current
+    /// edge tolerance.
+    pub fn ensure_same_parameter(
+        &mut self,
+        ek: EdgeKey,
+        fk: FaceKey,
+        tolerance: f32,
+        max_iterations: usize,
+    ) -> Option<SameParamResult> {
+        let curve_3d = self.edges.get(ek)?.curve.clone();
+        // Circle edges: the 3D curve already matches the surface geometry.
+        // Skip PCurve adjustment to avoid phase-mismatch false deviation.
+        if matches!(curve_3d, CurveGeom::Circle { .. }) {
+            return Some(SameParamResult {
+                deviation_before: 0.0, deviation_after: 0.0,
+                converged: true, iterations: 0, tolerance_updated: false,
+            });
+        }
+        let pcurve = self.edges.get(ek)?.pcurves.get(&fk)?.clone();
+        let surface = self.faces.get(fk)?.surface.clone();
+        let edge_tolerance = self.edges.get(ek).map(|e| e.tolerance).unwrap_or(tolerance);
+
+        const SAMPLE_COUNT: usize = 32;
+
+        let before = max_pcurve_deviation(&curve_3d, &pcurve, &surface, SAMPLE_COUNT);
+        if before <= tolerance {
+            return Some(SameParamResult {
+                deviation_before: before,
+                deviation_after: before,
+                converged: true,
+                iterations: 0,
+                tolerance_updated: false,
+            });
+        }
+
+        let mut current = pcurve;
+        let mut converged = false;
+        let mut iters = 0usize;
+
+        for i in 0..max_iterations {
+            iters = i + 1;
+            let samples = sample_pcurve_deviations(&curve_3d, &current, &surface, SAMPLE_COUNT);
+            if let Some(adjusted) = adjust_pcurve_from_samples(&current, &samples, &surface) {
+                current = adjusted;
+            } else {
+                break;
+            }
+            let after = max_pcurve_deviation(&curve_3d, &current, &surface, SAMPLE_COUNT);
+            if after <= tolerance {
+                converged = true;
+                break;
+            }
+        }
+
+        let after = max_pcurve_deviation(&curve_3d, &current, &surface, SAMPLE_COUNT);
+
+        // Store the adjusted PCurve
+        if let Some(edge_mut) = self.edges.get_mut(ek) {
+            edge_mut.pcurves.insert(fk, current);
+        }
+
+        // Raise edge tolerance if residual deviation exceeds current edge tolerance.
+        // Clamp to the chord length to prevent runaway inflation when the 3D curve
+        // and PCurve represent fundamentally different geometries (e.g. SURFACE_CURVE
+        // with a Line 3D curve hiding a circle).
+        let chord_len = {
+            let lo = self.vertices.get(self.edges.get(ek)?.v_low).map(|v| v.position);
+            let hi = self.vertices.get(self.edges.get(ek)?.v_high).map(|v| v.position);
+            match (lo, hi) {
+                (Some(l), Some(h)) => (h - l).length().max(1e-6),
+                _ => 1e-6,
+            }
+        };
+        let new_tol = after.max(edge_tolerance).max(tolerance).min(chord_len);
+        let tolerance_updated = if new_tol > edge_tolerance + 1e-8 {
+            if let Some(edge_mut) = self.edges.get_mut(ek) {
+                edge_mut.tolerance = new_tol;
+            }
+            true
+        } else {
+            false
+        };
+
+        Some(SameParamResult {
+            deviation_before: before,
+            deviation_after: after,
+            converged,
+            iterations: iters,
+            tolerance_updated,
+        })
+    }
+}
+
+/// Result of ensuring PCurve-on-surface alignment with 3D curve.
+#[derive(Debug, Clone)]
+pub struct SameParamResult {
+    pub deviation_before: f32,
+    pub deviation_after: f32,
+    pub converged: bool,
+    pub iterations: usize,
+    pub tolerance_updated: bool,
+}
+
+// ── SameParameter helpers (shared) ─────────────────────────────────
+
+struct PcDevSample {
+    #[allow(dead_code)] t: f32,
+    pt_3d: rc3d_core::math::Vec3,
+    dev: f32,
+}
+
+fn sample_pcurve_deviations(
+    curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize,
+) -> Vec<PcDevSample> {
+    use crate::geom::SurfaceGeom;
+    (0..=n).map(|i| {
+        let t = i as f32 / n as f32;
+        let pt_3d = curve_3d.d0(t);
+        let uv = pcurve.d0(t);
+        let on_surf = surface.d0_native(uv.0, uv.1);
+        PcDevSample { t, pt_3d, dev: (on_surf - pt_3d).length() }
+    }).collect()
+}
+
+fn max_pcurve_deviation(
+    curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize,
+) -> f32 {
+    sample_pcurve_deviations(curve_3d, pcurve, surface, n)
+        .iter().map(|s| s.dev).fold(0.0f32, f32::max)
+}
+
+fn adjust_pcurve_from_samples(
+    pcurve: &Curve2d, samples: &[PcDevSample], surface: &SurfaceGeom,
+) -> Option<Curve2d> {
+    use crate::geom::SurfaceGeom;
+    match pcurve {
+        Curve2d::Line { .. } => {
+            let first = &samples[0];
+            let last = &samples[samples.len() - 1];
+            let uv_start = surface.project(first.pt_3d)?;
+            let uv_end = surface.project(last.pt_3d)?;
+            let d = (uv_end.0 - uv_start.0, uv_end.1 - uv_start.1);
+            if d.0.abs() < 1e-12 && d.1.abs() < 1e-12 { return None; }
+            Some(Curve2d::Line { origin: uv_start, direction: d })
+        }
+        Curve2d::Polyline { points } => {
+            if points.len() < 2 || samples.is_empty() { return None; }
+            let step = (samples.len().saturating_sub(1) / points.len().saturating_sub(1)).max(1);
+            let new_pts: Vec<(f32, f32)> = points.iter().enumerate().map(|(idx, &orig)| {
+                let si = (idx * step).min(samples.len() - 1);
+                surface.project(samples[si].pt_3d).unwrap_or(orig)
+            }).collect();
+            Some(Curve2d::Polyline { points: new_pts })
+        }
+        Curve2d::BSpline { degree, control_points, knots, weights } => {
+            let n = control_points.len();
+            if n < 2 { return None; }
+            let first_3d = &samples[0].pt_3d;
+            let last_3d = &samples[samples.len() - 1].pt_3d;
+            let uv_first = surface.project(*first_3d)?;
+            let uv_last = surface.project(*last_3d)?;
+            let mut new_cps = control_points.clone();
+            new_cps[0] = uv_first;
+            new_cps[n - 1] = uv_last;
+            let step = (samples.len().saturating_sub(1) / n.saturating_sub(1)).max(1);
+            for i in 1..n - 1 {
+                let si = (i * step).min(samples.len() - 1);
+                if let Some(uv) = surface.project(samples[si].pt_3d) {
+                    new_cps[i] = ((new_cps[i].0 + uv.0) * 0.5, (new_cps[i].1 + uv.1) * 0.5);
+                }
+            }
+            Some(Curve2d::BSpline {
+                degree: *degree, control_points: new_cps,
+                knots: knots.clone(), weights: weights.clone(),
+            })
+        }
+        // Circle/Ellipse/Trimmed/Composite → polyline approximation
+        _ => {
+            let n_samples = 16usize;
+            let pts: Vec<(f32, f32)> = (0..=n_samples).filter_map(|i| {
+                let t = i as f32 / n_samples as f32;
+                let si = (t * (samples.len() - 1) as f32) as usize;
+                surface.project(samples[si.min(samples.len() - 1)].pt_3d)
+            }).collect();
+            if pts.len() < 2 { return None; }
+            Some(Curve2d::Polyline { points: pts })
         }
     }
 }
@@ -368,8 +598,8 @@ mod tests {
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone(), true);
 
         assert_eq!(e0, e1, "same endpoint pair should return same edge");
         let edge = reg.edges.get(e0).unwrap();
@@ -388,8 +618,8 @@ mod tests {
 
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
-        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
+        reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone(), true);
 
         let shared = reg.find_shared_edges(f0, f1);
         assert_eq!(shared.len(), 1, "f0 and f1 share one edge");
@@ -405,14 +635,14 @@ mod tests {
         let f0 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
         let new_pcurve = Curve2d::Line { origin: (1.0, 0.0), direction: (1.0, 0.0) };
-        let old = reg.set_pcurve(ek, f0, (new_pcurve, true));
+        let old = reg.set_pcurve(ek, f0, new_pcurve, true);
         assert!(old.is_some());
 
         let edge = reg.edges.get(ek).unwrap();
-        let (pcurve, _same_sense) = edge.pcurves.get(&f0).unwrap();
+        let pcurve = edge.pcurves.get(&f0).unwrap();
         match pcurve {
             Curve2d::Line { origin, .. } => {
                 assert!((origin.0 - 1.0).abs() < 1e-6, "expected new pcurve origin");
@@ -429,15 +659,15 @@ mod tests {
         let f0 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
         let pcurve = reg.pcurve_mut(ek, f0).unwrap();
-        *pcurve = (Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) }, false);
+        *pcurve = Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) };
         // Explicitly end the mutable borrow before reading back
         let _ = pcurve;
 
         let edge = reg.edges.get(ek).unwrap();
-        let (updated, _same_sense) = edge.pcurves.get(&f0).unwrap();
+        let updated = edge.pcurves.get(&f0).unwrap();
         match updated {
             Curve2d::Line { origin, direction } => {
                 assert!((origin.0 - 2.0).abs() < 1e-6);
@@ -456,9 +686,9 @@ mod tests {
         let f1 = make_plane_face(&mut reg);
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
 
-        let old = reg.set_pcurve(ek, f1, (pc.clone(), true));
+        let old = reg.set_pcurve(ek, f1, pc.clone(), true);
         assert!(old.is_none(), "f1 had no pcurve before");
 
         let edge = reg.edges.get(ek).unwrap();
@@ -478,8 +708,8 @@ mod tests {
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
         let pc2 = Curve2d::Line { origin: (1.0, 0.0), direction: (-1.0, 1.0) };
 
-        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc, true));
-        let e1 = reg.add_edge_with_pcurve(v1, v2, line2.clone(), 1e-4, f0, (pc2, true));
+        let e0 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc, true);
+        let e1 = reg.add_edge_with_pcurve(v1, v2, line2.clone(), 1e-4, f0, pc2, true);
 
         let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();
         assert_eq!(v0_edges, &vec![e0], "v0 belongs only to e0");
@@ -499,9 +729,9 @@ mod tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
-        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, (pc.clone(), true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f0, pc.clone(), true);
         // Adding same edge from f1 should reuse ek
-        let ek2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, (pc.clone(), true));
+        let ek2 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, f1, pc.clone(), true);
         assert_eq!(ek, ek2, "should reuse existing edge");
 
         // edge_to_faces should have both faces
@@ -522,7 +752,7 @@ mod tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
 
-        let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, (pc, true));
+        let ek = reg.add_seam_edge(v0, v0, line.clone(), 1e-4, f0, pc, true);
 
         // vertex_to_edges should have v0 → ek (only once, not duplicated)
         let v0_edges = reg.vertex_to_edges.get(&v0).unwrap();

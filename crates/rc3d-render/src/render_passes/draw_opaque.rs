@@ -104,13 +104,19 @@ fn draw_flat_triangle_batches(
     }
 }
 
+/// Records opaque triangle draws. May be called twice per frame on the same
+/// encoder (depth prepass + solid pass). Both calls MUST produce the identical
+/// instance/indirect buffer layout: `queue.write_buffer` calls are applied
+/// before `queue.submit`, so the GPU executes BOTH passes against the LAST
+/// written contents. `upload_buffers=false` skips the redundant second upload
+/// when the prepass already wrote identical data this frame.
 pub(super) fn draw_opaque_triangle_batches(
     renderer: &mut crate::renderer::Renderer,
     pass: &mut wgpu::RenderPass<'_>,
     ctx: &super::PassContext<'_>,
     solid_pipeline: &wgpu::RenderPipeline,
     flat_solid_pipeline: &wgpu::RenderPipeline,
-    draw_meshlets: bool,
+    upload_buffers: bool,
 ) {
     if ctx.mode == DisplayMode::Flat || ctx.mode == DisplayMode::FlatWithEdge {
         draw_flat_triangle_batches(renderer, pass, ctx, flat_solid_pipeline);
@@ -170,8 +176,10 @@ pub(super) fn draw_opaque_triangle_batches(
         // puts it there. The meshlet draw reads instances[0] via the indirect
         // buffer's first_instance=0. Phase 2 write goes to queue before encoder
         // submit, so the meshlet data is at slot 0 when the render pass starts.
+        // NOTE: this condition must not depend on which pass we record for, so
+        // prepass and solid produce identical instance layouts (see fn doc).
         let mut instance_cursor: u64 = 0;
-        if draw_meshlets && !ctx.meshlet_indices.is_empty() {
+        if !ctx.meshlet_indices.is_empty() {
             let dc = ctx.visible[ctx.meshlet_indices[0]];
             all_instances.push(InstanceData {
                 model: dc.model_matrix.to_cols_array_2d(),
@@ -204,7 +212,8 @@ pub(super) fn draw_opaque_triangle_batches(
                 // Meshlet draw path requires HZB (even for frustum-only cull, the
                 // bind group layout binds HZB texture views). Without HZB, fall
                 // back to standard instanced draws for meshlet-indexed geometry.
-                let can_meshlet_draw = draw_meshlets && renderer.gpu.hzb.is_some();
+                // Must be pass-independent so prepass/solid layouts match.
+                let can_meshlet_draw = renderer.gpu.hzb.is_some();
                 for &i in &ctx.solid_order[start..end] {
                     if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
                         if can_meshlet_draw { md.push(i); } else { sd.push(i); }
@@ -212,9 +221,11 @@ pub(super) fn draw_opaque_triangle_batches(
                 }
             }
 
-            // Meshlet path: per-draw (no instance batching needed)
+            // Meshlet path: per-draw (no instance batching needed).
+            // Also recorded in the depth prepass: draw_clustered{,_basic} use
+            // the currently bound pipeline, so the prepass renders meshlet
+            // depth with its own prepass pipeline (keeps HZB occluder coverage).
             for &i in renderer.gpu.draw_bufs.meshlet_draws.iter() {
-                if !draw_meshlets { continue; }
                 let dc = ctx.visible[i];
                 let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
@@ -324,7 +335,7 @@ pub(super) fn draw_opaque_triangle_batches(
         // Phase 2: write all instance data (meshlet at slot 0 + standard at slots 1+).
         // queue.write_buffer goes to queue before encoder submit, so slot 0
         // has meshlet data when the render pass starts.
-        if !renderer.gpu.draw_bufs.instances.is_empty() {
+        if upload_buffers && !renderer.gpu.draw_bufs.instances.is_empty() {
             renderer.queue.write_buffer(
                 &renderer.gpu.instance_buffer, 0,
                 bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
@@ -362,15 +373,17 @@ pub(super) fn draw_opaque_triangle_batches(
             if !indirect_args.is_empty() {
                 let indirect_buf = renderer.gpu.draw_bufs.standard_indirect_buf.as_ref().unwrap();
                 let arg_stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>();
-                let mut indirect_bytes: Vec<u8> = Vec::with_capacity(indirect_args.len() * arg_stride);
-                for arg in indirect_args.iter() {
-                    indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.index_count));
-                    indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.instance_count));
-                    indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.first_index));
-                    indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.base_vertex));
-                    indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.first_instance));
+                if upload_buffers {
+                    let mut indirect_bytes: Vec<u8> = Vec::with_capacity(indirect_args.len() * arg_stride);
+                    for arg in indirect_args.iter() {
+                        indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.index_count));
+                        indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.instance_count));
+                        indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.first_index));
+                        indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.base_vertex));
+                        indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.first_instance));
+                    }
+                    renderer.queue.write_buffer(indirect_buf, 0, &indirect_bytes);
                 }
-                renderer.queue.write_buffer(indirect_buf, 0, &indirect_bytes);
                 let mut batch_start = 0u32;
                 let mut current_mesh: Option<crate::gpu_resource::MeshId> = None;
                 let mut current_mat_key: Option<u64> = None;

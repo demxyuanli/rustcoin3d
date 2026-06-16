@@ -60,7 +60,7 @@ pub(crate) fn fix_add_natural_bound(reg: &mut BRepStore, face_key: FaceKey) -> b
             origin: (u0, v0),
             direction: (u1 - u0, v1 - v0),
         };
-        let ek = reg.add_edge_with_pcurve(v0k, v1k, curve_3d, tolerance, face_key, (pcurve, true));
+        let ek = reg.add_edge_with_pcurve(v0k, v1k, curve_3d, tolerance, face_key, pcurve, true);
         edges.push((ek, Orientation::Forward));
     }
 
@@ -111,7 +111,7 @@ fn signed_uv_wire_area(reg: &BRepStore, face_key: FaceKey, wire_key: WireKey) ->
             Some(e) => e,
             None => continue,
         };
-        let (pcurve, _same_sense) = match edge.pcurves.get(&face_key) {
+        let pcurve = match edge.pcurves.get(&face_key) {
             Some(pc) => pc,
             None => continue,
         };

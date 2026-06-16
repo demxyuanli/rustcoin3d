@@ -320,9 +320,10 @@ impl super::Renderer {
                 self.gpu.frustum_uniform.as_ref(),
                 self.gpu.gpu_cull_bg.as_ref(),
             ) {
-                // Upload transforms (all objects for now; dirty-tracking TBD)
+                // Upload transforms (all objects for now; dirty-tracking TBD).
+                // Cap at the GPU buffer capacity to avoid out-of-bounds writes.
                 let transforms: Vec<crate::vertex::GpuObjectTransform> = draw_calls.iter()
-                    
+                    .take(self.gpu.max_gpu_cull_objects as usize)
                     .map(|dc| crate::vertex::GpuObjectTransform {
                         model_matrix: dc.model_matrix.to_cols_array_2d(),
                         aabb_min: dc.aabb.as_ref().map_or([0.0f32; 3], |a| a.min.to_array()),
@@ -334,10 +335,11 @@ impl super::Renderer {
                     })
                     .collect();
                 cull_pass.write_transforms(&self.queue, transform_buf, &transforms);
+                self.frame.gpu_cull_object_count = transforms.len() as u32;
 
-                // Write frustum planes
+                // Write frustum planes + object count (consumed by the cull shader)
                 let planes = frustum.plane_array();
-                cull_pass.write_frustum(&self.queue, frustum_buf, &planes);
+                cull_pass.write_frustum(&self.queue, frustum_buf, &planes, transforms.len() as u32);
 
                 // Reset indirect args
                 cull_pass.reset_indirect_args(&self.queue, indirect_buf, 4096);
@@ -691,14 +693,20 @@ impl super::Renderer {
                             csm_view_proj[i] = *lvp;
                         }
                     }
-                    let far_range = camera_far - camera_near;
-                    for i in 0..cascade_count as usize {
+                    // Shader compares csm_split_depths against view-space depth
+                    // (abs(view_pos.z), in world units) — write the splits as
+                    // view-space distances, NOT normalized [0,1] values.
+                    // Slots at/beyond the last real cascade get a huge sentinel
+                    // so select_cascade_blended() clamps to the last valid
+                    // cascade instead of falling through to an IDENTITY one.
+                    const SPLIT_SENTINEL: f32 = 1.0e30;
+                    for i in 0..cascade_count.saturating_sub(1) as usize {
                         if i + 1 < splits.len() {
-                            csm_split_depths[i] = (splits[i + 1] - camera_near) / far_range;
+                            csm_split_depths[i] = splits[i + 1];
                         }
                     }
-                    for s in &mut csm_split_depths[cascade_count as usize..CSM_CASCADE_COUNT] {
-                        *s = 1.0;
+                    for s in &mut csm_split_depths[cascade_count.saturating_sub(1) as usize..CSM_CASCADE_COUNT] {
+                        *s = SPLIT_SENTINEL;
                     }
 
                     let inv = 1.0 / sm_size as f32;
@@ -818,11 +826,13 @@ impl super::Renderer {
                 );
             }
         }
+        // NOTE: solid_order/transparent_order were moved into self.frame above;
+        // read them from there (the locals are empty after mem::take).
         let diagnostics = self.build_frame_diagnostics(
             &visible,
             &mesh_handles,
-            &solid_order,
-            &transparent_order,
+            &self.frame.solid_order_buf,
+            &self.frame.transparent_order_buf,
             gpu_pass,
         );
         stats.diagnostics = Some(diagnostics.clone());
@@ -854,40 +864,24 @@ impl super::Renderer {
         let down_tex = self.gpu.interaction_downscale_tex.take();
         let down_view = self.gpu.interaction_downscale_view.take();
         let down_depth = self.gpu.interaction_downscale_depth.take();
-        let _down_depth_view = self.gpu.interaction_downscale_depth_view.take();
+        let down_depth_view = self.gpu.interaction_downscale_depth_view.take();
+        let down_depth_read_view = self.gpu.interaction_downscale_depth_read_view.take();
 
-        let (down_tex, down_view, down_depth) = match (down_tex, down_view, down_depth) {
-            (Some(t), Some(v), Some(d)) => (t, v, d),
-            _ => return self.render_draw_calls_core(
-                draw_calls, scene, post_swapchain_overlay,
-                render_passes::FramePresentation::Swapchain, None,
-            ),
-        };
+        let (down_tex, down_view, down_depth, down_depth_view, down_depth_read_view) =
+            match (down_tex, down_view, down_depth, down_depth_view, down_depth_read_view) {
+                (Some(t), Some(v), Some(d), Some(dv), Some(drv)) => (t, v, d, dv, drv),
+                _ => return self.render_draw_calls_core(
+                    draw_calls, scene, post_swapchain_overlay,
+                    render_passes::FramePresentation::Swapchain, None,
+                ),
+            };
         let down_w = down_tex.width();
         let down_h = down_tex.height();
 
-        // Replace depth texture with downscaled version for the offscreen render
+        // Swap in the cached downscaled depth texture for the offscreen render
+        // (avoids creating/destroying a depth texture every interaction frame).
         let saved_depth = self.gpu.depth_texture.take();
-        let depth_tex2 = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Interaction depth"),
-            size: wgpu::Extent3d { width: down_w, height: down_h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32FloatStencil8,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let dv = depth_tex2.create_view(&wgpu::TextureViewDescriptor::default());
-        let drv = depth_tex2.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Interaction depth readonly"),
-            format: Some(wgpu::TextureFormat::Depth32Float),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::DepthOnly,
-            base_mip_level: 0, mip_level_count: Some(1),
-            base_array_layer: 0, array_layer_count: Some(1),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-        });
-        self.gpu.depth_texture = Some((depth_tex2, dv, drv));
+        self.gpu.depth_texture = Some((down_depth, down_depth_view, down_depth_read_view));
 
         // Downscaled depth mismatches full-res intermediate targets (LDR shade, HDR post-fx).
         // Save and disable both so execute_passes renders directly to the offscreen surface.
@@ -910,12 +904,19 @@ impl super::Renderer {
         self.hdr_post_processing = saved_hdr;
         self.enable_ldr_fxaa = saved_ldr_fxaa;
 
-        // Restore original depth + intermediate textures
+        // Restore original depth + intermediate textures (the downscaled depth
+        // and its views go back into the interaction cache for reuse).
+        if let Some((d, dv, drv)) = self.gpu.depth_texture.take() {
+            // Guard against the core render having replaced the depth texture.
+            if d.width() == down_w && d.height() == down_h {
+                self.gpu.interaction_downscale_depth = Some(d);
+                self.gpu.interaction_downscale_depth_view = Some(dv);
+                self.gpu.interaction_downscale_depth_read_view = Some(drv);
+            }
+        }
         self.gpu.depth_texture = saved_depth;
         self.gpu.interaction_downscale_tex = Some(down_tex);
         self.gpu.interaction_downscale_view = Some(down_view);
-        self.gpu.interaction_downscale_depth = Some(down_depth);
-        self.gpu.interaction_downscale_depth_view = _down_depth_view;
 
         // Upscale from intermediate to swapchain
         let swapchain_frame = match self.surface.get_current_texture() {
@@ -972,28 +973,8 @@ impl super::Renderer {
             hook(&mut encoder, &swapchain_view);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        // Swap occlusion depth buffer: read back the one we just captured
-        if let Some(ref buf) = self.frame.occlusion_capture_buf.take() {
-            let (dw, dh, row_bytes) = self.frame.occlusion_dims;
-            let padded_w = (row_bytes / 4) as u32;
-if let Some((data, _w, _h)) = crate::render_passes::try_read_occlusion_depth(&buf, &self.device, dw, dh, padded_w) {
-                self.frame.occlusion_data = Some((data, dw, dh));
-            }
-        }
-        // Create a new capture buffer for next frame
-        if self.frame.occlusion_dims.0 > 0 {
-            let (_dw, dh, row_bytes) = self.frame.occlusion_dims;
-            let size = (row_bytes as u64) * (dh as u64);
-            if size > 0 {
-                let new_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("occlusion depth capture"),
-                    size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
-                self.frame.occlusion_capture_buf = Some(new_buf);
-            }
-        }
+        // Occlusion depth readback is handled non-blockingly inside
+        // execute_passes (async map kicked after submit, harvested next frame).
         swapchain_frame.present();
 
         stats

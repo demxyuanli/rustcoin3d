@@ -5,7 +5,7 @@ pub(crate) mod pcurve_fix;
 pub(crate) mod same_param_fix;
 pub(crate) mod face_fix;
 pub(crate) mod shell_fix;
-pub(crate) mod seam;
+pub mod seam;
 pub mod check;
 pub(crate) mod lacking;
 pub(crate) mod degenerated;
@@ -21,6 +21,7 @@ pub mod topo_diag;
 pub(crate) mod free_bounds;
 pub(crate) mod compose_shell;
 pub(crate) mod face_fold;
+pub(crate) mod edge_connect;
 use std::collections::HashSet;
 
 use crate::topo::{FaceKey, ShellKey, WireKey};
@@ -79,6 +80,7 @@ pub struct HealReport {
     pub free_bounds_open_found: usize,
     pub shells_composed: usize,
     pub face_folds_repaired: usize,
+    pub face_self_intersections_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
     skip_faces_seen: HashSet<FaceKey>,
@@ -105,6 +107,7 @@ impl HealReport {
         self.split_faces_created += other.split_faces_created;
         self.natural_bounds_added += other.natural_bounds_added;
         self.reversed_2d_fixed += other.reversed_2d_fixed;
+        self.face_self_intersections_fixed += other.face_self_intersections_fixed;
         for (fk, reason) in other.face_skip_reasons {
             push_skip_face(self, fk, reason);
         }
@@ -146,6 +149,8 @@ pub struct HealConfig {
     pub fix_free_bounds: bool,
     pub fix_compose_shell: bool,
     pub fix_face_fold: bool,
+    pub fix_face_self_intersect: bool,
+    pub fix_edge_connect: bool,
     pub small_edge_min_length: f32,
     pub uv_gap_tolerance: f32,
 }
@@ -178,6 +183,8 @@ impl HealConfig {
             fix_free_bounds: false,
             fix_compose_shell: false,
             fix_face_fold: false,
+            fix_face_self_intersect: false,
+            fix_edge_connect: false,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 0.0,
         }
@@ -221,6 +228,8 @@ impl Default for HealConfig {
             fix_free_bounds: true,
             fix_compose_shell: false,
             fix_face_fold: true,
+            fix_face_self_intersect: false,
+            fix_edge_connect: false,
             small_edge_min_length: 1e-6,
             uv_gap_tolerance: 1e-5,
         }
@@ -412,6 +421,11 @@ fn heal_face_passes(
         report.face_folds_repaired += fr.folds_repaired;
     }
 
+    if config.fix_face_self_intersect {
+        let sir = face_self_intersect::fix_face_self_intersections(face_key, reg, config.gap_tolerance);
+        report.face_self_intersections_fixed += sir.faces_fixed;
+    }
+
     true
 }
 
@@ -562,15 +576,32 @@ pub fn heal_shell(
         report.free_bounds_open_found += fb.open_edges_found;
     }
 
-    // Compose shell: verify face connectivity via shared edges.
-    // OCC alignment: ShapeFix_ComposeShell — detects disconnected face groups.
+    // EdgeConnect: merge geometrically coincident vertices across adjacent faces.
+    // OCC alignment: ShapeFix_EdgeConnect — merges shared edge endpoints.
+    if config.fix_edge_connect {
+        let merges = edge_connect::connect_shell_edges(reg, shell_key, config.gap_tolerance);
+        if merges > 0 {
+            log::debug!("[BRep heal] EdgeConnect: merged {} vertices on shell {:?}", merges, shell_key);
+        }
+    }
+
+    // Compose shell: group disconnected faces into separate shells.
+    // OCC alignment: ShapeFix_ComposeShell — stitches faces into shells.
     if config.fix_compose_shell {
         let faces: Vec<FaceKey> = face_keys.iter()
             .filter(|(fk, _)| !report.skip_faces_seen.contains(fk))
             .map(|(fk, _)| *fk)
             .collect();
-        let groups = compose_shell::compose_shells(&faces, reg);
-        report.shells_composed = groups.len();
+        if !faces.is_empty() {
+            let groups = compose_shell::compose_shells(&faces, reg);
+            if groups.len() > 1 {
+                // Multiple disconnected face groups — create separate shells.
+                let cr = compose_shell::compose_shells_into_store(&faces, reg);
+                report.shells_composed = cr.shells_composed;
+            } else {
+                report.shells_composed = groups.len();
+            }
+        }
     }
 
     let check_report = check_shell(shell_key, reg);
@@ -675,19 +706,19 @@ mod tests {
             origin: (a.x, a.y),
             direction: (b.x - a.x, b.y - a.y),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, (pc(Vec3::ZERO, Vec3::X), true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line(Vec3::ZERO, Vec3::X), 1e-4, fk, pc(Vec3::ZERO, Vec3::X), true);
         let gap_v = reg.vertices.insert(crate::topo::BRepVertex {
             position: Vec3::new(1.0, 0.00005, 0.0),
             tolerance: 1e-6,
         });
-        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, (pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)), true));
+        let e2 = reg.add_edge_with_pcurve(gap_v, v2, line(Vec3::new(1.0, 0.00005, 0.0), Vec3::new(1.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 0.1, 0.0), Vec3::new(1.0, 1.0, 0.0)), true);
         let e2_orient = if gap_v < v2 {
             Orientation::Forward
         } else {
             Orientation::Reversed
         };
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, (pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), true));
-        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, (pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), true));
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 1e-4, fk, pc(Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), true);
+        let e5 = reg.add_edge_with_pcurve(v3, v0, line(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), 1e-4, fk, pc(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO), true);
         reg.wires.get_mut(wk).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, e2_orient),

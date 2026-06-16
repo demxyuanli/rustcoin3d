@@ -122,7 +122,7 @@ fn wire_uv_polygon(
         let Some(edge) = reg.edges.get(ek) else {
             continue;
         };
-        if let Some((pcurve, _)) = edge.pcurves.get(&face_key) {
+        if let Some(pcurve) = edge.pcurves.get(&face_key) {
             for i in 0..=STEPS {
                 let t = i as f32 / STEPS as f32;
                 let t = if orient == Orientation::Reversed {

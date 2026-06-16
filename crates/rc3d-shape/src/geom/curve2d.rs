@@ -50,6 +50,38 @@ pub enum Curve2d {
 }
 
 impl Curve2d {
+    /// Return a new curve whose parameterization runs in the opposite direction:
+    /// `reversed.d0(t) == self.d0(1.0 - t)`.
+    ///
+    /// Used to normalize PCurves at storage time so that all stored
+    /// PCurves run in the same direction as their 3D edge curve.
+    pub fn reversed(&self) -> Self {
+        // For simple types, produce a direct reversed form.
+        // For others, wrap in a Trimmed with span = -1.
+        match self {
+            Curve2d::Line { origin, direction } => {
+                let end = (origin.0 + direction.0, origin.1 + direction.1);
+                Curve2d::Line {
+                    origin: end,
+                    direction: (-direction.0, -direction.1),
+                }
+            }
+            Curve2d::Polyline { points } => {
+                let mut rev = points.clone();
+                rev.reverse();
+                Curve2d::Polyline { points: rev }
+            }
+            // Circle, Ellipse, BSpline, Trimmed, Composite — treat
+            // generically via parameter reversal (evaluates correctly
+            // for all d0 / d1 / to_beziers usage).
+            _ => Curve2d::Trimmed {
+                basis: Box::new(self.clone()),
+                t_min: 1.0,
+                t_max: 0.0,
+            },
+        }
+    }
+
     /// Evaluate the curve at parameter t ∈ [0, 1].
     pub fn d0(&self, t: f32) -> (f32, f32) {
         match self {
@@ -259,6 +291,47 @@ impl Curve2d {
 //  Conversion: CurveGeom (3D, used as PCurve with Vec3(u,v,0)) ↔ Curve2d
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Simplify a polyline to a Line if all points are collinear within tolerance.
+/// Returns None for degenerate (closed-loop or zero-length) polylines.
+pub fn simplify_polyline_to_line(pts: &[(f32, f32)]) -> Option<Curve2d> {
+    if pts.len() < 2 {
+        return None;
+    }
+    if pts.len() == 2 {
+        let dx = pts[1].0 - pts[0].0;
+        let dy = pts[1].1 - pts[0].1;
+        if dx * dx + dy * dy < 1e-12 {
+            return None; // degenerate
+        }
+        return Some(Curve2d::Line {
+            origin: pts[0],
+            direction: (dx, dy),
+        });
+    }
+    let first = pts[0];
+    let last = pts[pts.len() - 1];
+    let dir = (last.0 - first.0, last.1 - first.1);
+    let len_sq = dir.0 * dir.0 + dir.1 * dir.1;
+    // Do NOT simplify closed loops (first ≈ last): the Line direction
+    // would be zero, producing invalid Curve2ds that break OCC import.
+    let is_closed = (last.0 - first.0).abs() < 1e-4 && (last.1 - first.1).abs() < 1e-4;
+    if len_sq < 1e-12 || is_closed {
+        return None;
+    }
+    // Check all intermediate points lie on the line segment
+    for i in 1..pts.len() - 1 {
+        let dx = pts[i].0 - first.0;
+        let dy = pts[i].1 - first.1;
+        // Cross product: |dir × (pt - first)| / |dir| < tol
+        let cross = (dir.0 * dy - dir.1 * dx).abs();
+        let dist = cross / len_sq.sqrt();
+        if dist > 1e-4 {
+            return None; // not collinear
+        }
+    }
+    Some(Curve2d::Line { origin: first, direction: dir })
+}
+
 impl Curve2d {
     /// Convert a 3D CurveGeom used as a PCurve (where d0 returns Vec3(u, v, 0))
     /// into a native 2D Curve2d.
@@ -290,8 +363,9 @@ impl Curve2d {
                 t_min: *t_min,
                 t_max: *t_max,
             },
-            CurveGeom::Polyline { points } => Curve2d::Polyline {
-                points: points.iter().map(|p| (p.x, p.y)).collect(),
+            CurveGeom::Polyline { points } => {
+                let pts_2d: Vec<(f32, f32)> = points.iter().map(|p| (p.x, p.y)).collect();
+                simplify_polyline_to_line(&pts_2d).unwrap_or(Curve2d::Polyline { points: pts_2d })
             },
             CurveGeom::Composite { segments, .. } => Curve2d::Composite {
                 segments: segments.iter().map(|(seg, reversed)| {

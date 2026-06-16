@@ -186,7 +186,7 @@ mod tests {
             let v0 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
             x += len;
             let v1 = reg.find_or_add_vertex(Vec3::new(x, 0.0, 0.0), 1e-4);
-            let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, (pc.clone(), true));
+            let ek = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, face_key, pc.clone(), true);
             edge_keys.push(ek);
         }
         let wire_edges: Vec<(EdgeKey, Orientation)> = edge_keys

@@ -102,7 +102,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 Some(e) => e,
                 None => continue,
             };
-            let (pc, _same_sense) = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
+            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
                 Some(p) => p,
                 None => match edge.pcurves.values().next() {
                     Some(p) => p,
@@ -124,6 +124,14 @@ pub fn triangulate_uv_cdt_with_steiner(
     let mut uv_to_handle: HashMap<(u64, u64), super::delaunay2d::CdtVertHandle> = HashMap::new();
     let uv_span = compute_uv_span(loops);
     let span_opt = Some(uv_span);
+
+    let native_uv = |u: f32, v: f32| -> (f32, f32) {
+        if let (Some(r), Some(fk)) = (reg, face_key) {
+            r.face_native_uv(fk, u, v)
+        } else {
+            (u, v)
+        }
+    };
 
     let mut outer_handles = Vec::new();
     for v in &loops.outer.boundary {
@@ -185,7 +193,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 Some(e) => e,
                 None => continue,
             };
-            let (pc, _same_sense) = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
+            let pc = match face_key.and_then(|fk| edge.pcurves.get(&fk)) {
                 Some(p) => p,
                 None => match edge.pcurves.values().next() {
                     Some(p) => p,
@@ -197,8 +205,10 @@ pub fn triangulate_uv_cdt_with_steiner(
             if (uv0.0 - uv1.0).abs() < 1e-10 && (uv0.1 - uv1.1).abs() < 1e-10 {
                 continue;
             }
-            let pt0 = face.surface.d0_native(uv0.0, uv0.1);
-            let pt1 = face.surface.d0_native(uv1.0, uv1.1);
+            let (nu0, nv0) = native_uv(uv0.0, uv0.1);
+            let pt0 = face.surface.d0_native(nu0, nv0);
+            let (nu1, nv1) = native_uv(uv1.0, uv1.1);
+            let pt1 = face.surface.d0_native(nu1, nv1);
             let gi0 = register_boundary_point_with_normal_indexed_shared(
                 pt0,
                 global_vertices,
@@ -206,7 +216,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 pos_to_idx,
                 shared_boundary,
                 || {
-                    let mut n = face.surface.normal_native(uv0.0, uv0.1);
+                    let mut n = face.surface.normal_native(nu0, nv0);
                     if !face.same_sense {
                         n = -n;
                     }
@@ -220,7 +230,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 pos_to_idx,
                 shared_boundary,
                 || {
-                    let mut n = face.surface.normal_native(uv1.0, uv1.1);
+                    let mut n = face.surface.normal_native(nu1, nv1);
                     if !face.same_sense {
                         n = -n;
                     }
@@ -309,7 +319,8 @@ pub fn triangulate_uv_cdt_with_steiner(
                     continue;
                 }
                 if point_in_trim(*u, *v, &outer_uv, &inner_uv) {
-                    let pt_3d = face.surface.d0_native(*u, *v);
+                    let (nu, nv) = native_uv(*u, *v);
+                    let pt_3d = face.surface.d0_native(nu, nv);
                     let gi = register_boundary_point_with_normal_indexed_shared(
                         pt_3d,
                         global_vertices,
@@ -317,7 +328,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                         pos_to_idx,
                         shared_boundary,
                         || {
-                            let mut n = face.surface.normal_native(*u, *v);
+                            let mut n = face.surface.normal_native(nu, nv);
                             if !face.same_sense {
                                 n = -n;
                             }
@@ -365,9 +376,12 @@ pub fn triangulate_uv_cdt_with_steiner(
                     let uv0 = uvs[0];
                     let uv1 = uvs[1];
                     let uv2 = uvs[2];
-                    let p0 = face.surface.d0_native(uv0.0, uv0.1);
-                    let p1 = face.surface.d0_native(uv1.0, uv1.1);
-                    let p2 = face.surface.d0_native(uv2.0, uv2.1);
+                    let (nu0, nv0) = native_uv(uv0.0, uv0.1);
+                    let p0 = face.surface.d0_native(nu0, nv0);
+                    let (nu1, nv1) = native_uv(uv1.0, uv1.1);
+                    let p1 = face.surface.d0_native(nu1, nv1);
+                    let (nu2, nv2) = native_uv(uv2.0, uv2.1);
+                    let p2 = face.surface.d0_native(nu2, nv2);
                     let area_3d = (p1 - p0).cross(p2 - p0).length();
                     if area_3d < 1e-12 {
                         continue;
@@ -387,13 +401,16 @@ pub fn triangulate_uv_cdt_with_steiner(
                         }
                         let mid_3d = (*a + *b) * 0.5;
                         let uv_mid = ((uva.0 + uvb.0) * 0.5, (uva.1 + uvb.1) * 0.5);
-                        let surf_mid = face.surface.d0_native(uv_mid.0, uv_mid.1);
+                        let (nu_mid, nv_mid) = native_uv(uv_mid.0, uv_mid.1);
+                        let surf_mid = face.surface.d0_native(nu_mid, nv_mid);
                         let dev = (mid_3d - surf_mid).length();
                         max_chord = max_chord.max(dev);
                         let mut needs = dev > config.deflection_interior;
                         if !needs {
-                            let na = face.surface.normal_native(uva.0, uva.1);
-                            let nb = face.surface.normal_native(uvb.0, uvb.1);
+                            let (nu_a, nv_a) = native_uv(uva.0, uva.1);
+                            let na = face.surface.normal_native(nu_a, nv_a);
+                            let (nu_b, nv_b) = native_uv(uvb.0, uvb.1);
+                            let nb = face.surface.normal_native(nu_b, nv_b);
                             let angle = na.normalize().dot(nb.normalize()).max(-1.0).min(1.0).acos();
                             needs = angle > config.angular_deflection;
                         }
@@ -433,7 +450,8 @@ pub fn triangulate_uv_cdt_with_steiner(
                         continue;
                     }
                     dedup.insert(key);
-                    let pt_3d = face.surface.d0_native(u as f32, v as f32);
+                    let (nu, nv) = native_uv(u as f32, v as f32);
+                    let pt_3d = face.surface.d0_native(nu, nv);
                     let gi = register_boundary_point_with_normal_indexed_shared(
                         pt_3d,
                         global_vertices,
@@ -441,7 +459,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                         pos_to_idx,
                         shared_boundary,
                         || {
-                            let mut n = face.surface.normal_native(u as f32, v as f32);
+                            let mut n = face.surface.normal_native(nu, nv);
                             if !face.same_sense {
                                 n = -n;
                             }
@@ -869,7 +887,7 @@ mod tests {
             origin: Vec3::new(1.0, 0.0, 0.0),
             direction: Vec3::new(-1.0, 0.0, 1.0),
         };
-        let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, (degen_pc, true));
+        let dek = reg.add_seam_edge(pole, pole, degen_curve, 1e-4, fk, degen_pc, true);
         if let Some(face) = reg.faces.get_mut(fk) {
             face.degenerated_edges.push(dek);
         }
@@ -953,7 +971,7 @@ mod tests {
             origin: Vec3::ZERO,
             direction: Vec3::Z,
         };
-        let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, (degen_pc, true));
+        let dek = reg.add_seam_edge(apex, apex, degen_curve, 1e-4, fk, degen_pc, true);
         if let Some(face) = reg.faces.get_mut(fk) {
             face.degenerated_edges.push(dek);
         }

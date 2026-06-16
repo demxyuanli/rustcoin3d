@@ -29,14 +29,15 @@ pub fn apply_same_parameter(
         }
 
         let mut snapped = poly.params_3d.clone();
-        for (&face_key, (pcurve, _)) in &edge.pcurves {
+        for (&face_key, pcurve) in &edge.pcurves {
             let face = match reg.faces.get(face_key) {
                 Some(f) => f,
                 None => continue,
             };
             for (i, &(t, p)) in poly.params_3d.iter().enumerate() {
                 let uv = pcurve.d0(t);
-                let on_surf = face.surface.d0_native(uv.0, uv.1);
+                let (nu, nv) = reg.face_native_uv(face_key, uv.0, uv.1);
+                let on_surf = face.surface.d0_native(nu, nv);
                 if (on_surf - p).length() > best_tol {
                     snapped[i] = (t, on_surf);
                 }
@@ -44,7 +45,7 @@ pub fn apply_same_parameter(
         }
         poly.params_3d = snapped;
 
-        for (&face_key, (pcurve, _)) in &edge.pcurves {
+        for (&face_key, pcurve) in &edge.pcurves {
             if reg.faces.get(face_key).is_some() {
                 let pts_2d: Vec<(f32, (f32, f32))> = poly
                     .params_3d
@@ -105,7 +106,7 @@ mod tests {
             direction: (5.0, 0.0),
         };
         if let Some(edge) = reg.edges.get_mut(ek) {
-            edge.pcurves.insert(face_key, (pcurve, true));
+            edge.pcurves.insert(face_key, pcurve);
         }
 
         let offset = Vec3::new(0.0, 0.0, 0.5);

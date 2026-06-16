@@ -115,8 +115,6 @@ pub fn close_free_bounds(
                 && (hi_i - lo_j).length() < tolerance;
 
             if match_forward || match_reversed {
-                // Merge by sharing: copy PCurves from victim to survivor edge.
-
                 // Gather faces referencing each edge
                 let faces_i: Vec<FaceKey> = reg.edge_to_faces.get(&open_edges[i])
                     .cloned().unwrap_or_default();
@@ -130,9 +128,88 @@ pub fn close_free_bounds(
                     (open_edges[j], open_edges[i])
                 };
 
+                // Merge vertices: ensure both edges share the same endpoint vertices
+                // so the topological edge closure is real, not just wire-level.
+                {
+                    let surv_p_lo = reg.edges.get(survivor)
+                        .and_then(|e| reg.vertices.get(e.v_low))
+                        .map(|v| v.position);
+                    let surv_p_hi = reg.edges.get(survivor)
+                        .and_then(|e| reg.vertices.get(e.v_high))
+                        .map(|v| v.position);
+                    let vict_p_lo = reg.edges.get(victim)
+                        .and_then(|e| reg.vertices.get(e.v_low))
+                        .map(|v| v.position);
+                    let vict_p_hi = reg.edges.get(victim)
+                        .and_then(|e| reg.vertices.get(e.v_high))
+                        .map(|v| v.position);
+
+                    if let (Some(sp_lo), Some(sp_hi), Some(vp_lo), Some(vp_hi)) =
+                        (surv_p_lo, surv_p_hi, vict_p_lo, vict_p_hi)
+                    {
+                        // Merge endpoint vertices — find_or_add_vertex deduplicates
+                        // within tolerance, returning a shared key for both edges.
+                        let merged_v_lo = reg.find_or_add_vertex(sp_lo, tolerance);
+                        let merged_v_hi = reg.find_or_add_vertex(sp_hi, tolerance);
+                        // The victim's matching endpoint will also resolve to the same key
+                        // because its position is within tolerance (checked above).
+                        let _merged_vict_lo = reg.find_or_add_vertex(vp_lo, tolerance);
+                        let _merged_vict_hi = reg.find_or_add_vertex(vp_hi, tolerance);
+
+                        // Update survivor edge vertices
+                        if let Some(se) = reg.edges.get_mut(survivor) {
+                            let old_lo = se.v_low;
+                            let old_hi = se.v_high;
+                            se.v_low = merged_v_lo;
+                            se.v_high = merged_v_hi;
+                            // Maintain vertex_to_edges index
+                            if old_lo != merged_v_lo {
+                                if let Some(edges) = reg.vertex_to_edges.get_mut(&old_lo) {
+                                    edges.retain(|&e| e != survivor);
+                                }
+                                reg.vertex_to_edges.entry(merged_v_lo).or_default().push(survivor);
+                            }
+                            if old_hi != merged_v_hi {
+                                if let Some(edges) = reg.vertex_to_edges.get_mut(&old_hi) {
+                                    edges.retain(|&e| e != survivor);
+                                }
+                                reg.vertex_to_edges.entry(merged_v_hi).or_default().push(survivor);
+                            }
+                        }
+
+                        // Update victim edge vertices to match survivor
+                        if let Some(ve) = reg.edges.get_mut(victim) {
+                            let old_lo = ve.v_low;
+                            let old_hi = ve.v_high;
+                            let (new_lo, new_hi) = if match_forward {
+                                (merged_v_lo, merged_v_hi)
+                            } else {
+                                (merged_v_hi, merged_v_lo)
+                            };
+                            ve.v_low = new_lo;
+                            ve.v_high = new_hi;
+                            // Update vertex_to_edges for victim
+                            if old_lo != new_lo {
+                                if let Some(edges) = reg.vertex_to_edges.get_mut(&old_lo) {
+                                    edges.retain(|&e| e != victim);
+                                }
+                                reg.vertex_to_edges.entry(new_lo).or_default().push(victim);
+                            }
+                            if old_hi != new_hi {
+                                if let Some(edges) = reg.vertex_to_edges.get_mut(&old_hi) {
+                                    edges.retain(|&e| e != victim);
+                                }
+                                reg.vertex_to_edges.entry(new_hi).or_default().push(victim);
+                            }
+                        }
+                    }
+                }
+
+                // Merge by sharing: copy PCurves from victim to survivor edge.
+
                 // Copy PCurves from victim to survivor
                 if let Some(victim_edge) = reg.edges.get(victim) {
-                    let victim_pcurves: Vec<(FaceKey, (Curve2d, bool))> = victim_edge.pcurves
+                    let victim_pcurves: Vec<(FaceKey, Curve2d)> = victim_edge.pcurves
                         .iter()
                         .map(|(&fk, pc)| (fk, pc.clone()))
                         .collect();
@@ -258,26 +335,26 @@ mod tests {
         };
 
         let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true));
+            make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true);
         let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
+            make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true);
         let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true));
+            make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true);
         let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true));
+            make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true);
 
         // Face B edges (e1 is shared with face A — v1→v2)
         let e4 = reg.add_edge_with_pcurve(v1, v4, make_line(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), true));
+            make_pc(Vec3::new(1.,0.,0.), Vec3::new(2.,0.,0.)), true);
         // Shared edge — add fkb's pcurve to e1
         if let Some(edge) = reg.edges.get_mut(e1) {
-            edge.pcurves.insert(fkb, (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
+            edge.pcurves.insert(fkb, make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
         }
         reg.edge_to_faces.entry(e1).or_default().push(fkb);
         let e5 = reg.add_edge_with_pcurve(v4, v5, make_line(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), true));
+            make_pc(Vec3::new(2.,0.,0.), Vec3::new(2.,1.,0.)), true);
         let e6 = reg.add_edge_with_pcurve(v5, v2, make_line(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), true));
+            make_pc(Vec3::new(2.,1.,0.), Vec3::new(1.,1.,0.)), true);
 
         reg.wires.get_mut(wka).unwrap().edges = vec![
             (e0, Orientation::Forward), (e1, Orientation::Forward),
@@ -323,7 +400,7 @@ mod tests {
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, (pc, true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let sk = reg.shells.insert(BRepShell {
             faces: vec![(fk, Orientation::Forward)], closed: false, step_id: None,

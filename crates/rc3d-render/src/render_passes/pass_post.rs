@@ -73,14 +73,14 @@ pub(super) fn encode_post_processing(
             renderer.gpu_timer.end(encoder, ti);
         }
 
-        // ── Volumetric Fog (reads depth only, writes to dst) ──
+        // ── Volumetric Fog (reads depth + scene color, writes composited dst) ──
         if renderer.enable_volumetric_fog {
             let ti = renderer.gpu_timer.begin(encoder, "PP VolFog");
-            let (_src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
+            let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
             if let Some(ref fog) = renderer.gpu.volumetric_fog {
                 fog.compute(
                     &renderer.device, &renderer.queue, encoder,
-                    depth_read_view, dst, w, h,
+                    depth_read_view, src, dst, w, h,
                     ctx.camera_inv_proj,
                     Vec3::from(ctx.camera_pos),
                     Vec3::new(0.5, -0.8, 0.3),
@@ -200,12 +200,17 @@ pub(super) fn encode_post_processing(
         if renderer.enable_taa {
             let ti = renderer.gpu_timer.begin(encoder, "PP TAA");
             let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
+            let (src_tex, dst_tex) = if hdr_is_src {
+                (&fx.hdr_tex, &fx.scratch_tex)
+            } else {
+                (&fx.scratch_tex, &fx.hdr_tex)
+            };
             if let Some(ref mut taa) = renderer.gpu.taa_pass {
                 taa.ensure_history(&renderer.device, w, h);
                 taa.resolve(
                     &renderer.device, &renderer.queue, encoder,
-                    src, &fx.velocity_view, depth_read_view,
-                    dst,
+                    src, src_tex, &fx.velocity_view, depth_read_view,
+                    dst, dst_tex,
                     0.05, 1.0,
                 );
                 hdr_is_src = !hdr_is_src;

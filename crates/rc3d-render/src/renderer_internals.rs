@@ -132,6 +132,9 @@ pub(crate) struct FrameState {
     pub cached_projected_labels: Vec<crate::world_label::WorldLabelCommand>,
     /// GPU→CPU depth capture buffer (filled one frame, read the next).
     pub occlusion_capture_buf: Option<wgpu::Buffer>,
+    /// Set when an async map of `occlusion_capture_buf` is in flight.
+    /// 0 = in flight, 1 = mapped OK, 2 = mapping failed.
+    pub occlusion_map_pending: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>,
     /// Depth data from previous frame for annotation occlusion.
     pub occlusion_data: Option<(Vec<f32>, u32, u32)>,
     /// (tex_w, tex_h, aligned_row_bytes) for the capture buffer.
@@ -166,6 +169,9 @@ pub(crate) struct FrameState {
     /// How many frames since LOD nodes were last seen (auto-disable after 2 empty scans).
     pub lod_scan_frames_since_seen: u8,
     pub gpu_cull_ready: bool,
+    /// Number of object transforms uploaded for GPU culling this frame
+    /// (must match the dispatch size and the uniform's object_count).
+    pub gpu_cull_object_count: u32,
     pub parallel_traversal_enabled: bool,
     /// Static frame: true when BVH had zero dirty AABBs this frame.
     pub bvh_fully_static: bool,
@@ -260,6 +266,14 @@ pub(crate) struct GpuInternals {
     pub interaction_downscale_view: Option<wgpu::TextureView>,
     pub interaction_downscale_depth: Option<wgpu::Texture>,
     pub interaction_downscale_depth_view: Option<wgpu::TextureView>,
+    /// Read-only (DepthOnly aspect) view of `interaction_downscale_depth`.
+    pub interaction_downscale_depth_read_view: Option<wgpu::TextureView>,
+    /// Compute pipeline that downsamples the full depth buffer into a small
+    /// R32Float grid for annotation occlusion (whole-screen coverage).
+    pub occlusion_downsample_pipeline: Option<wgpu::ComputePipeline>,
+    pub occlusion_downsample_bgl: Option<wgpu::BindGroupLayout>,
+    /// Small R32Float target of the occlusion downsample (tex, storage view).
+    pub occlusion_downsample_tex: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Upscale pipeline + BGL + sampler for dynamic resolution interaction blit.
     pub upscale_pipeline: Option<wgpu::RenderPipeline>,
     pub upscale_bgl: Option<wgpu::BindGroupLayout>,

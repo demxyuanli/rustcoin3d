@@ -75,7 +75,7 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
                 );
 
                 let ek = ctx.reg.add_edge_with_pcurve(v0, v1, curve, ctx.tol, face_key,
-                    (rc3d_shape::geom::curve2d::Curve2d::from_pcurve_3d(&pcurve), true));
+                    rc3d_shape::geom::curve2d::Curve2d::from_pcurve_3d(&pcurve), true);
                 let (v_lo_key, _v_hi_key) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
                 let wire_orient = if v0 == v_lo_key {
                     Orientation::Forward
@@ -121,6 +121,10 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
             ctx.reg.trim_ranges.insert(face_key, trim);
         }
 
+        // Face orientation in shell comes from STEP CLOSED_SHELL ORIENTED_FACE flag.
+        // oriented_forward=true: face is used with its natural orientation in the solid.
+        // oriented_forward=false: face is reversed (flipped) relative to its natural orientation.
+        // The natural orientation already incorporates face.same_sense (face vs surface normal).
         let face_orient = if face_data.oriented_forward {
             *ctx.oriented_forward_faces += 1;
             Orientation::Forward

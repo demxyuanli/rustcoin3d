@@ -120,6 +120,13 @@ fn config_hash(config: &BRepMeshConfig) -> u64 {
     discriminant(&config.face.delaunay_backend).hash(&mut h);
     config.face.skip_interior_edge_split.hash(&mut h);
     config.fast_export.hash(&mut h);
+    config.weld_tolerance.to_bits().hash(&mut h);
+    config.fallback.trimmed_cdt.hash(&mut h);
+    config.fallback.closed_parametric.hash(&mut h);
+    config.fallback.ruled_strip.hash(&mut h);
+    config.fallback.parametric_grid.hash(&mut h);
+    config.fallback.plane_center_fan.hash(&mut h);
+    config.fallback.surface_fill_3d.hash(&mut h);
     h.finish()
 }
 

@@ -21,6 +21,7 @@ struct FogParams {
 @group(0) @binding(1) var s_point: sampler;
 @group(0) @binding(2) var<uniform> params: FogParams;
 @group(0) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var t_scene: texture_2d<f32>;       // scene HDR color
 
 // Reconstruct world position from depth and UV
 fn world_pos_from_depth(uv: vec2<f32>, depth: f32) -> vec3<f32> {
@@ -95,9 +96,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Combine fog color with scattered light
-    let fog = params.fog_color.rgb * (1.0 - transmittance);
-    let result = fog + scattered_light;
+    // Combine fog color with scattered light, then composite over the scene:
+    // out = scene * transmittance + fog. Writing the composited image keeps
+    // this pass a valid ping-pong stage in the post-processing chain.
+    let fog = params.fog_color.rgb * (1.0 - transmittance) + scattered_light;
+    let scene = textureLoad(t_scene, vec2<i32>(gid.xy), 0).rgb;
+    let result = scene * transmittance + fog;
 
-    textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(result, transmittance));
+    textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(result, 1.0));
 }

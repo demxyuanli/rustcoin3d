@@ -94,7 +94,6 @@ pub fn compose_shells(
 /// Build shells from a flat face list, creating ShellKey entries in BRepStore.
 ///
 /// Returns the list of newly created ShellKeys.
-#[allow(dead_code)]
 pub fn compose_shells_into_store(
     face_keys: &[FaceKey],
     reg: &mut BRepStore,
@@ -150,7 +149,7 @@ mod tests {
                 direction: Vec3::X,
             };
             let pc = Curve2d::Line { origin: (offset, 0.0), direction: (1.0, 0.0) };
-            let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, (pc, true));
+            let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
             reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
             face_keys.push(fk);
         }
@@ -187,13 +186,13 @@ mod tests {
             color: None, degenerated_edges: vec![],
         });
         let e0 = reg.add_edge_with_pcurve(v0, v1, make_line(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true));
+            make_pc(Vec3::new(0.,0.,0.), Vec3::new(1.,0.,0.)), true);
         let e1 = reg.add_edge_with_pcurve(v1, v2, make_line(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
+            make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true);
         let e2 = reg.add_edge_with_pcurve(v2, v3, make_line(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true));
+            make_pc(Vec3::new(1.,1.,0.), Vec3::new(0.,1.,0.)), true);
         let e3 = reg.add_edge_with_pcurve(v3, v0, make_line(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), 1e-4, fka,
-            (make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true));
+            make_pc(Vec3::new(0.,1.,0.), Vec3::new(0.,0.,0.)), true);
         reg.wires.get_mut(wka).unwrap().edges = vec![
             (e0, Orientation::Forward), (e1, Orientation::Forward),
             (e2, Orientation::Forward), (e3, Orientation::Forward),
@@ -208,15 +207,15 @@ mod tests {
         });
         // Shared edge e1: add fkb's pcurve
         if let Some(edge) = reg.edges.get_mut(e1) {
-            edge.pcurves.insert(fkb, (make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)), true));
+            edge.pcurves.insert(fkb, make_pc(Vec3::new(1.,0.,0.), Vec3::new(1.,1.,0.)));
         }
         reg.edge_to_faces.entry(e1).or_default().push(fkb);
         let e4 = reg.add_edge_with_pcurve(v2, v5, make_line(Vec3::new(1.,1.,0.), Vec3::new(2.,1.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(1.,1.,0.), Vec3::new(2.,1.,0.)), true));
+            make_pc(Vec3::new(1.,1.,0.), Vec3::new(2.,1.,0.)), true);
         let e5 = reg.add_edge_with_pcurve(v5, v4, make_line(Vec3::new(2.,1.,0.), Vec3::new(2.,0.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(2.,1.,0.), Vec3::new(2.,0.,0.)), true));
+            make_pc(Vec3::new(2.,1.,0.), Vec3::new(2.,0.,0.)), true);
         let e6 = reg.add_edge_with_pcurve(v4, v1, make_line(Vec3::new(2.,0.,0.), Vec3::new(1.,0.,0.)), 1e-4, fkb,
-            (make_pc(Vec3::new(2.,0.,0.), Vec3::new(1.,0.,0.)), true));
+            make_pc(Vec3::new(2.,0.,0.), Vec3::new(1.,0.,0.)), true);
         reg.wires.get_mut(wkb).unwrap().edges = vec![
             (e1, Orientation::Forward), (e4, Orientation::Forward),
             (e5, Orientation::Forward), (e6, Orientation::Forward),
@@ -243,7 +242,7 @@ mod tests {
         });
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, (pc, true));
+        let ek = reg.add_edge_with_pcurve(v0, v1, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         let report = compose_shells_into_store(&[fk], &mut reg);

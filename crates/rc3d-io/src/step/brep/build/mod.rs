@@ -30,6 +30,7 @@ use crate::step::topology;
 use rc3d_shape::BRepStore;
 use rc3d_shape::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
+use rc3d_shape::geom::curve2d::Curve2d;
 use super::geom::curve_eval::approx_chordal_length;
 use super::geom::normalize_edge_curve_to_vertices;
 use super::heal::curve_trim::add_degenerated_edge_at_pole;
@@ -179,6 +180,13 @@ fn resolve_edge_curve(
     geometry_fallback_count: &mut usize,
 ) -> Option<CurveGeom> {
     if let Some(curve) = build_curve(edge_data.curve_id, entities) {
+        // SURFACE_CURVE with a degenerate/short Line 3D curve may hide a Circle:
+        // the actual circular geometry is defined by PCurves on the surface.
+        if let Some(upgraded) = try_upgrade_to_circle(
+            edge_data, &curve, entities,
+        ) {
+            return Some(upgraded);
+        }
         return Some(curve);
     }
     if options.allow_geometry_fallback {
@@ -193,6 +201,140 @@ fn resolve_edge_curve(
         *skipped_edges += 1;
         None
     }
+}
+
+/// Detect when a SURFACE_CURVE's 3D curve is a degenerate/short Line hiding
+/// a circle. The edge endpoints are far apart but the Line direction is near
+/// zero → the edge is a circular arc on a cylinder/sphere.
+///
+/// Generates a Circle through the start/end points with axis perpendicular
+/// to the edge chord, matching the cylinder/sphere radius.
+fn try_upgrade_to_circle(
+    edge_data: &topology::StepEdge,
+    curve: &CurveGeom,
+    entities: &EntityIndex,
+) -> Option<CurveGeom> {
+    // Only process SURFACE_CURVE with Line 3D curves
+    let record = entities.get(&edge_data.curve_id)?;
+    if record.name != "SURFACE_CURVE" {
+        return None;
+    }
+    let line = match curve {
+        CurveGeom::Line { origin, direction } => (origin, direction),
+        _ => return None,
+    };
+    let line_len = line.1.length();
+    let chord_len = (edge_data.end - edge_data.start).length();
+    // Closed circle (start ≈ end) or very short 3D line relative to chord:
+    // the real geometry is in the PCurves on the cylindrical/spherical surface.
+    let is_closed = chord_len < line_len * 0.01 || chord_len < 1e-4;
+    if !is_closed && line_len > chord_len * 0.1 {
+        return None;
+    }
+    // Find the cylindrical/spherical surface among the PCURVEs
+    let pcurve_ids = geom::nth_list_refs(&record.params, 2)?;
+    for &pcurve_id in &pcurve_ids {
+        let pc_record = entities.get(&pcurve_id)?;
+        let surface_id = geom::nth_ref(&pc_record.params, 1)?;
+        let surface = build_surface(surface_id, entities)?;
+        match &surface {
+            SurfaceGeom::Cylinder { origin, axis, radius, .. } => {
+                let ax = axis.normalize();
+                let r = *radius;
+                // Project start/end onto plane perpendicular to axis through origin
+                let mid = (edge_data.start + edge_data.end) * 0.5;
+                let to_mid = mid - *origin;
+                let axial = ax * ax.dot(to_mid);
+                let radial = to_mid - axial;
+                let center = *origin + axial + radial.normalize() * r;
+                let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(ax);
+                return Some(CurveGeom::Circle { center, axis: ax, radius: r, x_dir, y_dir });
+            }
+            SurfaceGeom::Sphere { center, radius: r } => {
+                let mid = (edge_data.start + edge_data.end) * 0.5;
+                let to_mid = mid - *center;
+                let h = to_mid.length();
+                if h > *r { continue; }
+                let circ_r = (r * r - h * h).sqrt().max(1e-6);
+                let axis = to_mid.normalize();
+                let c = *center + axis * h;
+                let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(axis);
+                return Some(CurveGeom::Circle { center: c, axis, radius: circ_r, x_dir, y_dir });
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Post-processing: iterate all edges of faces with cylindrical/spherical
+/// surfaces. When an edge has a Line 3D curve but the face surface is curved,
+/// replace the Line with a Circle computed from the surface + PCurve data.
+fn upgrade_line_edges_to_circles(reg: &mut BRepStore) -> usize {
+    let mut count = 0usize;
+    let face_keys: Vec<FaceKey> = reg.faces.keys().collect();
+    for fk in face_keys {
+        let surface = match reg.faces.get(fk).map(|f| f.surface.clone()) {
+            Some(s) => s, None => continue,
+        };
+        match &surface {
+            SurfaceGeom::Cylinder { origin, axis, radius, .. } => {
+                let ax = axis.normalize();
+                let r = *radius;
+                let edge_keys: Vec<EdgeKey> = rc3d_shape::topo_iter::iter_edges_of_face(fk, reg);
+                for ek in edge_keys {
+                    let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
+                    if !matches!(edge.curve, CurveGeom::Line { .. }) { continue; }
+                    if let Some(pc) = edge.pcurves.get(&fk) {
+                        let uv_mid = pc.d0(0.5);
+                        let v = uv_mid.1;
+                        let center = *origin + ax * v;
+                        let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(ax);
+                        // Rebuild PCurve: fresh Line matching the Circle geometry
+                        let fresh_pc = Curve2d::Line {
+                            origin: (0.0, v),
+                            direction: (std::f32::consts::TAU, 0.0),
+                        };
+                        if let Some(e) = reg.edges.get_mut(ek) {
+                            e.curve = CurveGeom::Circle { center, axis: ax, radius: r, x_dir, y_dir };
+                            e.pcurves.insert(fk, fresh_pc);
+                            e.tolerance = 1e-4;
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            SurfaceGeom::Sphere { center, radius: r } => {
+                let edge_keys: Vec<EdgeKey> = rc3d_shape::topo_iter::iter_edges_of_face(fk, reg);
+                for ek in edge_keys {
+                    let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
+                    if !matches!(edge.curve, CurveGeom::Line { .. }) { continue; }
+                    if let Some(pc) = edge.pcurves.get(&fk) {
+                        let uv = pc.d0(0.5);
+                        let v_norm = uv.1 / std::f32::consts::PI;
+                        let z = r * (1.0 - 2.0 * v_norm).cos();
+                        let circ_r = (r * r - z * z).sqrt().max(1e-6);
+                        let axis = Vec3::Z;
+                        let c = *center + axis * z;
+                        let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(axis);
+                        // Rebuild PCurve: fresh Line for the latitude circle
+                        let fresh_pc = Curve2d::Line {
+                            origin: (0.0, uv.1),
+                            direction: (std::f32::consts::TAU, 0.0),
+                        };
+                        if let Some(e) = reg.edges.get_mut(ek) {
+                            e.curve = CurveGeom::Circle { center: c, axis, radius: circ_r, x_dir, y_dir };
+                            e.pcurves.insert(fk, fresh_pc);
+                            e.tolerance = 1e-4;
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+    count
 }
 
 pub fn build_brep_with_options(
@@ -261,6 +403,24 @@ pub fn build_brep_with_options(
 
     // Build edge-to-face inverted index for fast shared edge queries
     reg.build_edge_to_faces_index();
+
+    // Post-process: upgrade degenerate Line edges on cylindrical/spherical
+    // faces to Circle curves.
+    let upgraded = upgrade_line_edges_to_circles(&mut reg);
+    if upgraded > 0 {
+        log::info!("[STEP] Upgraded {} Line edges to Circle on curved surfaces", upgraded);
+    }
+
+    // Post-process: add seam edges to closed parametric surfaces (Sphere, Cylinder).
+    // These are needed for topological validity; without them OCC-based tools
+    // may reject the geometry.
+    let mut seams_added = 0usize;
+    for fk in reg.faces.keys().collect::<Vec<_>>() {
+        seams_added += rc3d_shape::heal::seam::fix_missing_seams(&mut reg, fk);
+    }
+    if seams_added > 0 {
+        log::info!("[STEP] Added {} seam edges to closed surfaces", seams_added);
+    }
 
     // Phase: Void shell subtraction (when strict_voids enabled)
     let mut void_shells_subtracted = 0usize;

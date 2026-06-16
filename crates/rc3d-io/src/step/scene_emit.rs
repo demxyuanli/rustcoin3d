@@ -327,16 +327,15 @@ fn add_mesh_nodes(graph: &mut SceneGraph, comp: NodeId, mesh: rc3d_shape::MeshRe
 }
 
 pub fn emit_plan_options_from_step(options: &crate::step::StepImportOptions) -> EmitPlanOptions {
-    let mut mesh_config = if options.fast_export {
-        rc3d_shape::mesh::BRepMeshConfig::preview()
-    } else if options.mesh_relative_deflection > 0.0 {
-        let mut cfg = rc3d_shape::mesh::BRepMeshConfig::quality();
-        cfg.relative_deflection = options.mesh_relative_deflection;
-        cfg
-    } else {
-        rc3d_shape::mesh::BRepMeshConfig::default()
-    };
-    mesh_config.relative_deflection = options.mesh_relative_deflection;
+    // Use TessellationTier-driven policy (OCC alignment).
+    // The tier maps through TessellationPolicy → BRepMeshConfig + HealPolicy + FallbackAllowlist.
+    let tier = options.tessellation_tier.unwrap_or(rc3d_shape::mesh::TessellationTier::Standard);
+    let policy = rc3d_shape::mesh::TessellationPolicy::for_tier(tier);
+    let mut mesh_config = policy.to_mesh_config();
+    // Override with explicit mesh_relative_deflection if user specified one
+    if options.mesh_relative_deflection > 0.0 {
+        mesh_config.relative_deflection = options.mesh_relative_deflection;
+    }
     EmitPlanOptions {
         mesh_config,
         heal_skip_faces: Vec::new(),

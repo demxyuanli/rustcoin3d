@@ -82,6 +82,8 @@ pub(crate) fn mesh_faces_in_chunk(
             let tris_before = all_indices.len() / 4;
             mesh_closed_surface(
         face,
+        info_face_key,
+        reg,
         &scaled_config.face,
         &mut global_vertices,
         &mut global_normals,
@@ -142,11 +144,6 @@ pub(crate) fn mesh_faces_in_chunk(
         | SurfaceGeom::Torus { .. }
         );
         let mut algo = algo_from_plan(mesh_plan).unwrap_or(FaceMeshAlgo::SurfaceFill3d);
-        // Respect FallbackAllowlist: skip face when surface_fill_3d is disallowed
-        if algo == FaceMeshAlgo::SurfaceFill3d && !scaled_config.fallback.surface_fill_3d {
-            log::debug!("[BRep mesh] face {:?}: surface_fill_3d disallowed by FallbackAllowlist, skip", info_face_key);
-            continue;
-        }
         if info_wire_edges.len() == 2 && uv_loop_is_degenerate(&loops) {
             algo = FaceMeshAlgo::TrimmedCdt;
         }
@@ -471,6 +468,7 @@ pub(crate) fn mesh_faces_in_chunk(
             &boundary_ordered,
             &inner_boundaries,
             face,
+            reg,
             &mut global_vertices,
             &mut global_normals,
             &mut all_indices,
@@ -484,6 +482,7 @@ pub(crate) fn mesh_faces_in_chunk(
         &boundary_ordered,
         &inner_boundaries,
         face,
+        reg,
         &mut global_vertices,
         &mut global_normals,
         &mut all_indices,
@@ -496,6 +495,7 @@ pub(crate) fn mesh_faces_in_chunk(
         &boundary_ordered,
         &inner_boundaries,
         face,
+        reg,
         &mut global_vertices,
         &mut global_normals,
         &mut all_indices,
@@ -612,6 +612,8 @@ pub(crate) fn mesh_faces_in_chunk(
         );
         mesh_trimmed_uv_grid(
             face,
+            info_face_key,
+            reg,
             fill_loops,
             uv_bounds,
             Some(&retry_cfg),
@@ -641,6 +643,7 @@ pub(crate) fn mesh_faces_in_chunk(
         &boundary_ordered,
         &inner_boundaries,
         face,
+        reg,
         &mut global_vertices,
         &mut global_normals,
         &mut all_indices,
@@ -757,6 +760,7 @@ pub(crate) fn mesh_faces_in_chunk(
             &boundary_ordered,
             &inner_boundaries,
             face,
+            reg,
             &mut global_vertices,
             &mut global_normals,
             &mut all_indices,
@@ -789,6 +793,7 @@ pub(crate) fn mesh_faces_in_chunk(
             &boundary_ordered,
             &inner_boundaries,
             face,
+            reg,
             &mut global_vertices,
             &mut global_normals,
             &mut all_indices,
@@ -906,6 +911,8 @@ pub(crate) fn mesh_faces_in_chunk(
         let append_start_tri = all_indices.len() / 4;
         mesh_trimmed_uv_grid(
             face,
+            info_face_key,
+            reg,
             &grid_loops,
             uv_bounds,
             Some(&scaled_config.face),
@@ -926,6 +933,8 @@ pub(crate) fn mesh_faces_in_chunk(
             if wire_len == 2 && matches!(face.surface, SurfaceGeom::Revolution { .. }) {
                 mesh_uv_bbox_grid(
                     face,
+                    info_face_key,
+                    reg,
                     uv_bounds,
                     Some(&scaled_config.face),
                     &mut global_vertices,
@@ -996,6 +1005,8 @@ pub(crate) fn mesh_faces_in_chunk(
         let tris_before = all_indices.len() / 4;
         mesh_parametric_grid(
             face,
+            info_face_key,
+            reg,
             Some(uv_bounds),
             Some(&scaled_config.face),
             &mut global_vertices,
@@ -1025,6 +1036,7 @@ pub(crate) fn mesh_faces_in_chunk(
         &boundary_ordered,
         &inner_boundaries,
         face,
+        reg,
         &mut global_vertices,
         &mut global_normals,
         &mut all_indices,

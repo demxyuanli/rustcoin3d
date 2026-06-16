@@ -40,7 +40,9 @@ pub(super) fn pass_depth_prepass(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
-    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &prepass_pipeline, &scene_pl.flat_solid, false);
+    // Prepass uploads the shared instance/indirect buffers; the solid pass
+    // re-records the identical layout without re-uploading (see draw_opaque).
+    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &prepass_pipeline, &scene_pl.flat_solid, true);
 }
 
 pub(super) fn pass_solid_and_outline(
@@ -98,7 +100,9 @@ pub(super) fn pass_solid_and_outline(
 
     // Meshlet draw path: uses basic (full-buffer direct draw) or GPU cull
     // (compact+indirect) depending on meshlet_gpu_cull_enabled.
-    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, true);
+    // When the depth prepass already ran this frame it uploaded identical
+    // instance/indirect data; skip the redundant upload here.
+    super::draw_opaque_triangle_batches(renderer, &mut pass, ctx, &solid_pipeline, &scene_pl.flat_solid, !reuse_prepass_depth);
 
     if ctx.run_outline {
         {

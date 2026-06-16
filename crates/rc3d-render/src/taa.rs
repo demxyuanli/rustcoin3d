@@ -73,6 +73,8 @@ pub struct TaaPass {
     params_buffer: wgpu::Buffer,
     pub history_texture: Option<wgpu::Texture>,
     pub history_view: Option<wgpu::TextureView>,
+    /// False until the history texture has been seeded with a real frame.
+    history_valid: bool,
 }
 
 #[repr(C)]
@@ -226,6 +228,7 @@ impl TaaPass {
             params_buffer,
             history_texture: None,
             history_view: None,
+            history_valid: false,
         }
     }
 
@@ -255,27 +258,52 @@ impl TaaPass {
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             self.history_texture = Some(tex);
             self.history_view = Some(view);
+            self.history_valid = false;
         }
     }
 
     /// Run TAA resolve. `current_color` is the HDR scene output.
     /// `velocity_tex` is the screen-space motion vector texture (Rg16Float).
     /// `depth_tex` is the linear depth texture.
+    /// `current_color_tex`/`output_tex` are the textures behind the views;
+    /// they are used to seed the history on the first frame and to copy the
+    /// resolved result into the history for the next frame (both must have
+    /// COPY_SRC usage).
     pub fn resolve(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         current_color_view: &wgpu::TextureView,
+        current_color_tex: &wgpu::Texture,
         velocity_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
         output_view: &wgpu::TextureView,
+        output_tex: &wgpu::Texture,
         blend_factor: f32,
         clip_factor: f32,
     ) {
         let Some(history_view) = &self.history_view else {
             return;
         };
+        let Some(history_tex) = &self.history_texture else {
+            return;
+        };
+        let copy_extent = wgpu::Extent3d {
+            width: history_tex.width(),
+            height: history_tex.height(),
+            depth_or_array_layers: 1,
+        };
+
+        // Seed history with the current frame so the first resolve is an
+        // identity blend instead of mixing 95% black into the output.
+        if !self.history_valid {
+            encoder.copy_texture_to_texture(
+                current_color_tex.as_image_copy(),
+                history_tex.as_image_copy(),
+                copy_extent,
+            );
+        }
 
         queue.write_buffer(
             &self.params_buffer,
@@ -334,8 +362,20 @@ impl TaaPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bg, &[]);
         // Dispatch based on history texture dimensions
-        let w = self.history_texture.as_ref().map(|t| t.width()).unwrap_or(1);
-        let h = self.history_texture.as_ref().map(|t| t.height()).unwrap_or(1);
+        let w = copy_extent.width;
+        let h = copy_extent.height;
         pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+        drop(pass);
+
+        // Carry the resolved frame into the history for the next frame's
+        // temporal accumulation.
+        if let Some(history_tex) = &self.history_texture {
+            encoder.copy_texture_to_texture(
+                output_tex.as_image_copy(),
+                history_tex.as_image_copy(),
+                copy_extent,
+            );
+        }
+        self.history_valid = true;
     }
 }

@@ -19,6 +19,7 @@ use super::face_uv::{
     FaceUvLoops, UvLoop, UvSource, UvVertex,
 };
 use crate::geom::SurfaceGeom;
+use crate::store::BRepStore;
 use crate::topo::{BRepFace, FaceKey};
 
 pub fn default_grid_for_surface(surface: &SurfaceGeom) -> (u32, u32) {
@@ -166,6 +167,7 @@ pub fn surface_fill_3d(
     boundary_global: &[usize],
     inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
+    reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
@@ -266,11 +268,34 @@ pub fn surface_fill_3d(
             .collect();
 
         if boundary_uvs.len() >= 3 {
+            // Project inner boundary vertices to UV for hole constraints
+            let inner_loops: Vec<UvLoop> = inner_boundaries.iter().map(|ib| {
+                let inner_uvs: Vec<UvVertex> = ib.iter().filter_map(|&gi| {
+                    if gi < global_vertices.len() {
+                        let pt = global_vertices[gi];
+                        let uv = if matches!(face.surface, SurfaceGeom::Revolution { .. }) {
+                            face.surface
+                                .revolution_native_uv_at(pt)
+                                .or_else(|| face.surface.project(pt))
+                                .or_else(|| face.surface.inverse_native_uv(pt, inv_tol))
+                        } else {
+                            face.surface
+                                .project(pt)
+                                .or_else(|| face.surface.inverse_native_uv(pt, inv_tol))
+                        };
+                        uv.map(|uv| UvVertex { global_idx: gi, uv })
+                    } else {
+                        None
+                    }
+                }).collect();
+                UvLoop { boundary: inner_uvs }
+            }).collect();
+
             let mut loops = FaceUvLoops {
                 outer: UvLoop {
                     boundary: boundary_uvs,
                 },
-                inners: vec![],
+                inners: inner_loops,
                 uv_source: UvSource::SurfaceFill,
             };
             unwrap_periodic_uv_loops(&mut loops, &face.surface);
@@ -298,7 +323,7 @@ pub fn surface_fill_3d(
                     global_normals,
                     pos_to_idx,
                     config,
-                    None,
+                    Some(reg),
                     shared_boundary,
                 );
 
@@ -346,6 +371,7 @@ pub fn surface_fill_3d(
         boundary_global,
         inner_boundaries,
         face,
+        reg,
         global_vertices,
         global_normals,
         all_indices,
@@ -364,6 +390,7 @@ pub(crate) fn surface_fill_3d_planar(
     boundary_global: &[usize],
     inner_boundaries: &[Vec<usize>],
     face: &BRepFace,
+    reg: &BRepStore,
     global_vertices: &mut Vec<Vec3>,
     global_normals: &mut Vec<Vec3>,
     all_indices: &mut Vec<i32>,
@@ -508,7 +535,8 @@ pub(crate) fn surface_fill_3d_planar(
                     let edge_len = (*a - *b).length();
                     let mid_3d = (*a + *b) * 0.5;
                     if let Some((su, sv)) = face.surface.project(mid_3d) {
-                        let on_surf = face.surface.d0_native(su, sv);
+                        let (nu, nv) = reg.face_native_uv(face_key, su, sv);
+                        let on_surf = face.surface.d0_native(nu, nv);
                         let dev = (mid_3d - on_surf).length();
                         max_chord = max_chord.max(dev);
                         if dev > config.deflection_interior && edge_len > min_sz {
@@ -519,8 +547,10 @@ pub(crate) fn surface_fill_3d_planar(
                     if let (Some((su_a, sv_a)), Some((su_b, sv_b))) =
                         (face.surface.project(*a), face.surface.project(*b))
                     {
-                        let na = face.surface.normal_native(su_a, sv_a);
-                        let nb = face.surface.normal_native(su_b, sv_b);
+                        let (nu_a, nv_a) = reg.face_native_uv(face_key, su_a, sv_a);
+                        let (nu_b, nv_b) = reg.face_native_uv(face_key, su_b, sv_b);
+                        let na = face.surface.normal_native(nu_a, nv_a);
+                        let nb = face.surface.normal_native(nu_b, nv_b);
                         let angle = na.dot(nb).max(-1.0).min(1.0).acos();
                         if angle > config.angular_deflection && edge_len > min_sz {
                             tri_split = true;
@@ -551,7 +581,8 @@ pub(crate) fn surface_fill_3d_planar(
                 let Some((su, sv)) = face.surface.project(mid_3d_plane) else {
                     continue;
                 };
-                let pt_3d = face.surface.d0_native(su, sv);
+                let (nu, nv) = reg.face_native_uv(face_key, su, sv);
+                let pt_3d = face.surface.d0_native(nu, nv);
                 let gi = register_boundary_point_with_normal_indexed_shared(
                     pt_3d,
                     global_vertices,
@@ -559,7 +590,8 @@ pub(crate) fn surface_fill_3d_planar(
                     pos_to_idx,
                     shared_boundary,
                     || {
-                        let mut n = face.surface.normal_native(su, sv);
+                        let (nu, nv) = reg.face_native_uv(face_key, su, sv);
+                        let mut n = face.surface.normal_native(nu, nv);
                         if !face.same_sense {
                             n = -n;
                         }

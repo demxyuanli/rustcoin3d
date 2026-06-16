@@ -7,7 +7,14 @@ use crate::vertex::GpuObjectTransform;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct FrustumUniforms {
     planes: [[f32; 4]; 6],
+    // object_count rides in the uniform: the device is created without the
+    // PUSH_CONSTANTS feature, so push constants would fail validation.
+    object_count: u32,
+    _pad: [u32; 3],
 }
+
+/// Byte size of the frustum uniform buffer (planes + object_count + padding).
+pub const FRUSTUM_UNIFORM_SIZE: u64 = std::mem::size_of::<FrustumUniforms>() as u64;
 
 /// GPU compute pipeline for object-level frustum culling.
 pub struct GpuCullPass {
@@ -75,10 +82,7 @@ impl GpuCullPass {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Object Cull Layout"),
                 bind_group_layouts: &[&bgl],
-                push_constant_ranges: &[wgpu::PushConstantRange {
-                    stages: wgpu::ShaderStages::COMPUTE,
-                    range: 0..4,
-                }],
+                push_constant_ranges: &[],
             });
 
         let pipeline =
@@ -127,14 +131,19 @@ impl GpuCullPass {
         })
     }
 
-    /// Upload frustum plane data to the uniform buffer.
+    /// Upload frustum plane data and the object count to the uniform buffer.
     pub fn write_frustum(
         &self,
         queue: &wgpu::Queue,
         frustum_uniform: &wgpu::Buffer,
         planes: &[[f32; 4]; 6],
+        object_count: u32,
     ) {
-        let data = FrustumUniforms { planes: *planes };
+        let data = FrustumUniforms {
+            planes: *planes,
+            object_count,
+            _pad: [0; 3],
+        };
         queue.write_buffer(frustum_uniform, 0, bytemuck::bytes_of(&data));
     }
 
@@ -149,18 +158,21 @@ impl GpuCullPass {
     }
 
     /// Reset indirect args counters to zero (called before dispatch).
+    /// Only the first entry is used today (all objects upload mesh_id = 0),
+    /// so avoid re-uploading the full 64 KB table every frame.
     pub fn reset_indirect_args(
         &self,
         queue: &wgpu::Queue,
         indirect_buffer: &wgpu::Buffer,
-        max_entries: u32,
+        _max_entries: u32,
     ) {
         let entry_size = std::mem::size_of::<wgpu::util::DrawIndirectArgs>();
-        let zeroed = vec![0u8; max_entries as usize * entry_size];
+        let zeroed = vec![0u8; entry_size];
         queue.write_buffer(indirect_buffer, 0, &zeroed);
     }
 
-    /// Dispatch the compute cull pass.
+    /// Dispatch the compute cull pass. `object_count` must match the count
+    /// previously written via `write_frustum`.
     pub fn dispatch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -173,8 +185,6 @@ impl GpuCullPass {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, bind_group, &[]);
-        let pc: [u32; 1] = [object_count];
-        pass.set_push_constants(0, bytemuck::bytes_of(&pc));
         let workgroup_count = object_count.div_ceil(256);
         pass.dispatch_workgroups(workgroup_count, 1, 1);
     }

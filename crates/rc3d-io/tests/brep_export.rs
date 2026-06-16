@@ -65,16 +65,15 @@ fn brep_export_cube_writes_file() {
         .expect("import Cube.step");
 
     let store = &result.document.store;
-    let path = std::env::temp_dir().join("cube_brep_test.brep");
+    let output_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output/brep");
+    std::fs::create_dir_all(&output_dir).ok();
+    let path = output_dir.join("Cube.brep");
     let mut file = std::fs::File::create(&path).expect("create file");
     write_brep(store, &mut file).expect("write brep");
 
     let file_size = std::fs::metadata(&path).unwrap().len();
     assert!(file_size > 100, "brep file too small: {} bytes", file_size);
-    println!("Cube.brep: {} bytes", file_size);
-
-    // Clean up
-    let _ = std::fs::remove_file(&path);
+    println!("Cube.brep: {} bytes → {}", file_size, path.display());
 }
 
 #[test]

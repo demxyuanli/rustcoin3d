@@ -163,7 +163,7 @@ fn trim_inner_wire_at_outer(
             Some(e) => e,
             None => continue,
         };
-        let (pc, _same_sense) = match edge.pcurves.get(&face_key) {
+        let pc = match edge.pcurves.get(&face_key) {
             Some(p) => p,
             None => continue,
         };
@@ -201,7 +201,7 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<
     let mut pts = Vec::new();
     for &(ek, _) in &wire.edges {
         let edge = reg.edges.get(ek)?;
-        let (pc, _same_sense) = edge.pcurves.get(&fk)?;
+        let pc = edge.pcurves.get(&fk)?;
         let uv = pc.d0(0.0);
         pts.push((uv.0, uv.1));
     }
@@ -209,7 +209,7 @@ fn collect_wire_uv_polygon(wk: WireKey, fk: FaceKey, reg: &BRepStore) -> Option<
         // Close the polygon
         if let Some(&last_ek) = wire.edges.last() {
             if let Some(edge) = reg.edges.get(last_ek.0) {
-                if let Some((pc, _same_sense)) = edge.pcurves.get(&fk) {
+                if let Some(pc) = edge.pcurves.get(&fk) {
                     let uv = pc.d0(1.0);
                     pts.push((uv.0, uv.1));
                 }
@@ -324,10 +324,10 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc1, true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc2, true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc3, true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc4, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1, true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2, true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3, true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4, true);
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
@@ -338,9 +338,9 @@ mod tests {
         let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
-        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, (pc_inner1, true));
-        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, (pc_inner2, true));
-        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, (pc_inner3, true));
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1, true);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2, true);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3, true);
         let wk_inner = reg.wires.insert(BRepWire { edges: vec![
             (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
         ]});
@@ -370,10 +370,10 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc1, true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc2, true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc3, true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc4, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1, true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2, true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3, true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4, true);
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
@@ -383,9 +383,9 @@ mod tests {
         let pc_inner1 = Curve2d::Line { origin: (10.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (11.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (11.0, 1.0), direction: (-1.0, -1.0) };
-        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, (pc_inner1, true));
-        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, (pc_inner2, true));
-        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, (pc_inner3, true));
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1, true);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2, true);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3, true);
         let wk_inner = reg.wires.insert(BRepWire { edges: vec![
             (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
         ]});
@@ -415,10 +415,10 @@ mod tests {
             same_sense: true, tolerance: 1e-4, seam_edges: vec![], color: None,
             degenerated_edges: vec![],
         });
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc1, true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc2, true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc3, true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc4, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc1, true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc2, true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc3, true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc4, true);
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward), (e2, Orientation::Forward), (e3, Orientation::Forward), (e4, Orientation::Forward),
         ];
@@ -429,9 +429,9 @@ mod tests {
         let pc_inner1 = Curve2d::Line { origin: (1.0, 0.0), direction: (1.0, 0.0) };
         let pc_inner2 = Curve2d::Line { origin: (2.0, 0.0), direction: (0.0, 1.0) };
         let pc_inner3 = Curve2d::Line { origin: (2.0, 1.0), direction: (-1.0, -1.0) };
-        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, (pc_inner1, true));
-        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, (pc_inner2, true));
-        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, (pc_inner3, true));
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner1, true);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner2, true);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner3, true);
         let wk_inner = reg.wires.insert(BRepWire { edges: vec![
             (ek1, Orientation::Forward), (ek2, Orientation::Forward), (ek3, Orientation::Forward),
         ]});
@@ -474,10 +474,10 @@ mod tests {
             origin: (0.0, 0.0),
             direction: (2.0, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc, true);
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, Orientation::Forward),
@@ -492,9 +492,9 @@ mod tests {
             origin: (0.5, 0.0),
             direction: (2.5, 0.0),
         };
-        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, (pc_inner.clone(), true));
-        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, (pc_inner.clone(), true));
-        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, (pc_inner, true));
+        let ek1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_inner.clone(), true);
+        let ek2 = reg.add_edge_with_pcurve(v5, v6, line.clone(), 1e-4, fk, pc_inner.clone(), true);
+        let ek3 = reg.add_edge_with_pcurve(v6, v4, line.clone(), 1e-4, fk, pc_inner, true);
         let wk_inner = reg.wires.insert(BRepWire {
             edges: vec![
                 (ek1, Orientation::Forward),
@@ -545,10 +545,10 @@ mod tests {
             origin: (0.0, 0.0),
             direction: (5.0, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, (pc, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e3 = reg.add_edge_with_pcurve(v2, v3, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e4 = reg.add_edge_with_pcurve(v3, v0, line.clone(), 1e-4, fk, pc, true);
         reg.wires.get_mut(wk_outer).unwrap().edges = vec![
             (e1, Orientation::Forward),
             (e2, Orientation::Forward),
@@ -562,7 +562,7 @@ mod tests {
             origin: (1.0, 1.0),
             direction: (0.5, 0.0),
         };
-        let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, (pc_i1, true));
+        let ei1 = reg.add_edge_with_pcurve(v4, v5, line.clone(), 1e-4, fk, pc_i1, true);
         let wk_i1 = reg.wires.insert(BRepWire {
             edges: vec![(ei1, Orientation::Forward)],
         });
@@ -572,7 +572,7 @@ mod tests {
             origin: (1.4, 1.4),
             direction: (0.6, 0.0),
         };
-        let ei2 = reg.add_edge_with_pcurve(v6, v7, line.clone(), 1e-4, fk, (pc_i2, true));
+        let ei2 = reg.add_edge_with_pcurve(v6, v7, line.clone(), 1e-4, fk, pc_i2, true);
         let wk_i2 = reg.wires.insert(BRepWire {
             edges: vec![(ei2, Orientation::Forward)],
         });

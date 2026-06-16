@@ -937,6 +937,7 @@ impl Renderer {
                 has_lod_nodes: true,     // optimistic; auto-disabled after 2 frames with no LODs
                 lod_scan_frames_since_seen: 0,
                 gpu_cull_ready: false,
+                gpu_cull_object_count: 0,
                 parallel_traversal_enabled: false,
                 bvh_fully_static: false,
                 static_visible_indices: Vec::with_capacity(1024),
@@ -951,6 +952,7 @@ impl Renderer {
                 light_hashes_buf: Vec::with_capacity(1024),
                 meshlet_indices_buf: Vec::with_capacity(256),
                 occlusion_capture_buf: None,
+                occlusion_map_pending: None,
                 occlusion_data: None,
                 occlusion_dims: (0, 0, 0),
             },
@@ -1020,6 +1022,10 @@ impl Renderer {
                 interaction_downscale_view: None,
                 interaction_downscale_depth: None,
                 interaction_downscale_depth_view: None,
+                interaction_downscale_depth_read_view: None,
+                occlusion_downsample_pipeline: None,
+                occlusion_downsample_bgl: None,
+                occlusion_downsample_tex: None,
                 upscale_pipeline: Some(upscale_pipeline),
                 upscale_bgl: Some(upscale_bgl),
                 upscale_sampler: Some(upscale_sampler),
@@ -1183,11 +1189,21 @@ impl Renderer {
                 view_formats: &[],
             });
             let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let depth_read_view = depth_tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("Interaction Downscale Depth readonly"),
+                format: Some(wgpu::TextureFormat::Depth32Float),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                base_mip_level: 0, mip_level_count: Some(1),
+                base_array_layer: 0, array_layer_count: Some(1),
+                usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            });
 
             self.gpu.interaction_downscale_tex = Some(color_tex);
             self.gpu.interaction_downscale_view = Some(color_view);
             self.gpu.interaction_downscale_depth = Some(depth_tex);
             self.gpu.interaction_downscale_depth_view = Some(depth_view);
+            self.gpu.interaction_downscale_depth_read_view = Some(depth_read_view);
         }
     }
 
@@ -1270,7 +1286,7 @@ impl Renderer {
         }));
         self.gpu.frustum_uniform = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Frustum Uniform"),
-            size: 6 * 16, // 6 planes × vec4<f32>
+            size: crate::gpu_culling::FRUSTUM_UNIFORM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));

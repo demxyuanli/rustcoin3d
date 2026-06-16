@@ -137,9 +137,18 @@ pub fn boolean_brep(
         return handle_no_intersection(shells_a, shells_b, reg, op, tolerance);
     }
 
-    // Phase 2: Split faces along intersection curves
-    let split_a_uv = split::split_all_faces_brep(shells_a, &curves, reg);
-    let split_b_uv = split::split_all_faces_brep(shells_b, &curves, reg);
+    // Phase 2: Split faces using BopDS PaveBlock data (OCC BOPAlgo_BuilderFace)
+    // Replaces legacy split_all_faces_brep UV geometric marching
+    let split_a_uv = if bopds.face_face_interfs.is_empty() {
+        split::split_all_faces_brep(shells_a, &curves, reg)
+    } else {
+        split::split_faces_from_bopds(shells_a, &bopds, reg)
+    };
+    let split_b_uv = if bopds.face_face_interfs.is_empty() {
+        split::split_all_faces_brep(shells_b, &curves, reg)
+    } else {
+        split::split_faces_from_bopds(shells_b, &bopds, reg)
+    };
 
     // Phase 2b: Build BRep faces from UV split regions (OCC BOPAlgo_BuilderFace)
     // Must run BEFORE classification since it needs &mut reg
@@ -480,7 +489,7 @@ mod tests {
         for (va, vb, pa, pb) in edges_data {
             let curve = CurveGeom::Line { origin: pa, direction: pb - pa };
             let pc = Curve2d::Line { origin: (pa.x, pa.y), direction: (pb.x - pa.x, pb.y - pa.y) };
-            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, (pc, true));
+            let ek = reg.add_edge_with_pcurve(va, vb, curve.clone(), 1e-4, fk, pc, true);
             wire_edges.push((ek, Orientation::Forward));
         }
         reg.wires.get_mut(wk).unwrap().edges = wire_edges;

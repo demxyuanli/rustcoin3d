@@ -62,16 +62,16 @@ pub fn fix_degenerated_edges(
 
     for singularity in &singularities {
         for &(ek, orient) in &wire_edges {
-            let (tolerance, pc, _same_sense) = {
+            let (tolerance, pc) = {
                 let edge = match reg.edges.get(ek) {
                     Some(e) => e,
                     None => continue,
                 };
-                let (pc, same_sense) = match edge.pcurves.get(&face_key) {
+                let pc = match edge.pcurves.get(&face_key) {
                     Some(p) => p.clone(),
                     None => continue,
                 };
-                (edge.tolerance, pc, same_sense)
+                (edge.tolerance, pc)
             };
 
             let mut best_t = None;
@@ -268,7 +268,7 @@ mod tests {
         // PCurve: UV from (0,0) at the equator to near the north pole at (0, PI/2 - 1e-6)
         let pole_v = std::f32::consts::FRAC_PI_2 - 1e-6;
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, pole_v) };
-        let ek = reg.add_edge_with_pcurve(v_eq, v_near_pole, line, 1e-4, fk, (pc, true));
+        let ek = reg.add_edge_with_pcurve(v_eq, v_near_pole, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         let report = fix_degenerated_edges(fk, &mut reg);
@@ -281,7 +281,7 @@ mod tests {
                 edge.v_low, edge.v_high,
                 "OCC degenerated edge should have v_low == v_high"
             );
-            let (pc, _) = edge.pcurves.values().next().unwrap();
+            let pc = edge.pcurves.values().next().unwrap();
             let uv0 = pc.d0(0.0);
             let uv1 = pc.d0(1.0);
             let uv_len = ((uv0.0 - uv1.0).powi(2) + (uv0.1 - uv1.1).powi(2)).sqrt();
@@ -318,7 +318,7 @@ mod tests {
         });
         let line = CurveGeom::Line { origin: Vec3::new(0.0, 0.0, 1.0), direction: Vec3::new(1.0, 0.0, -1.0) };
         let pc = Curve2d::Line { origin: (0.0, std::f32::consts::FRAC_PI_2 - 1e-6), direction: (0.1, -std::f32::consts::FRAC_PI_2 + 1e-6) };
-        let ek = reg.add_edge_with_pcurve(v_np, v_eq, line, 1e-4, fk, (pc, true));
+        let ek = reg.add_edge_with_pcurve(v_np, v_eq, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
         let report = fix_degenerated_edges(fk, &mut reg);
         assert!(report.degenerate_edges_created > 0);
@@ -327,7 +327,7 @@ mod tests {
         for &dek in &face.degenerated_edges {
             let edge = reg.edges.get(dek).unwrap();
             // Degenerated edge should have a PCurve with real UV extent
-            let (pc, _) = edge.pcurves.values().next().unwrap();
+            let pc = edge.pcurves.values().next().unwrap();
             let uv0 = pc.d0(0.0);
             let uv1 = pc.d0(1.0);
             let uv_len = ((uv0.0 - uv1.0).powi(2) + (uv0.1 - uv1.1).powi(2)).sqrt();
@@ -402,7 +402,7 @@ pub fn fix_periodic_degenerated(
     let mut u_max = f32::MIN;
     for &(ek, _) in &wire.edges {
         let Some(edge) = reg.edges.get(ek) else { continue; };
-        let Some((pc, _same_sense)) = edge.pcurves.get(&face_key) else { continue; };
+        let Some(pc) = edge.pcurves.get(&face_key) else { continue; };
         for t in [0.0, 0.5, 1.0] {
             let uv = pc.d0(t);
             u_min = u_min.min(uv.0);
@@ -426,7 +426,7 @@ pub fn fix_periodic_degenerated(
             origin: (pole_uv.0, pole_uv.1),
             direction: (0.0, 0.0),
         };
-        let dek = reg.add_seam_edge(vk, vk, degen_curve, tolerance, face_key, (degen_pc, true));
+        let dek = reg.add_seam_edge(vk, vk, degen_curve, tolerance, face_key, degen_pc, true);
         new_degen.push(dek);
         report.pole_edges_created += 1;
     }
@@ -470,7 +470,7 @@ mod periodic_tests {
         let line = CurveGeom::Line { origin: Vec3::ZERO, direction: Vec3::X };
         // PCurve wrapping 0 to 2*PI in U, V near equator
         let pc = Curve2d::Line { origin: (0.0, 0.0), direction: (std::f32::consts::TAU, 0.0) };
-        let ek = reg.add_edge_with_pcurve(v_np, v_sp, line, 1e-4, fk, (pc, true));
+        let ek = reg.add_edge_with_pcurve(v_np, v_sp, line, 1e-4, fk, pc, true);
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
 
         let report = fix_periodic_degenerated(fk, &mut reg);

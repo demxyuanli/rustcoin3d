@@ -29,13 +29,11 @@ pub fn plane_tangent_basis(normal: Vec3, u_dir: Vec3) -> (Vec3, Vec3) {
     (u, v)
 }
 
-/// Maximum B-spline degree handled with stack-allocated tables.
+/// Maximum B-spline degree expected in practice.
 /// Typical STEP B-splines are degree 2–5, rarely exceeding 8.
+/// Degrees above this threshold log a warning but are handled correctly
+/// via dynamically sized working tables.
 const MAX_DEGREE: usize = 16;
-
-/// Flattened triangular table size for degrees 0..=MAX_DEGREE.
-/// Sum of (k+1) for k in 0..=MAX_DEGREE = (MAX_DEGREE+1)*(MAX_DEGREE+2)/2
-const NDU_SIZE: usize = (MAX_DEGREE + 1) * (MAX_DEGREE + 2) / 2; // 153
 
 /// Index into the flattened `ndu` table: row `k` starts at offset k*(k+1)/2.
 #[inline]
@@ -46,8 +44,8 @@ fn ndu_idx(k: usize, i: usize) -> usize {
 /// Compute d0, d1, d2 for a (possibly rational) B-spline at parameter t.
 /// Uses the Cox-de Boor recurrence for basis functions and their derivatives.
 ///
-/// For degree ≤ `MAX_DEGREE` (16), all working tables are stack-allocated.
-/// Returns `Vec3::ZERO` for degree > `MAX_DEGREE` (not seen in practice).
+/// Working tables are sized dynamically to the B-spline degree.
+/// A warning is logged when degree exceeds `MAX_DEGREE` (16).
 fn bspline_d012(
     degree: usize,
     control_points: &[Vec3],
@@ -74,19 +72,21 @@ fn bspline_d012(
         return (pt, Vec3::ZERO, Vec3::ZERO);
     }
 
-    // STEP files never exceed degree ~8; MAX_DEGREE=16 is well above that.
-    // Return zero for pathological degrees rather than maintaining a duplicate
-    // heap-allocated code path.
     if p > MAX_DEGREE {
-        return (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        log::warn!(
+            "B-spline degree {} exceeds MAX_DEGREE ({}), using dynamic allocation",
+            p,
+            MAX_DEGREE
+        );
     }
 
     let span = find_span(p, knots, t);
     let s = span;
 
-    // ── Basis functions (stack-allocated triangular table) ──
+    // ── Basis functions (triangular table) ──
     // ndu[k*(k+1)/2 + i] = N_{s-k+i, k}(t) for i = 0..k
-    let mut ndu = [0.0f32; NDU_SIZE];
+    let ndu_size = (p + 1) * (p + 2) / 2;
+    let mut ndu = vec![0.0f32; ndu_size];
     ndu[ndu_idx(0, 0)] = 1.0;
 
     for k in 1..=p {
@@ -120,7 +120,7 @@ fn bspline_d012(
     }
 
     // ── First derivatives N'_{s-p+k, p} ──
-    let mut ndu1 = [0.0f32; MAX_DEGREE + 1];
+    let mut ndu1 = vec![0.0f32; p + 1];
     for k in 0..=p {
         let idx = s + k - p;
         let left = if k >= 1 {
@@ -147,10 +147,10 @@ fn bspline_d012(
     }
 
     // ── Second derivatives N''_{s-p+k, p} ──
-    let mut ndu2 = [0.0f32; MAX_DEGREE + 1];
+    let mut ndu2 = vec![0.0f32; p + 1];
     if p >= 2 {
         // First compute N'_{s-(p-1)+k, p-1} for k = 0..p-1
-        let mut ndu1_pm1 = [0.0f32; MAX_DEGREE];
+        let mut ndu1_pm1 = vec![0.0f32; p];
         for k in 0..p {
             let idx = s + k - (p - 1);
             let left = if k >= 1 {

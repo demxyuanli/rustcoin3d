@@ -1,8 +1,13 @@
-//! Face-level self-intersection detection via surface-normal inversion grid.
+//! Face-level self-intersection detection and repair via surface-normal
+//! inversion grid.
 //!
 //! Unlike `self_intersect.rs` which checks UV-boundary wire crossing, this module
 //! checks whether the surface **itself** folds in 3D by detecting adjacent grid cells
 //! whose normals point in opposite directions (dot product < 0).
+//!
+//! When self-intersections are detected, the fix pass subdivides the face's
+//! boundary wires by inserting Steiner vertices at edge midpoints, which gives
+//! the CDT mesher more constraint points and reduces self-intersecting triangles.
 
 use crate::geom::SurfaceGeom;
 use crate::nurbs::NurbsSurface;
@@ -101,6 +106,81 @@ fn check_nurbs_self_intersect(nurbs: &NurbsSurface, grid_res: usize) -> usize {
     }
 
     inversions
+}
+
+/// Report from face self-intersection fix pass.
+#[derive(Debug, Clone, Default)]
+pub struct FaceSelfIntersectFixReport {
+    pub faces_checked: usize,
+    pub faces_fixed: usize,
+    pub steiner_vertices_added: usize,
+}
+
+/// Attempt to resolve face self-intersections by subdividing boundary edges.
+///
+/// Strategy: for each edge in the face's outer wire with chord length above
+/// the tolerance, split it at its midpoint. This inserts Steiner vertices into
+/// the UV boundary, providing the CDT mesher with more constraint points and
+/// reducing the likelihood of self-intersecting triangles.
+///
+/// The approach is conservative: it only splits edges long enough to warrant
+/// subdivision (chord > 10 × tolerance), avoiding creating tiny edges that
+/// would complicate downstream processing.
+pub fn fix_face_self_intersections(
+    face_key: FaceKey,
+    reg: &mut BRepStore,
+    tolerance: f32,
+) -> FaceSelfIntersectFixReport {
+    let mut report = FaceSelfIntersectFixReport { faces_checked: 1, ..Default::default() };
+
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return report,
+    };
+
+    // Only BSpline surfaces benefit from boundary subdivision.
+    if !matches!(&face.surface, SurfaceGeom::BSpline(_)) {
+        return report;
+    }
+
+    let outer_wk = face.outer_wire;
+    let wire_edges: Vec<(crate::topo::EdgeKey, crate::topo::Orientation)> = match reg.wires.get(outer_wk) {
+        Some(w) => w.edges.clone(),
+        None => return report,
+    };
+
+    let min_chord = tolerance * 10.0;
+    let mut steiner_added = 0usize;
+
+    for (ek, orient) in &wire_edges {
+        let chord = {
+            let edge = match reg.edges.get(*ek) {
+                Some(e) => e,
+                None => continue,
+            };
+            let p_lo = reg.vertices.get(edge.v_low).map(|v| v.position).unwrap_or(Vec3::ZERO);
+            let p_hi = reg.vertices.get(edge.v_high).map(|v| v.position).unwrap_or(Vec3::ZERO);
+            (p_hi - p_lo).length()
+        };
+
+        if chord < min_chord {
+            continue;
+        }
+
+        // Split at midpoint (t = 0.5 in edge parameter space).
+        let parts = super::curve_trim::split_edge_at_params(*ek, face_key, *orient, &[0.5], reg);
+        if parts.len() > 1 {
+            super::curve_trim::replace_wire_edge_with_splits(outer_wk, *ek, &parts, reg);
+            steiner_added += parts.len() - 1;
+        }
+    }
+
+    if steiner_added > 0 {
+        report.faces_fixed = 1;
+        report.steiner_vertices_added = steiner_added;
+    }
+
+    report
 }
 
 #[cfg(test)]

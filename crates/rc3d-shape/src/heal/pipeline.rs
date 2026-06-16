@@ -193,12 +193,25 @@ pub fn auto_heal_shell(
     // improving mesh watertightness across face boundaries.
     if level >= HealLevel::Standard {
         let _ts = std::time::Instant::now();
-        let (results, adjusted) =
-            super::same_param_reparam::same_parameter_reparam(reg, &[shell_key], 1e-4, 5);
+        let mut checked = 0usize;
+        let mut adjusted = 0usize;
+        for ek in super::edge_tolerance::collect_shell_edges(reg, shell_key) {
+            if let Some(edge) = reg.edges.get(ek) {
+                let face_keys: Vec<crate::topo::FaceKey> = edge.pcurves.keys().copied().collect();
+                for fk in face_keys {
+                    checked += 1;
+                    if let Some(result) = reg.ensure_same_parameter(ek, fk, 1e-4, 5) {
+                        if result.deviation_after < result.deviation_before {
+                            adjusted += 1;
+                        }
+                    }
+                }
+            }
+        }
         if adjusted > 0 {
             log::info!(
                 "[BRep heal] SameParameter reparam: adjusted {} PCurves in {:.1}s ({} total edges checked)",
-                adjusted, _ts.elapsed().as_secs_f32(), results.len()
+                adjusted, _ts.elapsed().as_secs_f32(), checked
             );
         }
     }
@@ -254,6 +267,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_vertex_position = true;
             config.fix_free_bounds = true;
             config.fix_compose_shell = true;
+            config.fix_edge_connect = true;
         }
     } else {
         if check.has_uv_gaps || check.has_pcurve_issues {
@@ -283,6 +297,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             }
             if check.has_face_self_intersections {
                 config.fix_face_fold = true;
+                config.fix_face_self_intersect = true;
             }
         }
     }
@@ -327,9 +342,9 @@ mod tests {
             origin: (0.0, 0.0),
             direction: (1.0, 0.0),
         };
-        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, (pc.clone(), true));
-        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, (pc, true));
+        let e1 = reg.add_edge_with_pcurve(v0, v1, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e2 = reg.add_edge_with_pcurve(v1, v2, line.clone(), 1e-4, fk, pc.clone(), true);
+        let e3 = reg.add_edge_with_pcurve(v2, v0, line.clone(), 1e-4, fk, pc, true);
         let orient_for = |ek, from_vk| {
             let edge = reg.edges.get(ek).unwrap();
             if edge.v_low == from_vk {

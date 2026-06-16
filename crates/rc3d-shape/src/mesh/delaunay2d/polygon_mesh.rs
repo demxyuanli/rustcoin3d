@@ -41,6 +41,11 @@ fn walk_polygon_occ(
     end: VertIdx,
     adj: &HashMap<VertIdx, Vec<VertIdx>>,
 ) -> Vec<VertIdx> {
+    // Degenerate guard: no edges or trivially collinear input
+    let total_edges: usize = adj.values().map(|v| v.len()).sum();
+    if total_edges == 0 {
+        return vec![start];
+    }
     let mut poly = vec![start, end];
     let mut dead: HashSet<(VertIdx, VertIdx)> = HashSet::new();
     let mut leprous: HashSet<(VertIdx, VertIdx)> = HashSet::new();
@@ -84,7 +89,7 @@ fn walk_polygon_occ(
         } else if poly.len() <= 2 {
             break;
         } else {
-            let tail = poly.pop().unwrap();
+            let tail = poly.pop().unwrap_or(start);
             let back_prev = *poly.last().unwrap_or(&start);
             dead.insert(edge_key(back_prev, tail));
             leprous.remove(&edge_key(back_prev, tail));

@@ -1016,6 +1016,8 @@ pub fn fill_trimmed(
         let grid_first = all_indices.len() / 4;
         mesh_trimmed_uv_grid(
             face,
+            face_key,
+            reg,
             &work_loops,
             uv_bounds_from_loops(&work_loops),
             Some(&fill_cfg),

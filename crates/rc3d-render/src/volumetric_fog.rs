@@ -85,6 +85,16 @@ impl VolumetricFogPass {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -118,14 +128,15 @@ impl VolumetricFogPass {
         }
     }
 
-    /// Compute volumetric fog. Output to `fog_output` (Rgba16Float):
-    /// RGB = scattered light, A = transmittance.
+    /// Compute volumetric fog and composite it over `scene_color`.
+    /// Output to `fog_output` (Rgba16Float): RGB = scene * transmittance + fog.
     pub fn compute(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         depth: &wgpu::TextureView,
+        scene_color: &wgpu::TextureView,
         fog_output: &wgpu::TextureView,
         width: u32,
         height: u32,
@@ -178,6 +189,10 @@ impl VolumetricFogPass {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(fog_output),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(scene_color),
                 },
             ],
         });
