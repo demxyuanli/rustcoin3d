@@ -1,3 +1,43 @@
+//! # B-Rep Healing Pipeline
+//!
+//! Diagnostic and repair passes for B-Rep topology and geometry.
+//! Tier-driven configurable pipeline (OCC ShapeHealing equivalent).
+//!
+//! ## Architecture
+//! - `HealConfig` — per-pass parameter set (tolerances, thresholds, limits)
+//! - `HealPolicy` / `HealLevel` — tier-driven pass selection (`Preview`/`Standard`/`Deep`)
+//! - `HealReport` — diagnostics collected across all passes
+//! - `auto_heal_shell()` — iterative pipeline: run passes, check, repeat until converged
+//! - `heal_shell()` / `heal_solid()` — single-pass heal with config
+//! - `check_shell()` → `CheckReport` — topology validation (closed, oriented, no free bounds)
+//!
+//! ## Key passes
+//! | Module | Pass | OCC class |
+//! |--------|------|-----------|
+//! | `wire_ops` | FixConnected, RemoveSmallEdges, ReorderWire, FixNotchedEdges, FixTails | `ShapeFix_Wire` |
+//! | `wire_join` | CloseWireGaps, FixConnectedWire | `ShapeFix_Wire` |
+//! | `same_param_fix` | FixSameParameter | `ShapeFix_SameParameter` |
+//! | `pcurve_fix` | FixPCurve (shifted/edge-curve) | `ShapeFix_Edge` |
+//! | `face_fix` | FixSmallFaces, FixReversed2d, AddNaturalBound | `ShapeFix_Face` |
+//! | `shell_fix` | ShellOrientation, SplitFace, VertexPositions | `ShapeFix_Shell` |
+//! | `seam` | FixMissingSeams | `ShapeFix_Wire` (seam variant) |
+//! | `lacking` | FixLackingEdges | `ShapeFix_Wire` |
+//! | `degenerated` | FixDegeneratedEdges, FixPeriodicDegenerated | `ShapeFix_Wire` |
+//! | `self_intersect` | FixSelfIntersectingWire | `ShapeFix_Wire` |
+//! | `intersecting_wires` | FixIntersectingWires | `ShapeFix_Wire` |
+//! | `unify_same_domain` | UnifySameDomain | `ShapeUpgrade_UnifySameDomain` |
+//! | `canonical` | RecognizeCanonical | `ShapeCustom_RestrictionParameters` |
+//! | `solid_fix` | FixSmallSolids, RemoveEmptyShells | `ShapeFix_Solid` |
+//! | `continuity` | CheckShellContinuity (C0/C1/G1) | `ShapeAnalysis_Surface` |
+//! | `topo_diag` | TopoDiagReport | `ShapeAnalysis` |
+//!
+//! ## Usage
+//! ```ignore
+//! use rc3d_shape::heal::{auto_heal_shell, HealLevel, HealPolicy};
+//! let policy = HealPolicy::for_tier(TessellationTier::Standard);
+//! let report = auto_heal_shell(&[shell_key], &mut store, policy);
+//! ```
+
 use rc3d_core::math::Real;
 pub(crate) mod edge_tolerance;
 pub(crate) mod wire_ops;

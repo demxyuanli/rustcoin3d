@@ -1,3 +1,34 @@
+//! # rc3d-io — File Format Import/Export
+//!
+//! Readers and writers for 3D interchange formats. Converts between
+//! external file representations and the internal scene graph / B-Rep store.
+//!
+//! ## Architecture
+//! - `step` — ISO 10303 STEP AP203/AP214/AP242 reader and writer
+//! - `iges` — IGES 5.3 reader
+//! - `stl` — ASCII/binary STL reader and writer
+//! - `obj` — Wavefront OBJ reader
+//! - `gltf` — glTF 2.0 reader (via gltf crate)
+//! - `fbx` — FBX reader (ASCII and binary)
+//! - `iv` — Open Inventor reader and writer (Coin3D format)
+//! - `brep_binary` — Internal binary B-Rep serialization for caching
+//! - `mesh_export` — Unified tessellation + mesh export pipeline
+//!
+//! ## Key types
+//! - `ImportError` — unified error type for all format errors
+//! - `import_file(path)` — auto-detect format and import into `SceneGraph`
+//! - `export_step_to_ascii_stl()` — STEP-to-STL conversion with per-face material grouping
+//!
+//! ## OCC alignment
+//! Corresponds to OpenCASCADE `STEPControl`, `IGESControl`, `StlAPI`, and
+//! `BRepTools` serialization layers.
+//!
+//! ## Usage
+//! ```ignore
+//! use rc3d_io::step::{import_step_file_with_options, StepImportOptions, StepImportMode};
+//! let result = import_step_file_with_options("model.stp", &mut scene, options)?;
+//! ```
+
 pub mod brep_binary;
 pub mod mesh_export;
 pub mod fbx;

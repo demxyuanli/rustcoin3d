@@ -1,3 +1,14 @@
+//! Fix small or degenerate solids.
+//!
+//! Removes solids with volume below a threshold and shells with zero faces.
+//!
+//! ## OCC alignment
+//! Corresponds to `ShapeFix_Solid` / `ShapeFix_FixSmallSolid`.
+//!
+//! ## Key functions
+//! - `fix_small_solids()` — remove solids with `|volume| < min_volume`
+//! - `remove_empty_shells()` — remove shells with zero faces
+
 use crate::store::BRepStore;
 use crate::topo::{ShellKey, SolidKey};
 use rc3d_core::math::Real;

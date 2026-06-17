@@ -1,3 +1,16 @@
+//! Post-processing passes for triangle meshes after B-Rep tessellation.
+//!
+//! ## OCC alignment
+//! Corresponds to `BRepMesh_ModelHealer` — gap repair, T-junction fixing,
+//! degenerate triangle culling, normal recomputation, and vertex compaction.
+//!
+//! ## Key functions
+//! - `heal_mesh_gaps()` — weld free boundary edges across adjacent face meshes via union-find
+//! - `fix_t_junctions()` — split edges at T-junction vertices to produce watertight output
+//! - `cull_degenerate_tris()` — remove zero-area triangles from index buffer
+//! - `recompute_normals_from_tris_preserving()` — rebuild normals from triangle geometry
+//! - `compact_mesh_vertices()` — remove unreferenced vertices and remap indices
+
 use rc3d_core::math::{Real, PVec3};
 use rc3d_core::utils::hash::f64x3_quantized_bits;
 use crate::mesh_result::MeshResult;

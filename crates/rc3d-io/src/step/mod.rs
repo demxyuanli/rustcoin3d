@@ -1,3 +1,40 @@
+//! # STEP File I/O (ISO 10303)
+//!
+//! Reads and writes STEP AP203/AP214/AP242 files.
+//! Parses the EXPRESS-based Part 21 format, builds an in-memory entity model,
+//! transfers geometry into B-Rep, and emits scene graph nodes.
+//!
+//! ## Architecture
+//! - `parser` — Part 21 tokenizer and entity parser
+//! - `model` — in-memory entity store (`StepModel`) with lazy reference resolution
+//! - `schema` — EXPRESS schema types (`StepEntity` trait, type system)
+//! - `adapter` — STEP entity → B-Rep geometry conversion (`AdapterMode`)
+//! - `caf_transfer` — XCAF (Extended CAF) transfer for colors/layers/names/PMI
+//! - `scene_emit` — B-Rep → `SceneGraph` node tree with instancing
+//! - `tree` / `assembly` — product assembly hierarchy (`AssemblyTree`, `AssemblyNode`)
+//! - `write` — B-Rep → STEP entity serialization (roundtrip)
+//! - `validate` — STEP entity consistency checks
+//! - `brep` — STEP geometric model items (`StepBRepModelItem`, shell/face/edge building)
+//! - `curve` / `nurbs` — parametric curve and NURBS surface conversion
+//! - `topology` — topology graph construction from STEP entities
+//!
+//! ## Key types
+//! - `StepImportOptions` / `StepImportMode` — import configuration (full / tessellated / faces-only)
+//! - `StepImportResult` / `StepImportReport` — import diagnostics
+//! - `StepCafTransfer` / `CafTransferOutput` — color/material/PMI extraction
+//! - `StepError` — parse, geometry, and IO errors
+//!
+//! ## OCC alignment
+//! Corresponds to OpenCASCADE `STEPControl_Reader`, `STEPCAFControl_Reader`,
+//! `STEPControl_Writer`, and `XCAFDoc` layers.
+//!
+//! ## Usage
+//! ```ignore
+//! use rc3d_io::step::{parse_step_file, import_step_file_with_options, StepImportOptions};
+//! let options = StepImportOptions::default();
+//! let result = import_step_file_with_options("part.stp", &mut scene, options)?;
+//! ```
+
 pub mod value;
 pub mod entity_types;
 pub mod adapter;

@@ -1,3 +1,39 @@
+//! # B-Rep Meshing Pipeline
+//!
+//! Tessellation of B-Rep faces and shells into triangle meshes.
+//! OCC BRepMesh equivalent — incremental mesh with configurable deflection.
+//!
+//! ## Architecture
+//! - **Face meshing** — per-face algorithm dispatch via `face_dispatch`
+//!   - `face_fill` — Delaunay-based face filling (`BRepMesh_FastDiscretFace`)
+//!   - `fill_surface` — UV-gridded surface fill with deflection control
+//!   - `fill_plane` — analytic plane fill (no surface evaluation needed)
+//!   - `fill_revolution` — polar-gridded revolution surface fill
+//!   - `face_cdt` — constrained Delaunay triangulation of planar face domains
+//!   - `delaunay2d` — generic 2D Delaunay triangulator
+//! - **Shell meshing** — `shell_mesh::mesh_brep_shell()` aggregates per-face results
+//! - **Solid meshing** — `solid_mesh::mesh_solid_with_voids()` handles void subtraction
+//! - **Post-processing** — `post_process` handles gap repair, T-junction fixing, normal recompute
+//!
+//! ## Key types
+//! | Module | Type/Function | OCC class |
+//! |--------|--------------|-----------|
+//! | `config` | `BRepMeshConfig`, `TessellationTier` | `BRepMesh_IncrementalMesh` |
+//! | `shell_mesh` | `mesh_brep_shell()` | `BRepMesh_IncrementalMesh::Perform` |
+//! | `face_dispatch` | `FaceMeshPlan`, `plan_face_mesh()` | Mesh selector |
+//! | `report` | `ShellMeshReport`, `deflection_from_report()` | Mesh quality |
+//! | `t4_quality` | `DeflectionMetrics`, `HausdorffMetrics` | Mesh validation |
+//! | `edge_disc` | Edge discretization | `BRepMesh_Edge` |
+//! | `post_process` | `heal_mesh_gaps()`, `fix_t_junctions()` | `BRepMesh_ModelHealer` |
+//! | `same_param` | Same-parameter mesh stitch | `BRepMesh_ShapeTool` |
+//!
+//! ## Usage
+//! ```ignore
+//! use rc3d_shape::mesh::{mesh_brep_shell, BRepMeshConfig, TessellationTier};
+//! let config = BRepMeshConfig::for_tier(TessellationTier::Standard);
+//! let mesh = mesh_brep_shell(shell_key, &store, &config, &[]);
+//! ```
+
 pub mod edge_disc;
 pub(crate) mod refiner;
 pub(crate) mod optimize;
