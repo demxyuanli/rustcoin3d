@@ -3,10 +3,16 @@
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, Orientation, WireKey};
 use rc3d_core::math::{Real, PVec3};
+use rc3d_core::utils::hash::f64x3_quantized_bits;
+
+/// 3-component hash key for vertex positions — no XOR collisions.
+type VertHash = [u64; 3];
 
 // ── Edge reordering (T3.1) ─────────────────────────────────────────
 
 /// Reorder wire edges into a connected chain. Returns None if disconnected.
+/// Uses collision-free [u64; 3] hash keys for vertex position matching
+/// (replaces the previous XOR-packed u64 which had aliasing collisions).
 pub(crate) fn reorder_wire_edges(
     edges: &[(EdgeKey, Orientation)],
     reg: &BRepStore,
@@ -14,7 +20,7 @@ pub(crate) fn reorder_wire_edges(
     if edges.len() <= 1 { return Some(edges.to_vec()); }
 
     let n = edges.len();
-    let mut endpoints: Vec<Option<(u64, u64)>> = vec![None; n];
+    let mut endpoints: Vec<Option<(VertHash, VertHash)>> = vec![None; n];
     for (i, (ek, orient)) in edges.iter().enumerate() {
         if let Some(edge) = reg.edges.get(*ek) {
             let (p0, p1) = if *orient == Orientation::Forward {
@@ -25,8 +31,8 @@ pub(crate) fn reorder_wire_edges(
             let pos0 = reg.vertices.get(p0).map(|v| v.position);
             let pos1 = reg.vertices.get(p1).map(|v| v.position);
             if let (Some(p0), Some(p1)) = (pos0, pos1) {
-                let h0 = quantize(p0);
-                let h1 = quantize(p1);
+                let h0 = f64x3_quantized_bits([p0.x, p0.y, p0.z]);
+                let h1 = f64x3_quantized_bits([p1.x, p1.y, p1.z]);
                 endpoints[i] = Some((h0, h1));
             }
         }
@@ -65,13 +71,6 @@ pub(crate) fn reorder_wire_edges(
     }
 
     Some(result)
-}
-
-fn quantize(p: PVec3) -> u64 {
-    let x = (p.x * 1e6) as i64;
-    let y = (p.y * 1e6) as i64;
-    let z = (p.z * 1e6) as i64;
-    ((x as u64) << 40) ^ ((y as u64) << 20) ^ (z as u64)
 }
 
 // ── Small edge removal ─────────────────────────────────────────────

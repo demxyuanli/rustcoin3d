@@ -263,7 +263,7 @@ fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<
     let mut a: Vec<Vec<Real>> = mat.to_vec();
     let mut b: Vec<Real> = rhs.to_vec();
 
-    // Forward elimination with partial pivoting
+    // Forward elimination with partial pivoting (Gaussian elimination, O(n³))
     for col in 0..n {
         // Find pivot
         let mut max_val = a[col][col].abs();
@@ -274,8 +274,9 @@ fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<
                 max_row = row;
             }
         }
-        if max_val < 1e-10 {
-            return None; // Singular
+        // Pivot threshold: f64 precision supports ~1e-15, use 1e-12 for safety margin
+        if max_val < 1e-12 {
+            return None; // Singular or ill-conditioned
         }
         // Swap rows
         if max_row != col {
@@ -296,7 +297,7 @@ fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<
     // Back substitution
     let mut x = vec![0.0_f64; n];
     for i in (0..n).rev() {
-        if a[i][i].abs() < 1e-10 {
+        if a[i][i].abs() < 1e-12 {
             return None;
         }
         let mut sum = b[i];
@@ -305,6 +306,36 @@ fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<
         }
         x[i] = sum / a[i][i];
     }
+
+    // Iterative refinement: one pass of Newton correction.
+    // For ill-conditioned systems, the initial solve may have residual error.
+    // Compute residual r = b - A*x, solve A*dx = r, update x' = x + dx.
+    let mut residual = vec![0.0_f64; n];
+    for i in 0..n {
+        let ax: Real = (0..n).map(|j| mat[i][j] * x[j]).sum();
+        residual[i] = rhs[i] - ax;
+    }
+    let res_norm: Real = residual.iter().map(|&r| r * r).sum::<Real>().sqrt();
+    if res_norm > 1e-10 {
+        // Forward substitution for correction dx (reusing the same LU decomposition)
+        let mut dx = vec![0.0_f64; n];
+        for i in 0..n {
+            let mut sum = residual[i];
+            for j in 0..i {
+                sum -= a[i][j] * dx[j];
+            }
+            dx[i] = sum / a[i][i];
+        }
+        for i in (0..n).rev() {
+            let mut sum = dx[i];
+            for j in (i + 1)..n {
+                sum -= a[i][j] * dx[j];
+            }
+            dx[i] = sum / a[i][i];
+        }
+        for i in 0..n { x[i] += dx[i]; }
+    }
+
     Some(x)
 }
 

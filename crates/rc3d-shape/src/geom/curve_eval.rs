@@ -244,11 +244,16 @@ fn bspline_d012(
         (a0, a1, a2)
     };
 
-    // NaN safety: replace any NaN component with zero
-    let safe = |v: PVec3| -> PVec3 {
-        if v.is_nan() { PVec3::ZERO } else { v }
+    // NaN guard: log warning and clamp to zero instead of silent propagation.
+    // A NaN result indicates a numerical issue upstream (degenerate knot, near-zero weights).
+    // OCC throws Geom_UndefinedDerivative here; we warn and return zero for robustness.
+    let safe = |v: PVec3, which: &str| -> PVec3 {
+        if v.is_nan() {
+            log::warn!("[geom] bspline_d012: NaN in {} derivative — clamping to zero", which);
+            PVec3::ZERO
+        } else { v }
     };
-    (safe(d0), safe(d1), safe(d2))
+    (safe(d0, "d0"), safe(d1, "d1"), safe(d2, "d2"))
 }
 
 /// De Casteljau evaluation of Bezier curve at parameter t ∈ [0, 1].
