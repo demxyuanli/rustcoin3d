@@ -30,7 +30,7 @@ use std::collections::HashSet;
 
 use crate::topo::{FaceKey, ShellKey, SolidKey, WireKey};
 use crate::store::BRepStore;
-use wire_ops::{reorder_wire_edges, remove_small_edges};
+use wire_ops::{fix_notched_edges, fix_tails, reorder_wire_edges, remove_small_edges};
 use wire_join::{close_wire_gaps, close_wire_gaps_2d, fix_connected_wire};
 use same_param_fix::fix_same_parameter_wire;
 use pcurve_fix::{fix_shifted_pcurves, fix_edge_curves_wire};
@@ -91,6 +91,8 @@ pub struct HealReport {
     pub small_faces_merged: usize,
     pub removed_small_solids: usize,
     pub removed_empty_shells: usize,
+    pub notched_edges_fixed: usize,
+    pub tails_removed: usize,
     skip_faces_seen: HashSet<FaceKey>,
 }
 
@@ -125,6 +127,8 @@ impl HealReport {
         self.small_faces_merged += other.small_faces_merged;
         self.removed_small_solids += other.removed_small_solids;
         self.removed_empty_shells += other.removed_empty_shells;
+        self.notched_edges_fixed += other.notched_edges_fixed;
+        self.tails_removed += other.tails_removed;
     }
 }
 
@@ -166,6 +170,10 @@ pub struct HealConfig {
     pub fix_unify_same_domain: bool,
     pub fix_small_faces: bool,
     pub fix_small_solids: bool,
+    pub fix_notched_edges: bool,
+    pub fix_tails: bool,
+    pub notch_angle_threshold: Real,
+    pub tail_min_length: Real,
     pub small_edge_min_length: Real,
     pub small_face_min_area: Real,
     pub small_solid_min_volume: Real,
@@ -205,6 +213,10 @@ impl HealConfig {
             fix_unify_same_domain: false,
             fix_small_faces: false,
             fix_small_solids: false,
+            fix_notched_edges: false,
+            fix_tails: false,
+            notch_angle_threshold: 5.0,
+            tail_min_length: 1e-3,
             small_edge_min_length: 1e-6,
             small_face_min_area: 0.01,
             small_solid_min_volume: 0.001,
@@ -255,6 +267,10 @@ impl Default for HealConfig {
             fix_unify_same_domain: false,
             fix_small_faces: false,
             fix_small_solids: false,
+            fix_notched_edges: false,
+            fix_tails: false,
+            notch_angle_threshold: 5.0,
+            tail_min_length: 1e-3,
             small_edge_min_length: 1e-6,
             small_face_min_area: 0.01,
             small_solid_min_volume: 0.001,
@@ -372,6 +388,16 @@ fn heal_wire_passes(
         let t = _t.elapsed().as_secs_f32();
         if t > 0.1 { log::debug!("[heal timer]    fix_edge_curves: {:.1}s", t); }
         report.adjusted_edge_curves += adjusted;
+    }
+
+    if config.fix_notched_edges {
+        let fixed = fix_notched_edges(wire_key, reg, config.notch_angle_threshold);
+        report.notched_edges_fixed += fixed;
+    }
+
+    if config.fix_tails {
+        let removed = fix_tails(wire_key, reg, config.tail_min_length);
+        report.tails_removed += removed;
     }
 
     true

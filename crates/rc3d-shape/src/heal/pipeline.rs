@@ -24,6 +24,8 @@ pub enum HealPassId {
     FixSmallArea,
     FixSmallFaces,
     FixSmallSolids,
+    FixNotchedEdges,
+    FixTails,
     UnifySameDomain,
     DivideContinuity,
 }
@@ -247,6 +249,8 @@ pub fn apply_pass_to_config(pass: HealPassId, config: &mut HealConfig) {
         HealPassId::FixSmallArea => config.fix_small_area = true,
         HealPassId::FixSmallFaces => config.fix_small_faces = true,
         HealPassId::FixSmallSolids => config.fix_small_solids = true,
+        HealPassId::FixNotchedEdges => config.fix_notched_edges = true,
+        HealPassId::FixTails => config.fix_tails = true,
         HealPassId::UnifySameDomain => config.fix_unify_same_domain = true,
         HealPassId::DivideContinuity => {}, // edge-level split — caller handles directly
     }
