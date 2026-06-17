@@ -24,6 +24,7 @@ pub(crate) mod compose_shell;
 pub(crate) mod face_fold;
 pub(crate) mod edge_connect;
 pub mod unify_same_domain;
+pub mod canonical;
 pub mod solid_fix;
 use std::collections::HashSet;
 

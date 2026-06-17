@@ -191,6 +191,7 @@ pub fn constant_radius_fillet(
         t_min: 0.0,
         t_max: 1.0,
         pcurves: HashMap::new(),
+        cached_deflection: None,
     });
     let ek_b = reg.edges.insert(BRepEdge {
         curve: contact_curve_b,
@@ -200,6 +201,7 @@ pub fn constant_radius_fillet(
         t_min: 0.0,
         t_max: 1.0,
         pcurves: HashMap::new(),
+        cached_deflection: None,
     });
 
     // Create fillet face wire
@@ -332,6 +334,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves: HashMap::new(),
+            cached_deflection: None,
         });
 
         reg.edge_to_faces.insert(ek, vec![face_keys[0], face_keys[1]]);
@@ -400,6 +403,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves: std::collections::HashMap::new(),
+            cached_deflection: None,
         });
         // Don't add edge to edge_to_faces — it will be empty
         let result = constant_radius_fillet(ek, 1.0, true, &mut reg);

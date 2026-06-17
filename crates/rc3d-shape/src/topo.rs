@@ -38,6 +38,8 @@ pub struct BRepEdge {
     /// Every stored PCurve is normalized to run in the same direction
     /// as the 3D edge curve (same_sense applied at insertion time).
     pub pcurves: HashMap<FaceKey, Curve2d>,
+    /// Cached deflection value from last discretization (for incremental reuse).
+    pub cached_deflection: Option<Real>,
 }
 
 #[derive(Debug, Clone)]

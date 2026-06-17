@@ -114,6 +114,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves,
+            cached_deflection: None,
         });
         reg.wires.get_mut(wire).unwrap().edges.push((ek, Orientation::Forward));
         let shell_key = reg.shells.insert(BRepShell {

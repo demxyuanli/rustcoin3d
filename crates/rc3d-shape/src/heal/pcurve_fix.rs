@@ -393,21 +393,25 @@ mod tests {
         let e1 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, pc_normal.clone())]),
         });
         let e2 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, pc_normal.clone())]),
         });
         let e3 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d.clone(), tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, pc_normal)]),
         });
         let e4 = reg.edges.insert(BRepEdge {
             v_low: v0, v_high: v1, curve: curve_3d, tolerance: 1e-4,
             t_min: 0.0, t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, pc_shifted)]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![
@@ -476,6 +480,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
         let wk = reg.wires.insert(BRepWire {
@@ -530,6 +535,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, Curve2d::Circle { center: (0.0, 0.0), radius: 1.0 })]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];
@@ -577,6 +583,7 @@ mod tests {
             v_high: v0.max(v1),
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(fk, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
         reg.wires.get_mut(wk).unwrap().edges = vec![(ek, Orientation::Forward)];

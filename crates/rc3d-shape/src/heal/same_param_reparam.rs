@@ -247,6 +247,7 @@ mod tests {
             v_low: v0, v_high: v1,
             curve: CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::X },
             tolerance: 1e-6, t_min: 0.0, t_max: 1.0, pcurves,
+            cached_deflection: None,
         });
         reg.wires.get_mut(wire).unwrap().edges.push((ek, Orientation::Forward));
         let sk = reg.shells.insert(BRepShell {

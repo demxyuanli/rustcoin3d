@@ -25,6 +25,7 @@ pub enum HealPassId {
     FixSmallFaces,
     FixSmallSolids,
     UnifySameDomain,
+    DivideContinuity,
 }
 
 /// Tier-driven heal policy — derived from `TessellationTier` via `for_tier()`.
@@ -247,6 +248,7 @@ pub fn apply_pass_to_config(pass: HealPassId, config: &mut HealConfig) {
         HealPassId::FixSmallFaces => config.fix_small_faces = true,
         HealPassId::FixSmallSolids => config.fix_small_solids = true,
         HealPassId::UnifySameDomain => config.fix_unify_same_domain = true,
+        HealPassId::DivideContinuity => {}, // edge-level split — caller handles directly
     }
 }
 

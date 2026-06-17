@@ -94,6 +94,70 @@ pub fn discretize_all_edges(
     result
 }
 
+/// Check if existing edge discretization is still valid for the current tolerance.
+/// If the new deflection is looser (larger) than the old, reuse is safe.
+pub fn is_discretization_consistent(
+    _edge: &BRepEdge,
+    old_deflection: Real,
+    new_deflection: Real,
+) -> bool {
+    old_deflection <= new_deflection
+}
+
+/// Compute the effective deflection for an edge given the config.
+/// When `relative_deflection` is set, scales by curve length.
+fn effective_deflection_for_edge(edge: &BRepEdge, config: &EdgeDiscConfig) -> Real {
+    if config.relative_deflection {
+        let chord_len = (edge.curve.d0(1.0) - edge.curve.d0(0.0)).length();
+        let curve_len = if chord_len < 1e-10 {
+            estimate_curve_length(&edge.curve).max(1.0)
+        } else {
+            chord_len
+        };
+        curve_len * config.deflection
+    } else {
+        config.deflection
+    }
+}
+
+/// Discretize edges, reusing existing discretizations where possible.
+/// Returns the discretization results and (total_edges, reused_count).
+pub fn discretize_edges_incremental(
+    edges: &[EdgeKey],
+    reg: &mut BRepStore,
+    config: &EdgeDiscConfig,
+) -> (HashMap<EdgeKey, EdgePolygon>, usize, usize) {
+    let mut result = HashMap::new();
+    let mut total = 0;
+    let mut reused = 0;
+
+    for &ek in edges {
+        total += 1;
+
+        // Check if existing discretization is still valid
+        let effective = reg.edges.get(ek).map(|e| effective_deflection_for_edge(e, config));
+        let can_reuse = reg.edges.get(ek).and_then(|e| e.cached_deflection).zip(effective)
+            .map(|(cached, eff)| cached <= eff)
+            .unwrap_or(false);
+
+        if can_reuse {
+            reused += 1;
+            continue;
+        }
+
+        // Do full discretization
+        let poly = discretize_edge(ek, reg, config);
+        result.insert(ek, poly);
+
+        // Store the effective deflection for future reuse
+        if let (Some(edge_mut), Some(eff)) = (reg.edges.get_mut(ek), effective) {
+            edge_mut.cached_deflection = Some(eff);
+        }
+    }
+
+    (result, total, reused)
+}
+
 /// Discretize a single edge: PCurve-on-surface (preferred) + per-face UV params.
 /// Estimate arc length of a curve by sampling.
 fn estimate_curve_length(curve: &crate::geom::CurveGeom) -> Real {
@@ -551,5 +615,59 @@ mod tests {
         assert!((end.x - 10.0).abs() < 0.01, "expected x~10, got {:?}", end);
         let uv_end = poly.params_2d.get(&face_key).unwrap().last().unwrap().1;
         assert!((uv_end.0 - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_discretize_edges_incremental_reuse() {
+        let mut reg = BRepStore::new();
+        let v0 = reg.find_or_add_vertex(PVec3::ZERO, 1e-4);
+        let v1 = reg.find_or_add_vertex(PVec3::new(10.0, 0.0, 0.0), 1e-4);
+        let wire = reg.wires.insert(crate::topo::BRepWire { edges: vec![] });
+        let face_key = reg.faces.insert(BRepFace {
+            surface: SurfaceGeom::Plane {
+                origin: PVec3::ZERO,
+                normal: PVec3::Z,
+                u_dir: PVec3::X,
+            },
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+
+        let curve_3d = CurveGeom::Line { origin: PVec3::ZERO, direction: PVec3::new(10.0, 0.0, 0.0) };
+        let pcurve = Curve2d::Line { origin: (0.0, 0.0), direction: (10.0, 0.0) };
+        let ek = reg.add_edge_with_pcurve(v0, v1, curve_3d, 1e-4, face_key, pcurve, true);
+
+        let edges = vec![ek];
+        let config = EdgeDiscConfig::default();
+
+        // First discretization: no reuse (nothing cached)
+        let (_result, total, reused) = discretize_edges_incremental(&edges, &mut reg, &config);
+        assert_eq!(total, 1);
+        assert_eq!(reused, 0, "first pass should have no reuse");
+
+        // Verify cached_deflection was stored
+        assert!(reg.edges.get(ek).unwrap().cached_deflection.is_some());
+
+        // Second discretization with same config: should reuse
+        let (_result2, total2, reused2) = discretize_edges_incremental(&edges, &mut reg, &config);
+        assert_eq!(total2, 1);
+        assert_eq!(reused2, 1, "same tolerance should reuse all edges");
+
+        // Third discretization with tighter config: should NOT reuse
+        let tighter = EdgeDiscConfig { deflection: config.deflection * 0.5, ..config.clone() };
+        let (_result3, total3, reused3) = discretize_edges_incremental(&edges, &mut reg, &tighter);
+        assert_eq!(total3, 1);
+        assert_eq!(reused3, 0, "tighter tolerance should force re-discretization");
+
+        // Fourth discretization with looser config: should reuse
+        let looser = EdgeDiscConfig { deflection: config.deflection * 2.0, ..config.clone() };
+        let (_result4, total4, reused4) = discretize_edges_incremental(&edges, &mut reg, &looser);
+        assert_eq!(total4, 1);
+        assert_eq!(reused4, 1, "looser tolerance should reuse");
     }
 }

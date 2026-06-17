@@ -322,6 +322,7 @@ mod tests {
             v_high: v1,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }),
                                      (face_b, Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) })]),
         });
@@ -332,6 +333,7 @@ mod tests {
             v_high: v2,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, 1.0) })]),
         });
         let e23 = reg.edges.insert(BRepEdge {
@@ -341,6 +343,7 @@ mod tests {
             v_high: v3,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (-1.0, 0.0) })]),
         });
         let e30 = reg.edges.insert(BRepEdge {
@@ -350,6 +353,7 @@ mod tests {
             v_high: v0,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::from([(face_a, Curve2d::Line { origin: (0.0, 0.0), direction: (0.0, -1.0) })]),
         });
 

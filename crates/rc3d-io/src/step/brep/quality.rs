@@ -141,6 +141,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves: Default::default(),
+            cached_deflection: None,
         });
         let e1 = reg.edges.insert(BRepEdge {
             v_low: v1, v_high: v2,
@@ -152,6 +153,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves: Default::default(),
+            cached_deflection: None,
         });
         let e2 = reg.edges.insert(BRepEdge {
             v_low: v2, v_high: v0,
@@ -163,6 +165,7 @@ mod tests {
             t_min: 0.0,
             t_max: 1.0,
             pcurves: Default::default(),
+            cached_deflection: None,
         });
 
         let wire = reg.wires.insert(BRepWire {

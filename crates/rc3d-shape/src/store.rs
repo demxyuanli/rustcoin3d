@@ -148,6 +148,7 @@ impl BRepStore {
             v_high: v_hi,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: {
                 let mut m = HashMap::new();
                 m.insert(face, pcurve.clone());
@@ -193,6 +194,7 @@ impl BRepStore {
             v_high: v_hi,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: {
                 let mut m = HashMap::new();
                 m.insert(face, pcurve);

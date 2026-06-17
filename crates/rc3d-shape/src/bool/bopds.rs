@@ -480,6 +480,7 @@ mod tests {
                 v_high: v0.max(v1),
                 t_min: 0.0,
                 t_max: (positions[j] - positions[i]).length(),
+                cached_deflection: None,
                 pcurves: HashMap::new(),
             });
             edge_keys.push((ek, Orientation::Forward));

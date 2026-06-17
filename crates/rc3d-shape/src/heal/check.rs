@@ -953,6 +953,7 @@ mod tests {
             tolerance: 1e-4,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: HashMap::new(),
         });
         // Create 3 faces sharing the same edge

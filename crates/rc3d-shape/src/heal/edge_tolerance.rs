@@ -187,6 +187,7 @@ mod tests {
             v_high: v1,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: [(fk, pcurve)].into(),
         });
 
@@ -238,6 +239,7 @@ mod tests {
             v_high: v1,
             t_min: 0.0,
             t_max: 1.0,
+            cached_deflection: None,
             pcurves: [(fk, pcurve)].into(),
         });
 
