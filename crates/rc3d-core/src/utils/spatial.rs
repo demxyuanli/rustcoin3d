@@ -13,7 +13,7 @@ macro_rules! impl_spatial_index {
         /// Grid cell for a 3D position.
         #[inline]
         pub fn $spatial_cell(p: [$F; 3], cell_size: $F) -> (i64, i64, i64) {
-            let s = if cell_size < 1e-6 { 1e-6 as $F } else { cell_size };
+            let s = cell_size.max(1e-6 as $F);
             (
                 (p[0] / s).floor() as i64,
                 (p[1] / s).floor() as i64,
@@ -41,7 +41,7 @@ macro_rules! impl_spatial_index {
             /// Create an index with the given cell size (typically the dedup tolerance).
             pub fn with_cell_size(cell_size: $F) -> Self {
                 Self {
-                    cell_size: if cell_size < 1e-6 { 1e-6 as $F } else { cell_size },
+                    cell_size: cell_size.max(1e-6 as $F),
                     grid: HashMap::new(),
                 }
             }

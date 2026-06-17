@@ -30,6 +30,9 @@ struct EdgeSplitPoint {
     uv: (Real, Real),
     /// The new vertex created at this split (populated after vertex creation).
     vertex: Option<VertexKey>,
+    /// True if this split point comes from a CommonBlock (shared edge between adjacent faces).
+    /// These edges should not be duplicated in the result topology (OCC: PerformShapesToAvoid).
+    is_shared: bool,
 }
 
 /// Result of splitting a face along intersection curves.
@@ -131,19 +134,18 @@ fn detect_edge_split_points(
                             position: pb.points_3d.0,
                             uv: uv_at(pb.t_range.0),
                             vertex: None,
+                            is_shared: false,
                         });
                     }
                 }
             }
         }
-        // Consume CommonBlocks: shared edge segments across adjacent faces (OCC BOPAlgo_BuilderFace::PerformShapesToAvoid).
-        // For each CommonBlock that includes this face, add split points at the shared segment boundaries
-        // on the edges that overlap. This prevents shared edges from being duplicated in the result topology.
+        // Consume CommonBlocks: shared edges between adjacent faces (OCC BOPAlgo_BuilderFace::PerformShapesToAvoid).
+        // Mark these split points as shared so downstream face builders can avoid duplicating them.
         for cb in &bopds.common_blocks {
             if !cb.faces.contains(&face_key) { continue; }
             for pb in &cb.pave_blocks {
                 for &ek in &edges {
-                    // Find the matching pave block for this edge by comparing vertex pairs
                     if let Some(blocks) = bopds.pave_blocks.get(&ek) {
                         if blocks.iter().any(|b| {
                             b.vertices == pb.vertices
@@ -156,13 +158,13 @@ fn detect_edge_split_points(
                                     .map(|pc| pc.d0(t))
                                     .unwrap_or((0.0, 0.0))
                             };
-                            // Add split points at both ends of the shared segment
                             points.push(EdgeSplitPoint {
                                 edge: ek,
                                 t: pb.t_range.0,
                                 position: pb.points_3d.0,
                                 uv: uv_at(pb.t_range.0),
                                 vertex: None,
+                                is_shared: true,
                             });
                             break;
                         }
@@ -196,6 +198,7 @@ fn detect_edge_split_points(
                         position: pt,
                         uv,
                         vertex: None,
+                        is_shared: false,
                     });
                     break;
                 }
@@ -225,6 +228,7 @@ fn create_split_vertices(
             position: sp.position,
             uv: sp.uv,
             vertex: Some(vk),
+            is_shared: sp.is_shared,
         }
     }).collect()
 }

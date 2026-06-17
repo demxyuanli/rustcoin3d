@@ -351,6 +351,7 @@ fn plane_cylinder(
     plane_o: PVec3, plane_n: PVec3,
     cyl_o: PVec3, cyl_axis: PVec3, cyl_r: Real,
 ) -> Option<Vec<CurveGeom>> {
+    if cyl_r < 1e-10 { return None; } // degenerate cylinder
     let axis = cyl_axis.normalize();
     let cos_angle = plane_n.dot(axis).abs();
 
