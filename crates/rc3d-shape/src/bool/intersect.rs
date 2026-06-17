@@ -373,8 +373,28 @@ fn plane_cylinder(
             CurveGeom::Line { origin: p2, direction: line_dir },
         ]);
     }
-    // General case → ellipse (return None for now; P3 marching will handle)
-    None
+    // General case → ellipse.
+    // The intersection of an oblique plane with a cylinder is an ellipse.
+    // Center: intersection of cylinder axis with plane.
+    // Semi-minor axis = r (perpendicular to both plane_n and cyl_axis).
+    // Semi-major axis = r / cos(angle) along the projection of cyl_axis onto plane.
+    let d = plane_n.dot(cyl_o - plane_o);
+    // Intersection of axis line cyl_o + axis * t with the plane
+    let t = -d / plane_n.dot(axis);
+    let center = cyl_o + axis * t;
+    // Direction perpendicular to both plane normal and cylinder axis
+    let minor_dir = plane_n.cross(axis).normalize();
+    // Major axis direction in the plane, perpendicular to minor_dir
+    let major_dir = minor_dir.cross(plane_n).normalize();
+    let major_r = cyl_r / cos_angle;
+    Some(vec![CurveGeom::Ellipse {
+        center,
+        axis: plane_n,
+        semi_major: major_r,
+        semi_minor: cyl_r,
+        x_dir: major_dir,
+        y_dir: minor_dir,
+    }])
 }
 
 // ── Plane × Sphere ────────────────────────────────────────────────────
@@ -717,6 +737,21 @@ mod tests {
         if let Some(cs) = curves {
             assert!(cs.len() >= 2, "parallel case should produce 2 lines");
         }
+    }
+
+    #[test]
+    fn plane_cylinder_oblique_ellipse() {
+        // Plane at 45° to cylinder axis → ellipse
+        // Cylinder along Z with radius 1, plane with normal at 45° to Z
+        let n = PVec3::new(0.0, 0.7071, 0.7071); // ~45° to Z axis
+        let fa = make_test_face(SurfaceGeom::Plane { origin: PVec3::ZERO, normal: n, u_dir: PVec3::X });
+        let fb = make_test_face(SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 1.0));
+        let curves = intersect_surfaces_brep(&fa, &fb, &BRepStore::new());
+        assert!(curves.is_some(), "oblique plane-cylinder should produce ellipse");
+        let cs = curves.unwrap();
+        assert!(!cs.is_empty());
+        // Should be an ellipse, not None
+        assert!(matches!(&cs[0], CurveGeom::Ellipse { .. }), "expected Ellipse");
     }
 
     #[test]

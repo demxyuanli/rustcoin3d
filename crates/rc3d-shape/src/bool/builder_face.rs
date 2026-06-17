@@ -136,6 +136,40 @@ fn detect_edge_split_points(
                 }
             }
         }
+        // Consume CommonBlocks: shared edge segments across adjacent faces (OCC BOPAlgo_BuilderFace::PerformShapesToAvoid).
+        // For each CommonBlock that includes this face, add split points at the shared segment boundaries
+        // on the edges that overlap. This prevents shared edges from being duplicated in the result topology.
+        for cb in &bopds.common_blocks {
+            if !cb.faces.contains(&face_key) { continue; }
+            for pb in &cb.pave_blocks {
+                for &ek in &edges {
+                    // Find the matching pave block for this edge by comparing vertex pairs
+                    if let Some(blocks) = bopds.pave_blocks.get(&ek) {
+                        if blocks.iter().any(|b| {
+                            b.vertices == pb.vertices
+                                && b.t_range.0 <= pb.t_range.1
+                                && pb.t_range.0 <= b.t_range.1
+                        }) {
+                            let uv_at = |t: Real| -> (Real, Real) {
+                                reg.edges.get(ek)
+                                    .and_then(|e| e.pcurves.get(&face_key))
+                                    .map(|pc| pc.d0(t))
+                                    .unwrap_or((0.0, 0.0))
+                            };
+                            // Add split points at both ends of the shared segment
+                            points.push(EdgeSplitPoint {
+                                edge: ek,
+                                t: pb.t_range.0,
+                                position: pb.points_3d.0,
+                                uv: uv_at(pb.t_range.0),
+                                vertex: None,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     for curve in curves {
