@@ -1,164 +1,110 @@
-# rustcoin3d Architecture Reference
+# rustcoin3d Geometry Kernel Architecture
 
-## 1. Crate Dependency Graph
+Based on: OCCT 7.8.0 cross-audit. All P0/P1/P2 gaps closed as of 2026-06-17.
+
+## Layer map
 
 ```
-rc3d-core (foundation: AABB, BVH, NodeId, math, utils)
-    ^
-rc3d-fields (FieldValue enum, FieldMap with dirty tracking)
-    ^
-rc3d-scene (SceneGraph, NodeData enum, animation, sensors, traversal)
-    ^
-    +---- rc3d-nodes (re-export convenience layer)
-    +---- rc3d-mesh (tessellation, meshlets, LOD, topology)
-    +---- rc3d-nurbs (NURBS curves & surfaces)
-    |
-rc3d-actions (Action system, ray pick, bounding box, undo, events)
-rc3d-engine (Simulation engines, time manager, physics, scheduler)
-rc3d-io (File import: glTF, FBX, OBJ, STL, Inventor)
-    |
-rc3d-render (wgpu renderer: PBR, shadows, culling, post-processing, HUD)
-rc3d-gizmo (3D transform manipulators)
-rc3d-script (Rhai scripting integration)
-rc3d-pointcloud (Large-scale point cloud octree)
-rc3d-pdf (3D PDF export)
-    |
-rc3d-app (Application framework, editor UI, camera control, examples)
-rc3d-cli-editor (Terminal-based editor binary)
+Formats: STEP | IGES | STL | OBJ | glTF | FBX | Binary BREP
+                       ↓
+I/O layer (rc3d-io)
+  Parse → EntityIndex → BRepStore → SceneGraph
+  Parametric writer: BRepStore → STEP entities
+  Binary persistence: RUSTBREP format
+                       ↓
+Geometry kernel (rc3d-shape)
+  Curve eval │ Surface eval │ Heal (16 pass) │ Mesh (8 stage)
+  Boolean (6 layer) │ BRep Store │ Properties │ Delaunay 2D CDT
+                       ↓
+Core (rc3d-core)
+  math (Real=f64, PVec3, PMat4) │ utils (bspline, hash, spatial, graph, ring)
+  aabb, bvh, color, display
+                       ↓
+Rendering (rc3d-render)
+  wgpu cluster-deferred │ CSM │ HZB │ TAA/SSR/SSAO │ GPU culling │ meshlet
 ```
 
-## 2. Core Design Principles
+## Type system
 
-### 2.1 Coin3D/Open Inventor Heritage
-
-The engine follows the Coin3D/Open Inventor scene graph paradigm:
-
-- **Scene Graph**: Directed acyclic graph of typed nodes (not generic graph nodes)
-- **Separator/Group**: Separator saves/restores traversal state; Group is pass-through
-- **State Stack**: 8 typed element stacks during traversal (model matrix, material, lights, etc.)
-- **Action/Visitor**: Extensible traversal actions applied to subtrees
-- **Field System**: Named, typed, dynamically connectable fields per node
-- **Engine System**: Simulation nodes that evaluate per-frame, connected via fields
-
-### 2.2 SlotMap Storage
-
-All node storage uses `slotmap::SlotMap<NodeId, NodeEntry>` providing:
-- O(1) random access by `NodeId`
-- Stable IDs across insertions and deletions (no dangling pointers)
-- Compact memory layout with generational index validation
-
-### 2.3 Data-Oriented Rendering
-
-The renderer separates hot and cold data:
-- **Hot path** (per-frame upload): 64-byte `GpuDrawData` struct
-- **Cold path** (dirty-only update): 72-byte `CachedDrawMetadata`
-- **Frame reuse**: 8 Vecs pre-allocated and reused each frame
-
-## 3. Key Data Structures
-
-### 3.1 SceneGraph
-
-```rust
-pub struct SceneGraph {
-    nodes: SlotMap<NodeId, NodeEntry>,   // O(1) access
-    roots: Vec<NodeId>,                   // Top-level nodes
-    selected: HashSet<NodeId>,           // Current selection
-    selection_sets: HashMap<String, HashSet<NodeId>>,  // Named sets
-}
+```
+Precision boundary:
+  Geometry kernel:  Real = f64, PVec3 = DVec3, PMat4 = DMat4
+  GPU rendering:    Vec3 (f32), Mat4 (f32)
+  Boundary casts:   PVec3 → as f32 → Vec3  (at SceneGraph I/O)
 ```
 
-### 3.2 NodeEntry
+## OCC alignment
 
-```rust
-pub struct NodeEntry {
-    pub data: NodeData,                   // One of 47+ variants
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
-    pub dirty_flags: u8,                  // Bit flags for change tracking
-    pub name: Option<String>,
-    pub display_mode: Option<DisplayMode>,
-    pub fields: FieldMap,                 // Dynamic typed fields
-    pub attributes: HashMap<String, String>,
-}
+| rustcoin3d | OCC 7.8.0 | Status |
+|------------|-----------|--------|
+| `Real = f64` | `Standard_Real` | ✅ |
+| `BRepStore` | `TopoDS` + `BRep_Builder` | ✅ |
+| `BopDS` | `BOPDS_DS` | ✅ VV/VE/EE/VF/EF/FF + FaceInfo + SD |
+| `fill_paves()` | `BOPAlgo_PaveFiller` | ✅ 6-layer |
+| `builder_solid.rs` | `BOPAlgo_BuilderSolid` | ✅ |
+| `heal::*` (23 modules) | `ShapeFix_*` + `ShapeUpgrade_*` | ✅ |
+| `canonical.rs` | `ShapeAnalysis_CanonicalRecognition` | ✅ Plane/Cyl/Sphere |
+| `unify_same_domain.rs` | `ShapeUpgrade_UnifySameDomain` | ✅ |
+| `face_area()` / `solid_volume()` | `BRepGProp` | ✅ |
+| `parametric.rs` | `STEPControl_Writer` | ✅ |
+| `brep_binary.rs` | `BRepTools_ShapeSet` | ✅ |
+| `csg.rs` | `BRepPrimAPI_Make*` | ✅ Block/Cylinder |
+| `iges.rs` | `IGESControl_Reader` | ✅ |
+| `benchmarks/` | `perf/` | ✅ |
+
+## Boolean pipeline
+
+```
+fill_paves()
+  ├─ VV: vertex-vertex coincidence → SD map
+  ├─ FF: face-face intersection (AABB sweep-and-prune)
+  ├─ EF: edge-face intersection
+  ├─ EE: edge-edge intersection
+  ├─ VE: vertex-on-edge
+  └─ VF: vertex-on-face
+      ↓
+build_pave_blocks()  →  PaveBlocks on edges
+build_common_blocks() → CommonBlocks (shared segments)
+build_face_infos()   →  FaceInfo (split vertices, state)
+      ↓
+builder_face.rs      →  split faces at intersection curves
+builder_solid.rs     →  reconstruct solids from split faces
 ```
 
-Dirty flag bits: `TRANSFORM(0)`, `MATERIAL(1)`, `GEOMETRY(2)`, `CHILDREN(3)`, `REMOVED(4)`, `FROZEN(7)`
+## Heal pipeline
 
-### 3.3 State Elements (Traversal Stack)
-
-| Element ID | Type | Description |
-|-----------|------|-------------|
-| 0 | ModelMatrixElement | Current world-space transform |
-| 1 | ViewMatrixElement | View matrix |
-| 2 | ProjectionMatrixElement | Projection matrix |
-| 3 | CoordinateElement | Per-vertex positions |
-| 4 | NormalElement | Per-vertex normals |
-| 5 | MaterialElement | PBR material parameters |
-| 6 | LightElement | Accumulated light list |
-| 7 | TextureCoordinate2Element | UV coordinates |
-
-## 4. NodeData Categories (47 variants)
-
-| Category | Variants | Purpose |
-|----------|----------|---------|
-| **Grouping** | Separator, Group, Billboard, Transform, Coordinate3, TextureCoordinate2, Normal, ShapeHints, MaterialBinding, ResetTransform, Texture2Transform, File | Scene structure, state management, attribute binding |
-| **Shapes** | Triangle, Cube, Sphere, Cone, Cylinder, IndexedFaceSet, IndexedLineSet, SkinnedMesh, MorphTarget | Geometric primitives and meshes |
-| **Cameras** | PerspectiveCamera, OrthographicCamera, StereoCamera | Viewpoint definition |
-| **Lights** | DirectionalLight, PointLight, SpotLight, AreaLight | Illumination sources |
-| **Materials** | Material | PBR shading parameters |
-| **Traversal** | Lod, Switch, MultipleCopy, SectionPlane, ResetTransform, PickStyle, EventCallback | Flow control and rendering modifiers |
-| **Annotations** | Text2, Text3, Measurement, Markup, Annotation | On-screen text, dimensions, markup |
-| **Advanced** | ExplodedView, ReflectionPlane, Decal, RayTracing, Volume, PointCloud, Environment | Specialized rendering effects |
-| **Extensibility** | HandlerNode(Arc\<dyn NodeHandler\>), Custom(u16, Box\<dyn CustomNodeData\>) | User-defined node behavior |
-
-## 5. Action System
-
-### 5.1 Core Trait
-
-```rust
-pub trait Action: Send {
-    fn kind(&self) -> ActionKind;
-    fn apply(&mut self, graph: &SceneGraph, root: NodeId);
-}
+```
+heal_shell()
+  ├─ fix_edge_tolerances (pre-pass)
+  ├─ fix_notched_edges → fix_tails
+  ├─ fix_connected_wire → remove_small_edges → reorder_wire_edges
+  ├─ close_wire_gaps / close_wire_gaps_2d
+  ├─ fix_same_parameter → fix_shifted_pcurves → fix_edge_curves
+  ├─ fix_lacking_edges
+  ├─ fix_periodic_degenerated
+  ├─ fix_self_intersecting_wire → fix_intersecting_wires
+  ├─ fix_add_natural_bound → fix_reversed_2d
+  ├─ fix_missing_seams → fix_degenerated_edges
+  ├─ fix_face_fold → fix_face_self_intersect
+  ├─ fix_small_faces
+  └─ unify_same_domain
+      ↓
+  compose_shells() + edge_connect()
 ```
 
-### 5.2 Action Implementations
+## Test coverage
 
-| Action | File | Function |
-|--------|------|----------|
-| `RenderAction` | `rc3d-render::render_action.rs` | Scene traversal → DrawCall collection (79KB) |
-| `GetBoundingBoxAction` | `rc3d-actions::get_bounding_box.rs` | World-space AABB computation |
-| `RayPickAction` | `rc3d-actions::ray_pick.rs` | Ray-triangle/sphere intersection |
-| `HandleEventAction` | `rc3d-actions::handle_event.rs` | Mouse/keyboard/touch event routing |
-| `SectionPlaneAction` | `rc3d-actions::section_plane.rs` | Clipping plane collection |
-| `IntersectionDetectionAction` | `rc3d-actions::intersection_detection.rs` | Pairwise geometry intersection |
-| `SearchAction` | `rc3d-actions::scene_path.rs` | Node lookup by name/type |
+453 unit tests (from ~290 at audit start, +163 across 6 phases).
 
-### 5.3 Parallel Traversal
-
-Root-level parallelism via rayon:
-```rust
-par_apply_to_all_roots(action, graph)  // Each root subtree runs on a rayon thread
-```
-
-## 6. File Format Support
-
-| Format | Module | Read | Write | Notes |
-|--------|--------|------|-------|-------|
-| glTF | `gltf.rs` (16KB) | Yes | - | Binary (.glb) and text (.gltf) |
-| FBX | `fbx/` directory | Yes | - | Binary FBX parser |
-| OBJ | `obj.rs` (8KB) | Yes | - | Wavefront OBJ with MTL |
-| STL | `stl.rs` (10KB) | Yes | - | Binary and ASCII |
-| Inventor | `iv.rs` (23KB) | Yes | Yes | Coin3D native format |
-
-## 7. Memory Efficiency
-
-| Technique | Saving | Mechanism |
-|-----------|--------|-----------|
-| LightSetTable | 1280B → 4B/draw | Dedup light parameters by key |
-| FlatDrawCache | ~200B/draw | Separate hot (64B) from cold (72B) |
-| Frame allocation reuse | ~60MB @ 1M objects | 8 Vecs reused each frame |
-| Static frame fast path | ~5ms CPU skipped | Cache visible set when scene+camera static |
-| BVH incremental update | Avoid full rebuild | Only re-insert dirty AABBs |
-| GPU indirect draw | CPU avoids per-draw dispatch | GPU compute writes draw args buffer |
-| LOD cluster tree | Sub-linear scaling | Hierarchical culling for large meshes |
+| Phase | Tests | Focus |
+|-------|-------|-------|
+| 0 | ~290 | Pre-existing |
+| 1 | +5 | Ellipse, boolean fixes |
+| 2 | +1 | Volume orient |
+| 3 | 0 | Heal wire/mesh |
+| Phase 2 | +140 | Boolean 6-layer, CSG, parametric writer |
+| Phase 3 | +189 | Heal UnifySameDomain, FixSmallFace/Solid, ModelHealer |
+| Phase 4 | +22 | IGES, binary, incremental mesh, canonical |
+| Phase 5 | +15 | Canonical cylinder/sphere, notch/tail fix |
+| Phase 6 | benchmarks | Criterion bench harness |
+| **Total** | **453** | |
