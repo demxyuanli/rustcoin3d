@@ -23,6 +23,7 @@ pub mod pave_filler;
 pub mod builder_face;
 pub mod coplanar;
 pub mod section;
+pub mod builder_solid;
 pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_intersection};
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 

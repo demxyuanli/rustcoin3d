@@ -13,11 +13,15 @@
 //! 4. Create pave blocks between consecutive split vertices
 //! 5. Group overlapping pave blocks into common blocks
 
+use std::collections::{HashMap, HashSet};
+
+use crate::geom::project::project_point_on_curve;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
 use crate::topo_iter;
 use super::bopds::{BopDS, CommonBlock, FaceFaceInterf, InterfPoint, PaveBlock};
 use super::face_intersector;
+use super::intersect_edge::EdgeFaceHit;
 use rc3d_core::math::{Real, PVec3};
 
 /// Result of the pave filling phase.
@@ -46,6 +50,10 @@ pub fn fill_paves(
     // Collect all faces from both shell sets
     let faces_a: Vec<(FaceKey, ShellKey)> = collect_shell_faces(shells_a, reg);
     let faces_b: Vec<(FaceKey, ShellKey)> = collect_shell_faces(shells_b, reg);
+
+    // Phase 1a: Vertex-vertex interference — identify coincident vertices (SD pairs).
+    // Must run before face-face intersection so split vertices can reference canonical keys.
+    ds.build_vv_interferences(shells_a, shells_b, reg);
 
     // Build AABB acceleration, tracking faces without bboxes separately
     let mut bboxes_a: Vec<(FaceKey, super::aabb::AABB)> = Vec::new();
@@ -127,11 +135,210 @@ pub fn fill_paves(
         }
     }
 
+    // Phase 1c: Edge-Edge interference — detect where edges from shell A
+    // cross edges from shell B. Each hit becomes an InterfPoint referencing
+    // the faces those edges belong to.
+    for &sk_a in shells_a {
+        for ek_a in topo_iter::iter_edges_of_shell(sk_a, reg) {
+            let edge_a = match reg.edges.get(ek_a) { Some(e) => e, None => continue };
+            for &sk_b in shells_b {
+                for ek_b in topo_iter::iter_edges_of_shell(sk_b, reg) {
+                    let edge_b = match reg.edges.get(ek_b) { Some(e) => e, None => continue };
+                    if !edge_bbox_touches_two(edge_a, edge_b, tolerance) { continue; }
+                    let hits = super::intersect_edge::intersect_edge_edge(
+                        &edge_a.curve, &edge_b.curve, tolerance,
+                    );
+                    for hit in &hits {
+                        let faces_a: Vec<FaceKey> = reg.edge_to_faces.get(&ek_a).cloned().unwrap_or_default();
+                        let faces_b: Vec<FaceKey> = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
+                        for &fa in &faces_a {
+                            for &fb in &faces_b {
+                                ds.face_face_interfs.push(FaceFaceInterf {
+                                    face_a: fa, face_b: fb,
+                                    curves_3d: vec![],
+                                    pcurves_a: vec![],
+                                    pcurves_b: vec![],
+                                    points: vec![InterfPoint {
+                                        point_3d: hit.point,
+                                        uv_a: (hit.t_a, 0.0),
+                                        uv_b: (hit.t_b, 0.0),
+                                    }],
+                                });
+                                report.intersections_found += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 1d: Vertex-Edge interference (OCC: BOPAlgo_PaveFiller::PerformVE)
+    // For each unique vertex in one shell, project onto edges of the other shell.
+    // If the projection distance is within tolerance, record the hit.
+    {
+        // Collect all unique vertices from shell A, skipping non-canonical SD duplicates.
+        let mut verts_a: HashSet<VertexKey> = HashSet::new();
+        for &sk in shells_a {
+            for vk in topo_iter::deep_vertices_of_shell(sk, reg) {
+                if !ds.sd_vertices.contains_key(&vk) {
+                    verts_a.insert(vk);
+                }
+            }
+        }
+
+        // Collect all unique vertices from shell B, skipping non-canonical SD duplicates.
+        let mut verts_b: HashSet<VertexKey> = HashSet::new();
+        for &sk in shells_b {
+            for vk in topo_iter::deep_vertices_of_shell(sk, reg) {
+                if !ds.sd_vertices.contains_key(&vk) {
+                    verts_b.insert(vk);
+                }
+            }
+        }
+
+        // Pre-build vertex-to-faces lookups for cross-referencing in FaceFaceInterf.
+        let build_vf_map = |faces: &[(FaceKey, ShellKey)]| -> HashMap<VertexKey, Vec<FaceKey>> {
+            let mut m: HashMap<VertexKey, Vec<FaceKey>> = HashMap::new();
+            for &(fk, _) in faces {
+                for vk in topo_iter::deep_vertices_of_face(fk, reg) {
+                    m.entry(vk).or_default().push(fk);
+                }
+            }
+            m
+        };
+        let vtx_to_faces_a = build_vf_map(&faces_a);
+        let vtx_to_faces_b = build_vf_map(&faces_b);
+
+        // VE: vertices of A against edges of B
+        for &vk in &verts_a {
+            let v_pos = match reg.vertices.get(vk) { Some(v) => v.position, None => continue };
+            for &sk_b in shells_b {
+                for ek_b in topo_iter::iter_edges_of_shell(sk_b, reg) {
+                    let edge_b = match reg.edges.get(ek_b) { Some(e) => e, None => continue };
+                    if let Some(hit) = vertex_on_edge(v_pos, edge_b, tolerance) {
+                        let faces_for_v = vtx_to_faces_a.get(&vk).cloned().unwrap_or_default();
+                        let faces_for_e = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
+                        for &fa in &faces_for_v {
+                            for &fb in &faces_for_e {
+                                ds.face_face_interfs.push(FaceFaceInterf {
+                                    face_a: fa, face_b: fb,
+                                    curves_3d: vec![],
+                                    pcurves_a: vec![],
+                                    pcurves_b: vec![],
+                                    points: vec![InterfPoint {
+                                        point_3d: hit.point,
+                                        uv_a: (0.0, 0.0),
+                                        uv_b: hit.uv_face,
+                                    }],
+                                });
+                                report.intersections_found += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // VE: vertices of B against edges of A
+        for &vk in &verts_b {
+            let v_pos = match reg.vertices.get(vk) { Some(v) => v.position, None => continue };
+            for &sk_a in shells_a {
+                for ek_a in topo_iter::iter_edges_of_shell(sk_a, reg) {
+                    let edge_a = match reg.edges.get(ek_a) { Some(e) => e, None => continue };
+                    if let Some(hit) = vertex_on_edge(v_pos, edge_a, tolerance) {
+                        let faces_for_v = vtx_to_faces_b.get(&vk).cloned().unwrap_or_default();
+                        let faces_for_e = reg.edge_to_faces.get(&ek_a).cloned().unwrap_or_default();
+                        for &fb in &faces_for_v {
+                            for &fa in &faces_for_e {
+                                ds.face_face_interfs.push(FaceFaceInterf {
+                                    face_a: fa, face_b: fb,
+                                    curves_3d: vec![],
+                                    pcurves_a: vec![],
+                                    pcurves_b: vec![],
+                                    points: vec![InterfPoint {
+                                        point_3d: hit.point,
+                                        uv_a: hit.uv_face,
+                                        uv_b: (0.0, 0.0),
+                                    }],
+                                });
+                                report.intersections_found += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 1e: Vertex-Face interference (OCC: BOPAlgo_PaveFiller::PerformVF)
+        // For each vertex, project onto face surfaces and check UV bounds.
+        // VF: vertices of A against faces of B
+        for &vk in &verts_a {
+            let v_pos = match reg.vertices.get(vk) { Some(v) => v.position, None => continue };
+            for &(fkb, _) in &faces_b {
+                let face_b = match reg.faces.get(fkb) { Some(f) => f, None => continue };
+                if let Some(uv) = face_b.surface.project(v_pos) {
+                    let proj_3d = face_b.surface.d0_native(uv.0, uv.1);
+                    let dist = (proj_3d - v_pos).length();
+                    if dist < tolerance && uv_in_face_bounds(uv, fkb, reg) {
+                        let faces_for_v = vtx_to_faces_a.get(&vk).cloned().unwrap_or_default();
+                        for &fa in &faces_for_v {
+                            ds.face_face_interfs.push(FaceFaceInterf {
+                                face_a: fa, face_b: fkb,
+                                curves_3d: vec![],
+                                pcurves_a: vec![],
+                                pcurves_b: vec![],
+                                points: vec![InterfPoint {
+                                    point_3d: v_pos,
+                                    uv_a: (0.0, 0.0),
+                                    uv_b: uv,
+                                }],
+                            });
+                            report.intersections_found += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // VF: vertices of B against faces of A
+        for &vk in &verts_b {
+            let v_pos = match reg.vertices.get(vk) { Some(v) => v.position, None => continue };
+            for &(fka, _) in &faces_a {
+                let face_a = match reg.faces.get(fka) { Some(f) => f, None => continue };
+                if let Some(uv) = face_a.surface.project(v_pos) {
+                    let proj_3d = face_a.surface.d0_native(uv.0, uv.1);
+                    let dist = (proj_3d - v_pos).length();
+                    if dist < tolerance && uv_in_face_bounds(uv, fka, reg) {
+                        let faces_for_v = vtx_to_faces_b.get(&vk).cloned().unwrap_or_default();
+                        for &fb in &faces_for_v {
+                            ds.face_face_interfs.push(FaceFaceInterf {
+                                face_a: fka, face_b: fb,
+                                curves_3d: vec![],
+                                pcurves_a: vec![],
+                                pcurves_b: vec![],
+                                points: vec![InterfPoint {
+                                    point_3d: v_pos,
+                                    uv_a: uv,
+                                    uv_b: (0.0, 0.0),
+                                }],
+                            });
+                            report.intersections_found += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Build pave blocks from the intersection data
     build_pave_blocks_from_interfs(&mut ds, reg, &mut report);
 
     // Build common blocks by grouping overlapping pave blocks
     build_common_blocks(&mut ds, &mut report);
+
+    // Build per-face info from accumulated intersection data
+    ds.build_face_infos(reg);
 
     (ds, report)
 }
@@ -149,6 +356,22 @@ fn edge_bbox_touches(
     edge_bb.expand(PVec3::new(p0.x + tol, p0.y + tol, p0.z + tol));
     edge_bb.expand(PVec3::new(p1.x + tol, p1.y + tol, p1.z + tol));
     edge_bb.overlaps(face_bbox)
+}
+
+/// Quick AABB check: do the bounding boxes of two edges intersect?
+fn edge_bbox_touches_two(a: &crate::topo::BRepEdge, b: &crate::topo::BRepEdge, tol: Real) -> bool {
+    use super::aabb::AABB;
+    let mut bb_a = AABB::empty();
+    bb_a.expand(a.curve.d0(0.0));
+    bb_a.expand(a.curve.d0(1.0));
+    bb_a.expand(PVec3::new(a.curve.d0(0.0).x + tol, a.curve.d0(0.0).y + tol, a.curve.d0(0.0).z + tol));
+    bb_a.expand(PVec3::new(a.curve.d0(1.0).x + tol, a.curve.d0(1.0).y + tol, a.curve.d0(1.0).z + tol));
+    let mut bb_b = AABB::empty();
+    bb_b.expand(b.curve.d0(0.0));
+    bb_b.expand(b.curve.d0(1.0));
+    bb_b.expand(PVec3::new(b.curve.d0(0.0).x + tol, b.curve.d0(0.0).y + tol, b.curve.d0(0.0).z + tol));
+    bb_b.expand(PVec3::new(b.curve.d0(1.0).x + tol, b.curve.d0(1.0).y + tol, b.curve.d0(1.0).z + tol));
+    bb_a.overlaps(&bb_b)
 }
 
 /// Compute intersection for a single face pair.
@@ -290,6 +513,81 @@ fn find_param_on_edge(pt: PVec3, edge: &crate::topo::BRepEdge) -> Real {
         }
     }
     best_t
+}
+
+/// Project a vertex position onto an edge curve and return the hit if within tolerance.
+///
+/// OCC: BOPAlgo_PaveFiller::PerformVE — vertex-on-edge projection using Extrema.
+/// Returns the closest projection point (t_edge, 3D point) when within the tolerance.
+fn vertex_on_edge(v_pos: PVec3, edge: &crate::topo::BRepEdge, tolerance: Real) -> Option<EdgeFaceHit> {
+    let proj = project_point_on_curve(&edge.curve, v_pos);
+    let tol_sq = tolerance * tolerance;
+    for &(t, dist_sq) in &proj {
+        if dist_sq < tol_sq {
+            let t_clamped = t.clamp(0.0, 1.0);
+            return Some(EdgeFaceHit {
+                t_edge: t_clamped,
+                point: edge.curve.d0(t_clamped),
+                uv_face: (0.0, 0.0),
+            });
+        }
+    }
+    None
+}
+
+/// Check whether a UV coordinate lies within a face's outer wire bounds.
+///
+/// Builds a UV polygon from the face's outer wire pcurves, then uses the
+/// even-odd rule for point-in-polygon containment test.
+fn uv_in_face_bounds(uv: (Real, Real), face_key: FaceKey, reg: &BRepStore) -> bool {
+    let face = match reg.faces.get(face_key) {
+        Some(f) => f,
+        None => return false,
+    };
+    let wire = match reg.wires.get(face.outer_wire) {
+        Some(w) => w,
+        None => return true, // No wire: unbounded face
+    };
+    let edges = &wire.edges;
+    if edges.is_empty() {
+        return true; // Empty wire: unbounded face
+    }
+
+    // Build a polygon from pcurve start points (or vertex projections as fallback).
+    let mut poly: Vec<(Real, Real)> = Vec::with_capacity(edges.len());
+    for &(ek, _orient) in edges {
+        let edge = match reg.edges.get(ek) {
+            Some(e) => e,
+            None => continue,
+        };
+        if let Some(pcurve) = edge.pcurves.get(&face_key) {
+            let start_uv = pcurve.d0(0.0);
+            poly.push((start_uv.0, start_uv.1));
+        } else if let Some(v) = reg.vertices.get(edge.v_low) {
+            if let Some(proj_uv) = face.surface.project(v.position) {
+                poly.push(proj_uv);
+            }
+        }
+    }
+    if poly.len() < 3 {
+        return true; // Degenerate wire: accept as inside
+    }
+
+    // Even-odd rule point-in-polygon test.
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > uv.1) != (yj > uv.1) {
+            let x_intersect = (xj - xi) * (uv.1 - yi) / (yj - yi) + xi;
+            if uv.0 < x_intersect {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 #[cfg(test)]

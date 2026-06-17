@@ -15,9 +15,46 @@
 
 use std::collections::{HashMap, HashSet};
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, FaceKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use crate::topo_iter;
 use crate::geom::CurveGeom;
 use rc3d_core::math::{Real, PVec3};
+use rc3d_core::utils::spatial::SpatialIndexF64;
+use log;
+
+/// Classification state for a face in a boolean operation.
+///
+/// OCC: BOPDS_FaceState — whether the face interior lies inside, outside,
+/// or on the boundary of the other shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceState {
+    In,   // Face interior is in the other shape
+    Out,  // Face interior is outside the other shape
+    On,   // Face is on the boundary (coplanar)
+}
+
+/// Per-face split-vertex and state data.
+///
+/// OCC: BOPDS_FaceInfo — aggregates intersection results for one face,
+/// tracking which vertices lie on this face, which pave blocks belong to it,
+/// and its classification relative to the other shape.
+#[derive(Debug, Clone)]
+pub struct FaceInfo {
+    /// Split vertices on this face (from VF/EF intersection points).
+    pub split_vertices: Vec<VertexKey>,
+    /// Pave blocks from intersection curves that lie ON this face.
+    pub pave_blocks_on: Vec<PaveBlock>,
+    /// Classification state (In/Out/On).
+    pub state: FaceState,
+    /// Faces from the other shape that intersect this face.
+    pub interfs: Vec<FaceKey>,
+}
+
+impl Default for FaceInfo {
+    fn default() -> Self {
+        Self { split_vertices: vec![], pave_blocks_on: vec![], state: FaceState::Out, interfs: vec![] }
+    }
+}
 
 /// A parameter interval on an edge created by intersection with another face.
 ///
@@ -91,6 +128,11 @@ pub struct BopDS {
     pub common_blocks: Vec<CommonBlock>,
     /// New vertices created during face splitting.
     pub split_vertices: Vec<VertexKey>,
+    /// Per-face intersection data (split vertices, pave blocks, state, interfs).
+    pub face_infos: HashMap<FaceKey, FaceInfo>,
+    /// Same-domain vertex map: maps each vertex to its canonical (lowest-key) coincident vertex.
+    /// Populated by `build_vv_interferences()`.
+    pub sd_vertices: HashMap<VertexKey, VertexKey>,
     /// Tolerance for intersection computations.
     pub tolerance: Real,
 }
@@ -102,6 +144,8 @@ impl BopDS {
             pave_blocks: HashMap::new(),
             common_blocks: Vec::new(),
             split_vertices: Vec::new(),
+            face_infos: HashMap::new(),
+            sd_vertices: HashMap::new(),
             tolerance,
         }
     }
@@ -228,6 +272,33 @@ impl BopDS {
         self.common_blocks = common;
     }
 
+    /// Populate per-face info from intersection data.
+    ///
+    /// Call this after VV/VE/VF/EF/FF detection and after build_pave_blocks().
+    pub fn build_face_infos(&mut self, _reg: &BRepStore) {
+        self.face_infos.clear();
+        // For each face_face_interf, record which faces intersect
+        for interf in &self.face_face_interfs {
+            let info_a = self.face_infos.entry(interf.face_a).or_default();
+            info_a.interfs.push(interf.face_b);
+            info_a.state = FaceState::On; // intersecting faces are ON the boundary
+
+            let info_b = self.face_infos.entry(interf.face_b).or_default();
+            info_b.interfs.push(interf.face_a);
+            info_b.state = FaceState::On;
+        }
+        // For each pave block, add split vertices to face info
+        for (_ek, blocks) in &self.pave_blocks {
+            for pb in blocks {
+                for &fk in &pb.face_refs {
+                    let info = self.face_infos.entry(fk).or_default();
+                    info.split_vertices.push(pb.vertices.0);
+                    info.split_vertices.push(pb.vertices.1);
+                }
+            }
+        }
+    }
+
     /// Infer edge key from two vertices (lookup in face-face interfs).
     pub fn edge_for_vertices(&self, _va: VertexKey, _vb: VertexKey, _reg: &BRepStore) -> Option<EdgeKey> {
         // Stub: in full pipeline, intersects index edges by vertex adjacency.
@@ -242,6 +313,82 @@ impl BopDS {
             }
         }
         None
+    }
+
+    /// Resolve a vertex to its canonical same-domain vertex.
+    ///
+    /// If `vk` has a coincident vertex recorded in `sd_vertices`, returns the canonical one.
+    /// Otherwise returns `vk` unchanged.
+    pub fn resolve_sd(&self, vk: VertexKey) -> VertexKey {
+        *self.sd_vertices.get(&vk).unwrap_or(&vk)
+    }
+
+    /// Build vertex-vertex (VV) interference map.
+    ///
+    /// OCC: BOPAlgo_PaveFiller::PerformVV() — identifies coincident vertices
+    /// from both shells within the pave filler tolerance. Each pair maps to the
+    /// canonical (lower SlotMap key) vertex.
+    ///
+    /// Called during `fill_paves()` after face collection, before the FF loop.
+    pub fn build_vv_interferences(
+        &mut self,
+        shells_a: &[ShellKey],
+        shells_b: &[ShellKey],
+        reg: &BRepStore,
+    ) {
+        let mut spatial = SpatialIndexF64::with_cell_size(self.tolerance);
+        let tolerance = self.tolerance;
+
+        // Collect all unique vertices from both shell sets
+        let mut all_vertices: Vec<VertexKey> = Vec::new();
+        {
+            let mut seen = HashSet::new();
+            for &sk in shells_a {
+                for vk in topo_iter::deep_vertices_of_shell(sk, reg) {
+                    if seen.insert(vk) {
+                        all_vertices.push(vk);
+                    }
+                }
+            }
+            for &sk in shells_b {
+                for vk in topo_iter::deep_vertices_of_shell(sk, reg) {
+                    if seen.insert(vk) {
+                        all_vertices.push(vk);
+                    }
+                }
+            }
+        }
+
+        let mut sd_count = 0u64;
+
+        for &vk in &all_vertices {
+            let pos = match reg.vertices.get(vk) {
+                Some(v) => [v.position.x, v.position.y, v.position.z],
+                None => continue,
+            };
+
+            if let Some(existing) = spatial.find_near(pos, tolerance, |k| {
+                reg.vertices
+                    .get(k)
+                    .map(|v| [v.position.x, v.position.y, v.position.z])
+                    .unwrap_or([0.0; 3])
+            }) {
+                // Map to canonical (lower SlotMap key is the one inserted first)
+                let canonical = existing.min(vk);
+                let non_canonical = existing.max(vk);
+                self.sd_vertices.insert(non_canonical, canonical);
+                sd_count += 1;
+            } else {
+                spatial.insert(vk, pos);
+            }
+        }
+
+        log::info!(
+            "VV: {} SD vertex pairs found among {} unique vertices (tolerance={:.2e})",
+            sd_count,
+            all_vertices.len(),
+            tolerance,
+        );
     }
 
     /// Total number of intersection curves found.
@@ -286,6 +433,81 @@ fn faces_for_edge(_ek: EdgeKey, interfs: &[FaceFaceInterf]) -> Vec<FaceKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::SurfaceGeom;
+    use crate::topo::*;
+    use rc3d_core::math::PVec3;
+    use std::collections::HashMap;
+
+    fn make_shell_with_vertices(reg: &mut BRepStore, positions: &[PVec3]) -> ShellKey {
+        make_shell_with_vertices_dedup(reg, positions, true)
+    }
+
+    /// Build a shell from positions. If `dedup` is true, uses `find_or_add_vertex`
+    /// (same position gives same key). If false, inserts raw vertices (same position
+    /// gives different keys — used to test VV coincidence detection).
+    fn make_shell_with_vertices_dedup(
+        reg: &mut BRepStore,
+        positions: &[PVec3],
+        dedup: bool,
+    ) -> ShellKey {
+        let mut edge_keys = Vec::new();
+        for i in 0..positions.len() {
+            let j = (i + 1) % positions.len();
+            let v0 = if dedup {
+                reg.find_or_add_vertex(positions[i], 1e-4)
+            } else {
+                reg.vertices.insert(BRepVertex {
+                    position: positions[i],
+                    tolerance: 1e-4,
+                })
+            };
+            let v1 = if dedup {
+                reg.find_or_add_vertex(positions[j], 1e-4)
+            } else {
+                reg.vertices.insert(BRepVertex {
+                    position: positions[j],
+                    tolerance: 1e-4,
+                })
+            };
+            let curve = CurveGeom::Line {
+                origin: positions[i],
+                direction: (positions[j] - positions[i]).normalize(),
+            };
+            let ek = reg.edges.insert(BRepEdge {
+                curve,
+                tolerance: 1e-4,
+                v_low: v0.min(v1),
+                v_high: v0.max(v1),
+                t_min: 0.0,
+                t_max: (positions[j] - positions[i]).length(),
+                pcurves: HashMap::new(),
+            });
+            edge_keys.push((ek, Orientation::Forward));
+        }
+        let wire = reg.wires.insert(BRepWire {
+            edges: edge_keys.clone(),
+        });
+        let surface = SurfaceGeom::Plane {
+            origin: PVec3::ZERO,
+            normal: PVec3::Z,
+            u_dir: PVec3::X,
+        };
+        let fk = reg.faces.insert(BRepFace {
+            surface,
+            outer_wire: wire,
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        reg.shells.insert(BRepShell {
+            faces: vec![(fk, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        })
+    }
 
     #[test]
     fn test_bopds_new() {
@@ -324,5 +546,184 @@ mod tests {
         });
         let found = ds.interfs_for_face(fk);
         assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn test_vv_interferences_coincident_vertices() {
+        let mut reg = BRepStore::new();
+        // Use non-dedup insertion so coincident positions get different VertexKeys
+        let sa = make_shell_with_vertices_dedup(
+            &mut reg,
+            &[
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 0.0, 0.0),
+                PVec3::new(1.0, 1.0, 0.0),
+            ],
+            false,
+        );
+        let sb = make_shell_with_vertices_dedup(
+            &mut reg,
+            &[
+                PVec3::new(0.0, 0.0, 0.0), // coincident with sa[0] but different VertexKey
+                PVec3::new(2.0, 0.0, 0.0),
+                PVec3::new(2.0, 2.0, 0.0),
+            ],
+            false,
+        );
+
+        let mut ds = BopDS::new(1e-4);
+        ds.build_vv_interferences(&[sa], &[sb], &reg);
+        // Should find at least 1 SD pair (the coincident origin vertex)
+        assert!(!ds.sd_vertices.is_empty(),
+            "should find SD pairs for coincident vertices, got empty map");
+    }
+
+    #[test]
+    fn test_vv_interferences_no_coincident() {
+        let mut reg = BRepStore::new();
+        let sa = make_shell_with_vertices(
+            &mut reg,
+            &[
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 0.0, 0.0),
+                PVec3::new(0.0, 1.0, 0.0),
+            ],
+        );
+        let sb = make_shell_with_vertices(
+            &mut reg,
+            &[
+                PVec3::new(100.0, 0.0, 0.0),
+                PVec3::new(101.0, 0.0, 0.0),
+                PVec3::new(100.0, 1.0, 0.0),
+            ],
+        );
+
+        let mut ds = BopDS::new(1e-4);
+        ds.build_vv_interferences(&[sa], &[sb], &reg);
+        assert!(ds.sd_vertices.is_empty(),
+            "widely separated shells should have no SD pairs");
+    }
+
+    #[test]
+    fn test_resolve_sd_returns_canonical() {
+        let mut reg = BRepStore::new();
+        // Use non-dedup insertion so coincident positions get different VertexKeys
+        let sa = make_shell_with_vertices_dedup(
+            &mut reg,
+            &[
+                PVec3::new(0.0, 0.0, 0.0),
+                PVec3::new(1.0, 0.0, 0.0),
+                PVec3::new(0.0, 1.0, 0.0),
+            ],
+            false,
+        );
+        let sb = make_shell_with_vertices_dedup(
+            &mut reg,
+            &[
+                PVec3::new(0.0, 0.0, 0.0), // coincident
+                PVec3::new(2.0, 0.0, 0.0),
+                PVec3::new(2.0, 2.0, 0.0),
+            ],
+            false,
+        );
+
+        let mut ds = BopDS::new(1e-4);
+        ds.build_vv_interferences(&[sa], &[sb], &reg);
+
+        // Every non-canonical vertex should resolve to a different (smaller) key
+        for (&vk, &canonical) in &ds.sd_vertices {
+            assert!(canonical < vk,
+                "non-canonical {:?} should map to smaller key {:?}", vk, canonical);
+            assert_eq!(ds.resolve_sd(vk), canonical);
+            // Canonical vertex resolves to itself
+            assert_eq!(ds.resolve_sd(canonical), canonical);
+        }
+    }
+
+    #[test]
+    fn test_resolve_sd_unknown_vertex_returns_self() {
+        let ds = BopDS::new(1e-4);
+        let vk = VertexKey::default();
+        assert_eq!(ds.resolve_sd(vk), vk,
+            "unknown vertex should resolve to itself");
+    }
+
+    #[test]
+    fn test_face_infos_built_from_interfs() {
+        let mut ds = BopDS::new(1e-4);
+        let reg = BRepStore::new();
+
+        // Create two face-face interfs
+        let fa = FaceKey::default();
+        let fb = FaceKey::default();
+        let fc = FaceKey::default();
+
+        ds.face_face_interfs.push(FaceFaceInterf {
+            face_a: fa,
+            face_b: fb,
+            curves_3d: vec![],
+            pcurves_a: vec![],
+            pcurves_b: vec![],
+            points: vec![],
+        });
+        ds.face_face_interfs.push(FaceFaceInterf {
+            face_a: fa,
+            face_b: fc,
+            curves_3d: vec![],
+            pcurves_a: vec![],
+            pcurves_b: vec![],
+            points: vec![],
+        });
+
+        // Add pave blocks referencing faces
+        let ek = EdgeKey::default();
+        let va = VertexKey::default();
+        let vb = VertexKey::default();
+        ds.pave_blocks.insert(ek, vec![
+            PaveBlock {
+                edge: ek,
+                t_range: (0.0, 0.5),
+                vertices: (va, vb),
+                face_refs: vec![fa, fb],
+                points_3d: (PVec3::ZERO, PVec3::X),
+            },
+            PaveBlock {
+                edge: ek,
+                t_range: (0.5, 1.0),
+                vertices: (vb, va),
+                face_refs: vec![fa, fc],
+                points_3d: (PVec3::X, PVec3::Y),
+            },
+        ]);
+
+        ds.build_face_infos(&reg);
+
+        // face_a should intersect fb and fc, state On, with split vertices
+        let info_a = ds.face_infos.get(&fa).expect("face_a should have info");
+        assert_eq!(info_a.state, FaceState::On);
+        assert!(info_a.interfs.contains(&fb));
+        assert!(info_a.interfs.contains(&fc));
+        assert!(!info_a.split_vertices.is_empty(),
+            "face_a should have split vertices from pave blocks");
+
+        // face_b should intersect fa only
+        let info_b = ds.face_infos.get(&fb).expect("face_b should have info");
+        assert_eq!(info_b.state, FaceState::On);
+        assert!(info_b.interfs.contains(&fa));
+        assert!(!info_b.split_vertices.is_empty());
+
+        // face_c should intersect fa only
+        let info_c = ds.face_infos.get(&fc).expect("face_c should have info");
+        assert_eq!(info_c.state, FaceState::On);
+        assert!(info_c.interfs.contains(&fa));
+    }
+
+    #[test]
+    fn test_face_info_default_is_out() {
+        let info = FaceInfo::default();
+        assert_eq!(info.state, FaceState::Out);
+        assert!(info.split_vertices.is_empty());
+        assert!(info.pave_blocks_on.is_empty());
+        assert!(info.interfs.is_empty());
     }
 }

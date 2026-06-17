@@ -6,6 +6,7 @@
 
 pub mod format;
 pub mod entity_to_step;
+pub mod parametric;
 pub mod scene_to_step;
 
 use super::parser::EntityIndex;
@@ -23,6 +24,14 @@ pub fn write_step_from_graph(_graph: &SceneGraph) -> Result<String, String> {
 pub fn write_step_from_entities(entities: &EntityIndex) -> String {
     entity_to_step::write_entities(entities)
 }
+
+/// Write a BRepStore as ISO 10303-21 parametric STEP text (Path C: exact geometry).
+/// Produces AP242 entities: CARTESIAN_POINT, DIRECTION, AXIS2_PLACEMENT_3D,
+/// LINE, CIRCLE, ELLIPSE, B_SPLINE_CURVE_WITH_KNOTS, PLANE, CYLINDRICAL_SURFACE,
+/// CONICAL_SURFACE, SPHERICAL_SURFACE, TOROIDAL_SURFACE, SURFACE_OF_LINEAR_EXTRUSION,
+/// SURFACE_OF_REVOLUTION, OFFSET_SURFACE, EDGE_CURVE, ORIENTED_EDGE, EDGE_LOOP,
+/// FACE_OUTER_BOUND, ADVANCED_FACE, CLOSED_SHELL/OPEN_SHELL, MANIFOLD_SOLID_BREP.
+pub use parametric::write_step_parametric;
 
 #[cfg(test)]
 mod tests {
