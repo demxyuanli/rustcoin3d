@@ -26,7 +26,7 @@ mod fallback_policy;
 mod grid;
 mod edge_pool;
 mod param_div;
-mod post_process;
+pub mod post_process;
 mod ruled;
 mod shell_pipeline;
 mod shell_impl;

@@ -23,15 +23,17 @@ pub(crate) mod free_bounds;
 pub(crate) mod compose_shell;
 pub(crate) mod face_fold;
 pub(crate) mod edge_connect;
+pub mod unify_same_domain;
+pub mod solid_fix;
 use std::collections::HashSet;
 
-use crate::topo::{FaceKey, ShellKey, WireKey};
+use crate::topo::{FaceKey, ShellKey, SolidKey, WireKey};
 use crate::store::BRepStore;
 use wire_ops::{reorder_wire_edges, remove_small_edges};
 use wire_join::{close_wire_gaps, close_wire_gaps_2d, fix_connected_wire};
 use same_param_fix::fix_same_parameter_wire;
 use pcurve_fix::{fix_shifted_pcurves, fix_edge_curves_wire};
-use face_fix::{fix_add_natural_bound, fix_reversed_2d};
+use face_fix::{fix_add_natural_bound, fix_reversed_2d, fix_small_faces};
 use shell_fix::{fix_shell_orientation, fix_split_face, fix_vertex_positions};
 use seam::fix_missing_seams;
 use lacking::fix_lacking_edges;
@@ -84,6 +86,10 @@ pub struct HealReport {
     pub face_self_intersections_fixed: usize,
     pub check_errors: usize,
     pub check_warnings: usize,
+    pub unify_merges: usize,
+    pub small_faces_merged: usize,
+    pub removed_small_solids: usize,
+    pub removed_empty_shells: usize,
     skip_faces_seen: HashSet<FaceKey>,
 }
 
@@ -114,6 +120,10 @@ impl HealReport {
         }
         self.check_errors += other.check_errors;
         self.check_warnings += other.check_warnings;
+        self.unify_merges += other.unify_merges;
+        self.small_faces_merged += other.small_faces_merged;
+        self.removed_small_solids += other.removed_small_solids;
+        self.removed_empty_shells += other.removed_empty_shells;
     }
 }
 
@@ -152,7 +162,12 @@ pub struct HealConfig {
     pub fix_face_fold: bool,
     pub fix_face_self_intersect: bool,
     pub fix_edge_connect: bool,
+    pub fix_unify_same_domain: bool,
+    pub fix_small_faces: bool,
+    pub fix_small_solids: bool,
     pub small_edge_min_length: Real,
+    pub small_face_min_area: Real,
+    pub small_solid_min_volume: Real,
     pub uv_gap_tolerance: Real,
 }
 
@@ -186,7 +201,12 @@ impl HealConfig {
             fix_face_fold: false,
             fix_face_self_intersect: false,
             fix_edge_connect: false,
+            fix_unify_same_domain: false,
+            fix_small_faces: false,
+            fix_small_solids: false,
             small_edge_min_length: 1e-6,
+            small_face_min_area: 0.01,
+            small_solid_min_volume: 0.001,
             uv_gap_tolerance: 0.0,
         }
     }
@@ -231,7 +251,12 @@ impl Default for HealConfig {
             fix_face_fold: true,
             fix_face_self_intersect: false,
             fix_edge_connect: false,
+            fix_unify_same_domain: false,
+            fix_small_faces: false,
+            fix_small_solids: false,
             small_edge_min_length: 1e-6,
+            small_face_min_area: 0.01,
+            small_solid_min_volume: 0.001,
             uv_gap_tolerance: 1e-5,
         }
     }
@@ -561,6 +586,17 @@ pub fn heal_shell(
         }
     }
 
+    if config.fix_small_faces {
+        let merged = fix_small_faces(shell_key, reg, config.small_face_min_area);
+        report.small_faces_merged = merged;
+        if merged > 0 {
+            log::debug!(
+                "[BRep heal] FixSmallFaces: merged/removed {} small faces on shell {:?}",
+                merged, shell_key
+            );
+        }
+    }
+
     if config.fix_orientation {
         report.flipped_faces = fix_shell_orientation(shell_key, reg);
     }
@@ -605,6 +641,19 @@ pub fn heal_shell(
         }
     }
 
+    // UnifySameDomain: merge adjacent faces sharing the same surface geometry.
+    // OCC alignment: ShapeUpgrade_UnifySameDomain::Perform()
+    if config.fix_unify_same_domain {
+        let ur = unify_same_domain::unify_same_domain(shell_key, reg, config.gap_tolerance);
+        report.unify_merges = ur.merges;
+        if ur.merges > 0 {
+            log::debug!(
+                "[BRep heal] UnifySameDomain: merged {} face clusters on shell {:?}",
+                ur.merges, shell_key
+            );
+        }
+    }
+
     let check_report = check_shell(shell_key, reg);
     report.check_errors = check_report.errors.len();
     report.check_warnings = check_report.warnings.len();
@@ -622,6 +671,29 @@ pub fn heal_shell(
     }
     log::debug!("[heal timer] check_shell: {:.1}s  total heal_shell: {:.1}s",
         _t_total.elapsed().as_secs_f32(), _t_total.elapsed().as_secs_f32());
+
+    report
+}
+
+
+/// Run solid-level healing passes (FixSmallSolids, remove empty shells).
+pub fn heal_solid(
+    solid_key: SolidKey,
+    reg: &mut BRepStore,
+    config: &HealConfig,
+) -> HealReport {
+    let mut report = HealReport::default();
+
+    if config.fix_small_solids {
+        let removed = solid_fix::fix_small_solids(&[solid_key], reg, config.small_solid_min_volume);
+        report.removed_small_solids = removed.len();
+    }
+
+    let empty_count = solid_fix::remove_empty_shells(reg);
+    report.removed_empty_shells = empty_count;
+    if empty_count > 0 {
+        log::info!("[heal] FixSmallSolid: removed {} empty shells", empty_count);
+    }
 
     report
 }

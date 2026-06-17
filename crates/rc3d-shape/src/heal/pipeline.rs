@@ -22,6 +22,9 @@ pub enum HealPassId {
     ShellFix,
     ContinuityCheck,
     FixSmallArea,
+    FixSmallFaces,
+    FixSmallSolids,
+    UnifySameDomain,
 }
 
 /// Tier-driven heal policy — derived from `TessellationTier` via `for_tier()`.
@@ -65,6 +68,7 @@ impl HealPolicy {
                     HealPassId::ShellFix,
                     HealPassId::ContinuityCheck,
                     HealPassId::FixSmallArea,
+                    HealPassId::FixSmallFaces,
                 ],
                 skip_on_non_manifold: false,
                 continuity_check: true,
@@ -83,6 +87,7 @@ impl HealPolicy {
                     HealPassId::ShellFix,
                     HealPassId::ContinuityCheck,
                     HealPassId::FixSmallArea,
+                    HealPassId::FixSmallFaces,
                 ],
                 skip_on_non_manifold: false,
                 continuity_check: true,
@@ -239,6 +244,9 @@ pub fn apply_pass_to_config(pass: HealPassId, config: &mut HealConfig) {
         HealPassId::ShellFix => { config.fix_vertex_position = true; config.fix_free_bounds = true; },
         HealPassId::ContinuityCheck => {}, // read-only check, no config flag
         HealPassId::FixSmallArea => config.fix_small_area = true,
+        HealPassId::FixSmallFaces => config.fix_small_faces = true,
+        HealPassId::FixSmallSolids => config.fix_small_solids = true,
+        HealPassId::UnifySameDomain => config.fix_unify_same_domain = true,
     }
 }
 
@@ -264,6 +272,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_reversed_2d = true;
             config.fix_vertex_tolerance = true;
             config.fix_small_area = true;
+            config.fix_small_faces = true;
             config.fix_vertex_position = true;
             config.fix_free_bounds = true;
             config.fix_compose_shell = true;
