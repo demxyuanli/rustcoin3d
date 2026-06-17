@@ -705,17 +705,54 @@ fn bspline_2d_d0(
     }
 }
 
-/// Decompose a B-spline into piecewise Bézier segments by inserting
-/// internal knots to full multiplicity.
+/// Insert knot `t` into a 2D B-spline curve using Boehm's algorithm.
+/// Returns (new_control_points, new_knots).
+fn insert_knot_2d(
+    degree: usize,
+    cps: &[(Real, Real)],
+    knots: &[Real],
+    t: Real,
+) -> (Vec<(Real, Real)>, Vec<Real>) {
+    let n = cps.len();
+    let s = rc3d_core::utils::bspline::find_span_f64(degree, knots, t);
+    let mut new_cps = vec![(0.0, 0.0); n + 1];
+    let mut new_knots = vec![0.0; knots.len() + 1];
+
+    // Copy unchanged portions
+    for i in 0..=s.saturating_sub(degree) { new_cps[i] = cps[i]; }
+    for i in s + 1..n { new_cps[i + 1] = cps[i]; }
+    for i in 0..=s { new_knots[i] = knots[i]; }
+    new_knots[s + 1] = t;
+    for i in s + 1..knots.len() { new_knots[i + 1] = knots[i]; }
+
+    // Compute new control points in the affected range
+    for i in (s.saturating_sub(degree) + 1)..=s {
+        let denom = knots[i + degree] - knots[i];
+        let alpha = if denom.abs() > 1e-15 {
+            (t - knots[i]) / denom
+        } else {
+            0.0
+        };
+        let p0 = cps[i - 1];
+        let p1 = cps[i];
+        new_cps[i] = ((1.0 - alpha) * p0.0 + alpha * p1.0, (1.0 - alpha) * p0.1 + alpha * p1.1);
+    }
+    (new_cps, new_knots)
+}
+
+/// Decompose a B-spline into piecewise Bézier segments.
+/// Inserts all internal knots to full multiplicity (degree), then extracts
+/// each span as a Bézier segment. This is the O(n²) correct algorithm
+/// (OCC BSplCLib::BezierCoefficients).
 fn decompose_bspline_to_beziers(
     degree: usize,
     cps: &[(Real, Real)],
     knots: &[Real],
-    _weights: Option<&[Real]>,
+    weights: Option<&[Real]>,
 ) -> Vec<Bezier2d> {
     let n = cps.len();
     if n <= degree + 1 {
-        // Single Bézier segment
+        // Already a single Bézier segment
         let c0 = cps[0];
         let c3 = cps[n - 1];
         let c1 = if n >= 3 { cps[1] } else {
@@ -727,31 +764,41 @@ fn decompose_bspline_to_beziers(
         return vec![Bezier2d { c0, c1, c2, c3 }];
     }
 
-    // Multi-segment: one Bézier per internal knot interval
-    let mut beziers = Vec::new();
-    let mut seg_start = degree;
-
-    for i in (degree + 1)..n {
-        let at_last = i == n - 1;
-        let is_knot_boundary = (knots[i + 1] - knots[i]).abs() > 1e-10 || at_last;
-
-        if is_knot_boundary {
-            let seg_cp_count = i - seg_start + degree + 1;
-            let seg_cps = &cps[seg_start - degree..seg_start - degree + seg_cp_count.min(cps.len() - (seg_start - degree))];
-
-            if seg_cps.len() == degree + 1 {
-                let c0 = seg_cps[0];
-                let c3 = seg_cps[degree];
-                let c1 = if degree >= 2 { seg_cps[1] } else {
-                    (c0.0 + (c3.0 - c0.0) / 3.0, c0.1 + (c3.1 - c0.1) / 3.0)
-                };
-                let c2 = if degree >= 3 { seg_cps[degree - 1] } else {
-                    (c3.0 - (c3.0 - c0.0) / 3.0, c3.1 - (c3.1 - c0.1) / 3.0)
-                };
-                beziers.push(Bezier2d { c0, c1, c2, c3 });
-            }
-            seg_start = i;
+    // Insert each distinct internal knot to full multiplicity (= degree).
+    let mut cur_cps = cps.to_vec();
+    let mut cur_knots = knots.to_vec();
+    let mut i = degree + 1;
+    while i < cur_knots.len() - degree - 1 {
+        let knot_val = cur_knots[i];
+        // Count current multiplicity
+        let mut mult = 0;
+        while i + mult < cur_knots.len() && (cur_knots[i + mult] - knot_val).abs() < 1e-12 {
+            mult += 1;
         }
+        // Insert to reach full multiplicity
+        for _ in mult..degree {
+            let (new_cps, new_knots) = insert_knot_2d(degree, &cur_cps, &cur_knots, knot_val);
+            cur_cps = new_cps;
+            cur_knots = new_knots;
+        }
+        i += degree; // skip past the inserted multiplicity block
+    }
+
+    // Extract Bezier segments: one per knot span
+    let mut beziers = Vec::new();
+    let seg_count = (cur_cps.len() - 1) / degree;
+    for s in 0..seg_count {
+        let start = s * degree;
+        let seg_cps = &cur_cps[start..start + degree + 1];
+        let c0 = seg_cps[0];
+        let c3 = seg_cps[degree];
+        let c1 = if degree >= 2 { seg_cps[1] } else {
+            (c0.0 + (c3.0 - c0.0) / 3.0, c0.1 + (c3.1 - c0.1) / 3.0)
+        };
+        let c2 = if degree >= 3 { seg_cps[degree - 1] } else {
+            (c3.0 - (c3.0 - c0.0) / 3.0, c3.1 - (c3.1 - c0.1) / 3.0)
+        };
+        beziers.push(Bezier2d { c0, c1, c2, c3 });
     }
     beziers
 }

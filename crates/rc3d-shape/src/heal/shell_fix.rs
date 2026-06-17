@@ -45,17 +45,28 @@ pub(crate) fn fix_shell_orientation(
 
                 let edge = reg.edges.get(shared[0]);
                 if let (Some(e), Some(_pcurve)) = (edge, edge.and_then(|e| e.pcurves.get(&current))) {
-                    let mid = e.curve.d0(0.5);
-                    if let Some((u0, v0)) = current_face.surface.project(mid) {
-                        if let Some((u1, v1)) = next_face.surface.project(mid) {
-                            let n0 = current_face.surface.normal(u0, v0);
-                            let n1 = next_face.surface.normal(u1, v1);
-                            if n0.dot(n1) < 0.0 {
-                                if let Some(face) = reg.faces.get_mut(next) {
-                                    face.same_sense = !face.same_sense;
-                                    flipped += 1;
-                                }
+                    // Multi-point sampling: evaluate at 7 Chebyshev-distributed samples
+                    // along the shared edge. Majority vote determines orientation.
+                    // This avoids the single-sample failure on curved surfaces
+                    // (spheres, tori) where the midpoint normal is unrepresentative.
+                    let ts: [Real; 7] = [0.038, 0.146, 0.309, 0.5, 0.691, 0.854, 0.962];
+                    let mut agree = 0u32;
+                    let mut disagree = 0u32;
+                    for &t in &ts {
+                        let p = e.curve.d0(t);
+                        if let Some((u0, v0)) = current_face.surface.project(p) {
+                            if let Some((u1, v1)) = next_face.surface.project(p) {
+                                let n0 = current_face.surface.normal(u0, v0);
+                                let n1 = next_face.surface.normal(u1, v1);
+                                if n0.dot(n1) < 0.0 { disagree += 1; } else { agree += 1; }
                             }
+                        }
+                    }
+                    // Majority vote: flip if more samples disagree than agree
+                    if disagree > agree {
+                        if let Some(face) = reg.faces.get_mut(next) {
+                            face.same_sense = !face.same_sense;
+                            flipped += 1;
                         }
                     }
                 }

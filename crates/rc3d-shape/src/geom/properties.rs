@@ -40,13 +40,19 @@ pub fn solid_volume(reg: &BRepStore, solid_key: crate::topo::SolidKey, grid_res:
     volume
 }
 
-/// Flux contribution of one face to volume integral: ∫ x·nx dS
-fn oriented_face_flux(reg: &BRepStore, fk: FaceKey, _orient: crate::topo::Orientation, grid_res: usize) -> Real {
+/// Flux contribution of one face to volume integral: ∫ x·nx dS.
+/// Uses both shell-level orientation AND face same_sense to determine
+/// the correct outward normal sign (OCC BRepGProp_Gauss::computeVInertia).
+fn oriented_face_flux(reg: &BRepStore, fk: FaceKey, orient: crate::topo::Orientation, grid_res: usize) -> Real {
     let face = match reg.faces.get(fk) { Some(f) => f, None => return 0.0 };
     let pr = reg.face_param_range(fk, &face.surface);
     let n = grid_res.max(4);
     let du = pr.u_span() / n as Real;
     let dv = pr.v_span() / n as Real;
+    // Combined sign: orient (shell-level) × same_sense (face-level normal direction).
+    // Forward + same_sense → outward (+); Reversed flips the sign.
+    let sign = if orient == crate::topo::Orientation::Forward { 1.0 } else { -1.0 }
+        * if face.same_sense { 1.0 } else { -1.0 };
     let mut flux = 0.0_f64;
     for iu in 0..n {
         let u = pr.u_min + (iu as Real + 0.5) * du;
@@ -55,8 +61,7 @@ fn oriented_face_flux(reg: &BRepStore, fk: FaceKey, _orient: crate::topo::Orient
             let p = face.surface.d0_native(u, v);
             let (su, sv) = face.surface.d1_native(u, v);
             let normal = su.cross(sv);
-            if !face.same_sense { flux -= p.x * normal.x * du * dv; }
-            else { flux += p.x * normal.x * du * dv; }
+            flux += sign * p.x * normal.x * du * dv;
         }
     }
     flux
