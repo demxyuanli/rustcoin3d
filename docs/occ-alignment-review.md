@@ -1,6 +1,6 @@
 # OCC 7.8.0 Alignment Review
 
-Date: 2026-06-18. Based on all completed phases.
+Date: 2026-06-18. Updated after Phase 7 (IGES) + Phase 8 (Mesh PreProcessor).
 
 ## Summary
 
@@ -54,8 +54,8 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 |-----------|------------|--------|-------|
 | `BRepMesh_IncrementalMesh` | `edge_disc.rs` | ✅ | cached_deflection reuse |
 | `BRepMesh_FaceDiscret` | `face_cdt.rs` + `face_fill.rs` | ✅ | Dual CDT backend |
+| **`BRepMesh_ModelPreProcessor`** | **`model_preprocessor.rs`** | **✅** | **Self-intersect + open-wire detection** |
 | `BRepMesh_ModelHealer` | `post_process.rs` | ✅ | gap weld + T-junction fix |
-| `BRepMesh_ModelPreProcessor` | — | ❌ | Wire self-intersection detection |
 | `GCPnts_TangentialDeflection` | `edge_disc.rs` | ✅ | Adaptive sampling |
 
 ### I/O (STEP / IGES / Binary)
@@ -80,18 +80,17 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `Standard_Real` (double) | `Real = f64` | ✅ |
 | `TopoDS_Shape` hierarchy | `BRepStore` + SlotMap | ✅ |
 | `TopLoc_Location` | SceneGraph `Mat4` | ✅ (different model) |
-| `TColStd` containers | `Vec`, `HashMap` | ✅ |
 
 ## Coverage summary
 
 | Category | Covered | Partial | Missing |
 |----------|---------|---------|---------|
-| Geometry (10 classes) | 8 | 1 | 1 |
+| Geometry (7 classes) | 6 | 1 | 0 |
 | Boolean (6 classes) | 4 | 1 | 1 |
 | Healing (11 classes) | 10 | 1 | 0 |
-| Meshing (5 classes) | 4 | 0 | 1 |
+| Meshing (5 classes) | **5** | 0 | 0 |
 | I/O (8 classes) | 6 | 0 | 2 |
-| **Total (40 classes)** | **32 (80%)** | **3** | **5** |
+| **Total (37 classes)** | **31 (84%)** | **3** | **3** |
 
 ## Remaining gaps (priority-ordered)
 
@@ -99,6 +98,5 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 |---|-----|--------|--------|
 | 1 | GK adaptive integration | 2d | High-accuracy volume |
 | 2 | IGES Writer | 2d | Roundtrip |
-| 3 | Mesh PreProcessor (wire self-intersection) | 1d | Mesh quality |
-| 4 | Greiner-Hormann for coplanar union | 2d | Correctness |
-| 5 | VRML reader/writer | 1d | Legacy format |
+| 3 | Greiner-Hormann for coplanar union | 2d | Correctness |
+| 4 | VRML reader/writer | 1d | Legacy format |
