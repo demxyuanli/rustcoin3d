@@ -1,7 +1,7 @@
 //! Global mesh properties (OCC BRepGProp equivalent).
 //! Volume, surface area, center of mass via divergence theorem.
 
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::PVec3;
 
 #[derive(Debug, Default, Clone)]
 pub struct MeshProperties {

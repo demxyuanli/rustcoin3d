@@ -748,7 +748,7 @@ fn decompose_bspline_to_beziers(
     degree: usize,
     cps: &[(Real, Real)],
     knots: &[Real],
-    weights: Option<&[Real]>,
+    _weights: Option<&[Real]>,
 ) -> Vec<Bezier2d> {
     let n = cps.len();
     if n <= degree + 1 {

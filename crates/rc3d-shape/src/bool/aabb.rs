@@ -1,6 +1,6 @@
 //! Axis-aligned bounding box utilities for boolean operation acceleration.
 
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::PVec3;
 use crate::store::BRepStore;
 use crate::topo::FaceKey;
 

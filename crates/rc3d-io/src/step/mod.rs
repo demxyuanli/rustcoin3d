@@ -72,7 +72,7 @@ pub use scene_emit::{apply_plan, emit_plan_options_from_step, SceneEmitOptions};
 pub use adapter::AdapterMode;
 
 use std::path::Path;
-use rc3d_core::math::{Real, PVec3, Vec3};
+use rc3d_core::math::{PVec3, Vec3};
 use rc3d_core::DisplayMode;
 use rc3d_scene::{NodeData, SceneGraph};
 use rc3d_scene::node_data::{MaterialNode, SeparatorNode};
@@ -314,7 +314,7 @@ fn exchange_to_import_result(
 
     // Post-SameParameter: reset tolerances on Circle edges that were upgraded
     // from Line to Circle after the initial tolerance propagation.
-    for mut edge in document.store.edges.values_mut() {
+    for edge in document.store.edges.values_mut() {
         if matches!(edge.curve, rc3d_shape::geom::CurveGeom::Circle { .. }) {
             edge.tolerance = edge.tolerance.min(1e-4);
         }

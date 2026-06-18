@@ -1,7 +1,7 @@
 //! Assembly tree: preserves product hierarchy from STEP assemblies.
 
 use std::collections::HashMap;
-use rc3d_core::math::{Real, PMat4};
+use rc3d_core::math::PMat4;
 
 /// A node in the assembly tree.
 #[derive(Debug, Clone)]

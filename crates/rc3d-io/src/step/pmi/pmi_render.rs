@@ -2,7 +2,6 @@
 //! Maps PmiData → AnnotationElement[] → AnnotationSetNode → SceneGraph.
 //! Rendering handled by existing pass_markup + plane_text pipeline.
 
-use rc3d_core::math::Real;
 use rc3d_core::NodeId;
 use rc3d_scene::SceneGraph;
 use rc3d_scene::node_data::{

@@ -149,8 +149,8 @@ fn e7_cylinder_plane_intersection() {
         let j = (i + 1) % n;
         let a_i = i as Real / n as Real * std::f64::consts::TAU;
         let a_j = j as Real / n as Real * std::f64::consts::TAU;
-        let p_i = PVec3::new(a_i.cos(), a_i.sin(), 0.0);
-        let p_j = PVec3::new(a_j.cos(), a_j.sin(), 0.0);
+        let _p_i = PVec3::new(a_i.cos(), a_i.sin(), 0.0);
+        let _p_j = PVec3::new(a_j.cos(), a_j.sin(), 0.0);
         let curve = CurveGeom::Circle { center: PVec3::ZERO, axis: PVec3::Z, radius: 1.0, x_dir, y_dir };
         let pc = Curve2d::Line { origin: (a_i, 0.0), direction: (a_j - a_i, 0.0) };
         let ek = reg.add_edge_with_pcurve(verts[i], verts[j], curve.clone(), 1e-4, cyl_fk, pc, true);

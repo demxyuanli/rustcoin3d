@@ -559,7 +559,7 @@ fn earclip_polygon(verts: &[usize], positions: &[Vec3], out: &mut Vec<u32>) {
 
     // Project to 2D using best-fit plane normal
     let n = {
-        let p0 = positions[verts[0]];
+        let _p0 = positions[verts[0]];
         let mut normal = Vec3::ZERO;
         for i in 0..verts.len() {
             let j = (i + 1) % verts.len();

@@ -474,7 +474,7 @@ struct PcDevSample {
 fn sample_pcurve_deviations(
     curve_3d: &CurveGeom, pcurve: &Curve2d, surface: &SurfaceGeom, n: usize,
 ) -> Vec<PcDevSample> {
-    use crate::geom::SurfaceGeom;
+    
     (0..=n).map(|i| {
         let t = i as Real / n as Real;
         let pt_3d = curve_3d.d0(t);
@@ -494,7 +494,7 @@ fn max_pcurve_deviation(
 fn adjust_pcurve_from_samples(
     pcurve: &Curve2d, samples: &[PcDevSample], surface: &SurfaceGeom,
 ) -> Option<Curve2d> {
-    use crate::geom::SurfaceGeom;
+    
     match pcurve {
         Curve2d::Line { .. } => {
             let first = &samples[0];

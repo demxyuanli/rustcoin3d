@@ -1,6 +1,5 @@
 //! Shared primary-record selection for complex STEP instances (adapter + model).
 
-use rc3d_core::math::Real;
 use crate::step::model::{ComplexMapping, Record, StepInstance};
 use crate::step::value::StepValue;
 

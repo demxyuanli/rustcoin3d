@@ -4,7 +4,7 @@
 //! BRepStore data. Skip BSpline curves/surfaces for now.
 
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io::{self};
 
 use rc3d_core::math::{Real, PVec3};
 use rc3d_shape::geom::{CurveGeom, SurfaceGeom};
@@ -686,7 +686,7 @@ pub fn write_brep_binary(store: &BRepStore) -> Vec<u8> {
         .enumerate()
         .map(|(i, k)| (k, i as u32))
         .collect();
-    let c_map: HashMap<CompoundKey, u32> = store.compounds.keys()
+    let _c_map: HashMap<CompoundKey, u32> = store.compounds.keys()
         .enumerate()
         .map(|(i, k)| (k, i as u32))
         .collect();
@@ -1136,7 +1136,7 @@ mod tests {
         let v011 = store.find_or_add_vertex(PVec3::new(0.0, 1.0, 1.0), 1e-6);
 
         // Helper: create plane face with a rectangular wire
-        let mut add_face = |store: &mut BRepStore,
+        let add_face = |store: &mut BRepStore,
                             origin: PVec3, normal: PVec3, u_dir: PVec3,
                             corners: &[(VertexKey, (Real, Real))]|
         -> FaceKey {
@@ -1224,7 +1224,7 @@ mod tests {
             "face count mismatch");
 
         // Verify vertex positions are preserved
-        for (vk, v) in store.vertices.iter() {
+        for (_vk, v) in store.vertices.iter() {
             let pos = v.position;
             let found = restored.vertices.iter()
                 .any(|(_, rv)| (rv.position - pos).length() < 1e-12);

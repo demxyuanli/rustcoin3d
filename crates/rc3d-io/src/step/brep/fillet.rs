@@ -291,7 +291,7 @@ pub fn chamfer_edges(
 mod tests {
     use super::*;
     use rc3d_shape::BRepStore;
-    use rc3d_shape::topo::*;
+    
     use crate::step::brep::geom::{CurveGeom, SurfaceGeom};
     use rc3d_core::math::PVec3;
 

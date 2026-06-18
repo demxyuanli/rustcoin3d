@@ -1,7 +1,7 @@
 //! SceneEmitPlan -> SceneGraph adapter (transform instancing, no vertex bake).
 
 use rc3d_core::math::Real;
-use rc3d_core::math::{Mat4, PMat4, PVec3, Vec3};
+use rc3d_core::math::{Mat4, PMat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::annotation::AnnotationPoint;
 use rc3d_scene::node_data::{

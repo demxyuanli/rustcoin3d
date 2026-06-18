@@ -1,7 +1,7 @@
 //! OCC BRepGProp — geometric properties: area, volume, center of mass.
 //! Uses surface integration for faces and divergence theorem for solids.
 
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::Real;
 use crate::topo::FaceKey;
 use crate::store::BRepStore;
 

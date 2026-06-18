@@ -1,4 +1,4 @@
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::PVec3;
 use crate::mesh::face_fill::FaceMeshRange;
 use crate::mesh::report::ShellMeshReport;
 use super::types::ChunkOutput;

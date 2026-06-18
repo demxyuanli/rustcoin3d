@@ -1,6 +1,6 @@
 //! TopoDS_Shape-like handles.
 
-use rc3d_core::math::{Real, PMat4};
+use rc3d_core::math::PMat4;
 use slotmap::new_key_type;
 
 use crate::topo::{EdgeKey, FaceKey, Orientation, ShellKey, SolidKey, VertexKey, WireKey};

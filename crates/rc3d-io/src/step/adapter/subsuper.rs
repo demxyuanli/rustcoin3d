@@ -1,6 +1,5 @@
 //! Map fidelity `StepInstance` records to flat entity params (OCC Transfer-style).
 
-use rc3d_core::math::Real;
 use crate::step::model::{ComplexMapping, Record, StepInstance};
 use crate::step::primary_keyword::PRIORITY_TYPES;
 use crate::step::value::StepValue;

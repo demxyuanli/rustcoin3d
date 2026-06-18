@@ -412,7 +412,7 @@ mod tests {
         let tol = reg.tolerance.model;
 
         // Create a rectangular face manually via the helper
-        let origin = PVec3::new(0.0, 0.0, 0.0);
+        let _origin = PVec3::new(0.0, 0.0, 0.0);
         let corners = [
             PVec3::new(1.0, 0.0, 0.0),
             PVec3::new(1.0, 1.0, 0.0),

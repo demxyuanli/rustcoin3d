@@ -345,7 +345,7 @@ pub fn fill_paves(
 
 /// Quick AABB check: does the edge's bounding box intersect the face bbox?
 fn edge_bbox_touches(
-    edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: Real, reg: &BRepStore,
+    edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: Real, _reg: &BRepStore,
 ) -> bool {
     use super::aabb::AABB;
     let p0 = edge.curve.d0(0.0);

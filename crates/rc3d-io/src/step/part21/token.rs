@@ -1,6 +1,5 @@
 //! ISO 10303-21 lexical tokens.
 
-use rc3d_core::math::Real;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Ref(u64),
