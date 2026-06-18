@@ -34,10 +34,12 @@ pub mod mesh_export;
 pub mod fbx;
 pub mod gltf;
 pub mod iges;
+pub mod iges_writer;
 pub mod iv;
 pub mod obj;
 pub mod step;
 pub mod stl;
+pub mod vrml;
 
 pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
@@ -60,6 +62,7 @@ pub use step::lod;
 pub use stl::{
     parse_stl, parse_stl_file, parse_stl_triangles, write_ascii_stl, write_binary_stl, StlError,
 };
+pub use vrml::{import_vrml, parse_vrml_str, VrmlError};
 pub use mesh_export::{
     convert_stl_to_ascii, default_stl_output, export_file_to_ascii_stl,
     export_step_per_face_ascii_stl, export_step_to_ascii_stl, mesh_step_file, ExportSummary,
