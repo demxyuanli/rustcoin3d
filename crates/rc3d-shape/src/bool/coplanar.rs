@@ -264,64 +264,164 @@ pub fn polygon_intersection(
 }
 
 /// Compute 2D polygon boolean: A ∪ B (union).
-/// For convex polygons, union = A + B - intersection.
-/// Simplified: return both polygons; the caller (mesh/stitch) handles overlap.
+/// For overlapping polygons: A∪B = clip(A outside B) + B.
+/// For disjoint: return both.
 pub fn polygon_union(
     poly_a: &[(Real, Real)],
     poly_b: &[(Real, Real)],
 ) -> Vec<Vec<(Real, Real)>> {
-    // Check if they overlap
-    let overlap = clip_polygon(poly_a, poly_b);
-    if overlap.len() < 3 {
-        // Disjoint — return both polygons
+    let ints = find_intersections(poly_a, poly_b);
+    if ints.is_empty() {
         return vec![poly_a.to_vec(), poly_b.to_vec()];
     }
-    // Overlapping — for now, return both original polygons.
-    // A proper union would merge them into one polygon, but that requires
-    // Weiler-Atherton or Greiner-Hormann for general concave polygons.
-    // The stitch module will handle shared edges correctly.
-    vec![poly_a.to_vec(), poly_b.to_vec()]
+    // A∪B = (A - B) + B
+    let a_minus_b = polygon_difference(poly_a, poly_b);
+    let mut result = a_minus_b;
+    result.push(poly_b.to_vec());
+    result
 }
 
 /// Compute 2D polygon boolean: A - B (difference).
-/// A - B = clip(A, complement(B)).
-/// For convex B: A - B = A \ (A ∩ B).
+/// Clip A against the complement of B (reverse B's winding).
 pub fn polygon_difference(
     poly_a: &[(Real, Real)],
     poly_b: &[(Real, Real)],
 ) -> Vec<Vec<(Real, Real)>> {
-    let intersection = clip_polygon(poly_a, poly_b);
-    if intersection.len() < 3 {
-        // No overlap — return A unchanged
-        return vec![poly_a.to_vec()];
-    }
-
-    // For convex polygons: A - B = edges of A that are outside B,
-    // combined with edges of (A∩B) traversed in reverse.
-    // Simplified approach: if B fully contains A, result is empty.
-    // If A fully contains B, result is A with a hole (inner wire).
-    // Otherwise, return A (approximation until full Weiler-Atherton).
-
-    // Check if B fully contains A
     let a_inside_b = poly_a.iter().all(|&p| point_in_polygon_winding(p.0, p.1, poly_b));
     if a_inside_b {
         return vec![]; // A entirely inside B → empty difference
     }
-
-    // Check if A fully contains B → A with B as inner wire
-    let b_inside_a = poly_b.iter().all(|&p| point_in_polygon_winding(p.0, p.1, poly_a));
-
-    // For partial overlap, return A (the caller handles splitting later)
-    // This is a conservative approximation.
-    if !b_inside_a {
-        // Partial overlap: return A minus the intersection region.
-        // Approximate by returning A as-is for now.
-        vec![poly_a.to_vec()]
-    } else {
-        // B fully inside A: A with a hole at B
-        // Represented as outer wire = A, inner wire = B
-        vec![poly_a.to_vec(), poly_b.to_vec()]
+    let ints = find_intersections(poly_a, poly_b);
+    if ints.is_empty() {
+        // No overlap or fully contains → return A
+        return vec![poly_a.to_vec()];
     }
+    // Build the difference polygon by walking A's boundary,
+    // skipping portions that lie inside B, connecting through intersection points.
+    let result = walk_difference(poly_a, poly_b, &ints);
+    if result.len() >= 3 {
+        vec![result]
+    } else {
+        vec![poly_a.to_vec()]
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Greiner-Hormann polygon clipping core
+// ═══════════════════════════════════════════════════════════════════════
+
+/// An intersection point between two polygon edges.
+#[derive(Debug, Clone)]
+struct Intersection {
+    edge_a: usize,
+    t_a: Real,
+    edge_b: usize,
+    t_b: Real,
+    point: (Real, Real),
+}
+
+/// Find all intersections between two polygon boundaries.
+fn find_intersections(
+    poly_a: &[(Real, Real)],
+    poly_b: &[(Real, Real)],
+) -> Vec<Intersection> {
+    let na = poly_a.len();
+    let nb = poly_b.len();
+    if na < 3 || nb < 3 { return vec![]; }
+
+    let mut ints = Vec::new();
+    for ia in 0..na {
+        let a0 = poly_a[ia];
+        let a1 = poly_a[(ia + 1) % na];
+        for ib in 0..nb {
+            let b0 = poly_b[ib];
+            let b1 = poly_b[(ib + 1) % nb];
+            if let Some((t_a, t_b, pt)) = segment_intersection(a0, a1, b0, b1) {
+                if (t_a <= 1e-10 || t_a >= 1.0 - 1e-10)
+                    && (t_b <= 1e-10 || t_b >= 1.0 - 1e-10) {
+                    continue; // vertex-on-vertex
+                }
+                ints.push(Intersection { edge_a: ia, t_a, edge_b: ib, t_b, point: pt });
+            }
+        }
+    }
+    // Deduplicate
+    let mut uniq: Vec<Intersection> = Vec::new();
+    for int in ints {
+        if !uniq.iter().any(|u| dist_sq_2d(u.point, int.point) < 1e-12) {
+            uniq.push(int);
+        }
+    }
+    uniq.sort_by(|a, b| a.edge_a.cmp(&b.edge_a).then(a.t_a.partial_cmp(&b.t_a).unwrap_or(std::cmp::Ordering::Equal)));
+    uniq
+}
+
+fn dist_sq_2d(a: (Real, Real), b: (Real, Real)) -> Real {
+    (a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)
+}
+
+/// Find the intersection of two 2D segments.
+fn segment_intersection(
+    a0: (Real, Real), a1: (Real, Real),
+    b0: (Real, Real), b1: (Real, Real),
+) -> Option<(Real, Real, (Real, Real))> {
+    let dax = a1.0 - a0.0; let day = a1.1 - a0.1;
+    let dbx = b1.0 - b0.0; let dby = b1.1 - b0.1;
+    let det = dax * dby - day * dbx;
+    if det.abs() < 1e-15 { return None; }
+    let dx = b0.0 - a0.0; let dy = b0.1 - a0.1;
+    let t_a = (dx * dby - dy * dbx) / det;
+    let t_b = (dx * day - dy * dax) / det;
+    if t_a < -1e-10 || t_a > 1.0 + 1e-10 || t_b < -1e-10 || t_b > 1.0 + 1e-10 {
+        return None;
+    }
+    let t_a_clamped = t_a.clamp(0.0, 1.0);
+    let t_b_clamped = t_b.clamp(0.0, 1.0);
+    let px = a0.0 + t_a_clamped * dax;
+    let py = a0.1 + t_a_clamped * day;
+    Some((t_a_clamped, t_b_clamped, (px, py)))
+}
+
+/// Walk A's boundary to produce A - B.
+/// Follows A's edges, inserting intersection points where A crosses B.
+/// Skips portions of A that lie inside B.
+fn walk_difference(
+    poly_a: &[(Real, Real)],
+    poly_b: &[(Real, Real)],
+    ints: &[Intersection],
+) -> Vec<(Real, Real)> {
+    let na = poly_a.len();
+    // Build augmented A: original vertices + intersection points
+    let mut verts: Vec<((Real, Real), bool)> = Vec::new();
+    // bool = is this an intersection point (and thus a crossing from outside↔inside B)
+    for i in 0..na {
+        verts.push((poly_a[i], false));
+        let mut on_edge: Vec<&Intersection> = ints.iter().filter(|int| int.edge_a == i).collect();
+        on_edge.sort_by(|a, b| a.t_a.partial_cmp(&b.t_a).unwrap_or(std::cmp::Ordering::Equal));
+        for int in on_edge {
+            // Determine if this is an entry or exit:
+            // Test a point slightly AFTER the intersection along A
+            let a0 = poly_a[i];
+            let a1 = poly_a[(i + 1) % na];
+            let test_t = (int.t_a + 0.001).min(0.999);
+            let test_pt = (a0.0 + (a1.0 - a0.0) * test_t, a0.1 + (a1.1 - a0.1) * test_t);
+            let inside = point_in_polygon_winding(test_pt.0, test_pt.1, poly_b);
+            // Entry = crossing from outside to inside → skip
+            // Exit = crossing from inside to outside → keep
+            verts.push((int.point, !inside)); // keep if exit (going outside)
+        }
+    }
+
+    // Collect result vertices, skipping those inside B
+    let mut result = Vec::new();
+    for (pt, is_exit) in &verts {
+        if !*is_exit {
+            let inside = point_in_polygon_winding(pt.0, pt.1, poly_b);
+            if inside { continue; }
+        }
+        result.push(*pt);
+    }
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -658,5 +758,56 @@ mod tests {
         let r = result.unwrap();
         assert!(!r.is_empty, "union of overlapping coplanar faces should not be empty");
         assert!(!r.result_shells.is_empty(), "should produce result shells");
+    }
+
+    // ── Greiner-Hormann unit tests ──
+
+    #[test]
+    fn test_gh_union_overlapping_squares() {
+        // Two unit squares overlapping by 50%: (0,0)-(1,1) ∪ (0.5,0)-(1.5,1)
+        let a = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let b = [(0.5, 0.0), (1.5, 0.0), (1.5, 1.0), (0.5, 1.0)];
+        let result = polygon_union(&a, &b);
+        assert!(!result.is_empty(), "union should not be empty");
+        // Union area should be ~1.5 (1.0 + 1.0 - 0.5 overlap)
+        let total_area: Real = result.iter().map(|p| polygon_area(p)).sum();
+        assert!((total_area - 1.5).abs() < 0.05, "union area ~1.5, got {}", total_area);
+    }
+
+    #[test]
+    fn test_gh_union_disjoint() {
+        let a = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let b = [(5.0, 5.0), (6.0, 5.0), (6.0, 6.0), (5.0, 6.0)];
+        let result = polygon_union(&a, &b);
+        assert_eq!(result.len(), 2, "disjoint union returns both polygons");
+    }
+
+    #[test]
+    fn test_gh_difference_partial_overlap() {
+        // A - B where A and B partially overlap
+        let a = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)];
+        let b = [(1.0, 0.0), (3.0, 0.0), (3.0, 1.0), (1.0, 1.0)];
+        let result = polygon_difference(&a, &b);
+        assert!(!result.is_empty(), "difference should not be empty");
+    }
+
+    #[test]
+    fn test_gh_difference_fully_inside() {
+        // A fully inside B → empty difference
+        let a = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)];
+        let b = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let result = polygon_difference(&a, &b);
+        assert!(result.is_empty(), "A inside B should be empty");
+    }
+
+    #[test]
+    fn test_segment_intersection_crossing() {
+        let result = segment_intersection(
+            (0.0, 0.0), (2.0, 2.0),
+            (0.0, 2.0), (2.0, 0.0),
+        );
+        assert!(result.is_some());
+        let (_, _, pt) = result.unwrap();
+        assert!((pt.0 - 1.0).abs() < 1e-6 && (pt.1 - 1.0).abs() < 1e-6);
     }
 }
