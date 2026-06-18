@@ -557,10 +557,15 @@ impl AssemblyGraph {
     }
 
     /// Build the child_to_parent reverse index from parent_child data.
+    /// Iterates parents in sorted order for deterministic behavior across runs.
     fn build_reverse_index(&mut self) {
-        for (&parent, children) in &self.parent_child {
-            for (child, xform) in children {
-                self.child_to_parent.insert(*child, (parent, xform.clone()));
+        let mut parents: Vec<u64> = self.parent_child.keys().copied().collect();
+        parents.sort_unstable();
+        for &parent in &parents {
+            if let Some(children) = self.parent_child.get(&parent) {
+                for (child, xform) in children {
+                    self.child_to_parent.insert(*child, (parent, xform.clone()));
+                }
             }
         }
     }
