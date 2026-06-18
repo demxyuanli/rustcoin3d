@@ -4,6 +4,7 @@ use crate::topo::{FaceKey, ShellKey};
 use crate::mesh::boundary::SharedBoundaryPool;
 use crate::mesh::config::BRepMeshConfig;
 use crate::mesh::diagnostic::diag_enabled;
+use crate::mesh::model_preprocessor::{preprocess_shell_wires, PreprocessorReport};
 use crate::mesh::report::{shell_bbox_diagonal, ShellMeshReport};
 use crate::mesh::shell_mesh::ShellMeshOutput;
 use super::boundary_pool::build_shell_boundary_pool;
@@ -58,6 +59,28 @@ pub(crate) fn mesh_brep_shell_with_report_impl(
         &edge_boundary_idx,
         &global_vertices,
     );
+
+    // OCC BRepMesh_ModelPreProcessor: detect self-intersecting / open wires.
+    // Filter out flagged faces before the parallel mesh pass.
+    let preproc_report: PreprocessorReport = preprocess_shell_wires(shell_key, reg);
+    let face_loop_data: Vec<FaceLoopData> = if !preproc_report.self_intersecting_faces.is_empty() {
+        let skip: std::collections::HashSet<FaceKey> = preproc_report
+            .self_intersecting_faces
+            .iter()
+            .copied()
+            .collect();
+        let filtered = face_loop_data
+            .into_iter()
+            .filter(|fld| !skip.contains(&fld.face_key))
+            .collect();
+        log::info!(
+            "[mesh preprocessor] filtered {} self-intersecting faces from mesh pass",
+            preproc_report.self_intersecting_faces.len()
+        );
+        filtered
+    } else {
+        face_loop_data
+    };
 
     let shared_boundary = SharedBoundaryPool::new(
         boundary_vertices,

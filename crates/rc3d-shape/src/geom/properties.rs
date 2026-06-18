@@ -72,6 +72,7 @@ mod tests {
     use super::*;
     use crate::topo::*;
     use crate::geom::{CurveGeom, Curve2d, SurfaceGeom};
+    use rc3d_core::math::PVec3;
 
     #[test]
     fn cube_area() {

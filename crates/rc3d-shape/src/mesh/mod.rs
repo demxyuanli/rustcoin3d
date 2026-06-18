@@ -63,6 +63,7 @@ mod grid;
 mod edge_pool;
 mod param_div;
 pub mod post_process;
+pub mod model_preprocessor;
 mod ruled;
 mod shell_pipeline;
 mod shell_impl;
