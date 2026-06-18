@@ -1,6 +1,6 @@
 # OCC 7.8.0 Alignment Review
 
-Date: 2026-06-18. Updated after Phase 7 (IGES) + Phase 8 (Mesh PreProcessor).
+Date: 2026-06-18. Updated: Phase 7 (IGES), Phase 8 (Mesh PreProcessor), Phase 9 (Greiner-Hormann).
 
 ## Summary
 
@@ -90,13 +90,12 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | Healing (11 classes) | 10 | 1 | 0 |
 | Meshing (5 classes) | **5** | 0 | 0 |
 | I/O (8 classes) | 6 | 0 | 2 |
-| **Total (37 classes)** | **31 (84%)** | **3** | **3** |
+| **Total (37 classes)** | **32 (86%)** | **2** | **3** |
 
-## Remaining gaps (priority-ordered)
+## Remaining gaps
 
-| # | Gap | Effort | Impact |
-|---|-----|--------|--------|
-| 1 | GK adaptive integration | 2d | High-accuracy volume |
-| 2 | IGES Writer | 2d | Roundtrip |
-| 3 | VRML reader/writer | 1d | Legacy format |
-| 4 | VRML reader/writer | 1d | Legacy format |
+| # | Gap | Effort |
+|---|-----|--------|
+| 1 | GK adaptive integration | 2d |
+| 2 | IGES Writer | 2d |
+| 3 | VRML reader/writer | 1d |
