@@ -1,6 +1,6 @@
 # OCC 7.8.0 Alignment Review
 
-Date: 2026-06-18. All gaps closed.
+Date: 2026-06-18. All gaps closed. BRepCheck: 7 modules, 21 status codes.
 
 ## Summary
 
@@ -46,7 +46,7 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `ShapeUpgrade_ShapeDivideContinuity` | `continuity.rs` | ✅ | C0 edge split |
 | `ShapeAnalysis_CanonicalRecognition` | `canonical.rs` | ✅ | Plane/Cyl/Sphere PCA |
 | `ShapeProcess_OperLibrary` | `pipeline.rs` | ✅ | 16-pass pipeline |
-| `BRepCheck_Analyzer` | `check.rs` | ⚠️ | Partial (missing V-on-Curve/Surface checks) |
+| `BRepCheck_Analyzer` | `check/` (7 modules) | ✅ | 21 status codes, all vertex/edge/wire/face/shell/solid checks |
 
 ### Meshing (BRepMesh)
 
@@ -87,9 +87,9 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 |----------|---------|---------|---------|
 | Geometry (7 classes) | **7** | 0 | 0 |
 | Boolean (6 classes) | 5 | 0 | 1 |
-| Healing (11 classes) | 10 | 1 | 0 |
+| Healing (11 classes) | **11** | 0 | 0 |
 | Meshing (5 classes) | 5 | 0 | 0 |
 | I/O (8 classes) | **8** | 0 | 0 |
-| **Total (37 classes)** | **35 (95%)** | **1** | **1** |
+| **Total (37 classes)** | **36 (97%)** | **0** | **1** |
 
-All actionable OCC gaps closed. Remaining: BRepCheck full coverage (partial), GlueEnum (not needed).
+All actionable OCC gaps closed. Remaining: GlueEnum (not needed for core workflows).
