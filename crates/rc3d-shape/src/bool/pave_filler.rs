@@ -51,8 +51,9 @@ pub fn fill_paves(
     let faces_a: Vec<(FaceKey, ShellKey)> = collect_shell_faces(shells_a, reg);
     let faces_b: Vec<(FaceKey, ShellKey)> = collect_shell_faces(shells_b, reg);
 
-    // Phase 1a: Vertex-vertex interference — identify coincident vertices (SD pairs).
-    // Must run before face-face intersection so split vertices can reference canonical keys.
+    // Phase 1: Vertex-vertex interference — identify coincident vertices (SD pairs).
+    // Must run first so all subsequent phases can reference canonical keys.
+    // OCC: BOPAlgo_PaveFiller::PerformVV() — runs before VE/EE/VF/EF/FF.
     ds.build_vv_interferences(shells_a, shells_b, reg);
 
     // Build AABB acceleration, tracking faces without bboxes separately
@@ -75,67 +76,9 @@ pub fn fill_paves(
         }
     }
 
-    // Process AABB-accelerated face pairs
-    let mut test_pair = |fka: FaceKey, fkb: FaceKey| {
-        report.face_pairs_tested += 1;
-        let face_a = match reg.faces.get(fka) { Some(f) => f, None => return };
-        let face_b = match reg.faces.get(fkb) { Some(f) => f, None => return };
-        if let Some(interf) = compute_face_pair_interf(fka, fkb, face_a, face_b, reg, tolerance) {
-            report.intersections_found += 1;
-            report.total_curves += interf.curves_3d.len();
-            ds.add_face_face_interf(interf);
-        }
-    };
-
-    for &(fka, ref bbox_a) in &bboxes_a {
-        for &(fkb, ref bbox_b) in &bboxes_b {
-            if !bbox_a.overlaps(bbox_b) { continue; }
-            test_pair(fka, fkb);
-        }
-    }
-
-    // Faces without AABB: test against all faces from the other set
-    for &fka in &no_bbox_a {
-        for &(fkb, _) in &bboxes_b { test_pair(fka, fkb); }
-        for &fkb in &no_bbox_b { test_pair(fka, fkb); }
-    }
-    for &fkb in &no_bbox_b {
-        for &(fka, _) in &bboxes_a { test_pair(fka, fkb); }
-    }
-
-    // Phase 1b: Edge-face interference — edges of one shell pierce faces of the other.
-    // OCC: BOPAlgo_PaveFiller processes edge-face interferences alongside face-face.
-    // Each edge-face hit becomes a single InterfPoint in a minimal FaceFaceInterf.
-    for &sk_a in shells_a {
-        for fk_a in topo_iter::iter_faces_of_shell(sk_a, reg) {
-            for ek in topo_iter::iter_edges_of_face(fk_a, reg) {
-                let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
-                for &(fkb, ref bbox_b) in &bboxes_b {
-                    if !edge_bbox_touches(edge, bbox_b, tolerance, reg) { continue; }
-                    let face_b = match reg.faces.get(fkb) { Some(f) => f, None => continue };
-                    let hits = super::intersect_edge::intersect_edge_face(
-                        &edge.curve, &face_b.surface, tolerance,
-                    );
-                    for hit in &hits {
-                        ds.face_face_interfs.push(FaceFaceInterf {
-                            face_a: fk_a, face_b: fkb,
-                            curves_3d: vec![],
-                            pcurves_a: vec![],
-                            pcurves_b: vec![],
-                            points: vec![InterfPoint {
-                                point_3d: hit.point,
-                                uv_a: hit.uv_face,
-                                uv_b: hit.uv_face, // same face hit from edge perspective
-                            }],
-                        });
-                        report.intersections_found += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // Phase 1c: Edge-Edge interference — detect where edges from shell A
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 2: VE — Vertex-Edge (OCC: BOPAlgo_PaveFiller::PerformVE)
+    // ═══════════════════════════════════════════════════════════════════
     // cross edges from shell B. Each hit becomes an InterfPoint referencing
     // the faces those edges belong to.
     for &sk_a in shells_a {
@@ -328,6 +271,37 @@ pub fn fill_paves(
                     }
                 }
             }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Phase 6: FF — Face-Face intersection (OCC: BOPAlgo_PaveFiller::PerformFF)
+    // Runs LAST after VE/EE/VF/EF so that split edges from prior phases
+    // are available for intersection curve endpoints.
+    // ═══════════════════════════════════════════════════════════════════
+    {
+        let mut test_pair = |fka: FaceKey, fkb: FaceKey| {
+            report.face_pairs_tested += 1;
+            let face_a = match reg.faces.get(fka) { Some(f) => f, None => return };
+            let face_b = match reg.faces.get(fkb) { Some(f) => f, None => return };
+            if let Some(interf) = compute_face_pair_interf(fka, fkb, face_a, face_b, reg, tolerance) {
+                report.intersections_found += 1;
+                report.total_curves += interf.curves_3d.len();
+                ds.add_face_face_interf(interf);
+            }
+        };
+        for &(fka, ref bbox_a) in &bboxes_a {
+            for &(fkb, ref bbox_b) in &bboxes_b {
+                if !bbox_a.overlaps(bbox_b) { continue; }
+                test_pair(fka, fkb);
+            }
+        }
+        for &fka in &no_bbox_a {
+            for &(fkb, _) in &bboxes_b { test_pair(fka, fkb); }
+            for &fkb in &no_bbox_b { test_pair(fka, fkb); }
+        }
+        for &fkb in &no_bbox_b {
+            for &(fka, _) in &bboxes_a { test_pair(fka, fkb); }
         }
     }
 

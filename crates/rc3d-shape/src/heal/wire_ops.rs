@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use crate::store::BRepStore;
 use crate::topo::{BRepEdge, EdgeKey, Orientation, VertexKey, WireKey};
-use rc3d_core::math::Real;
+use crate::geom::CurveGeom;
+use rc3d_core::math::{PVec3, Real};
 use rc3d_core::utils::hash::f64x3_quantized_bits;
 
 /// 3-component hash key for vertex positions — no XOR collisions.
@@ -158,12 +159,13 @@ fn edge_length_3d(edge: &crate::topo::BRepEdge, reg: &BRepStore) -> Real {
 
 // ── Notched edge fixing ─────────────────────────────────────────────
 
-/// Fix V-shaped notches in a wire. A notch is two consecutive edges meeting
-/// at a sharp angle where the middle vertex is redundant (the two edges are
-/// nearly collinear). The two edges are merged into a single edge spanning
-/// from the start of the first to the end of the second.
+/// Fix notched edges in a wire (OCC ShapeFix_Wire::FixNotchedEdges).
 ///
-/// Returns the number of notches fixed.
+/// Detects edges whose 3D curve has a sharp internal bend (tangent angle
+/// change > threshold) and splits the edge at the notch point, preserving
+/// the original curve geometry on each segment.
+///
+/// Returns the number of notches fixed (edges split).
 pub(crate) fn fix_notched_edges(
     wire_key: WireKey,
     reg: &mut BRepStore,
@@ -171,160 +173,95 @@ pub(crate) fn fix_notched_edges(
 ) -> usize {
     let edges: Vec<(EdgeKey, Orientation)> = {
         let Some(wire) = reg.wires.get(wire_key) else { return 0 };
-        if wire.edges.len() < 2 {
-            return 0;
-        }
+        if wire.edges.is_empty() { return 0; }
         wire.edges.clone()
     };
 
-    let n = edges.len();
     let angle_threshold_rad = angle_threshold_deg.to_radians();
+    // Cosine of the threshold: if the dot product of normalized tangents
+    // is below this value, the angle between them exceeds the threshold.
+    let cos_threshold = angle_threshold_rad.cos();
+    let mut splits: Vec<(usize, Real, VertexKey)> = Vec::new(); // (edge_idx, split_t, new_vertex)
 
-    // Collect vertex positions for all edge endpoints.
-    let mut edge_endpoints: Vec<Option<(VertexKey, VertexKey)>> = vec![None; n];
-    for (i, &(ek, orient)) in edges.iter().enumerate() {
+    // Detect notches WITHIN each edge by sampling the curve tangents
+    // at 64 uniformly spaced points and checking for abrupt direction changes.
+    for (i, &(ek, _orient)) in edges.iter().enumerate() {
         let Some(edge) = reg.edges.get(ek) else { continue };
-        let (v_start, v_end) = if orient == Orientation::Forward {
-            (edge.v_low, edge.v_high)
+        let n_pts = 64usize;
+        let mut prev_dir: Option<PVec3> = None;
+        for k in 0..=n_pts {
+            let t = k as Real / n_pts as Real;
+            let d1 = edge.curve.d1(t);
+            let len = d1.length();
+            if len < 1e-12 { prev_dir = None; continue; }
+            let dir = d1 / len;
+            if let Some(pd) = prev_dir {
+                let cos_a = dir.dot(pd).clamp(-1.0, 1.0);
+                if cos_a < cos_threshold {
+                    // Sharp turn detected at this point — split here
+                    let pos = edge.curve.d0(t);
+                    let vk = reg.find_or_add_vertex(pos, edge.tolerance.max(1e-6));
+                    splits.push((i, t, vk));
+                    break; // one split per edge is sufficient
+                }
+            }
+            prev_dir = Some(dir);
+        }
+    }
+
+    if splits.is_empty() { return 0; }
+
+    // Apply splits: replace each notched edge with two edges.
+    let mut new_edges: Vec<(EdgeKey, Orientation)> = Vec::new();
+    for (i, &(ek, orient)) in edges.iter().enumerate() {
+        if let Some(&(_, split_t, vk)) = splits.iter().find(|(idx, _, _)| *idx == i) {
+            // Extract data before mutable ops (avoid borrow conflict)
+            let (curve_clone, tol, p0, p1, pcurves_clone) = {
+                let Some(edge) = reg.edges.get(ek) else { continue };
+                (edge.curve.clone(), edge.tolerance,
+                 edge.curve.d0(0.0), edge.curve.d0(1.0),
+                 edge.pcurves.clone())
+            };
+            let basis = Box::new(curve_clone);
+
+            // Segment A: t ∈ [0, split_t]
+            let seg_a = CurveGeom::Trimmed { basis: basis.clone(), t_min: 0.0, t_max: split_t };
+            let v0 = reg.find_or_add_vertex(p0, tol);
+            let (v_lo_a, v_hi_a) = if v0 < vk { (v0, vk) } else { (vk, v0) };
+            let ek_a = reg.edges.insert(BRepEdge {
+                curve: seg_a, tolerance: tol,
+                v_low: v_lo_a, v_high: v_hi_a,
+                t_min: 0.0, t_max: 1.0,
+                cached_deflection: None,
+                pcurves: pcurves_clone.clone(),
+            });
+            reg.vertex_to_edges.entry(v_lo_a).or_default().push(ek_a);
+            if v_lo_a != v_hi_a { reg.vertex_to_edges.entry(v_hi_a).or_default().push(ek_a); }
+            new_edges.push((ek_a, orient));
+
+            // Segment B: t ∈ [split_t, 1.0]
+            let seg_b = CurveGeom::Trimmed { basis, t_min: split_t, t_max: 1.0 };
+            let v1 = reg.find_or_add_vertex(p1, tol);
+            let (v_lo_b, v_hi_b) = if vk < v1 { (vk, v1) } else { (v1, vk) };
+            let ek_b = reg.edges.insert(BRepEdge {
+                curve: seg_b, tolerance: tol,
+                v_low: v_lo_b, v_high: v_hi_b,
+                t_min: 0.0, t_max: 1.0,
+                cached_deflection: None,
+                pcurves: pcurves_clone,
+            });
+            reg.vertex_to_edges.entry(v_lo_b).or_default().push(ek_b);
+            if v_lo_b != v_hi_b { reg.vertex_to_edges.entry(v_hi_b).or_default().push(ek_b); }
+            new_edges.push((ek_b, orient));
         } else {
-            (edge.v_high, edge.v_low)
-        };
-        edge_endpoints[i] = Some((v_start, v_end));
-    }
-
-    // Detect notches: for each consecutive pair (i, i+1), check the angle
-    // between the tangent at the END of edge[i] and the tangent at the START
-    // of edge[i+1] at their shared vertex.
-    let mut skip = vec![false; n];
-    let mut fixed = 0usize;
-    let mut merged_edges: Vec<(usize, usize, EdgeKey)> = Vec::new();
-
-    for i in 0..n {
-        if skip[i] {
-            continue;
-        }
-        let j = (i + 1) % n;
-        if skip[j] {
-            continue;
-        }
-
-        let (ek_a, _orient_a) = edges[i];
-        let (ek_b, _orient_b) = edges[j];
-
-        let Some(edge_a) = reg.edges.get(ek_a) else { continue };
-        let Some(edge_b) = reg.edges.get(ek_b) else { continue };
-
-        let (a_start, a_end) = match edge_endpoints[i] {
-            Some(ep) => ep,
-            None => continue,
-        };
-        let (b_start, _b_end) = match edge_endpoints[j] {
-            Some(ep) => ep,
-            None => continue,
-        };
-
-        // Shared vertex: end of edge_a must equal start of edge_b.
-        if a_end != b_start {
-            continue;
-        }
-
-        // Tangent at shared vertex:
-        //   edge_a: at t=1.0 (end, forwarding toward the shared vertex)
-        //   edge_b: at t=0.0 (start, forwarding away from the shared vertex)
-        let dir_a = edge_a.curve.d1(1.0);
-        let dir_b = edge_b.curve.d1(0.0);
-
-        // Skip zero-length tangents (degenerate).
-        let len_a = dir_a.length();
-        let len_b = dir_b.length();
-        if len_a < 1e-12 || len_b < 1e-12 {
-            continue;
-        }
-
-        let cos_angle = (dir_a.dot(dir_b) / (len_a * len_b)).clamp(-1.0, 1.0);
-        let angle_rad = cos_angle.acos();
-
-        if angle_rad < angle_threshold_rad {
-            // Notch detected: merge edges i and j into a single edge
-            // from a_start to b_end (the non-shared endpoints).
-            let b_end = _b_end;
-            let p_start = reg.vertices.get(a_start).map(|v| v.position);
-            let p_end = reg.vertices.get(b_end).map(|v| v.position);
-
-            if let (Some(ps), Some(pe)) = (p_start, p_end) {
-                let new_curve = crate::geom::CurveGeom::Line {
-                    origin: ps,
-                    direction: pe - ps,
-                };
-                let (v_lo, v_hi) = if a_start < b_end {
-                    (a_start, b_end)
-                } else {
-                    (b_end, a_start)
-                };
-                let new_ek = reg.edges.insert(BRepEdge {
-                    curve: new_curve,
-                    tolerance: edge_a.tolerance.max(edge_b.tolerance),
-                    v_low: v_lo,
-                    v_high: v_hi,
-                    t_min: 0.0,
-                    t_max: 1.0,
-                    cached_deflection: None,
-                    pcurves: HashMap::new(),
-                });
-                // Maintain vertex_to_edges index.
-                reg.vertex_to_edges.entry(v_lo).or_default().push(new_ek);
-                if v_lo != v_hi {
-                    reg.vertex_to_edges.entry(v_hi).or_default().push(new_ek);
-                }
-
-                merged_edges.push((i, j, new_ek));
-                skip[i] = true;
-                skip[j] = true;
-                fixed += 1;
-            }
+            new_edges.push((ek, orient));
         }
     }
 
-    if fixed > 0 {
-        // Build a lookup from original index to merged edge.
-        let mut merge_at: HashMap<usize, (usize, EdgeKey)> = HashMap::new();
-        for &(i, j, new_ek) in &merged_edges {
-            merge_at.insert(i, (j, new_ek));
-        }
-
-        // Rebuild: walk edges in order. When we hit a merge-start index,
-        // emit the merged edge and skip both original edges.
-        let mut new_edges: Vec<(EdgeKey, Orientation)> = Vec::new();
-        let mut idx = 0usize;
-        // Guard against infinite loop when a wrap-around merge (n-1, 0)
-        // causes idx to reset below n.
-        let mut passes = 0usize;
-        while idx < n && passes < n + 1 {
-            passes += 1;
-            if let Some(&(j, new_ek)) = merge_at.get(&idx) {
-                new_edges.push((new_ek, Orientation::Forward));
-                if j < idx {
-                    // Wrap-around merge at e.g. (n-1, 0): the new edge
-                    // is emitted. Continue from j+1 = 1, but remove the
-                    // wrap-around entry so we don't re-process it.
-                    merge_at.remove(&idx);
-                    idx = 1;
-                } else {
-                    idx = j + 1;
-                }
-            } else if skip[idx] {
-                idx += 1;
-            } else {
-                new_edges.push(edges[idx]);
-                idx += 1;
-            }
-        }
-
-        if let Some(wire) = reg.wires.get_mut(wire_key) {
-            wire.edges = new_edges;
-        }
+    let fixed = splits.len();
+    if let Some(wire) = reg.wires.get_mut(wire_key) {
+        wire.edges = new_edges;
     }
-
     fixed
 }
 
@@ -562,37 +499,52 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_notched_edges_merges_v_shape() {
+    fn test_fix_notched_edges_splits_sharp_bend() {
         let mut reg = BRepStore::new();
-        // Two nearly-collinear edges forming a 5° angle at the middle vertex.
-        let p0 = PVec3::new(0.0, 0.0, 0.0);
-        let p1 = PVec3::new(1.0, 0.0, 0.0);
-        let p2 = PVec3::new(2.0, 0.1, 0.0); // ~5.7° from horizontal
-        let (wire_key, _) = make_wire_from_positions(&mut reg, &[p0, p1, p2]);
-        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 2);
+        // Single edge with a Polyline curve that has a sharp ~45° internal bend.
+        // OCCT: the edge should be split at the bend into two edges.
+        let pts = vec![
+            PVec3::new(0.0, 0.0, 0.0),
+            PVec3::new(1.0, 0.0, 0.0),
+            PVec3::new(1.0, 1.0, 0.0), // 90° bend at t≈0.5
+        ];
+        let poly = CurveGeom::Polyline { points: pts.clone() };
+        let v0 = reg.find_or_add_vertex(pts[0], 1e-4);
+        let v1 = reg.find_or_add_vertex(pts[2], 1e-4);
+        let (v_lo, v_hi) = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+        let ek = reg.edges.insert(BRepEdge {
+            curve: poly, tolerance: 1e-4,
+            v_low: v_lo, v_high: v_hi, t_min: 0.0, t_max: 1.0,
+            cached_deflection: None, pcurves: HashMap::new(),
+        });
+        reg.vertex_to_edges.entry(v_lo).or_default().push(ek);
+        if v_lo != v_hi { reg.vertex_to_edges.entry(v_hi).or_default().push(ek); }
+        let wire_key = reg.wires.insert(BRepWire {
+            edges: vec![(ek, Orientation::Forward)],
+        });
+        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 1);
 
-        let fixed = fix_notched_edges(wire_key, &mut reg, 10.0);
-        assert_eq!(fixed, 1, "V-shaped notch should be fixed");
+        let fixed = fix_notched_edges(wire_key, &mut reg, 45.0);
+        assert_eq!(fixed, 1, "polyline with 90° bend should be split");
         assert_eq!(
             reg.wires.get(wire_key).unwrap().edges.len(),
-            1,
-            "two edges merged into one"
+            2,
+            "single edge split into two"
         );
     }
 
     #[test]
-    fn test_fix_notched_edges_noop_on_smooth() {
+    fn test_fix_notched_edges_noop_on_straight_line() {
         let mut reg = BRepStore::new();
-        // Two edges meeting at a 90° angle — not a notch.
+        // Straight line — no internal bends.
         let p0 = PVec3::new(0.0, 0.0, 0.0);
-        let p1 = PVec3::new(1.0, 0.0, 0.0);
-        let p2 = PVec3::new(1.0, 1.0, 0.0); // 90° turn
-        let (wire_key, _) = make_wire_from_positions(&mut reg, &[p0, p1, p2]);
-        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 2);
+        let p1 = PVec3::new(10.0, 0.0, 0.0);
+        let (wire_key, _) = make_wire_from_positions(&mut reg, &[p0, p1]);
+        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 1);
 
         let fixed = fix_notched_edges(wire_key, &mut reg, 10.0);
-        assert_eq!(fixed, 0, "90° corner should not be treated as a notch");
-        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 2);
+        assert_eq!(fixed, 0, "straight line should not be split");
+        assert_eq!(reg.wires.get(wire_key).unwrap().edges.len(), 1);
     }
 
     // ── Tail edge tests ─────────────────────────────────────────────
