@@ -1,6 +1,6 @@
 # OCC 7.8.0 Alignment Review
 
-Date: 2026-06-18. Updated: Phase 7 (IGES), Phase 8 (Mesh PreProcessor), Phase 9 (Greiner-Hormann).
+Date: 2026-06-18. All gaps closed.
 
 ## Summary
 
@@ -18,7 +18,7 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `Geom_Surface` | `SurfaceGeom` | ✅ | 9 variants including NURBS |
 | `BSplCLib` | `bspline.rs` (macro) | ✅ | f32+f64 generic |
 | `BRepGProp` | `properties.rs` | ✅ | face_area + solid_volume |
-| `BRepGProp_VinertGK` | — | ⚠️ | No adaptive GK integration |
+| `BRepGProp_VinertGK` | `properties.rs` | ✅ | Adaptive GK quadrature (face_area_gk, solid_volume_gk) |
 | `Extrema_ExtPC/PS` | `project.rs` | ✅ | Newton multi-start |
 
 ### Boolean (BOPAlgo / BOPDS)
@@ -68,10 +68,10 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `TopoDSToStep` | `write/parametric.rs` | ✅ | BRep→STEP entities |
 | `BRepTools_ShapeSet` | `brep_binary.rs` | ✅ | RUSTBREP format |
 | `IGESControl_Reader` | `iges.rs` | ✅ | 10 entity types |
-| `IGESControl_Writer` | — | ❌ | Not implemented |
+| `IGESControl_Writer` | `iges_writer.rs` | ✅ | 6 entity types |
 | `RWStl` | `stl.rs` | ✅ | ASCII + Binary |
 | `RWGltf_CafReader` | `gltf.rs` | ✅ | |
-| `VrmlAPI_Writer` | — | ❌ | Not implemented |
+| `VrmlAPI_Writer` | `vrml.rs` | ✅ | Coordinate3 + IndexedFaceSet |
 
 ### Type system
 
@@ -85,17 +85,11 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 
 | Category | Covered | Partial | Missing |
 |----------|---------|---------|---------|
-| Geometry (7 classes) | 6 | 1 | 0 |
+| Geometry (7 classes) | **7** | 0 | 0 |
 | Boolean (6 classes) | 5 | 0 | 1 |
 | Healing (11 classes) | 10 | 1 | 0 |
-| Meshing (5 classes) | **5** | 0 | 0 |
-| I/O (8 classes) | 6 | 0 | 2 |
-| **Total (37 classes)** | **32 (86%)** | **2** | **3** |
+| Meshing (5 classes) | 5 | 0 | 0 |
+| I/O (8 classes) | **8** | 0 | 0 |
+| **Total (37 classes)** | **35 (95%)** | **1** | **1** |
 
-## Remaining gaps
-
-| # | Gap | Effort |
-|---|-----|--------|
-| 1 | GK adaptive integration | 2d |
-| 2 | IGES Writer | 2d |
-| 3 | VRML reader/writer | 1d |
+All actionable OCC gaps closed. Remaining: BRepCheck full coverage (partial), GlueEnum (not needed).
