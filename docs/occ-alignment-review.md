@@ -29,7 +29,7 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `BOPDS_DS` | `BopDS` | ✅ | +SD map +FaceInfo |
 | `BOPAlgo_BuilderFace` | `builder_face.rs` | ✅ | +CommonBlock +is_shared |
 | `BOPAlgo_BuilderSolid` | `builder_solid.rs` | ✅ | Vertex-pair adjacency |
-| `BOPTools_AlgoTools2D` | `coplanar.rs` | ⚠️ | Sutherland-Hodgman, no Greiner-Hormann |
+| `BOPTools_AlgoTools2D` | `coplanar.rs` | ✅ | Greiner-Hormann polygon clipping |
 | `BOPAlgo_GlueEnum` | — | ❌ | Not implemented |
 
 ### Healing (ShapeFix / ShapeUpgrade / ShapeAnalysis)
@@ -86,7 +86,7 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | Category | Covered | Partial | Missing |
 |----------|---------|---------|---------|
 | Geometry (7 classes) | 6 | 1 | 0 |
-| Boolean (6 classes) | 4 | 1 | 1 |
+| Boolean (6 classes) | 5 | 0 | 1 |
 | Healing (11 classes) | 10 | 1 | 0 |
 | Meshing (5 classes) | **5** | 0 | 0 |
 | I/O (8 classes) | 6 | 0 | 2 |
@@ -98,5 +98,5 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 |---|-----|--------|--------|
 | 1 | GK adaptive integration | 2d | High-accuracy volume |
 | 2 | IGES Writer | 2d | Roundtrip |
-| 3 | Greiner-Hormann for coplanar union | 2d | Correctness |
+| 3 | VRML reader/writer | 1d | Legacy format |
 | 4 | VRML reader/writer | 1d | Legacy format |
