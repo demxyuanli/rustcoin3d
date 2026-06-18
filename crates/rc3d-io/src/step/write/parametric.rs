@@ -182,24 +182,24 @@ fn emit_bspline_curve(
     let mult_list: Vec<String> = multiplicities.iter().map(|m| m.to_string()).collect();
     let knot_list: Vec<String> = unique_knots.iter().map(|&k| fmt_real(k)).collect();
 
-    let has_weights = weights.is_some();
-    let entity_name = if has_weights {
+    let assigned = id.next();
+
+    // Check if all weights are 1.0 — if so, emit non-rational form
+    let all_unity = weights.map_or(true, |w| w.iter().all(|&x| (x - 1.0).abs() < 1e-12));
+    let has_rational = weights.is_some() && !all_unity;
+    let entity_name = if has_rational {
         "RATIONAL_B_SPLINE_CURVE"
     } else {
         "B_SPLINE_CURVE_WITH_KNOTS"
     };
 
-    let assigned = id.next();
-
-    let line = if has_weights {
+    let line = if has_rational {
         let w = weights.unwrap();
         let w_list: Vec<String> = w.iter().map(|&x| fmt_real(x)).collect();
         format!(
-            "#{} = {}({}, {}, ({}), .UNSPECIFIED., .F., .F., ({}), ({}), .UNSPECIFIED., ({}));\n",
-            assigned,
-            entity_name,
+            "#{} = {}('',{},{},.UNSPECIFIED.,.F.,.F.,{},{},.UNSPECIFIED.,{});\n",
+            assigned, entity_name,
             degree,
-            0, // curve_form integer enum
             cp_list.join(", "),
             mult_list.join(", "),
             knot_list.join(", "),
@@ -207,14 +207,12 @@ fn emit_bspline_curve(
         )
     } else {
         format!(
-            "#{} = {}({}, {}, ({}), .UNSPECIFIED., .F., .F., ({}), ({}), .UNSPECIFIED.);\n",
-            assigned,
-            entity_name,
+            "#{} = {}('',{},{},.UNSPECIFIED.,.F.,.F.,{},{},.UNSPECIFIED.);\n",
+            assigned, entity_name,
             degree,
-            0, // curve_form
             cp_list.join(", "),
             mult_list.join(", "),
-            knot_list.join(", ")
+            knot_list.join(", "),
         )
     };
 
@@ -415,9 +413,8 @@ fn emit_bspline_surface(
             w_refs.push(format!("({})", row_refs.join(", ")));
         }
         format!(
-            "#{} = {}({}, {}, ({}), .UNSPECIFIED., .F., .F., .F., ({}), ({}), ({}), ({}), .UNSPECIFIED., ({}));\n",
-            assigned,
-            entity_name,
+            "#{} = {}('',{},{},({}),.UNSPECIFIED.,.F.,.F.,.F.,({}),({}),({}),({}),.UNSPECIFIED.,({}));\n",
+            assigned, entity_name,
             nurbs.degree_u, nurbs.degree_v,
             cp_refs.join(", "),
             u_mult.join(", "), v_mult.join(", "),
@@ -426,9 +423,8 @@ fn emit_bspline_surface(
         )
     } else {
         format!(
-            "#{} = {}({}, {}, ({}), .UNSPECIFIED., .F., .F., .F., ({}), ({}), ({}), ({}), .UNSPECIFIED.);\n",
-            assigned,
-            entity_name,
+            "#{} = {}('',{},{},({}),.UNSPECIFIED.,.F.,.F.,.F.,({}),({}),({}),({}),.UNSPECIFIED.);\n",
+            assigned, entity_name,
             nurbs.degree_u, nurbs.degree_v,
             cp_refs.join(", "),
             u_mult.join(", "), v_mult.join(", "),
