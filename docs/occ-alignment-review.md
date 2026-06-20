@@ -30,7 +30,7 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | `BOPAlgo_BuilderFace` | `builder_face.rs` | ✅ | +CommonBlock +is_shared |
 | `BOPAlgo_BuilderSolid` | `builder_solid.rs` | ✅ | Vertex-pair adjacency |
 | `BOPTools_AlgoTools2D` | `coplanar.rs` | ✅ | Greiner-Hormann polygon clipping |
-| `BOPAlgo_GlueEnum` | — | ❌ | Not implemented |
+| `BOPAlgo_GlueEnum` | `bopds.rs` (GlueMode) | ✅ | Off/Shift/Full with fuzzy tolerance |
 
 ### Healing (ShapeFix / ShapeUpgrade / ShapeAnalysis)
 
@@ -86,10 +86,10 @@ industrial CAD import/heal/boolean/mesh/export workflows.
 | Category | Covered | Partial | Missing |
 |----------|---------|---------|---------|
 | Geometry (7 classes) | **7** | 0 | 0 |
-| Boolean (6 classes) | 5 | 0 | 1 |
+| Boolean (6 classes) | **6** | 0 | 0 |
 | Healing (11 classes) | **11** | 0 | 0 |
 | Meshing (5 classes) | 5 | 0 | 0 |
 | I/O (8 classes) | **8** | 0 | 0 |
-| **Total (37 classes)** | **36 (97%)** | **0** | **1** |
+| **Total (37 classes)** | **37 (100%)** | **0** | **0** |
 
-All actionable OCC gaps closed. Remaining: GlueEnum (not needed for core workflows).
+All OCC gaps closed — full coverage of the 37-class audit benchmark.

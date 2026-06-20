@@ -114,11 +114,26 @@ pub struct InterfPoint {
     pub uv_b: (Real, Real),
 }
 
+/// Glue mode for approximate boolean operations (OCC BOPAlgo_GlueEnum).
+/// Controls how nearly-coincident geometry is handled — trades precision
+/// for robustness on imported/tessellated models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlueMode {
+    /// No glue: strict tolerance comparisons (default, highest precision).
+    #[default]
+    Off,
+    /// Shift: use fuzzy tolerance for VV/VE coincidence detection.
+    /// Nearly-coincident vertices/edges are snapped together.
+    Shift,
+    /// Full: Shift + merge nearly-coplanar faces before boolean.
+    Full,
+}
+
 /// The full BOP data structure for a boolean operation.
 ///
 /// OCC: BOPDS_DS — manages all intersection data (pave blocks, common blocks,
 /// face-face interference results) for one boolean operation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BopDS {
     /// Face-face intersection results.
     pub face_face_interfs: Vec<FaceFaceInterf>,
@@ -135,6 +150,16 @@ pub struct BopDS {
     pub sd_vertices: HashMap<VertexKey, VertexKey>,
     /// Tolerance for intersection computations.
     pub tolerance: Real,
+    /// Glue mode for approximate boolean (OCC BOPAlgo_GlueEnum).
+    pub glue_mode: GlueMode,
+    /// Fuzzy tolerance used when glue mode is Shift/Full.
+    pub fuzzy_tolerance: Real,
+}
+
+impl Default for BopDS {
+    fn default() -> Self {
+        Self::new(1e-6)
+    }
 }
 
 impl BopDS {
@@ -147,6 +172,8 @@ impl BopDS {
             face_infos: HashMap::new(),
             sd_vertices: HashMap::new(),
             tolerance,
+            glue_mode: GlueMode::default(),
+            fuzzy_tolerance: tolerance * 10.0,
         }
     }
 
@@ -336,8 +363,12 @@ impl BopDS {
         shells_b: &[ShellKey],
         reg: &BRepStore,
     ) {
-        let mut spatial = SpatialIndexF64::with_cell_size(self.tolerance);
-        let tolerance = self.tolerance;
+        let effective_tol = match self.glue_mode {
+            GlueMode::Off => self.tolerance,
+            GlueMode::Shift | GlueMode::Full => self.tolerance.max(self.fuzzy_tolerance),
+        };
+        let mut spatial = SpatialIndexF64::with_cell_size(effective_tol);
+        let tolerance = effective_tol;
 
         // Collect all unique vertices from both shell sets
         let mut all_vertices: Vec<VertexKey> = Vec::new();
