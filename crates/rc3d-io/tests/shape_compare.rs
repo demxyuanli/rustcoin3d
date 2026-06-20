@@ -27,7 +27,7 @@ fn compare_shape_vs_occt() {
     let exchange =
         parser::parse_exchange_with_options(&text, &StepImportOptions::default()).expect("parse");
     let brep = build_brep(&exchange.entities).expect("brep");
-    let reg = brep.registry;
+    let mut reg = brep.registry;
     let skip_face_keys = Vec::new();
     // Skip heal — it incorrectly removes circle edges (v_start==v_end) from wires,
     // collapsing 4-edge loops to 2-edge degenerate loops.
@@ -41,8 +41,9 @@ fn compare_shape_vs_occt() {
     let mut our_mesh = MeshResult::default();
     let mut our_report: Option<ShellMeshReport> = None;
     for &sk in &brep.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &mesh_config, &skip_face_keys);
+        let outer_shell = reg.solids.get(sk).map(|s| s.outer_shell);
+        if let Some(outer_shell) = outer_shell {
+            let out = mesh_brep_shell_with_report(outer_shell, &mut reg, &mesh_config, &skip_face_keys);
             our_report = Some(out.report);
             our_mesh = out.mesh;
         }

@@ -23,7 +23,7 @@ fn import_and_check(path: &PathBuf, mode: StepImportMode, min_tris: usize) {
         mode,
         ..StepImportOptions::default()
     };
-    let result = import_step_file_with_options(path, &options)
+    let mut result = import_step_file_with_options(path, &options)
         .expect("import should succeed");
 
     // Verify B-Rep was built
@@ -52,9 +52,10 @@ fn import_and_check(path: &PathBuf, mode: StepImportMode, min_tris: usize) {
     if min_tris > 0 {
         // Actually mesh one solid to verify triangle output
         let mesh_config = rc3d_shape::mesh::config::BRepMeshConfig::default();
-        for (_sk, solid) in result.document.store.solids.iter() {
+        let solid_keys: Vec<_> = result.document.store.solids.iter().map(|(k, _)| k).collect();
+        for _sk in solid_keys {
             if let Some(out) = rc3d_shape::mesh::mesh_solid_with_voids(
-                &result.document.store,
+                &mut result.document.store,
                 _sk,
                 &mesh_config,
                 &[],

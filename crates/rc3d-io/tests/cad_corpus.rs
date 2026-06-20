@@ -114,8 +114,9 @@ fn run_corpus(file: &Path) -> PipelineResult {
     let mut total_verts = 0usize;
     let config = BRepMeshConfig::default();
     for &sk in &brep.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            let mesh = mesh_brep_shell(solid.outer_shell, &reg, &config, &[]);
+        let outer_shell = reg.solids.get(sk).map(|s| s.outer_shell);
+        if let Some(outer_shell) = outer_shell {
+            let mesh = mesh_brep_shell(outer_shell, &mut reg, &config, &[]);
             total_tris += mesh.indices.len() / 4;
             total_verts += mesh.vertices.len();
         }

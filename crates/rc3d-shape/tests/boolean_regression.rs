@@ -3,7 +3,7 @@
 //! Run: cargo test -p rc3d-shape --test boolean_regression -- --nocapture
 
 use rc3d_core::math::{Real, PVec3};
-use rc3d_shape::bool::{boolean_brep, BoolOp};
+use rc3d_shape::bool::{boolean_brep, BoolOp, BRepBoolOptions};
 use rc3d_shape::geom::{Curve2d, CurveGeom, SurfaceGeom};
 use rc3d_shape::store::BRepStore;
 use rc3d_shape::topo::{BRepFace, BRepShell, BRepWire, Orientation, ShellKey, FaceKey};
@@ -56,7 +56,7 @@ fn e1_coplanar_union() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
     eprintln!("E1 coplanar-union: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
     assert!(!r.result_shells.is_empty(), "union should produce result shell");
 }
@@ -66,7 +66,7 @@ fn e2_coplanar_intersection() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
     eprintln!("E2 coplanar-intersection: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
 }
 
@@ -75,7 +75,7 @@ fn e3_coplanar_difference() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference, &BRepBoolOptions::default());
     eprintln!("E3 coplanar-diff: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
 }
 
@@ -91,7 +91,7 @@ fn e4_perpendicular_faces_int() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0, PVec3::Y, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
     eprintln!("E4 perpendicular-int: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
 }
 
@@ -102,7 +102,7 @@ fn e5_disjoint_union_no_overlap() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 1.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(3.0, 0.0, 0.0), 1.0, PVec3::Z, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
     eprintln!("E5 disjoint-union: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
     assert!(!r.result_shells.is_empty() || !r.is_empty == false, "disjoint union should produce result");
 }
@@ -112,7 +112,7 @@ fn e6_disjoint_intersection_is_empty() {
     let mut reg = BRepStore::new();
     let (sa, _) = make_square_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), 1.0, PVec3::Z, PVec3::X);
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(3.0, 0.0, 0.0), 1.0, PVec3::Z, PVec3::X);
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
     eprintln!("E6 disjoint-int: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
     // Disjoint intersection should be empty or have no result shells
 }
@@ -162,7 +162,7 @@ fn e7_cylinder_plane_intersection() {
     // Build a plane intersecting the cylinder
     let (sb, _) = make_square_shell(&mut reg, PVec3::new(0.5, 0.0, 0.0), 2.0, PVec3::Z, PVec3::X);
 
-    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+    let r = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
     eprintln!("E7 cylinder-plane-int: shells={} empty={} ints={}", r.result_shells.len(), r.is_empty, r.intersection_count);
     // Should find face-face intersections (cylinder-plane yields curve)
     assert!(r.intersection_count > 0 || r.result_shells.is_empty(),

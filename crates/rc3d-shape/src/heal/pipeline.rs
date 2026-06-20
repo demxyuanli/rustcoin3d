@@ -1,9 +1,9 @@
 //! Iterative auto-heal pipeline (OCC ShapeHealing equivalent).
 //! Runs heal passes, checks results, re-applies fixes until converged.
 
-use crate::topo::ShellKey;
+use crate::topo::{ShellKey, SolidKey};
 use crate::store::BRepStore;
-use super::{CheckReport, HealConfig, HealReport, check_shell, heal_shell};
+use super::{CheckReport, HealConfig, HealReport, check_shell, heal_shell, heal_solid};
 use super::edge_tolerance::auto_fix_shell_edge_tolerances;
 
 // ── Heal policy (tier-driven heal configuration) ─────────────────
@@ -72,6 +72,7 @@ impl HealPolicy {
                     HealPassId::ContinuityCheck,
                     HealPassId::FixSmallArea,
                     HealPassId::FixSmallFaces,
+                    HealPassId::FixSmallSolids,
                 ],
                 skip_on_non_manifold: false,
                 continuity_check: true,
@@ -91,6 +92,7 @@ impl HealPolicy {
                     HealPassId::ContinuityCheck,
                     HealPassId::FixSmallArea,
                     HealPassId::FixSmallFaces,
+                    HealPassId::UnifySameDomain,
                 ],
                 skip_on_non_manifold: false,
                 continuity_check: true,
@@ -263,6 +265,8 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
         config.fix_connected = true;
         config.fix_small_edges = true;
         config.fix_reorder = true;
+        config.fix_notched_edges = true;
+        config.fix_tails = true;
         config.fix_gaps_3d = level >= HealLevel::Basic;
         config.fix_same_parameter = level >= HealLevel::Standard;
         config.fix_orientation = true;
@@ -279,6 +283,7 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_vertex_tolerance = true;
             config.fix_small_area = true;
             config.fix_small_faces = true;
+            config.fix_unify_same_domain = true;
             config.fix_vertex_position = true;
             config.fix_free_bounds = true;
             config.fix_compose_shell = true;
@@ -318,6 +323,45 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
     }
 
     config
+}
+
+/// Run heal pipeline on all root solids: shell-level auto-heal followed by
+/// solid-level healing (FixSmallSolid, empty shell removal).
+///
+/// This is the top-level entry point for the B-Rep healing pipeline.
+/// Each solid's outer shell and void shells are individually healed via
+/// `auto_heal_shell`, then the solid itself is healed via `heal_solid`.
+pub fn run_heal_pipeline(
+    reg: &mut BRepStore,
+    root_solids: &[SolidKey],
+    level: HealLevel,
+    max_iterations: usize,
+) -> HealReport {
+    let mut total_report = HealReport::default();
+    let config = HealConfig::default();
+    for &sk in root_solids {
+        let shell_keys: Vec<_> = reg
+            .solids
+            .get(sk)
+            .map(|s| {
+                let mut keys = Vec::with_capacity(1 + s.void_shells.len());
+                keys.push(s.outer_shell);
+                keys.extend(s.void_shells.iter().copied());
+                keys
+            })
+            .unwrap_or_default();
+        for shell_key in shell_keys {
+            total_report.merge(auto_heal_shell(
+                shell_key,
+                reg,
+                level,
+                max_iterations,
+            ));
+        }
+        // Heal solids (FixSmallSolid, empty shell removal)
+        total_report.merge(heal_solid(sk, reg, &config));
+    }
+    total_report
 }
 
 #[cfg(test)]

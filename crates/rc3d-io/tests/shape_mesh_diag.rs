@@ -88,8 +88,8 @@ fn run_file(step_file: &str) {
     }
     let cfg = BRepMeshConfig::preview();
     for &sk in &brep.root_solids {
-        let solid = reg.solids.get(sk).expect("solid");
-        let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &cfg, &skip);
+        let outer_shell = reg.solids.get(sk).expect("solid").outer_shell;
+        let out = mesh_brep_shell_with_report(outer_shell, &mut reg, &cfg, &skip);
         let diag = out.report.shell_diag.max(1.0);
         let (slivers, max_e, max_a, tris) =
             mesh_quality(&out.mesh.vertices, &out.mesh.indices, diag);

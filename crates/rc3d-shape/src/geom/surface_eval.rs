@@ -611,7 +611,7 @@ impl SurfaceGeom {
                 let v = if u_raw < 0.0 { u_raw / std::f64::consts::TAU + 1.0 } else { u_raw / std::f64::consts::TAU };
                 let angle = v * std::f64::consts::TAU;
                 let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
-                let u = find_param_on_curve(generatrix, unrotated, 64, 5);
+                let u = find_param_on_curve(generatrix, unrotated);
                 Some(self.d0_uv_to_native(u, v))
             }
             SurfaceGeom::BSpline(_) | SurfaceGeom::Torus { .. } => {
@@ -795,7 +795,7 @@ impl SurfaceGeom {
     /// Generatrix curve parameter in [0,1] for a 3D point on a revolution surface.
     pub fn revolution_generatrix_u_at(&self, point: PVec3) -> Option<Real> {
         let SurfaceGeom::Revolution { generatrix, .. } = self else { return None; };
-        Some(find_param_on_curve(generatrix, point, 64, 5))
+        Some(find_param_on_curve(generatrix, point))
     }
 
     /// Revolution native (u,v): u=generatrix parameter, v=axis angle in radians [0,TAU].
@@ -809,7 +809,7 @@ impl SurfaceGeom {
         else { let u_raw = Real::atan2(radial.dot(y_dir), radial.dot(x_dir));
             if u_raw < 0.0 { u_raw + std::f64::consts::TAU } else { u_raw } };
         let unrotated = rotate_around_axis(point, *axis_origin, axis, -angle);
-        let u = find_param_on_curve(generatrix, unrotated, 64, 5);
+        let u = find_param_on_curve(generatrix, unrotated);
         Some((u, angle))
     }
 

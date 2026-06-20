@@ -51,7 +51,7 @@ pub use step::{
     write_step_entities_file, AdapterMode, StepError, StepImportMode, StepImportOptions,
     StepImportReport, StepImportResult,
 };
-pub use step::write::{write_step_from_entities, write_step_from_graph};
+pub use step::write::{write_step_from_entities, write_step_from_graph, write_step_parametric};
 pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};
 pub use step::xml::{write_xml_step, parse_xml_step};
 pub use step::bool::BoolOp;
@@ -63,6 +63,9 @@ pub use stl::{
     parse_stl, parse_stl_file, parse_stl_triangles, write_ascii_stl, write_binary_stl, StlError,
 };
 pub use vrml::{import_vrml, parse_vrml_str, VrmlError};
+pub use iges::{import_iges, parse_iges_str, IgesError};
+pub use iges_writer::{write_iges, write_iges_string};
+pub use brep_binary::{write_brep_binary, read_brep_binary, write_brep_file, read_brep_file};
 pub use mesh_export::{
     convert_stl_to_ascii, default_stl_output, export_file_to_ascii_stl,
     export_step_per_face_ascii_stl, export_step_to_ascii_stl, mesh_step_file, ExportSummary,
@@ -70,7 +73,9 @@ pub use mesh_export::{
 };
 
 use std::path::Path;
-use rc3d_scene::SceneGraph;
+use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::node_data::SeparatorNode;
+use rc3d_shape::{ShapeDocument, EmitPlanOptions};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
@@ -88,6 +93,8 @@ pub enum ImportError {
     Fbx(#[from] FbxError),
     #[error("STEP error: {0}")]
     Step(#[from] StepError),
+    #[error("IGES error: {0}")]
+    Iges(#[from] IgesError),
     #[error("Unknown format: {0}")]
     UnknownFormat(String),
 }
@@ -117,6 +124,22 @@ pub fn import_file(path: &Path) -> Result<SceneGraph, ImportError> {
         }
         "step" | "stp" => {
             Ok(parse_step_file(path)?)
+        }
+        "iges" | "igs" => {
+            let store = import_iges(path)?;
+            let mut document = ShapeDocument::new();
+            document.store = store;
+            let plan_options = EmitPlanOptions::default();
+            let plan = document.build_emit_plan(&plan_options)
+                .map_err(|e| IgesError::Parse(format!("build emit plan: {e}")))?;
+            let mut graph = SceneGraph::new();
+            let root = graph.add_root(NodeData::Separator(SeparatorNode));
+            step::apply_plan(
+                &mut graph, root, &plan,
+                &step::SceneEmitOptions::default(),
+                &Default::default(),
+            )?;
+            Ok(graph)
         }
         _ => Err(ImportError::UnknownFormat(ext)),
     }

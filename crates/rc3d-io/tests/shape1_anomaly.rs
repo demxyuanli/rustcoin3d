@@ -83,10 +83,10 @@ fn shape1_per_face_anomaly_scan() {
     let mut combined_indices = Vec::new();
 
     for &sk in &brep.root_solids {
-        let solid = reg.solids.get(sk).expect("solid");
+        let outer_shell = reg.solids.get(sk).expect("solid").outer_shell;
         let out = mesh_brep_shell_with_report(
-            solid.outer_shell,
-            &reg,
+            outer_shell,
+            &mut reg,
             &mesh_config,
             &skip_face_keys,
         );

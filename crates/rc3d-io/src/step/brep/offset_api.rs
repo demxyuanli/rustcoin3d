@@ -12,7 +12,7 @@
 use rc3d_core::math::Real;
 use rc3d_shape::BRepStore;
 use rc3d_shape::topo::{FaceKey, ShellKey, SolidKey};
-use crate::step::bool::{boolean_brep, BoolOp};
+use crate::step::bool::{boolean_brep, BoolOp, BRepBoolOptions};
 use crate::step::brep::geom::SurfaceGeom;
 
 /// Result of a shelling operation.
@@ -95,6 +95,7 @@ pub fn make_thick_solid(
         &[inner_shell],
         reg,
         BoolOp::Difference,
+        &BRepBoolOptions::default(),
     );
 
     match bool_result.result_shells.first().copied() {

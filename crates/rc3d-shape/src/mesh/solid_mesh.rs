@@ -144,13 +144,16 @@ fn project_voids_as_inner_wires(
 
 /// Tessellate a solid: outer shell + reversed void shells merged into one mesh.
 pub fn mesh_solid_with_voids(
-    store: &BRepStore,
+    store: &mut BRepStore,
     sk: SolidKey,
     config: &BRepMeshConfig,
     skip_faces: &[FaceKey],
 ) -> Option<SolidMeshOutput> {
-    let solid = store.solids.get(sk)?;
-    let outer_out = mesh_brep_shell_with_report(solid.outer_shell, store, config, skip_faces);
+    let (outer_shell, void_shells) = {
+        let solid = store.solids.get(sk)?;
+        (solid.outer_shell, solid.void_shells.clone())
+    };
+    let outer_out = mesh_brep_shell_with_report(outer_shell, store, config, skip_faces);
     if outer_out.mesh.vertices.is_empty() || outer_out.mesh.indices.is_empty() {
         return None;
     }
@@ -159,7 +162,7 @@ pub fn mesh_solid_with_voids(
     let mut face_tri_ranges = face_ranges_from_report(&outer_out.report, 0);
     let mut report = outer_out.report;
 
-    for &void_sk in &solid.void_shells {
+    for &void_sk in &void_shells {
         let void_out = mesh_brep_shell_with_report(void_sk, store, config, skip_faces);
         if void_out.mesh.vertices.is_empty() || void_out.mesh.indices.is_empty() {
             continue;
@@ -174,7 +177,7 @@ pub fn mesh_solid_with_voids(
         merge_shell_report(&mut report, &void_out.report);
     }
     // Weld once after all void shells are merged (avoids O(V²) per void)
-    if !solid.void_shells.is_empty() {
+    if !void_shells.is_empty() {
         mesh.weld_vertices(config.weld_tolerance);
     }
 

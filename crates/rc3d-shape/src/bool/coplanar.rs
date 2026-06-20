@@ -536,6 +536,7 @@ pub fn handle_coplanar_boolean(
         is_empty,
         intersection_count: 0,
         tolerance,
+        solid_keys: vec![],
     })
 }
 

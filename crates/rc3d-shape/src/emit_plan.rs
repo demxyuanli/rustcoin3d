@@ -131,7 +131,7 @@ fn config_hash(config: &BRepMeshConfig) -> u64 {
 }
 
 pub fn mesh_solid_local(
-    store: &crate::store::BRepStore,
+    store: &mut crate::store::BRepStore,
     sk: SolidKey,
     config: &BRepMeshConfig,
     skip_faces: &[FaceKey],
@@ -163,7 +163,7 @@ impl ShapeDocument {
         }
         log::debug!("[emit_plan] tessellate_solid {:?} cache MISS, generating...", solid_key);
         let _t_msh = std::time::Instant::now();
-        let mut entry = mesh_solid_local(&self.store, solid_key, config, skip_faces)
+        let mut entry = mesh_solid_local(&mut self.store, solid_key, config, skip_faces)
             .ok_or_else(|| ShapeError::TessellationFailed(format!("solid {:?}", solid_key)))?;
         log::debug!("[emit_plan] tessellate_solid {:?}: {:.1}s ({} verts, {} tris)",
             solid_key, _t_msh.elapsed().as_secs_f32(),

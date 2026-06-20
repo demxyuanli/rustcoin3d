@@ -30,6 +30,10 @@ pub struct ShellMeshReport {
     /// Max 3D gap between boundary samples on duplicate EdgeKeys (same vertex pair).
     pub max_equiv_edge_weld_gap: Real,
     pub faces: Vec<FaceMeshStats>,
+    /// Number of vertex pairs welded across face boundary gaps (ModelHealer).
+    pub gap_welded: usize,
+    /// Number of T-junctions fixed (ModelHealer).
+    pub t_junctions_fixed: usize,
 }
 
 impl ShellMeshReport {

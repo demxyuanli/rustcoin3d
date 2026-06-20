@@ -33,7 +33,7 @@ fn mesh_step_file(step_path: &Path) -> MeshResult {
     let mut mesh = MeshResult::default();
     for &sk in &brep.root_solids {
         if let Some(solid) = reg.solids.get(sk) {
-            let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &mesh_config, &skip_face_keys);
+            let out = mesh_brep_shell_with_report(solid.outer_shell, &mut reg, &mesh_config, &skip_face_keys);
             mesh = out.mesh;
         }
     }

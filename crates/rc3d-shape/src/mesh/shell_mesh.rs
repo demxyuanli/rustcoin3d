@@ -16,7 +16,7 @@ pub struct ShellMeshOutput {
 /// Mesh a B-Rep shell (OCC BRepMesh_IncrementalMesh equivalent).
 pub fn mesh_brep_shell(
     shell_key: ShellKey,
-    reg: &BRepStore,
+    reg: &mut BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> MeshResult {
@@ -25,7 +25,7 @@ pub fn mesh_brep_shell(
 
 pub fn mesh_brep_shell_with_report(
     shell_key: ShellKey,
-    reg: &BRepStore,
+    reg: &mut BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> ShellMeshOutput {

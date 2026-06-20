@@ -101,8 +101,9 @@ fn run_corpus_brep_adapter_inner(
     let mut grid_fallback = 0usize;
     let mut deflection = DeflectionMetrics::default();
     for &sk in &brep.root_solids {
-        if let Some(solid) = reg.solids.get(sk) {
-            let out = mesh_brep_shell_with_report(solid.outer_shell, &reg, &mesh_config, &skip_face_keys);
+        let outer_shell = reg.solids.get(sk).map(|s| s.outer_shell);
+        if let Some(outer_shell) = outer_shell {
+            let out = mesh_brep_shell_with_report(outer_shell, &mut reg, &mesh_config, &skip_face_keys);
             total_faces += out.report.face_count;
             grid_fallback += out.report.grid_fallback_count;
             meshed += out.report.meshed_faces;

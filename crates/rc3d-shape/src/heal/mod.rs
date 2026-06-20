@@ -86,7 +86,7 @@ pub use topo_diag::{
     check_shell_topo_diag, log_shell_topo_diag, topo_diag_enabled, TopoDiagReport,
 };
 pub use continuity::check_shell_continuity;
-pub use pipeline::{auto_heal_shell, HealLevel, HealPassId, HealPolicy};
+pub use pipeline::{auto_heal_shell, HealLevel, HealPassId, HealPolicy, run_heal_pipeline};
 
 /// Why a face was excluded from meshing after heal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

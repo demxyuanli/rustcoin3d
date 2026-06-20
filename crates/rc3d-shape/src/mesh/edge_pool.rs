@@ -38,11 +38,11 @@ fn curves_should_weld(reg: &BRepStore, ek_a: EdgeKey, ek_b: EdgeKey) -> bool {
     }
     // STEP duplicate-edge variants (polyline vs line) can differ at mid by a few % of chord.
     let loose = chord * 0.055 + tol * 10.0;
-    let t_b = find_param_on_curve(&eb.curve, mid_a, 24, 3);
+    let t_b = find_param_on_curve(&eb.curve, mid_a);
     if (mid_a - eb.curve.d0(t_b)).length() <= loose {
         return true;
     }
-    let t_a = find_param_on_curve(&ea.curve, mid_b, 24, 3);
+    let t_a = find_param_on_curve(&ea.curve, mid_b);
     (mid_b - ea.curve.d0(t_a)).length() <= loose
 }
 

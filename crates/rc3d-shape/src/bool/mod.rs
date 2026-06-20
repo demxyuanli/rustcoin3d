@@ -28,7 +28,7 @@ pub use intersect::{FaceIntersectionResult, faces_are_coplanar, is_tangent_inter
 pub use marching::{SeedPoint, find_seeds, trace_curve};
 
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, FaceKey, ShellKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, ShellKey, SolidKey, VertexKey};
 
 /// Boolean operation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,6 +37,20 @@ pub enum BoolOp {
     #[default]
     Intersection, // A ∩ B
     Difference,   // A - B
+}
+
+/// Options controlling boolean operation behavior.
+#[derive(Debug, Clone)]
+pub struct BRepBoolOptions {
+    /// When true, reconstruct solid topology from result faces
+    /// and populate `BRepBoolResult::solid_keys`.
+    pub build_solids: bool,
+    // future: glue_mode, etc.
+}
+impl Default for BRepBoolOptions {
+    fn default() -> Self {
+        Self { build_solids: false }
+    }
 }
 
 /// History of a boolean operation: maps result shapes back to source shapes.
@@ -88,6 +102,8 @@ pub struct BRepBoolResult {
     /// History tracking: maps result shapes to source shapes.
     /// OCC alignment: BOPAlgo_Builder history.
     pub history: Option<BRepBoolHistory>,
+    /// Reconstructed solids from result faces (populated when `BRepBoolOptions::build_solids`).
+    pub solid_keys: Vec<SolidKey>,
 }
 
 /// Perform a boolean operation on B-Rep shells.
@@ -103,11 +119,12 @@ pub fn boolean_brep(
     shells_b: &[ShellKey],
     reg: &mut BRepStore,
     op: BoolOp,
+    options: &BRepBoolOptions,
 ) -> BRepBoolResult {
     let tolerance = compute_face_tolerance(shells_a.iter().chain(shells_b.iter()), reg) + 1e-6;
 
     if shells_a.is_empty() || shells_b.is_empty() {
-        return BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance };
+        return BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance, solid_keys: vec![] };
     }
 
     // Phase 1: Face-face intersections via PaveFiller (OCC BOPAlgo_PaveFiller)
@@ -190,6 +207,7 @@ pub fn boolean_brep(
             is_empty: true,
             intersection_count,
             tolerance,
+            solid_keys: vec![],
         };
     }
 
@@ -198,12 +216,20 @@ pub fn boolean_brep(
     let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
     let is_empty = result_shells.is_empty();
 
+    // Optional: reconstruct solid topology from result faces
+    let solid_keys = if options.build_solids {
+        builder_solid::build_solids_from_faces(&all_selected, reg)
+    } else {
+        vec![]
+    };
+
     BRepBoolResult {
         history: None,
         result_shells,
         is_empty,
         intersection_count,
         tolerance,
+        solid_keys,
     }
 }
 
@@ -246,10 +272,10 @@ fn handle_no_intersection(
         BoolOp::Union => {
             if a_inside_b {
                 // A inside B → result is B
-                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else if b_inside_a {
                 // B inside A → result is A
-                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else {
                 // Disjoint: both shells in result
                 let mut all_faces = Vec::new();
@@ -261,29 +287,29 @@ fn handle_no_intersection(
                 let shell_key = stitch::stitch_faces_into_shell(&all_faces, reg);
                 let result_shells: Vec<ShellKey> = shell_key.into_iter().collect();
                 let is_empty = result_shells.is_empty();
-                BRepBoolResult { history: None, result_shells, is_empty, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells, is_empty, intersection_count: 0, tolerance, solid_keys: vec![] }
             }
         }
         BoolOp::Intersection => {
             if a_inside_b {
-                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else if b_inside_a {
-                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_b[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else {
                 // Disjoint → empty intersection
-                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance, solid_keys: vec![] }
             }
         }
         BoolOp::Difference => {
             if a_inside_b {
                 // A entirely inside B → empty result
-                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else if b_inside_a {
                 // B entirely inside A → A with B void (simplified: return A)
-                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             } else {
                 // Disjoint → A unchanged
-                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance }
+                BRepBoolResult { history: None, result_shells: vec![shells_a[0]], is_empty: false, intersection_count: 0, tolerance, solid_keys: vec![] }
             }
         }
     }
@@ -350,7 +376,7 @@ mod tests {
     fn test_bool_module_loads() {
         let op = BoolOp::Union;
         assert_eq!(op, BoolOp::Union);
-        let result = BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance: 1e-4 };
+        let result = BRepBoolResult { history: None, result_shells: vec![], is_empty: true, intersection_count: 0, tolerance: 1e-4, solid_keys: vec![] };
         assert!(result.is_empty);
     }
 
@@ -361,7 +387,7 @@ mod tests {
         let sa = make_plane_shell(&mut reg, PVec3::new(0.0, 0.0, 0.0), PVec3::Z);
         let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
-        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
         // Disjoint union should produce a combined shell
         assert!(!result.result_shells.is_empty(), "Disjoint union should produce a result");
     }
@@ -372,7 +398,7 @@ mod tests {
         let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
         let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
-        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
         assert!(result.is_empty, "Disjoint intersection should be empty");
     }
 
@@ -382,7 +408,7 @@ mod tests {
         let sa = make_plane_shell(&mut reg, PVec3::ZERO, PVec3::Z);
         let sb = make_plane_shell(&mut reg, PVec3::new(100.0, 0.0, 0.0), PVec3::Z);
 
-        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference, &BRepBoolOptions::default());
         assert!(!result.is_empty, "Disjoint difference should return A");
         assert_eq!(result.result_shells, vec![sa]);
     }
@@ -390,7 +416,7 @@ mod tests {
     #[test]
     fn test_boolean_empty_shells() {
         let mut reg = BRepStore::new();
-        let result = boolean_brep(&[], &[], &mut reg, BoolOp::Union);
+        let result = boolean_brep(&[], &[], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
         assert!(result.is_empty);
     }
 
@@ -436,7 +462,7 @@ mod tests {
         assert_eq!(regions_b[0].1.len(), 2, "All 2 sub-faces of B classified");
 
         // Phase 4+5: Union (keep Outside) — Bug 1 verification: sub-faces created
-        let result_union = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+        let result_union = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
         assert!(!result_union.is_empty,
             "Union should produce non-empty result (Outside sub-faces selected)");
         assert!(result_union.intersection_count > 0,
@@ -444,7 +470,7 @@ mod tests {
             result_union.intersection_count);
 
         // Difference A-B: keep Outside from A, Inside from B
-        let result_diff = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference);
+        let result_diff = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Difference, &BRepBoolOptions::default());
         assert!(!result_diff.is_empty,
             "Difference should produce non-empty result");
     }
@@ -528,7 +554,7 @@ mod tests {
         // surface-surface intersection (they overlap in a 2D region).
         // Union correctly handles this via the disjoint path — both faces
         // are gathered and stitched into the result shell.
-        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union);
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Union, &BRepBoolOptions::default());
         assert!(!result.result_shells.is_empty(),
             "Union of overlapping squares should produce a result shell");
     }
@@ -540,7 +566,7 @@ mod tests {
         let (sa, _fa) = make_square_face(&mut reg, PVec3::new(0.0, 0.0, 0.0), 2.0);
         let (sb, _fb) = make_square_face(&mut reg, PVec3::new(1.0, 0.0, 0.0), 2.0);
 
-        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection);
+        let result = boolean_brep(&[sa], &[sb], &mut reg, BoolOp::Intersection, &BRepBoolOptions::default());
         // Coplanar overlapping squares should produce a non-empty intersection
         // via 2D polygon clipping in UV space.
         assert!(!result.is_empty || !result.result_shells.is_empty(),

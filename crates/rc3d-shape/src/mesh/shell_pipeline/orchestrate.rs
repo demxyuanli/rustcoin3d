@@ -18,7 +18,7 @@ use rayon::prelude::*;
 
 pub(crate) fn mesh_brep_shell_with_report_impl(
     shell_key: ShellKey,
-    reg: &BRepStore,
+    reg: &mut BRepStore,
     config: &BRepMeshConfig,
     skip_face_keys: &[FaceKey],
 ) -> ShellMeshOutput {

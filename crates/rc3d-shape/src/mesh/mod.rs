@@ -136,8 +136,8 @@ mod mesh_integration {
 
     #[test]
     fn mesh_brep_shell_plane_face_has_interior_tris() {
-        let (reg, shell_key) = build_plane_square_shell();
-        let out = mesh_brep_shell_with_report(shell_key, &reg, &BRepMeshConfig::default(), &[]);
+        let (mut reg, shell_key) = build_plane_square_shell();
+        let out = mesh_brep_shell_with_report(shell_key, &mut reg, &BRepMeshConfig::default(), &[]);
         let tri_count = out.mesh.indices.len() / 4;
         assert!(tri_count >= 2, "expected interior fill, got {tri_count} tris");
         assert!(!out.mesh.vertices.is_empty());

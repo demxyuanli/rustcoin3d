@@ -4,7 +4,8 @@ use rc3d_core::math::Real;
 use rc3d_core::math::PVec3;
 
 use crate::step::brep::heal::{
-    auto_heal_shell, check_shell_continuity, log_shell_topo_diag, HealLevel, HealReport,
+    auto_heal_shell, check_shell_continuity, heal_solid, log_shell_topo_diag, HealConfig,
+    HealLevel, HealReport,
 };
 use rc3d_shape::BRepStore;
 use rc3d_shape::topo::SolidKey;
@@ -19,6 +20,7 @@ pub fn run_heal_pipeline(
     max_iterations: usize,
 ) -> HealReport {
     let mut total_heal = HealReport::default();
+    let config = HealConfig::default();
     for &sk in root_solids {
         let shell_keys: Vec<_> = reg
             .solids
@@ -39,6 +41,8 @@ pub fn run_heal_pipeline(
             ));
             log_shell_topo_diag(shell_key, reg);
         }
+        // Heal solids (FixSmallSolid, empty shell removal)
+        total_heal.merge(heal_solid(sk, reg, &config));
     }
     log::info!("[STEP] healed: {:?}", total_heal);
     total_heal

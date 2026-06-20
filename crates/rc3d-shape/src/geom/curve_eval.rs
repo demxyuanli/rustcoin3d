@@ -284,10 +284,19 @@ fn de_casteljau_d0(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3
     }
 }
 
-/// First derivative via De Casteljau (hodograph).
-fn de_casteljau_d1(points: &[PVec3], _weights: Option<&[Real]>, t: Real) -> PVec3 {
+/// First derivative via De Casteljau (hodograph for unweighted;
+/// finite-difference on d0 for rational curves).
+fn de_casteljau_d1(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3 {
     let n = points.len();
     if n <= 1 { return PVec3::ZERO; }
+    if weights.is_some() {
+        let eps = 1e-4;
+        let t_lo = (t - eps).max(0.0);
+        let t_hi = (t + eps).min(1.0);
+        let p_lo = de_casteljau_d0(points, weights, t_lo);
+        let p_hi = de_casteljau_d0(points, weights, t_hi);
+        return (p_hi - p_lo) / (t_hi - t_lo);
+    }
     let degree = (n - 1) as Real;
     let diff: Vec<PVec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
     de_casteljau_d0(&diff, None, t)
@@ -786,20 +795,20 @@ impl CurveGeom {
                 let d2 = (d1_plus - d1_minus) / (2.0 * eps);
                 (p, d1, d2)
             }
-            CurveGeom::Circle { x_dir, y_dir, radius, .. } => {
+            CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {
                 let theta = t * std::f64::consts::TAU;
                 let twopi = std::f64::consts::TAU;
                 let (c, s) = (theta.cos(), theta.sin());
-                let d0 = *x_dir * (*radius * c) + *y_dir * (*radius * s);
+                let d0 = *center + *x_dir * (*radius * c) + *y_dir * (*radius * s);
                 let d1 = twopi * *radius * (-s * *x_dir + c * *y_dir);
                 let d2 = -(twopi * twopi) * *radius * (c * *x_dir + s * *y_dir);
                 (d0, d1, d2)
             }
-            CurveGeom::Ellipse { x_dir, y_dir, semi_major, semi_minor, .. } => {
+            CurveGeom::Ellipse { center, x_dir, y_dir, semi_major, semi_minor, .. } => {
                 let theta = t * std::f64::consts::TAU;
                 let twopi = std::f64::consts::TAU;
                 let (c, s) = (theta.cos(), theta.sin());
-                let d0 = *x_dir * (*semi_major * c) + *y_dir * (*semi_minor * s);
+                let d0 = *center + *x_dir * (*semi_major * c) + *y_dir * (*semi_minor * s);
                 let d1 = twopi * (-*semi_major * s * *x_dir + *semi_minor * c * *y_dir);
                 let d2 = -(twopi * twopi) * (*semi_major * c * *x_dir + *semi_minor * s * *y_dir);
                 (d0, d1, d2)
@@ -969,10 +978,8 @@ fn normalize_arc_params(a0: Real, a1: Real) -> (Real, Real) {
 
 /// Find the parameter t∈[0,1] on a curve closest to the target point.
 ///
-/// Uses uniform sampling followed by iterative step-halving refinement.
-/// `n_samples` controls the initial grid resolution; `refine_iters` controls
-/// the number of refinement passes.
-pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3, _n_samples: usize, _refine_iters: usize) -> Real {
+/// Delegates to multi-start Newton-Raphson curve projection.
+pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3) -> Real {
     let results = super::project::project_point_on_curve(curve, target);
     results.first().map(|(t, _)| *t).unwrap_or(0.0)
 }
@@ -1003,8 +1010,8 @@ pub fn normalize_edge_curve_to_vertices(
     if let Some(t) = trim_circle_to_vertices(&curve, p_lo, p_hi) { return t; }
 
     // Generic: trim curve to correct parameter range.
-    let t_lo = find_param_on_curve(&curve, p_lo, 24, 3);
-    let t_hi = find_param_on_curve(&curve, p_hi, 24, 3);
+    let t_lo = find_param_on_curve(&curve, p_lo);
+    let t_hi = find_param_on_curve(&curve, p_hi);
     if (curve.d0(t_lo) - p_lo).length() <= match_tol && (curve.d0(t_hi) - p_hi).length() <= match_tol {
         let (t_min, t_max) = (t_lo.min(t_hi), t_lo.max(t_hi));
         return CurveGeom::Trimmed { basis: Box::new(curve), t_min, t_max };
@@ -1385,6 +1392,53 @@ mod tests {
         let twopi3 = (2.0 * std::f64::consts::PI).powi(3) * 2.0; // radius=2
         // At t=0: sin(0)=0, cos(0)=1 → d3 = twopi3 * (0*x_dir - 1*y_dir) = -twopi3 * y_dir
         assert!((d[3] - PVec3::new(0.0, -twopi3, 0.0)).length() < 1.0);
+    }
+
+    #[test]
+    fn test_d012_off_center_circle() {
+        // Circle centered at (10, 20, 30), radius=3, in XY plane
+        let center = PVec3::new(10.0, 20.0, 30.0);
+        let circle = CurveGeom::circle(center, PVec3::Z, 3.0);
+
+        for i in 0..=8 {
+            let t = i as Real / 8.0;
+            let (d0, d1, d2) = circle.d012(t);
+            // d0 should be at distance ~3 from center
+            let rel = d0 - center;
+            assert!((rel.length() - 3.0).abs() < 1e-4,
+                "d012 d0 off-center circle: t={}, dist from center={:.6}, expected 3.0", t, rel.length());
+            // d0 must agree with standalone d0()
+            assert!((d0 - circle.d0(t)).length() < 1e-10,
+                "d012 vs d0 mismatch for off-center circle at t={}", t);
+            // d1 and d2 should also agree
+            assert!((d1 - circle.d1(t)).length() < 1e-10,
+                "d012 d1 mismatch for off-center circle at t={}", t);
+            assert!((d2 - circle.d2(t)).length() < 1e-10,
+                "d012 d2 mismatch for off-center circle at t={}", t);
+        }
+    }
+
+    #[test]
+    fn test_d012_off_center_ellipse() {
+        // Ellipse centered at (5, -2, 1), semi_major=4, semi_minor=1.5, in XY plane
+        let center = PVec3::new(5.0, -2.0, 1.0);
+        let ellipse = CurveGeom::ellipse(center, PVec3::Z, 4.0, 1.5);
+
+        for i in 0..=8 {
+            let t = i as Real / 8.0;
+            let (d0, d1, d2) = ellipse.d012(t);
+            // d0 must agree with standalone d0()
+            assert!((d0 - ellipse.d0(t)).length() < 1e-10,
+                "d012 vs d0 mismatch for off-center ellipse at t={}", t);
+            // d1 and d2 should also agree
+            assert!((d1 - ellipse.d1(t)).length() < 1e-10,
+                "d012 d1 mismatch for off-center ellipse at t={}", t);
+            assert!((d2 - ellipse.d2(t)).length() < 1e-10,
+                "d012 d2 mismatch for off-center ellipse at t={}", t);
+            // d0 should stay in XY plane (z = center.z)
+            assert!((d0.z - center.z).abs() < 1e-4,
+                "d012 d0.z should stay at center.z for XY ellipse, t={}, z={}", t, d0.z);
+        }
     }
 }
 

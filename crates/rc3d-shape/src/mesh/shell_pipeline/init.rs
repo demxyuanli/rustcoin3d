@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use crate::store::BRepStore;
 use crate::topo::{EdgeKey, ShellKey};
 use crate::mesh::config::BRepMeshConfig;
-use crate::mesh::edge_disc::{discretize_edge, EdgePolygon};
+use crate::mesh::edge_disc::EdgePolygon;
 use crate::mesh::report::{apply_relative_deflection, shell_bbox_diagonal, ShellMeshReport};
 use crate::mesh::same_param::apply_same_parameter;
 
 /// Returns `None` when the shell key does not exist in the store.
 pub(crate) fn init_shell_mesh(
     shell_key: ShellKey,
-    reg: &BRepStore,
+    reg: &mut BRepStore,
     config: &BRepMeshConfig,
 ) -> Option<(BRepMeshConfig, Real, ShellMeshReport, HashMap<EdgeKey, EdgePolygon>)> {
     let shell_diag = shell_bbox_diagonal(shell_key, reg);
@@ -36,8 +36,17 @@ pub(crate) fn init_shell_mesh(
     let mut edge_polygons: HashMap<EdgeKey, EdgePolygon> =
         HashMap::with_capacity(shell_edges.len());
     let edge_cfg = &scaled_config.edge;
-    for ek in &shell_edges {
-        edge_polygons.insert(*ek, discretize_edge(*ek, reg, edge_cfg));
+    let (edge_map, _, reused) = crate::mesh::edge_disc::discretize_edges_incremental(
+        &shell_edges, reg, edge_cfg,
+    );
+    log::debug!(
+        "[mesh] {} edges discretized ({} reused)",
+        shell_edges.len(),
+        reused
+    );
+    // Convert HashMap result to the existing edge_polygons format
+    for (ek, poly) in edge_map {
+        edge_polygons.insert(ek, poly);
     }
     log::debug!(
         "[mesh] edge discretization: {:.1}s for {} edges",

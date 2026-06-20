@@ -52,17 +52,18 @@ fn test_cs_step_face_mesh_coverage() {
     for &sk in &brep.root_solids {
         let outer_shell = reg.solids.get(sk).unwrap().outer_shell;
         let heal = rc3d_io::step::brep::heal::heal_shell(outer_shell, &mut reg, &heal_cfg);
-        let shell = reg.shells.get(outer_shell).unwrap();
-        println!("solid {:?}: {} faces, skip={:?}", sk, shell.faces.len(), heal.skip_face_keys);
+        let shell_faces: Vec<_> = reg.shells.get(outer_shell).unwrap().faces.clone();
+        let skip_face_keys = heal.skip_face_keys.clone();
+        println!("solid {:?}: {} faces, skip={:?}", sk, shell_faces.len(), skip_face_keys);
         let out = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
             outer_shell,
-            &reg,
+            &mut reg,
             &mesh_cfg,
-            &heal.skip_face_keys,
+            &skip_face_keys,
         );
         let mut meshed = 0usize;
-        for &(fk, _) in &shell.faces {
-            let skipped = heal.skip_face_keys.contains(&fk);
+        for &(fk, _) in &shell_faces {
+            let skipped = skip_face_keys.contains(&fk);
             let face = reg.faces.get(fk).unwrap();
             let wire = reg.wires.get(face.outer_wire).unwrap();
             let face_stats = out.report.faces.iter().find(|f| f.face_key == fk);
@@ -82,13 +83,13 @@ fn test_cs_step_face_mesh_coverage() {
                 face_stats.map(|f| f.grid_fallback).unwrap_or(false)
             );
         }
-        println!("  meshed_faces={}/{}", meshed, shell.faces.len());
+        println!("  meshed_faces={}/{}", meshed, shell_faces.len());
         assert_eq!(
             meshed,
-            shell.faces.len(),
+            shell_faces.len(),
             "expected all faces meshed, got {}/{}",
             meshed,
-            shell.faces.len()
+            shell_faces.len()
         );
     }
 }
@@ -145,7 +146,7 @@ fn test_shape2_heal_diagnostics() {
 
         // Mesh
         let output = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
-            shell_key, &reg, &mesh_cfg, &heal.skip_face_keys,
+            shell_key, &mut reg, &mesh_cfg, &heal.skip_face_keys,
         );
         let faces = reg.shells.get(shell_key).unwrap().faces.clone();
         println!("\nMesh: {} triangles, {} meshed_faces, {} skipped",
@@ -258,9 +259,9 @@ fn test_shared_topology_import() {
     assert!(report.topology_info.faces > 0, "should find faces");
 
     // Verify B-Rep pipeline
-    let brep_result = rc3d_io::step::brep::build_brep(&exchange.entities)
+    let mut brep_result = rc3d_io::step::brep::build_brep(&exchange.entities)
         .expect("B-Rep build");
-    let reg = &brep_result.registry;
+    let reg = &mut brep_result.registry;
     println!("  B-Rep: {} vertices, {} edges, {} faces, {} shells",
         reg.vertices.len(), reg.edges.len(), reg.faces.len(), reg.shells.len());
     assert!(reg.vertices.len() > 0, "should have vertices");
@@ -270,8 +271,8 @@ fn test_shared_topology_import() {
     // Verify mesh output
     let mesh_config = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
     for &sk in &brep_result.root_solids {
-        let solid = reg.solids.get(sk).unwrap();
-        let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(solid.outer_shell, reg, &mesh_config, &[]);
+        let outer_shell = reg.solids.get(sk).unwrap().outer_shell;
+        let mesh = rc3d_io::step::brep::mesh::mesh_brep_shell(outer_shell, reg, &mesh_config, &[]);
         println!("  Mesh: {} vertices, {} indices", mesh.vertices.len(), mesh.indices.len());
         assert!(!mesh.vertices.is_empty(), "should produce mesh vertices");
     }
@@ -452,15 +453,17 @@ fn test_heal_passes_on_cs_step() {
         );
 
         let mesh_cfg = rc3d_io::step::brep::mesh::BRepMeshConfig::default();
-        let shell = reg.shells.get(outer_shell).unwrap();
-        for &(face_key, _) in &shell.faces {
-            if heal.skip_face_keys.contains(&face_key) {
-                println!("  face {:?}: SKIPPED by heal", face_key);
+        {
+            let shell = reg.shells.get(outer_shell).unwrap();
+            for &(face_key, _) in &shell.faces {
+                if heal.skip_face_keys.contains(&face_key) {
+                    println!("  face {:?}: SKIPPED by heal", face_key);
+                }
             }
         }
         let output = rc3d_io::step::brep::mesh::mesh_brep_shell_with_report(
             outer_shell,
-            &reg,
+            &mut reg,
             &mesh_cfg,
             &heal.skip_face_keys,
         );

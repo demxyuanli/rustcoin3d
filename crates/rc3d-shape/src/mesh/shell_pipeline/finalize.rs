@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rc3d_core::math::{Real, PVec3};
 use crate::geom::SurfaceGeom;
@@ -199,6 +199,93 @@ pub(crate) fn finalize_shell_mesh(
         );
     }
     optimize_mesh(&mut mesh, &scaled_config.optimize);
+
+    // ── ModelHealer: repair gaps between adjacent face meshes ──
+    let weld_tol_for_heal = scaled_config
+        .weld_tolerance
+        .max(shell_diag * 1e-5)
+        .max(1e-6);
+    // Build per-face sub-meshes from face_ranges
+    let mut face_sub_meshes: Vec<(MeshResult, usize)> = Vec::new();
+    for (fi, range) in face_ranges.iter().enumerate() {
+        let tri_start = range.first_tri;
+        let tri_end = tri_start + range.tri_count;
+        if tri_start >= mesh.indices.len() / 4 || tri_end > mesh.indices.len() / 4 {
+            continue;
+        }
+        // Collect unique vertex indices used by this face
+        let mut global_to_local: HashMap<usize, usize> = HashMap::new();
+        let mut local_verts: Vec<PVec3> = Vec::new();
+        let mut local_norms: Vec<PVec3> = Vec::new();
+        for tri_idx in tri_start..tri_end {
+            let base = tri_idx * 4;
+            for j in 0..3 {
+                let gi = mesh.indices[base + j] as usize;
+                if gi < mesh.vertices.len() && !global_to_local.contains_key(&gi) {
+                    global_to_local.insert(gi, local_verts.len());
+                    local_verts.push(mesh.vertices[gi]);
+                    local_norms.push(mesh.normals[gi]);
+                }
+            }
+        }
+        let mut local_indices: Vec<i32> = Vec::new();
+        for tri_idx in tri_start..tri_end {
+            let base = tri_idx * 4;
+            for j in 0..3 {
+                let gi = mesh.indices[base + j] as usize;
+                if let Some(&li) = global_to_local.get(&gi) {
+                    local_indices.push(li as i32);
+                }
+            }
+            local_indices.push(-1);
+        }
+        face_sub_meshes.push((
+            MeshResult {
+                vertices: local_verts,
+                indices: local_indices,
+                normals: local_norms,
+            },
+            fi,
+        ));
+    }
+
+    let gap_welded = if face_sub_meshes.len() >= 2 {
+        let mut meshes_with_ids: Vec<(&mut MeshResult, usize)> = face_sub_meshes
+            .iter_mut()
+            .map(|(m, id)| (m, *id))
+            .collect();
+        crate::mesh::post_process::heal_mesh_gaps(&mut meshes_with_ids, weld_tol_for_heal)
+    } else {
+        0
+    };
+
+    // Rebuild combined mesh from healed per-face meshes
+    if gap_welded > 0 {
+        let mut new_vertices: Vec<PVec3> = Vec::new();
+        let mut new_indices: Vec<i32> = Vec::new();
+        let mut new_normals: Vec<PVec3> = Vec::new();
+        for (face_mesh, _) in &face_sub_meshes {
+            let base = new_vertices.len() as i32;
+            new_vertices.extend_from_slice(&face_mesh.vertices);
+            new_normals.extend_from_slice(&face_mesh.normals);
+            for chunk in face_mesh.indices.chunks(4) {
+                for j in 0..chunk.len() {
+                    let idx = chunk[j];
+                    new_indices.push(if idx >= 0 { idx + base } else { idx });
+                }
+            }
+        }
+        mesh.vertices = new_vertices;
+        mesh.indices = new_indices;
+        mesh.normals = new_normals;
+        report.total_tris = mesh.indices.len() / 4;
+    }
+
+    // OCC BRepMesh_ModelHealer: fix T-junctions on boundary edges
+    let t_junctions = crate::mesh::post_process::fix_t_junctions(&mut mesh, weld_tol_for_heal);
+    report.gap_welded = gap_welded;
+    report.t_junctions_fixed = t_junctions;
+
     if collect_diag {
         log_mesh_coordinates_if_requested(
             shell_key,

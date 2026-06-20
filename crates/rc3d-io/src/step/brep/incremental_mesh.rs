@@ -28,7 +28,7 @@ pub struct RemeshReport {
 pub fn remesh_modified_faces(
     shell_key: ShellKey,
     modified: &[FaceKey],
-    reg: &BRepStore,
+    reg: &mut BRepStore,
     config: &BRepMeshConfig,
     existing: &mut ShellMeshOutput,
 ) -> RemeshReport {
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_remesh_empty_modified_is_noop() {
-        let reg = BRepStore::new();
+        let mut reg = BRepStore::new();
         let config = BRepMeshConfig::default();
         let shell_key = ShellKey::default();
         let mut output = ShellMeshOutput {
@@ -123,7 +123,7 @@ mod tests {
             report: crate::step::brep::mesh::report::ShellMeshReport::default(),
         };
         output.report.face_count = 5;
-        let report = remesh_modified_faces(shell_key, &[], &reg, &config, &mut output);
+        let report = remesh_modified_faces(shell_key, &[], &mut reg, &config, &mut output);
         assert_eq!(report.faces_remeshed, 0);
         assert_eq!(report.faces_unchanged, 5);
     }
