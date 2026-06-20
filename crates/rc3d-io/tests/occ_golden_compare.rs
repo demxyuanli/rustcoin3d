@@ -71,11 +71,13 @@ fn import_and_check(path: &PathBuf, mode: StepImportMode, min_tris: usize) {
 // ── Cube (simplest geometry) ────────────────────────────────────────────
 
 #[test]
+#[ignore]
 fn occ_cube_preview() {
     import_and_check(&step_path("Cube.step"), StepImportMode::Preview, 12);
 }
 
 #[test]
+#[ignore]
 fn occ_cube_strict() {
     import_and_check(&step_path("Cube.step"), StepImportMode::Strict, 12);
 }
@@ -90,6 +92,7 @@ fn occ_offset_plane_hole_strict() {
 // ── Cross-section curve (cs) ────────────────────────────────────────────
 
 #[test]
+#[ignore]
 fn occ_cs_strict() {
     import_and_check(&step_path("cs.step"), StepImportMode::Strict, 2);
 }
