@@ -169,36 +169,17 @@ pub fn boolean_brep(
         split::split_faces_from_bopds(shells_b, &bopds, reg)
     };
 
-    // Phase 2b: Build BRep faces from UV split regions (OCC BOPAlgo_BuilderFace)
-    // Must run BEFORE classification since it needs &mut reg
-    let mut new_faces_a: Vec<crate::topo::FaceKey> = Vec::new();
-    for sfr in &split_a_uv {
-        let result = builder_face::build_faces_from_split(
-            sfr.original_face, &sfr.sub_faces, &curves, reg, Some(&bopds),
-        );
-        new_faces_a.extend(result.new_faces);
-    }
-    let mut new_faces_b: Vec<crate::topo::FaceKey> = Vec::new();
-    for sfr in &split_b_uv {
-        let result = builder_face::build_faces_from_split(
-            sfr.original_face, &sfr.sub_faces, &curves, reg, Some(&bopds),
-        );
-        new_faces_b.extend(result.new_faces);
-    }
-
     // Phase 3: Classify each region against the other solid(s)
     let regions_a = classify::classify_brep_regions(&split_a_uv, shells_b, reg);
     let regions_b = classify::classify_brep_regions(&split_b_uv, shells_a, reg);
 
-    // Phase 4: Select faces based on operation type
-    let selected = select::select_brep_faces(
-        &regions_a, &regions_b, &split_a_uv, &split_b_uv, op, reg,
+    // Phase 4: Select faces based on operation type.
+    // select_brep_faces builds BRep faces only for kept sub-regions
+    // (filtered by classification + boolean op), passing intersection curves
+    // so edge-split information is available during face construction.
+    let all_selected = select::select_brep_faces(
+        &regions_a, &regions_b, &split_a_uv, &split_b_uv, op, reg, &curves, Some(&bopds),
     );
-
-    // Append newly built BRep faces to the selected set
-    let mut all_selected = selected.clone();
-    all_selected.extend(new_faces_a);
-    all_selected.extend(new_faces_b);
 
     if all_selected.is_empty() {
         return BRepBoolResult {

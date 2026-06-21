@@ -182,7 +182,12 @@ pub fn triangulate_uv_cdt_with_steiner(
             let before = cdt.num_constraints();
             let ok = cdt.try_add_constraint(a, b);
             if !ok && cdt.num_constraints() == before && !cdt.exists_constraint(a, b) {
-                return (Vec::new(), 0.0, CdtConstraintReport::default());
+                // Log constraint failure but continue — don't kill the entire face.
+                // BRepMesh_Delaun continues with failures; ModelHealer fixes gaps later.
+                log::debug!(
+                    "[CDT] constraint failure: inner loop edge {}-{} could not be added, continuing",
+                    a, b
+                );
             }
         }
     }

@@ -159,8 +159,13 @@ fn point_inside_void_mesh(
     let cz = (point.z * cell_size_inv).floor() as i32;
 
     let mut seen = std::collections::HashSet::<usize>::new();
-    // DDA walk along +X through grid cells
-    for ci in cx..=max_x {
+    // DDA walk along +X through grid cells.
+    // Walk from cx to max_x (farthest void cell), but ensure at least
+    // some cells are scanned even when the point is to the RIGHT of
+    // all void cells (cx > max_x). In that case, scan from max_x to cx.
+    let walk_start = cx.min(max_x);
+    let walk_end = cx.max(max_x);
+    for ci in walk_start..=walk_end {
         // Tube check: current Y,Z cell + immediate neighbors
         for &(dcj, dck) in &[(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
             let cj = cy + dcj;

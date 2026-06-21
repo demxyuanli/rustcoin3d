@@ -98,17 +98,18 @@ pub fn validate_brep(text: &str) -> BrepValidation {
                 shapes.push(BrepShape { kind: TShapeKind::Vertex, line: line_no });
             }
             "Ed" => {
-                i += 1; // tolerance line
+                i += 1; // tolerance line: skip
+                i += 1; // curve line (type idx 0 0 param_range)
                 let curve_idx = if i < lines.len() {
                     parse_edge_curve_idx(lines[i])
                 } else { 0 };
-                i += 1; // curve line
-                if i < lines.len() && lines[i].trim() == "0" {
-                    i += 1; // pcurve count line
+                i += 1; // curve line advance
+                // Skip pcurve lines and trailing "0"
+                while i < lines.len() && !lines[i].trim().starts_with("010") && lines[i].trim() != "" {
+                    i += 1;
                 }
-                // Skip empty line, flags line
-                // Skip empty line, then flags line, then read refs
-                while i < lines.len() && !lines[i].trim().starts_with("010") { i += 1; }
+                // Skip blank lines to flags
+                while i < lines.len() && lines[i].trim().is_empty() { i += 1; }
                 i += 1; // skip flags
                 let v_refs = if i < lines.len() { parse_refs(lines[i]) } else { vec![] };
                 shapes.push(BrepShape {

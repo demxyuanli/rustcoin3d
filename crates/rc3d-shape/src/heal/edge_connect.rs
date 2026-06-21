@@ -53,20 +53,22 @@ pub fn connect_shell_edges(reg: &mut BRepStore, shell_key: crate::topo::ShellKey
 
         if let Some(&shared_vk) = pos_to_vk.get(&key_lo) {
             if shared_vk != v_lo {
-                // Merge v_lo → shared_vk
+                // Merge v_lo → shared_vk: update both the current edge AND all
+                // other edges that reference the old vertex to maintain consistency.
                 if let Some(edge_mut) = reg.edges.get_mut(*ek) {
                     edge_mut.v_low = shared_vk;
                     merges += 1;
                 }
-                // Update vertex_to_edges index
+                // Update vertex_to_edges index AND fix vertex refs for all migrated edges
                 if let Some(edges) = reg.vertex_to_edges.remove(&v_lo) {
-                    for e in &edges {
-                        if *e != *ek {
-                            reg.vertex_to_edges.entry(shared_vk).or_default().push(*e);
+                    for &e in &edges {
+                        if let Some(e_mut) = reg.edges.get_mut(e) {
+                            if e_mut.v_low == v_lo { e_mut.v_low = shared_vk; }
+                            if e_mut.v_high == v_lo { e_mut.v_high = shared_vk; }
                         }
+                        reg.vertex_to_edges.entry(shared_vk).or_default().push(e);
                     }
                 }
-                reg.vertex_to_edges.entry(shared_vk).or_default().push(*ek);
             }
         }
 
@@ -77,13 +79,14 @@ pub fn connect_shell_edges(reg: &mut BRepStore, shell_key: crate::topo::ShellKey
                     merges += 1;
                 }
                 if let Some(edges) = reg.vertex_to_edges.remove(&v_hi) {
-                    for e in &edges {
-                        if *e != *ek {
-                            reg.vertex_to_edges.entry(shared_vk).or_default().push(*e);
+                    for &e in &edges {
+                        if let Some(e_mut) = reg.edges.get_mut(e) {
+                            if e_mut.v_low == v_hi { e_mut.v_low = shared_vk; }
+                            if e_mut.v_high == v_hi { e_mut.v_high = shared_vk; }
                         }
+                        reg.vertex_to_edges.entry(shared_vk).or_default().push(e);
                     }
                 }
-                reg.vertex_to_edges.entry(shared_vk).or_default().push(*ek);
             }
         }
     }

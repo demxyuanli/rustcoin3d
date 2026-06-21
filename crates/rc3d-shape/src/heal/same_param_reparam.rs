@@ -152,9 +152,37 @@ fn adjust_line_pcurve(samples: &[DeviationSample], surface: &SurfaceGeom) -> Opt
     let last = &samples[samples.len() - 1];
     let uv_start = surface.project(first.pt_3d)?;
     let uv_end = surface.project(last.pt_3d)?;
+    // Normalize periodic UVs to the same branch to avoid wrap-around.
+    // Cylinder/Sphere/Torus have u-periodic parameterizations (0..2π).
+    let (uv_start, uv_end) = normalize_periodic_uv_pair(uv_start, uv_end, surface);
     let dir = (uv_end.0 - uv_start.0, uv_end.1 - uv_start.1);
     if dir.0.abs() < 1e-12 && dir.1.abs() < 1e-12 { return None; }
     Some(Curve2d::Line { origin: uv_start, direction: dir })
+}
+
+/// Normalize a UV pair to the same periodic branch.
+/// For surfaces with u-periodic parameterization (cylinder, sphere, cone, torus),
+/// ensures the u values are in the same 2π-wide band to avoid wrap-around.
+fn normalize_periodic_uv_pair(
+    mut uv_a: (Real, Real),
+    mut uv_b: (Real, Real),
+    surface: &SurfaceGeom,
+) -> ((Real, Real), (Real, Real)) {
+    let period = match surface {
+        SurfaceGeom::Cylinder { .. } | SurfaceGeom::Cone { .. }
+        | SurfaceGeom::Sphere { .. } | SurfaceGeom::Torus { .. }
+        | SurfaceGeom::Revolution { .. } => Some(std::f64::consts::TAU),
+        _ => None,
+    };
+    if let Some(p) = period {
+        let du = uv_b.0 - uv_a.0;
+        if du.abs() > p * 0.5 {
+            // Wrap uv_b to be closer to uv_a
+            let n = (du / p).round();
+            uv_b.0 -= n * p;
+        }
+    }
+    (uv_a, uv_b)
 }
 
 fn adjust_polyline_pcurve(

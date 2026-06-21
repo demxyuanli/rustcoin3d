@@ -77,7 +77,7 @@ pub fn fill_paves(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // Phase 2: VE — Vertex-Edge (OCC: BOPAlgo_PaveFiller::PerformVE)
+    // Phase 2: EE — Edge-Edge (OCC: BOPAlgo_PaveFiller::PerformEE)
     // ═══════════════════════════════════════════════════════════════════
     // cross edges from shell B. Each hit becomes an InterfPoint referencing
     // the faces those edges belong to.
@@ -96,6 +96,16 @@ pub fn fill_paves(
                         let faces_b: Vec<FaceKey> = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
                         for &fa in &faces_a {
                             for &fb in &faces_b {
+                                // Project hit point to face surfaces for proper UV coordinates.
+                                // Edge curve parameters (hit.t_a, hit.t_b) are NOT surface UVs.
+                                let fa_surface = reg.faces.get(fa).map(|f| f.surface.clone());
+                                let fb_surface = reg.faces.get(fb).map(|f| f.surface.clone());
+                                let uv_a = fa_surface.as_ref()
+                                    .and_then(|s| s.project(hit.point).or_else(|| s.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((hit.t_a, 0.0));
+                                let uv_b = fb_surface.as_ref()
+                                    .and_then(|s| s.project(hit.point).or_else(|| s.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((hit.t_b, 0.0));
                                 ds.face_face_interfs.push(FaceFaceInterf {
                                     face_a: fa, face_b: fb,
                                     curves_3d: vec![],
@@ -103,8 +113,8 @@ pub fn fill_paves(
                                     pcurves_b: vec![],
                                     points: vec![InterfPoint {
                                         point_3d: hit.point,
-                                        uv_a: (hit.t_a, 0.0),
-                                        uv_b: (hit.t_b, 0.0),
+                                        uv_a,
+                                        uv_b,
                                     }],
                                 });
                                 report.intersections_found += 1;
@@ -159,11 +169,18 @@ pub fn fill_paves(
             for &sk_b in shells_b {
                 for ek_b in topo_iter::iter_edges_of_shell(sk_b, reg) {
                     let edge_b = match reg.edges.get(ek_b) { Some(e) => e, None => continue };
-                    if let Some(hit) = vertex_on_edge(v_pos, edge_b, tolerance) {
+                    if let Some(hit) = vertex_on_edge(v_pos, edge_b, tolerance, None) {
                         let faces_for_v = vtx_to_faces_a.get(&vk).cloned().unwrap_or_default();
                         let faces_for_e = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
                         for &fa in &faces_for_v {
                             for &fb in &faces_for_e {
+                                let fb_surface = reg.faces.get(fb).map(|f| f.surface.clone());
+                                let uv_a = reg.faces.get(fa).and_then(|f| f.surface.project(hit.point))
+                                    .or_else(|| reg.faces.get(fa).and_then(|f| f.surface.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((0.0, 0.0));
+                                let uv_b = fb_surface.as_ref()
+                                    .and_then(|s| s.project(hit.point).or_else(|| s.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((0.0, 0.0));
                                 ds.face_face_interfs.push(FaceFaceInterf {
                                     face_a: fa, face_b: fb,
                                     curves_3d: vec![],
@@ -171,8 +188,8 @@ pub fn fill_paves(
                                     pcurves_b: vec![],
                                     points: vec![InterfPoint {
                                         point_3d: hit.point,
-                                        uv_a: (0.0, 0.0),
-                                        uv_b: hit.uv_face,
+                                        uv_a,
+                                        uv_b,
                                     }],
                                 });
                                 report.intersections_found += 1;
@@ -189,11 +206,18 @@ pub fn fill_paves(
             for &sk_a in shells_a {
                 for ek_a in topo_iter::iter_edges_of_shell(sk_a, reg) {
                     let edge_a = match reg.edges.get(ek_a) { Some(e) => e, None => continue };
-                    if let Some(hit) = vertex_on_edge(v_pos, edge_a, tolerance) {
+                    if let Some(hit) = vertex_on_edge(v_pos, edge_a, tolerance, None) {
                         let faces_for_v = vtx_to_faces_b.get(&vk).cloned().unwrap_or_default();
                         let faces_for_e = reg.edge_to_faces.get(&ek_a).cloned().unwrap_or_default();
                         for &fb in &faces_for_v {
                             for &fa in &faces_for_e {
+                                let fa_surface = reg.faces.get(fa).map(|f| f.surface.clone());
+                                let uv_a = fa_surface.as_ref()
+                                    .and_then(|s| s.project(hit.point).or_else(|| s.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((0.0, 0.0));
+                                let uv_b = reg.faces.get(fb).and_then(|f| f.surface.project(hit.point))
+                                    .or_else(|| reg.faces.get(fb).and_then(|f| f.surface.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                    .unwrap_or((0.0, 0.0));
                                 ds.face_face_interfs.push(FaceFaceInterf {
                                     face_a: fa, face_b: fb,
                                     curves_3d: vec![],
@@ -201,8 +225,8 @@ pub fn fill_paves(
                                     pcurves_b: vec![],
                                     points: vec![InterfPoint {
                                         point_3d: hit.point,
-                                        uv_a: hit.uv_face,
-                                        uv_b: (0.0, 0.0),
+                                        uv_a,
+                                        uv_b,
                                     }],
                                 });
                                 report.intersections_found += 1;
@@ -275,6 +299,86 @@ pub fn fill_paves(
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // Phase 5: EF — Edge-Face intersection (OCC: BOPAlgo_PaveFiller::PerformEF)
+    //
+    // Projects sample points from each edge onto the surfaces of the
+    // other shell's faces. Detects edge-pierces-face cases where the
+    // intersection occurs in the face interior (not at a vertex or
+    // existing edge intersection).
+    // ═══════════════════════════════════════════════════════════════════
+    {
+        // EF: edges of A against faces of B
+        for &sk_a in shells_a {
+            for ek_a in topo_iter::iter_edges_of_shell(sk_a, reg) {
+                let edge_a = match reg.edges.get(ek_a) { Some(e) => e, None => continue };
+                for &(fkb, _) in &faces_b {
+                    let face_b = match reg.faces.get(fkb) { Some(f) => f, None => continue };
+                    let hits = super::intersect_edge::intersect_edge_face(
+                        &edge_a.curve, &face_b.surface, tolerance,
+                    );
+                    for hit in &hits {
+                        let faces_for_e = reg.edge_to_faces.get(&ek_a).cloned().unwrap_or_default();
+                        for &fa in &faces_for_e {
+                            let fb_surface = &face_b.surface;
+                            let uv_a = reg.faces.get(fa).and_then(|f| f.surface.project(hit.point))
+                                .or_else(|| reg.faces.get(fa).and_then(|f| f.surface.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                .unwrap_or((0.0, 0.0));
+                            let uv_b = hit.uv_face;
+                            ds.face_face_interfs.push(FaceFaceInterf {
+                                face_a: fa, face_b: fkb,
+                                curves_3d: vec![],
+                                pcurves_a: vec![],
+                                pcurves_b: vec![],
+                                points: vec![InterfPoint {
+                                    point_3d: hit.point,
+                                    uv_a,
+                                    uv_b,
+                                }],
+                            });
+                            report.intersections_found += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // EF: edges of B against faces of A
+        for &sk_b in shells_b {
+            for ek_b in topo_iter::iter_edges_of_shell(sk_b, reg) {
+                let edge_b = match reg.edges.get(ek_b) { Some(e) => e, None => continue };
+                for &(fka, _) in &faces_a {
+                    let face_a = match reg.faces.get(fka) { Some(f) => f, None => continue };
+                    let hits = super::intersect_edge::intersect_edge_face(
+                        &edge_b.curve, &face_a.surface, tolerance,
+                    );
+                    for hit in &hits {
+                        let faces_for_e = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
+                        for &fb in &faces_for_e {
+                            let fa_surface = &face_a.surface;
+                            let uv_a = hit.uv_face;
+                            let uv_b = reg.faces.get(fb).and_then(|f| f.surface.project(hit.point))
+                                .or_else(|| reg.faces.get(fb).and_then(|f| f.surface.inverse_native_uv(hit.point, tolerance * 10.0)))
+                                .unwrap_or((0.0, 0.0));
+                            ds.face_face_interfs.push(FaceFaceInterf {
+                                face_a: fka, face_b: fb,
+                                curves_3d: vec![],
+                                pcurves_a: vec![],
+                                pcurves_b: vec![],
+                                points: vec![InterfPoint {
+                                    point_3d: hit.point,
+                                    uv_a,
+                                    uv_b,
+                                }],
+                            });
+                            report.intersections_found += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // Phase 6: FF — Face-Face intersection (OCC: BOPAlgo_PaveFiller::PerformFF)
     // Runs LAST after VE/EE/VF/EF so that split edges from prior phases
     // are available for intersection curve endpoints.
@@ -317,35 +421,38 @@ pub fn fill_paves(
     (ds, report)
 }
 
+/// Build an AABB from a 3D curve by sampling multiple points along it.
+/// Curved edges (arcs, BSplines) bulge outside the straight-line AABB
+/// of their endpoints, so we sample at multiple parameter values.
+fn edge_aabb(edge: &crate::topo::BRepEdge, tol: Real) -> super::aabb::AABB {
+    use super::aabb::AABB;
+    let mut bb = AABB::empty();
+    let n_samples: usize = match &edge.curve {
+        crate::geom::CurveGeom::Line { .. } => 2,
+        crate::geom::CurveGeom::Circle { .. } | crate::geom::CurveGeom::Ellipse { .. } => 8,
+        _ => 16,
+    };
+    for i in 0..n_samples {
+        let t = i as Real / (n_samples - 1) as Real;
+        bb.expand(edge.curve.d0(t));
+    }
+    // Add tolerance padding
+    let half = PVec3::splat(tol * 2.0);
+    bb.expand(bb.min - half);
+    bb.expand(bb.max + half);
+    bb
+}
+
 /// Quick AABB check: does the edge's bounding box intersect the face bbox?
 fn edge_bbox_touches(
     edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: Real, _reg: &BRepStore,
 ) -> bool {
-    use super::aabb::AABB;
-    let p0 = edge.curve.d0(0.0);
-    let p1 = edge.curve.d0(1.0);
-    let mut edge_bb = AABB::empty();
-    edge_bb.expand(p0);
-    edge_bb.expand(p1);
-    edge_bb.expand(PVec3::new(p0.x + tol, p0.y + tol, p0.z + tol));
-    edge_bb.expand(PVec3::new(p1.x + tol, p1.y + tol, p1.z + tol));
-    edge_bb.overlaps(face_bbox)
+    edge_aabb(edge, tol).overlaps(face_bbox)
 }
 
 /// Quick AABB check: do the bounding boxes of two edges intersect?
 fn edge_bbox_touches_two(a: &crate::topo::BRepEdge, b: &crate::topo::BRepEdge, tol: Real) -> bool {
-    use super::aabb::AABB;
-    let mut bb_a = AABB::empty();
-    bb_a.expand(a.curve.d0(0.0));
-    bb_a.expand(a.curve.d0(1.0));
-    bb_a.expand(PVec3::new(a.curve.d0(0.0).x + tol, a.curve.d0(0.0).y + tol, a.curve.d0(0.0).z + tol));
-    bb_a.expand(PVec3::new(a.curve.d0(1.0).x + tol, a.curve.d0(1.0).y + tol, a.curve.d0(1.0).z + tol));
-    let mut bb_b = AABB::empty();
-    bb_b.expand(b.curve.d0(0.0));
-    bb_b.expand(b.curve.d0(1.0));
-    bb_b.expand(PVec3::new(b.curve.d0(0.0).x + tol, b.curve.d0(0.0).y + tol, b.curve.d0(0.0).z + tol));
-    bb_b.expand(PVec3::new(b.curve.d0(1.0).x + tol, b.curve.d0(1.0).y + tol, b.curve.d0(1.0).z + tol));
-    bb_a.overlaps(&bb_b)
+    edge_aabb(a, tol).overlaps(&edge_aabb(b, tol))
 }
 
 /// Compute intersection for a single face pair.
@@ -492,17 +599,25 @@ fn find_param_on_edge(pt: PVec3, edge: &crate::topo::BRepEdge) -> Real {
 /// Project a vertex position onto an edge curve and return the hit if within tolerance.
 ///
 /// OCC: BOPAlgo_PaveFiller::PerformVE — vertex-on-edge projection using Extrema.
-/// Returns the closest projection point (t_edge, 3D point) when within the tolerance.
-fn vertex_on_edge(v_pos: PVec3, edge: &crate::topo::BRepEdge, tolerance: Real) -> Option<EdgeFaceHit> {
+/// Returns the closest projection point (t_edge, 3D point, and face UV) when within tolerance.
+/// The face surface is needed to compute proper surface UV coordinates for the hit point.
+fn vertex_on_edge(v_pos: PVec3, edge: &crate::topo::BRepEdge, tolerance: Real, face_surface: Option<&crate::geom::SurfaceGeom>) -> Option<EdgeFaceHit> {
     let proj = project_point_on_curve(&edge.curve, v_pos);
     let tol_sq = tolerance * tolerance;
     for &(t, dist_sq) in &proj {
         if dist_sq < tol_sq {
             let t_clamped = t.clamp(0.0, 1.0);
+            let hit_point = edge.curve.d0(t_clamped);
+            let uv_face = match face_surface {
+                Some(surf) => surf.project(hit_point)
+                    .or_else(|| surf.inverse_native_uv(hit_point, tolerance * 10.0))
+                    .unwrap_or((0.0, 0.0)),
+                None => (0.0, 0.0),
+            };
             return Some(EdgeFaceHit {
                 t_edge: t_clamped,
-                point: edge.curve.d0(t_clamped),
-                uv_face: (0.0, 0.0),
+                point: hit_point,
+                uv_face,
             });
         }
     }

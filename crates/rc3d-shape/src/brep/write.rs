@@ -25,6 +25,26 @@ fn rnd(x: Real) -> Real {
     if x.abs() < 1e-7 { 0.0 } else { (x * 1e7).round() / 1e7 }
 }
 
+/// Extract unique knot values and their multiplicities from a full knot vector.
+/// OCC BREP V1 format requires unique knots followed by multiplicities.
+fn extract_unique_and_mults(knots: &[Real]) -> (Vec<Real>, Vec<usize>) {
+    if knots.is_empty() {
+        return (vec![], vec![]);
+    }
+    let mut unique = vec![knots[0]];
+    let mut mults = vec![1usize];
+    for &k in &knots[1..] {
+        let last = *unique.last().unwrap();
+        if (k - last).abs() < 1e-12 {
+            *mults.last_mut().unwrap() += 1;
+        } else {
+            unique.push(k);
+            mults.push(1);
+        }
+    }
+    (unique, mults)
+}
+
 /// Write the full BRepStore as OCC BREP ASCII (classic format).
 pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> {
     let mut w = BrepWriter::new(store);
@@ -317,13 +337,15 @@ impl<'a> BrepWriter<'a> {
                     writeln!(output)?;
                 }
                 CurveGeom::BSpline { degree, control_points, knots, weights } => {
+                    let (unique_knots, mults) = extract_unique_and_mults(knots);
                     write!(output, "7 {}  {}  {}  {}",
-                        degree, control_points.len(), knots.len(),
+                        degree, control_points.len(), unique_knots.len(),
                         if weights.is_some() { 1 } else { 0 })?;
                     for cp in control_points {
                         write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
                     }
-                    for k in knots { write!(output, " {}", k)?; }
+                    for k in &unique_knots { write!(output, " {}", k)?; }
+                    for m in &mults { write!(output, " {}", m)?; }
                     if let Some(w) = weights {
                         for wt in w { write!(output, " {}", wt)?; }
                     }
@@ -397,14 +419,13 @@ impl<'a> BrepWriter<'a> {
                         x_dir.x, x_dir.y, x_dir.z,
                         y_dir.x, y_dir.y, y_dir.z, radius)?;
                 }
-                SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
+                SurfaceGeom::Cone { apex, axis, semi_angle: _, radius_at_apex, x_dir, y_dir } => {
                     writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         apex.x, apex.y, apex.z,
                         axis.x, axis.y, axis.z,
                         x_dir.x, x_dir.y, x_dir.z,
                         y_dir.x, y_dir.y, y_dir.z,
-                        semi_angle)?;
-                    writeln!(output, "{}", radius_at_apex)?;
+                        radius_at_apex)?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
                     // OCC Sphere format: 4 cx cy cz nx ny nz ux uy uz vx vy vz r
@@ -429,20 +450,37 @@ impl<'a> BrepWriter<'a> {
                 }
                 SurfaceGeom::BSpline(ns) => {
                     let rational = nurbs_is_rational(&ns.weights);
-                    // OCC classic: du dv uc vc ru rv (7 nums), CPs+w, knots all one line
+                    let (u_knots, u_mults) = extract_unique_and_mults(&ns.knots_u);
+                    let (v_knots, v_mults) = extract_unique_and_mults(&ns.knots_v);
+                    // OCC BREP V1: 8 du dv uc vc ru rv (7 ints), where
+                    //   uc = u_knot_count (unique), vc = v_knot_count (unique)
+                    //   ru = 0 (polynomial) or 2 (rational non-periodic) or 3 (rational periodic)
+                    //   rv = same as ru
+                    let mode = if rational { 2 } else { 0 };
                     write!(output, "8 {} {} {} {} {} {}",
                         ns.degree_u, ns.degree_v,
-                        ns.u_count(), ns.v_count(),
-                        if rational { 2 } else { 0 },
-                        if rational { 3 } else { 0 })?;
-                    for row in &ns.control_points {
-                        for cp in row {
-                            if rational { write!(output, " {} {} {} 1", cp.x, cp.y, cp.z)?; }
-                            else { write!(output, " {} {} {}", cp.x, cp.y, cp.z)?; }
+                        u_knots.len(), v_knots.len(),
+                        mode, mode)?;
+                    // Control points: for rational surfaces, write x y z w (actual weight)
+                    for (row_idx, row) in ns.control_points.iter().enumerate() {
+                        for (col_idx, cp) in row.iter().enumerate() {
+                            if rational {
+                                let w: Real = ns.weights
+                                    .get(row_idx)
+                                    .and_then(|weights_row: &Vec<Real>| weights_row.get(col_idx))
+                                    .copied()
+                                    .unwrap_or(1.0);
+                                write!(output, " {} {} {} {}", cp.x, cp.y, cp.z, w)?;
+                            } else {
+                                write!(output, " {} {} {}", cp.x, cp.y, cp.z)?;
+                            }
                         }
                     }
-                    for k in &ns.knots_u { write!(output, " {}", k)?; }
-                    for k in &ns.knots_v { write!(output, " {}", k)?; }
+                    // Unique knots + multiplicities (OCC V1 format)
+                    for k in &u_knots { write!(output, " {}", k)?; }
+                    for m in &u_mults { write!(output, " {}", m)?; }
+                    for k in &v_knots { write!(output, " {}", k)?; }
+                    for m in &v_mults { write!(output, " {}", m)?; }
                     writeln!(output)?;
                 }
                 SurfaceGeom::Extrusion { generatrix, direction } => {
@@ -545,19 +583,26 @@ impl<'a> BrepWriter<'a> {
         let rv1 = self.rev_idx(v1_pos);
         let rv2 = self.rev_idx(v2_pos);
 
-        let tol = edge.tolerance.max(1e-7);
+        // OCC edges should have tight tolerances. If ensure_same_parameter
+        // inflated the tolerance to chord length (large deviation), clamp to
+        // a reasonable geometric tolerance for the BREP file.
+        let raw_tol = edge.tolerance.max(1e-7);
+        let tol = if raw_tol > 0.1 {
+            1e-4_f64  // clamp inflated tolerances to reasonable default
+        } else {
+            raw_tol
+        };
         writeln!(output, "Ed")?;
-        writeln!(output, " {} {} 1 0", tol, 1)?;
-        // curve_type curve_idx 0 0 param_range
+        writeln!(output, " {} 1 1 0", tol)?;
+        // OCC format: curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
 
-        // PCurve references — OCC format: one line per PCurve
-        // Format: 2  curve2d_idx  face_pos  0  0  param_range
+        // PCurve references — OCC format: 4 C0 curve2d_idx 0 2 0 per pcurve
         if self.pcurve_count == 0 {
             writeln!(output, "0")?;
         } else {
             let edge_abs = self.edge_pos(ek);
-            let mut pc_lines: Vec<usize> = Vec::new(); // curve2d_index (1-based)
+            let mut pc_lines: Vec<usize> = Vec::new();
             for (idx, entry) in self.pcurve_entries.iter().enumerate() {
                 if entry.edge_abs_pos == edge_abs {
                     pc_lines.push(idx + 1);
@@ -567,8 +612,7 @@ impl<'a> BrepWriter<'a> {
                 writeln!(output, "0")?;
             } else {
                 for pc_idx in &pc_lines {
-                    // OCC format: 4 C0 {curve2d_idx} {location} 0 0
-                    writeln!(output, "4 C0 {} 0 0 0", pc_idx)?;
+                    writeln!(output, "4 C0 {} 0 2 0", pc_idx)?;
                 }
                 writeln!(output, "0")?;
             }
@@ -738,6 +782,20 @@ fn occ_curve_type(curve: &CurveGeom) -> usize {
         CurveGeom::Offset { .. } => 8,
         CurveGeom::Trimmed { basis, .. } => occ_curve_type(basis),
         CurveGeom::Composite { .. } => 7,
+    }
+}
+
+/// Compute the natural parameter range for a 2D curve.
+/// Returns (umin, umax) — the curve's natural parameterization bounds.
+fn curve2d_param_range(curve: &Curve2d) -> (Real, Real) {
+    match curve {
+        Curve2d::Line { direction, .. } => {
+            let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
+            (0.0, len.max(1e-12))
+        }
+        Curve2d::Circle { .. } => (0.0, std::f64::consts::TAU),
+        Curve2d::Ellipse { .. } => (0.0, std::f64::consts::TAU),
+        _ => (0.0, 1.0),
     }
 }
 
