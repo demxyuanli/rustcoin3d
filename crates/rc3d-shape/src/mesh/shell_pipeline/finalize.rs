@@ -259,19 +259,51 @@ pub(crate) fn finalize_shell_mesh(
         0
     };
 
-    // Rebuild combined mesh from healed per-face meshes
+    // Rebuild combined mesh from healed per-face meshes.
+    // After heal_mesh_gaps welds boundary vertices across sub-meshes, the
+    // same 3D position may appear in multiple sub-mesh vertex buffers.
+    // Deduplicate by spatial position during reassembly to avoid seam duplicates.
     if gap_welded > 0 {
         let mut new_vertices: Vec<PVec3> = Vec::new();
         let mut new_indices: Vec<i32> = Vec::new();
         let mut new_normals: Vec<PVec3> = Vec::new();
+        // Spatial dedup map: quantized position → vertex index in combined mesh
+        let weld_tol = weld_tol_for_heal.max(1e-6);
+        let inv_tol = 1.0 / weld_tol;
+        let mut pos_to_idx: std::collections::HashMap<(i32, i32, i32), usize> =
+            std::collections::HashMap::new();
+
         for (face_mesh, _) in &face_sub_meshes {
-            let base = new_vertices.len() as i32;
-            new_vertices.extend_from_slice(&face_mesh.vertices);
-            new_normals.extend_from_slice(&face_mesh.normals);
+            // Build local→global index mapping with deduplication
+            let mut local_to_global: Vec<i32> = Vec::with_capacity(face_mesh.vertices.len());
+            for (vi, &v) in face_mesh.vertices.iter().enumerate() {
+                let key = (
+                    (v.x * inv_tol).round() as i32,
+                    (v.y * inv_tol).round() as i32,
+                    (v.z * inv_tol).round() as i32,
+                );
+                if let Some(&gi) = pos_to_idx.get(&key) {
+                    local_to_global.push(gi as i32);
+                } else {
+                    let gi = new_vertices.len();
+                    pos_to_idx.insert(key, gi);
+                    new_vertices.push(v);
+                    if vi < face_mesh.normals.len() {
+                        new_normals.push(face_mesh.normals[vi]);
+                    } else {
+                        new_normals.push(PVec3::Z);
+                    }
+                    local_to_global.push(gi as i32);
+                }
+            }
+            // Remap indices
             for chunk in face_mesh.indices.chunks(4) {
-                for j in 0..chunk.len() {
-                    let idx = chunk[j];
-                    new_indices.push(if idx >= 0 { idx + base } else { idx });
+                for &idx in chunk {
+                    new_indices.push(if idx >= 0 {
+                        *local_to_global.get(idx as usize).unwrap_or(&0) as i32
+                    } else {
+                        idx
+                    });
                 }
             }
         }

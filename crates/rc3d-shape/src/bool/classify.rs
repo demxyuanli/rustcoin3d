@@ -38,6 +38,7 @@ pub fn classify_point_solid(
 
     let mut confident_votes = Vec::new();
 
+    // Phase 1: try 6 cardinal axes
     for &ray_dir in &ray_dirs {
         let mut intersections = 0u32;
         let mut on_boundary = false;
@@ -57,6 +58,35 @@ pub fn classify_point_solid(
 
         if on_boundary { continue; }
         confident_votes.push(intersections % 2 == 1);
+    }
+
+    // Phase 2: if cardinal axes gave no confident results (all hit boundaries),
+    // try random directions (OCC BRepClass3d_SClassifier strategy).
+    if confident_votes.is_empty() {
+        // Use fixed off-axis directions to avoid RNG non-determinism
+        let extra_dirs = [
+            PVec3::new(0.577350269, 0.577350269, 0.577350269),
+            PVec3::new(-0.577350269, 0.577350269, 0.577350269),
+            PVec3::new(0.577350269, -0.577350269, 0.577350269),
+            PVec3::new(0.577350269, 0.577350269, -0.577350269),
+        ];
+        for &ray_dir in &extra_dirs {
+            let mut intersections = 0u32;
+            let mut on_boundary = false;
+            for &(face_key, _orient) in &shell.faces {
+                let face = match reg.faces.get(face_key) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                match ray_surface_intersect(point, ray_dir, face, face_key, reg, tolerance) {
+                    RayHit::Boundary => { on_boundary = true; break; }
+                    RayHit::Hit => intersections += 1,
+                    RayHit::Miss => {}
+                }
+            }
+            if on_boundary { continue; }
+            confident_votes.push(intersections % 2 == 1);
+        }
     }
 
     if confident_votes.is_empty() {
@@ -129,13 +159,15 @@ fn winding_number_approximate(
 fn face_vertex_positions(
     _face_key: FaceKey, face: &BRepFace, reg: &BRepStore,
 ) -> Option<Vec<PVec3>> {
-    let wire = reg.wires.get(face.outer_wire)?;
+    let outer = reg.wires.get(face.outer_wire)?;
     let mut pts = Vec::new();
-    for &(ek, _) in &wire.edges {
-        let edge = reg.edges.get(ek)?;
-        let v = reg.vertices.get(edge.v_low)?;
-        if pts.last().map(|p: &PVec3| (*p - v.position).length() > 1e-10).unwrap_or(true) {
-            pts.push(v.position);
+    for wire in std::iter::once(outer).chain(face.inner_wires.iter().filter_map(|&wk| reg.wires.get(wk))) {
+        for &(ek, _) in &wire.edges {
+            let edge = reg.edges.get(ek)?;
+            let v = reg.vertices.get(edge.v_low)?;
+            if pts.last().map(|p: &PVec3| (*p - v.position).length() > 1e-10).unwrap_or(true) {
+                pts.push(v.position);
+            }
         }
     }
     if pts.len() < 3 { None } else { Some(pts) }

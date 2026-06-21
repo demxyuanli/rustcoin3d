@@ -199,6 +199,13 @@ fn fix_trimmed_periodic_seam(
     if let Some(ek) = build_u_isoparam_seam(reg, face_key, surface, u_seam, tol) {
         if let Some(face) = reg.faces.get_mut(face_key) {
             face.seam_edges.push(ek);
+            // Also add to wire edge list (consistent with add_vertex_loop_seams)
+            let wire_key = face.outer_wire;
+            if let Some(w) = reg.wires.get_mut(wire_key) {
+                if !w.edges.iter().any(|(e, _)| *e == ek) {
+                    w.edges.push((ek, Orientation::Forward));
+                }
+            }
         }
         1
     } else {

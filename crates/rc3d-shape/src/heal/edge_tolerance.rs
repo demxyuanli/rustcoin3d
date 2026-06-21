@@ -96,19 +96,16 @@ pub fn auto_fix_shell_edge_tolerances(
     report.edges_checked = edges.len();
 
     for ek in &edges {
+        let old_tol = reg.edges.get(*ek).map(|e| e.tolerance).unwrap_or(0.0);
         if let Some(new_tol) =
             auto_fix_edge_tolerance(*ek, reg, min_tolerance, max_tolerance, 16)
         {
-            // Re-read to get the old tolerance for reporting
-            if let Some(edge) = reg.edges.get(*ek) {
-                let adj = (new_tol - edge.tolerance).abs()
-                    .max((edge.tolerance - new_tol).abs());
-                report.max_adjustment = report.max_adjustment.max(adj);
-                if new_tol > edge.tolerance {
-                    report.tolerances_increased += 1;
-                } else {
-                    report.tolerances_decreased += 1;
-                }
+            let adj = (new_tol - old_tol).abs();
+            report.max_adjustment = report.max_adjustment.max(adj);
+            if new_tol > old_tol {
+                report.tolerances_increased += 1;
+            } else {
+                report.tolerances_decreased += 1;
             }
         }
     }

@@ -331,9 +331,20 @@ fn get_vertex_at(ek: EdgeKey, orient: Orientation, is_start: bool, reg: &BRepSto
 
 fn nudge_line_pcurve(pc: &Curve2d, du: Real, dv: Real, at_end: bool) -> Curve2d {
     match pc {
-        Curve2d::Line { origin, direction } => Curve2d::Line {
-            origin: if at_end { (origin.0 + du, origin.1 + dv) } else { *origin },
-            direction: (direction.0 + if at_end { 0.0 } else { du }, direction.1 + if at_end { 0.0 } else { dv }),
+        Curve2d::Line { origin, direction } => {
+            if at_end {
+                // Move END point (t=1): adjust direction, keep origin fixed
+                Curve2d::Line {
+                    origin: *origin,
+                    direction: (direction.0 + du, direction.1 + dv),
+                }
+            } else {
+                // Move START point (t=0): adjust origin, keep end fixed
+                Curve2d::Line {
+                    origin: (origin.0 + du, origin.1 + dv),
+                    direction: (direction.0 - du, direction.1 - dv),
+                }
+            }
         },
         other => other.clone(),
     }

@@ -198,7 +198,7 @@ impl NurbsSurface {
             }
         }
 
-        if weight_sum > 1e-10 {
+        if weight_sum.abs() > 1e-10 {
             point * (1.0 / weight_sum)
         } else {
             PVec3::ZERO
