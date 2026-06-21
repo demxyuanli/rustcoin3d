@@ -199,9 +199,15 @@ fn segments_intersect_2d(a: UvSegment, b: UvSegment) -> bool {
 }
 
 /// 2D orientation: cross product of (b-a) × (c-a).
-/// Positive → counter-clockwise, negative → clockwise, zero → collinear.
+/// Positive → counter-clockwise, negative → clockwise, ±0 → collinear.
+/// Uses a tolerance proportional to the segment lengths to avoid sign
+/// flips from floating-point rounding on near-collinear segments.
 fn orient_2d(ax: Real, ay: Real, bx: Real, by: Real, cx: Real, cy: Real) -> Real {
-    (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    let cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    let len_ab = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+    let len_ac = ((cx - ax).powi(2) + (cy - ay).powi(2)).sqrt();
+    let scale = (len_ab * len_ac).max(1e-12);
+    if cross.abs() < scale * 1e-12 { 0.0 } else { cross }
 }
 
 #[cfg(test)]

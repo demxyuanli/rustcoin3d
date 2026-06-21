@@ -170,6 +170,12 @@ fn gk_integrate<F: Fn(Real, Real) -> Real>(
         return fine_est;
     }
 
+    // If the integral value is negligible, accept early to avoid
+    // subdividing to max depth when the answer is effectively zero.
+    if fine_est.abs() < 1e-20 && mid_est.abs() < 1e-20 {
+        return fine_est;
+    }
+
     if depth >= MAX_GK_DEPTH {
         return fine_est;
     }
