@@ -357,19 +357,59 @@ impl<'a> BrepWriter<'a> {
                     write_polyline_as_bspline(output, points)?;
                 }
                 CurveGeom::Trimmed { basis, .. } => {
-                    // Expand: write inner basis
+                    // Expand: write the inner basis in its full form.
+                    // The edge t_min/t_max in TShapes already encode the trim.
                     match basis.as_ref() {
                         CurveGeom::Line { origin, direction } => {
                             let len = direction.length();
-                            let dir = if len > 1e-12 { *direction / len } else { *direction };
+                            let dir = if len > 1e-12 { *direction / len } else { PVec3::X };
                             writeln!(output, "1 {} {} {} {} {} {}",
-                                origin.x, origin.y, origin.z,
-                                dir.x, dir.y, dir.z)?;
+                                rnd(origin.x), rnd(origin.y), rnd(origin.z),
+                                rnd(dir.x), rnd(dir.y), rnd(dir.z))?;
                         }
-                        _ => {
-                            // Fallback
-                            writeln!(output, "1 0 0 0  1 0 0")?;
+                        CurveGeom::Circle { center, axis, radius, x_dir, y_dir } => {
+                            writeln!(output, "2 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {}",
+                                center.x, center.y, center.z,
+                                axis.x, axis.y, axis.z,
+                                x_dir.x, x_dir.y, x_dir.z,
+                                y_dir.x, y_dir.y, y_dir.z, radius)?;
                         }
+                        CurveGeom::Ellipse { center, axis, semi_major, semi_minor, x_dir, y_dir } => {
+                            writeln!(output, "3 {} {} {}  {} {} {}  {} {} {}  {} {} {}  {} {}",
+                                center.x, center.y, center.z,
+                                axis.x, axis.y, axis.z,
+                                x_dir.x, x_dir.y, x_dir.z,
+                                y_dir.x, y_dir.y, y_dir.z,
+                                semi_major, semi_minor)?;
+                        }
+                        CurveGeom::BSpline { degree, control_points, knots, weights } => {
+                            let (uk, um) = extract_unique_and_mults(knots);
+                            write!(output, "7 {}  {}  {}  {}",
+                                degree, control_points.len(), uk.len(),
+                                if weights.is_some() { 1 } else { 0 })?;
+                            for cp in control_points {
+                                write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
+                            }
+                            for k in &uk { write!(output, " {}", k)?; }
+                            for m in &um { write!(output, " {}", m)?; }
+                            if let Some(w) = weights {
+                                for wt in w { write!(output, " {}", wt)?; }
+                            }
+                            writeln!(output)?;
+                        }
+                        CurveGeom::BezierCurve { degree, control_points, weights } => {
+                            write!(output, "6 {}  {}  {}",
+                                degree, control_points.len(),
+                                if weights.is_some() { 1 } else { 0 })?;
+                            for cp in control_points {
+                                write!(output, "  {} {} {}", cp.x, cp.y, cp.z)?;
+                            }
+                            if let Some(w) = weights {
+                                for wt in w { write!(output, " {}", wt)?; }
+                            }
+                            writeln!(output)?;
+                        }
+                        _ => writeln!(output, "1 0 0 0  1 0 0")?,
                     }
                 }
                 _ => {
