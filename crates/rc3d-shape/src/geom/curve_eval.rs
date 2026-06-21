@@ -1026,7 +1026,9 @@ fn normalize_arc_params(a0: Real, a1: Real) -> (Real, Real) {
 /// Delegates to multi-start Newton-Raphson curve projection.
 pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3) -> Real {
     let results = super::project::project_point_on_curve(curve, target);
-    results.first().map(|(t, _)| *t).unwrap_or(0.0)
+    // Default to 0.5 (mid-point) if all projection methods fail, which is
+    // safer than 0.0 (curve start) for most downstream uses like trim fitting.
+    results.first().map(|(t, _)| *t).unwrap_or(0.5)
 }
 
 /// STEP `LINE` entities often reference a unit `VECTOR`; the actual edge span is

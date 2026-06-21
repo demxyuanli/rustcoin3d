@@ -351,19 +351,21 @@ fn create_edge_segment(
 }
 
 /// Build a new BRep face from a sub-region.
+///
+/// Creates edges and vertices for each UV boundary segment. When `edge_map`
+/// contains pre-split edge segments for a vertex pair with matching geometry,
+/// reuses the existing edge to maintain topological adjacency with adjacent
+/// sub-faces (avoids creating duplicate independent edges along shared splits).
 fn build_face_from_region(
-    _original_face: FaceKey,
+    original_face: FaceKey,
     region: &super::split::SubFaceRegion,
     surface: &SurfaceGeom,
-    _edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, Real, Real)>>,
+    edge_map: &HashMap<EdgeKey, Vec<(EdgeKey, Real, Real)>>,
     reg: &mut BRepStore,
 ) -> Option<FaceKey> {
-    // Create a new face with the same surface
     let new_face = reg.add_face(surface.clone(), 1e-4);
 
-    // Build a wire from the UV boundary
     if region.uv_boundary.is_empty() {
-        // No boundary specified — create a placeholder
         return Some(new_face);
     }
 
@@ -372,31 +374,62 @@ fn build_face_from_region(
         return Some(new_face);
     }
 
-    // Build edges from UV polygon vertices
+    // Collect pre-split edges from edge_map whose original edge belongs to
+    // the original face. The edge_map maps original EdgeKey → split segments.
+    let split_edges: Vec<(EdgeKey, Real, Real)> = {
+        let face_edges: std::collections::HashSet<EdgeKey> = crate::topo_iter::iter_edges_of_face(original_face, reg).into_iter().collect();
+        edge_map.iter()
+            .filter(|(orig_ek, _)| face_edges.contains(orig_ek))
+            .flat_map(|(_, segments)| segments.clone())
+            .collect()
+    };
+
     let mut wire_edges = Vec::new();
     for i in 0..outer_uv.len() {
         let j = (i + 1) % outer_uv.len();
         let uv0 = outer_uv[i];
         let uv1 = outer_uv[j];
 
-        // Create 3D edge between these UV points on the surface
         let p0 = surface.d0_native(uv0.0, uv0.1);
         let p1 = surface.d0_native(uv1.0, uv1.1);
 
         let v0 = reg.find_or_add_vertex(p0, 1e-4);
         let v1 = reg.find_or_add_vertex(p1, 1e-4);
 
-        let edge_3d = CurveGeom::Line {
-            origin: p0,
-            direction: p1 - p0,
-        };
-        let edge_pc = Curve2d::Line {
-            origin: (uv0.0, uv0.1),
-            direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
-        };
+        // Try to reuse a pre-split edge that matches this vertex pair
+        let reuse_ek = split_edges.iter().find_map(|&(ek, _t0, _t1)| {
+            let edge = reg.edges.get(ek)?;
+            if (edge.v_low == v0 && edge.v_high == v1)
+                || (edge.v_low == v1 && edge.v_high == v0)
+            {
+                // Reuse: add pcurve for this face
+                let pc = Curve2d::Line {
+                    origin: (uv0.0, uv0.1),
+                    direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
+                };
+                if let Some(em) = reg.edges.get_mut(ek) {
+                    em.pcurves.entry(new_face).or_insert(pc);
+                }
+                Some(ek)
+            } else {
+                None
+            }
+        });
 
-        let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, new_face, edge_pc, true);
-        wire_edges.push((ek, Orientation::Forward));
+        if let Some(ek) = reuse_ek {
+            wire_edges.push((ek, Orientation::Forward));
+        } else {
+            let edge_3d = CurveGeom::Line {
+                origin: p0,
+                direction: p1 - p0,
+            };
+            let edge_pc = crate::geom::curve2d::Curve2d::Line {
+                origin: (uv0.0, uv0.1),
+                direction: (uv1.0 - uv0.0, uv1.1 - uv0.1),
+            };
+            let ek = reg.add_edge_with_pcurve(v0, v1, edge_3d, 1e-4, new_face, edge_pc, true);
+            wire_edges.push((ek, Orientation::Forward));
+        }
     }
 
     // Update the face's outer wire

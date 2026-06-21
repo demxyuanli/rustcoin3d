@@ -563,7 +563,11 @@ impl SurfaceGeom {
         }
     }
 
-    /// Returns native STEP UV. `None` for torus, extrusion, offset.
+    /// Returns native STEP UV.
+    ///
+    /// Returns `None` for Torus, Extrusion, and Offset surfaces, which lack
+    /// closed-form projection formulas. Callers must fall back to
+    /// `inverse_native_uv()` (grid search) for these types.
     pub fn project(&self, point: PVec3) -> Option<(Real, Real)> {
         match self {
             SurfaceGeom::Plane { origin, normal, u_dir } => {
