@@ -436,8 +436,13 @@ fn fit_circle_2d(points: &[(Real, Real)]) -> Option<(Real, Real, Real)> {
 
     // Solve the 2×2 system for centred centre (a, b)
     let det = sxx * syy - sxy * sxy;
-    if det.abs() < 1e-20 {
-        // Points are (nearly) collinear — cannot fit a circle
+    // Check condition number: ill-conditioned for small-arc data where
+    // sxx≈syy≈sxy (covariance nearly singular). The Kasa fit produces
+    // noisy centre estimates for arc coverage below ~90°.
+    let trace = sxx + syy;
+    let cond = if trace > 1e-20 { det / (trace * trace) } else { 0.0 };
+    if det.abs() < 1e-20 || cond.abs() < 1e-10 {
+        // Points are (nearly) collinear or arc too small — cannot fit reliably
         return None;
     }
 
