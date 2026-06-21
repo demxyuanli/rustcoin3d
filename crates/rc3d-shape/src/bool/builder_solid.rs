@@ -229,17 +229,25 @@ fn build_shell_from_faces(faces: &[FaceKey], reg: &mut BRepStore) -> Option<Shel
 
 /// Check if a set of faces forms a closed shell.
 ///
-/// A shell is closed when every edge (vertex pair) in the face set is shared
-/// by exactly two faces (manifold, watertight). Uses unordered vertex-pair
-/// counting instead of EdgeKey deduplication because `add_edge_with_pcurve`
-/// may assign distinct EdgeKeys to the same physical edge.
+/// A shell is closed when every non-seam edge (vertex pair) in the face set
+/// is shared by exactly two faces (manifold, watertight). Seam edges on
+/// periodic surfaces (cylinder, sphere, torus) connect a vertex pair that
+/// appears only once per face and may have count 1 in single-face shells.
 fn is_shell_closed(faces: &[FaceKey], reg: &BRepStore) -> bool {
     if faces.len() < 3 {
         return false;
     }
-    // Count how many faces in the set share each unordered vertex pair
+    // Collect vertex pairs, tracking which are from seam edges
     let mut vp_count: HashMap<(VertexKey, VertexKey), usize> = HashMap::new();
+    let mut seam_pairs: HashSet<(VertexKey, VertexKey)> = HashSet::new();
     for &fk in faces {
+        let face = match reg.faces.get(fk) { Some(f) => f, None => continue };
+        // Build set of vertex pairs from seam edges
+        for &ek in &face.seam_edges {
+            if let Some((vl, vh)) = topo_iter::iter_vertices_of_edge(ek, reg) {
+                seam_pairs.insert(if vl < vh { (vl, vh) } else { (vh, vl) });
+            }
+        }
         for vp in face_vertex_pairs(fk, reg) {
             *vp_count.entry(vp).or_default() += 1;
         }
@@ -249,8 +257,11 @@ fn is_shell_closed(faces: &[FaceKey], reg: &BRepStore) -> bool {
         return false;
     }
 
-    // Every vertex pair must appear exactly twice (once per adjacent face)
-    vp_count.values().all(|&c| c == 2)
+    // Non-seam vertex pairs must appear exactly twice.
+    // Seam vertex pairs may appear once (single-face periodic shell) or twice.
+    vp_count.iter().all(|(vp, &c)| {
+        c == 2 || (seam_pairs.contains(vp) && c == 1)
+    })
 }
 
 #[cfg(test)]

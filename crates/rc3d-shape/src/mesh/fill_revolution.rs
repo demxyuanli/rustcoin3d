@@ -255,9 +255,11 @@ pub(crate) fn revolution_ruled_grid_from_uv(
         );
     }
     let mut grid = vec![vec![(PVec3::ZERO, PVec3::Y); nv + 1]; nu + 1];
-    // Same-edge seam (F+R): wires share UV so dv=0. Fill native (u,v) rectangle, not wire-to-wire blend.
+    // Same-edge seam (F+R): wires share UV so dv=0. Fill native (u,v) rectangle.
+    // Sweep U uniformly from u_min to u_max (not from wire samples) so the
+    // full face parameter range is covered even when the wire's UV samples
+    // are non-uniform (e.g. BSpline pcurves on revolution surfaces).
     if dv < 1e-4 && du > 1e-6 {
-        let r0 = resample_uv_polyline(uv0, nu);
         let (v_lo, v_hi) = seam_face_v_bounds(face, uv0, uv1, profile_sweep);
         if std::env::var("SHAPE_FACE_DIAG").is_ok() {
             eprintln!(
@@ -266,7 +268,7 @@ pub(crate) fn revolution_ruled_grid_from_uv(
             );
         }
         for i in 0..=nu {
-            let u = r0[i].0;
+            let u = u_min + (u_max - u_min) * i as Real / nu as Real;
             for j in 0..=nv {
                 let v = v_lo + (v_hi - v_lo) * j as Real / nv as Real;
                 let pt = face.surface.d0_native(u, v);

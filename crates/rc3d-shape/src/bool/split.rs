@@ -169,7 +169,17 @@ pub fn split_faces_from_bopds(
                 vec![whole_face_region(face_key, face)]
             } else {
                 uv_boundary_hint.iter().map(|boundary| {
-                    let interior = boundary.get(boundary.len() / 2).copied().unwrap_or((0.0, 0.0));
+                    // Centroid of all boundary vertices is more likely to be
+                    // inside the region than the midpoint (which fails for
+                    // concave shapes).
+                    let n = boundary.len();
+                    let interior = if n > 0 {
+                        let (su, sv) = boundary.iter()
+                            .fold((0.0, 0.0), |(a, b), &(u, v)| (a + u, b + v));
+                        (su / n as Real, sv / n as Real)
+                    } else {
+                        (0.0, 0.0)
+                    };
                     let (un, vn) = face.surface.native_uv_to_d0(interior.0, interior.1);
                     SubFaceRegion {
                         uv_boundary: vec![boundary.clone()],

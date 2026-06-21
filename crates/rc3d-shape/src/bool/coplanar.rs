@@ -400,10 +400,14 @@ fn walk_difference(
         on_edge.sort_by(|a, b| a.t_a.partial_cmp(&b.t_a).unwrap_or(std::cmp::Ordering::Equal));
         for int in on_edge {
             // Determine if this is an entry or exit:
-            // Test a point slightly AFTER the intersection along A
+            // Test a point slightly AFTER the intersection along A.
+            // Use a relative offset so it works for both very short and very long edges.
             let a0 = poly_a[i];
             let a1 = poly_a[(i + 1) % na];
-            let test_t = (int.t_a + 0.001).min(0.999);
+            let edge_len_sq = (a1.0 - a0.0).powi(2) + (a1.1 - a0.1).powi(2);
+            let edge_len = edge_len_sq.sqrt().max(1e-12);
+            let rel_offset = (0.001 * edge_len).min(edge_len * 0.1);
+            let test_t = (int.t_a + rel_offset / edge_len.max(1e-12)).min(0.999);
             let test_pt = (a0.0 + (a1.0 - a0.0) * test_t, a0.1 + (a1.1 - a0.1) * test_t);
             let inside = point_in_polygon_winding(test_pt.0, test_pt.1, poly_b);
             // Entry = crossing from outside to inside → skip
