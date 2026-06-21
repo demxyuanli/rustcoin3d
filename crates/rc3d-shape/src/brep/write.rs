@@ -906,6 +906,7 @@ fn write_expanded_offset_surface(
 }
 
 /// Sample generatrix curve and write extrusion as BSpline surface.
+#[allow(dead_code)]
 fn write_extrusion_as_bspline(
     output: &mut impl Write,
     generatrix: &CurveGeom,
@@ -947,6 +948,7 @@ fn write_extrusion_as_bspline(
 }
 
 /// Sample generatrix and revolve around axis to write as BSpline surface.
+#[allow(dead_code)]
 fn write_revolution_as_bspline(
     output: &mut impl Write,
     generatrix: &CurveGeom,
@@ -1001,6 +1003,7 @@ fn write_revolution_as_bspline(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn is_planar_surface(surface: &SurfaceGeom) -> bool {
     match surface {
         SurfaceGeom::Plane { .. } => true,
@@ -1010,6 +1013,7 @@ fn is_planar_surface(surface: &SurfaceGeom) -> bool {
 }
 
 /// Project 3D point to UV coordinates on a surface. Returns None if projection fails.
+#[allow(dead_code)]
 fn project_point_to_uv(point: PVec3, surface: &SurfaceGeom) -> Option<(Real, Real)> {
     match surface {
         SurfaceGeom::Plane { origin, normal, u_dir } => {

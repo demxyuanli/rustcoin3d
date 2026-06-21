@@ -51,6 +51,7 @@ pub(crate) fn fix_same_parameter_edge(
 // ---------------------------------------------------------------------------
 
 /// Project a 3D point onto the surface and return native (u, v) as PVec3(u, v, 0).
+#[allow(dead_code)]
 fn project_to_uv(
     surface: &SurfaceGeom,
     point: PVec3,
@@ -78,6 +79,7 @@ fn project_to_uv(
 // ---------------------------------------------------------------------------
 
 /// Shift uv by +/- period to be closest to reference in UV space.
+#[allow(dead_code)]
 pub(crate) fn normalize_periodic_uv(uv: PVec3, reference: PVec3, surface: &SurfaceGeom) -> PVec3 {
     let mut result = uv;
     if let Some(pu) = surface.native_u_period() {
@@ -103,6 +105,7 @@ pub(crate) fn normalize_periodic_uv(uv: PVec3, reference: PVec3, surface: &Surfa
 
 /// Sample deviation between 3D curve and surface(pcurve(t)) at adaptive points.
 /// Returns (max_deviation, [(t, p3d, deviation)]).
+#[allow(dead_code)]
 fn sample_deviation(
     curve_3d: &CurveGeom,
     pcurve: &Curve2d,
@@ -131,6 +134,7 @@ fn sample_deviation(
 // ---------------------------------------------------------------------------
 
 /// Decide between line and BSpline fit based on collinearity.
+#[allow(dead_code)]
 fn fit_new_pcurve(samples: &[(Real, PVec3)], tolerance: Real) -> Curve2d {
     if samples.len() <= 2 {
         let start = samples.first().map(|&(_, uv)| uv).unwrap_or(PVec3::ZERO);
@@ -146,6 +150,7 @@ fn fit_new_pcurve(samples: &[(Real, PVec3)], tolerance: Real) -> Curve2d {
 }
 
 /// Check if all UV points are collinear within tolerance.
+#[allow(dead_code)]
 fn all_collinear_uv(samples: &[(Real, PVec3)], tolerance: Real) -> bool {
     if samples.len() <= 2 {
         return true;
@@ -174,6 +179,7 @@ fn all_collinear_uv(samples: &[(Real, PVec3)], tolerance: Real) -> bool {
 // Line fit
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn fit_pcurve_line(uv_start: PVec3, uv_end: PVec3) -> Curve2d {
     Curve2d::Line {
         origin: (uv_start.x, uv_start.y),
@@ -185,6 +191,7 @@ fn fit_pcurve_line(uv_start: PVec3, uv_end: PVec3) -> Curve2d {
 // BSpline fit (interpolation through sample points)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn fit_pcurve_bspline(samples: &[(Real, PVec3)], degree: usize) -> Curve2d {
     let n = samples.len();
     if n <= 2 || n < degree + 1 {
@@ -259,6 +266,7 @@ fn fit_pcurve_bspline(samples: &[(Real, PVec3)], degree: usize) -> Curve2d {
 // Gaussian elimination
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<Real>> {
     let mut a: Vec<Vec<Real>> = mat.to_vec();
     let mut b: Vec<Real> = rhs.to_vec();
@@ -347,6 +355,7 @@ fn solve_linear_system(mat: &[Vec<Real>], rhs: &[Real], n: usize) -> Option<Vec<
 ///
 /// Implements Algorithm A2.2 from "The NURBS Book" (Piegl & Tiller).
 /// Returns a vector of n_basis values where n_basis = knots.len() - degree - 1.
+#[allow(dead_code)]
 fn bspline_basis_all(degree: usize, knots: &[Real], t: Real) -> Vec<Real> {
     let n_knots = knots.len();
     let n_basis = n_knots.saturating_sub(degree + 1);
@@ -414,6 +423,7 @@ fn bspline_basis_all(degree: usize, knots: &[Real], t: Real) -> Vec<Real> {
 }
 
 /// Standard Cox-de Boor: returns the value of the i-th B-spline basis function at t.
+#[allow(dead_code)]
 fn bspline_basis(degree: usize, knot_index: usize, knots: &[Real], t: Real) -> Real {
     let all = bspline_basis_all(degree, knots, t);
     if knot_index < all.len() {
