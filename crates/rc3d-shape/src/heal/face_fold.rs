@@ -59,13 +59,27 @@ pub fn fix_face_folds(
         }
     }
 
-    // Detect fold: a pair of normals with strongly negative dot product
+    // Detect fold: check adjacent cell pairs in the grid for strongly
+    // negative dot products. Using a single reference normal (e.g. first
+    // sample) can miss folds if the reference lands exactly on the fold line.
     let mut has_fold = false;
-    if let Some(&ref_normal) = normals.first() {
-        for n in &normals[1..] {
-            if ref_normal.dot(*n) < -0.3 {
+    for row in 0..n_u {
+        for col in 0..n_v.saturating_sub(1) {
+            let i = row * n_v + col;
+            if normals.get(i + 1).map_or(false, |n| normals[i].dot(*n) < -0.3) {
                 has_fold = true;
                 break;
+            }
+        }
+    }
+    if !has_fold {
+        for row in 0..n_u.saturating_sub(1) {
+            for col in 0..n_v {
+                let i = row * n_v + col;
+                if normals.get(i + n_v).map_or(false, |n| normals[i].dot(*n) < -0.3) {
+                    has_fold = true;
+                    break;
+                }
             }
         }
     }

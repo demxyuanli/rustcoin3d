@@ -28,9 +28,11 @@ pub fn check_solid_orientation(sk: SolidKey, reg: &BRepStore) -> Vec<CheckStatus
     };
 
     // Compute approximate signed volume from face polygons.
-    // For each face, compute a centroid and area-weighted normal contribution.
-    // This is an approximation; a full tessellation-based volume would be
-    // more accurate but much more expensive.
+    // For each face, compute a centroid and area-weighted normal contribution
+    // via Newell's method. This is exact for planar polygon faces but an
+    // approximation for curved faces (cylinder, sphere, BSpline). The sign
+    // is correct for outward-facing shells; magnitude may differ from the
+    // true solid volume for non-planar faces.
     let mut signed_volume: Real = 0.0;
 
     for &(face_key, face_orient) in &shell.faces {
