@@ -385,6 +385,12 @@ pub fn surface_fill_3d(
 
 /// Planar fallback: fit a plane to boundary, CDT in 2D plane coords,
 /// Steiner points snapped to surface via `surface.project()` + `surface.d0_native()`.
+///
+/// NOTE: The CDT triangulation operates in plane 2D space while 3D points are
+/// snapped to the actual (possibly non-planar) surface. For near-planar faces
+/// this distortion is negligible. For highly curved surfaces, the native UV fill
+/// path should be used instead — this fallback is only invoked when pcurve-based
+/// CDT fails (degenerate UV loops, collapsed parameterization).
 pub(crate) fn surface_fill_3d_planar(
     face_key: FaceKey,
     boundary_global: &[usize],
