@@ -660,7 +660,8 @@ impl SurfaceGeom {
                     let p = basis.d0(u, v) + basis.normal(u, v) * *distance;
                     (p - point).length_squared()
                 };
-                let mut step = 0.05_f64;
+                let pr_basis = basis.param_range();
+                let mut step = ((pr_basis.u_span() + pr_basis.v_span()) / 40.0).clamp(0.001, 0.5);
                 for _ in 0..8 {
                     for &(du, dv) in &[(step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)] {
                         let nu = (u + du).clamp(pr.u_min, pr.u_max);
