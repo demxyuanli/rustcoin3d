@@ -28,14 +28,21 @@ impl CdtConstraintReport {
     }
 }
 
+/// Safe f64→u64 conversion — clamps to [0, u64::MAX] to avoid overflow
+/// panics in debug mode and silent wraps in release.
+fn f64_to_u64(v: f64) -> u64 {
+    if v.is_nan() || v.is_infinite() { return 0; }
+    if v < 0.0 { 0 } else if v > u64::MAX as f64 { u64::MAX } else { v as u64 }
+}
+
 fn uv_quant_key(uv: (Real, Real)) -> (u64, u64) {
-    ((uv.0 * 1e6).round() as u64, (uv.1 * 1e6).round() as u64)
+    (f64_to_u64((uv.0 * 1e6).round()), f64_to_u64((uv.1 * 1e6).round()))
 }
 
 fn uv_quant_key_relative(uv: (Real, Real), uv_span: (Real, Real)) -> (u64, u64) {
     let su = uv_span.0.max(1e-6);
     let sv = uv_span.1.max(1e-6);
-    ((uv.0 / su * 1e6).round() as u64, (uv.1 / sv * 1e6).round() as u64)
+    (f64_to_u64((uv.0 / su * 1e6).round()), f64_to_u64((uv.1 / sv * 1e6).round()))
 }
 
 fn quant_key(uv: (Real, Real), span: Option<(Real, Real)>) -> (u64, u64) {
@@ -305,10 +312,10 @@ pub fn triangulate_uv_cdt_with_steiner(
             .outer
             .boundary
             .iter()
-            .map(|vb| ((vb.uv.0 / u_eps).round() as u64, (vb.uv.1 / v_eps).round() as u64))
+            .map(|vb| (f64_to_u64((vb.uv.0 / u_eps).round()), f64_to_u64((vb.uv.1 / v_eps).round())))
             .chain(loops.inners.iter().flat_map(|inner| {
                 inner.boundary.iter().map(|vb| {
-                    ((vb.uv.0 / u_eps).round() as u64, (vb.uv.1 / v_eps).round() as u64)
+                    (f64_to_u64((vb.uv.0 / u_eps).round()), f64_to_u64((vb.uv.1 / v_eps).round()))
                 })
             }))
             .collect();
@@ -319,7 +326,7 @@ pub fn triangulate_uv_cdt_with_steiner(
                 if cdt.vertex_count() >= config.max_cdt_vertices.max(1) {
                     break;
                 }
-                let qkey = ((u / u_eps).round() as u64, (v / v_eps).round() as u64);
+                let qkey = (f64_to_u64((u / u_eps).round()), f64_to_u64((v / v_eps).round()));
                 if boundary_uv_set.contains(&qkey) {
                     continue;
                 }

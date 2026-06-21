@@ -430,7 +430,12 @@ impl BopDS {
 
 // ── BopDS helpers ────────────────────────────────────────────────────
 
-/// Project a 3D point onto a curve to find parameter t (20-sample + binary refine).
+/// Project a 3D point onto a curve to find parameter t.
+///
+/// Uses 20-sample coarse scan followed by local refinement around the best
+/// sample. The local refine evaluates neighbors at ±delta and iteratively
+/// centres on the best candidate — more reliable than binary search which
+/// doesn't bracket the minimum properly.
 fn project_point_on_edge(curve: &CurveGeom, pt: PVec3, tolerance: Real) -> Option<Real> {
     const N: usize = 20;
     let mut best_t = 0.0_f64;
@@ -440,14 +445,19 @@ fn project_point_on_edge(curve: &CurveGeom, pt: PVec3, tolerance: Real) -> Optio
         let d = (curve.d0(t) - pt).length();
         if d < best_dist { best_dist = d; best_t = t; }
     }
-    let mut lo = (best_t - 0.1).max(0.0);
-    let mut hi = (best_t + 0.1).min(1.0);
-    for _ in 0..8 {
-        let mid = (lo + hi) * 0.5;
-        if (curve.d0(mid) - pt).length() < (curve.d0(lo) - pt).length() { lo = mid; } else { hi = mid; }
+    // Local refinement: evaluate neighbors at decreasing step sizes
+    let mut t = best_t;
+    let mut step = 0.05_f64;
+    for _ in 0..6 {
+        for &dt in &[-step, step] {
+            let tc = (t + dt).clamp(0.0, 1.0);
+            let d = (curve.d0(tc) - pt).length();
+            if d < best_dist { best_dist = d; t = tc; }
+        }
+        step *= 0.5;
     }
-    let t_final = (lo + hi) * 0.5;
-    if (curve.d0(t_final) - pt).length() < tolerance.max(0.1) { Some(t_final) } else { None }
+    let tol = tolerance.max(0.01);
+    if best_dist < tol { Some(t) } else { None }
 }
 
 /// Collect all face keys that reference a given edge from the interference data.

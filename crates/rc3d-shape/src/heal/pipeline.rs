@@ -283,11 +283,14 @@ pub(crate) fn select_fixes(level: HealLevel, iteration: usize, check: &CheckRepo
             config.fix_vertex_tolerance = true;
             config.fix_small_area = true;
             config.fix_small_faces = true;
-            config.fix_unify_same_domain = true;
             config.fix_vertex_position = true;
-            config.fix_free_bounds = true;
-            config.fix_compose_shell = true;
-            config.fix_edge_connect = true;
+            // Defer passes that need stable topology from previous iterations
+            if iteration > 0 {
+                config.fix_unify_same_domain = true;
+                config.fix_free_bounds = true;
+                config.fix_compose_shell = true;
+                config.fix_edge_connect = true;
+            }
         }
     } else {
         if check.has_uv_gaps || check.has_pcurve_issues {
