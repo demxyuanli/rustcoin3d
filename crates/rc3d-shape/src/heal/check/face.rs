@@ -169,11 +169,15 @@ pub fn check_surface_singularities(face_key: FaceKey, reg: &BRepStore) -> Vec<St
     };
 
     match &face.surface {
-        crate::geom::SurfaceGeom::Sphere { .. } => {
+        crate::geom::SurfaceGeom::Sphere { radius, .. } => {
             let wire = match reg.wires.get(face.outer_wire) {
                 Some(w) => w,
                 None => return warnings,
             };
+            // Angular tolerance scaled by radius: a pole degeneracy matters
+            // when it represents a significant 3D distance relative to the face
+            // tolerance. Large spheres need tighter angular thresholds.
+            let angular_tol = (face.tolerance.max(1e-6) / radius.max(1e-6)).clamp(0.001, 0.1);
             for &(ek, _) in &wire.edges {
                 let edge = match reg.edges.get(ek) {
                     Some(e) => e,
@@ -182,7 +186,7 @@ pub fn check_surface_singularities(face_key: FaceKey, reg: &BRepStore) -> Vec<St
                 if let Some(pc) = edge.pcurves.get(&face_key) {
                     for t in [0.0, 1.0] {
                         let uv = pc.d0(t);
-                        if (uv.1.abs() - std::f64::consts::FRAC_PI_2).abs() < 0.01 {
+                        if (uv.1.abs() - std::f64::consts::FRAC_PI_2).abs() < angular_tol {
                             warnings.push(format!(
                                 "face {:?}: potential degeneracy near sphere pole at u={:.3}, v={:.3}",
                                 face_key, uv.0, uv.1
@@ -251,7 +255,10 @@ pub fn check_parameter_range(face_key: FaceKey, reg: &BRepStore) -> Vec<String> 
             None => continue,
         };
         if let Some(pc) = edge.pcurves.get(&face_key) {
-            for t in [0.0, 1.0] {
+            // Sample at 5 points (not just endpoints) — interior points
+            // may stray outside the parameter range on curved surfaces.
+            for s in 0..=4 {
+                let t = s as Real / 4.0;
                 let uv = pc.d0(t);
                 let margin = 0.1;
                 if uv.0 < u_range.0 - margin || uv.0 > u_range.1 + margin {

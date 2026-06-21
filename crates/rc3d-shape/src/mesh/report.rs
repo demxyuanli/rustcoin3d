@@ -82,9 +82,6 @@ pub fn shell_vertex_bbox(shell_key: ShellKey, reg: &BRepStore) -> Option<(PVec3,
         for wire_key in wires {
             let wire = reg.wires.get(wire_key)?;
             for &(ek, _) in &wire.edges {
-                if face.seam_edges.contains(&ek) {
-                    continue;
-                }
                 let edge = reg.edges.get(ek)?;
                 for vk in [edge.v_low, edge.v_high] {
                     if let Some(v) = reg.vertices.get(vk) {
