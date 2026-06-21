@@ -353,7 +353,6 @@ pub fn fill_paves(
                     for hit in &hits {
                         let faces_for_e = reg.edge_to_faces.get(&ek_b).cloned().unwrap_or_default();
                         for &fb in &faces_for_e {
-                            let fa_surface = &face_a.surface;
                             let uv_a = hit.uv_face;
                             let uv_b = reg.faces.get(fb).and_then(|f| f.surface.project(hit.point))
                                 .or_else(|| reg.faces.get(fb).and_then(|f| f.surface.inverse_native_uv(hit.point, tolerance * 10.0)))
