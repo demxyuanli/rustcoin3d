@@ -684,6 +684,11 @@ impl NurbsSurface {
                 new_cps.push(self.control_points[n_u - 1].clone());
                 new_ws.push(self.weights[n_u - 1].clone());
             } else {
+                // alpha = i/degree is only correct for clamped uniform knots
+                // (Piegl & Tiller Eq. 6.16 requires knot-dependent alpha).
+                // For non-uniform knots, degree reduction may produce incorrect
+                // control points; reduce_deviation_ok catches large errors.
+                // TODO: implement proper knot-dependent alpha when needed.
                 let alpha = i as Real / self.degree_u as Real;
                 let one_minus_a = 1.0 - alpha;
                 let prev_cp = &new_cps[new_cps.len() - 1];

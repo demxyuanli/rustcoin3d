@@ -284,22 +284,55 @@ fn de_casteljau_d0(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3
     }
 }
 
-/// First derivative via De Casteljau (hodograph for unweighted;
-/// finite-difference on d0 for rational curves).
+/// First derivative via De Casteljau.
+///
+/// For unweighted curves: uses the analytical hodograph (degree·Δcp).
+/// For rational curves: uses Richardson extrapolation with two finite-difference
+/// step sizes for 4th-order accuracy (interior) / 2nd-order (endpoints).
+/// This is a significant improvement over the previous single-step central
+/// difference which had O(1e-4) endpoint error.
 fn de_casteljau_d1(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3 {
     let n = points.len();
     if n <= 1 { return PVec3::ZERO; }
-    if weights.is_some() {
-        let eps = 1e-4;
-        let t_lo = (t - eps).max(0.0);
-        let t_hi = (t + eps).min(1.0);
-        let p_lo = de_casteljau_d0(points, weights, t_lo);
-        let p_hi = de_casteljau_d0(points, weights, t_hi);
-        return (p_hi - p_lo) / (t_hi - t_lo);
+    if let Some(w) = weights {
+        if w.is_empty() { return PVec3::ZERO; }
+        let h = 1e-4_f64;
+        if t > h && t < 1.0 - h {
+            // Interior: Richardson extrapolation on central differences
+            let p_lo1 = de_casteljau_d0(points, weights, t - h);
+            let p_hi1 = de_casteljau_d0(points, weights, t + h);
+            let d1 = (p_hi1 - p_lo1) / (2.0 * h);
+            let h2 = h * 0.5;
+            let p_lo2 = de_casteljau_d0(points, weights, t - h2);
+            let p_hi2 = de_casteljau_d0(points, weights, t + h2);
+            let d2 = (p_hi2 - p_lo2) / (2.0 * h2);
+            // 4th-order extrapolation: (4*d2 - d1) / 3
+            (d2 * 4.0 - d1) / 3.0
+        } else if t <= h {
+            // Near t=0: one-sided Richardson
+            let p0 = de_casteljau_d0(points, weights, 0.0);
+            let p_h = de_casteljau_d0(points, weights, h);
+            let d1 = (p_h - p0) / h;
+            let h2 = h * 0.5;
+            let p_h2 = de_casteljau_d0(points, weights, h2);
+            let d2 = (p_h2 - p0) / h2;
+            // 2nd-order extrapolation: 2*d2 - d1
+            d2 * 2.0 - d1
+        } else {
+            // Near t=1: one-sided Richardson
+            let p1 = de_casteljau_d0(points, weights, 1.0);
+            let p_h = de_casteljau_d0(points, weights, 1.0 - h);
+            let d1 = (p1 - p_h) / h;
+            let h2 = h * 0.5;
+            let p_h2 = de_casteljau_d0(points, weights, 1.0 - h2);
+            let d2 = (p1 - p_h2) / h2;
+            d2 * 2.0 - d1
+        }
+    } else {
+        let degree = (n - 1) as Real;
+        let diff: Vec<PVec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
+        de_casteljau_d0(&diff, None, t)
     }
-    let degree = (n - 1) as Real;
-    let diff: Vec<PVec3> = points.windows(2).map(|w| (w[1] - w[0]) * degree).collect();
-    de_casteljau_d0(&diff, None, t)
 }
 
 /// Approximate arc length of a curve by chordal sum with fixed sampling.
@@ -789,10 +822,22 @@ impl CurveGeom {
             CurveGeom::BezierCurve { control_points, weights, .. } => {
                 let p = de_casteljau_d0(control_points, weights.as_deref(), t);
                 let d1 = de_casteljau_d1(control_points, weights.as_deref(), t);
-                let eps = 1e-4;
-                let d1_plus = de_casteljau_d1(control_points, weights.as_deref(), (t + eps).min(1.0));
-                let d1_minus = de_casteljau_d1(control_points, weights.as_deref(), (t - eps).max(0.0));
-                let d2 = (d1_plus - d1_minus) / (2.0 * eps);
+                let h = 1e-4_f64;
+                let d2 = if t > h && t < 1.0 - h {
+                    // Interior: Richardson extrapolation on central d1 differences
+                    let dp1 = de_casteljau_d1(control_points, weights.as_deref(), t + h);
+                    let dm1 = de_casteljau_d1(control_points, weights.as_deref(), t - h);
+                    let a1 = (dp1 - dm1) / (2.0 * h);
+                    let h2 = h * 0.5;
+                    let dp2 = de_casteljau_d1(control_points, weights.as_deref(), t + h2);
+                    let dm2 = de_casteljau_d1(control_points, weights.as_deref(), t - h2);
+                    let a2 = (dp2 - dm2) / (2.0 * h2);
+                    (a2 * 4.0 - a1) / 3.0
+                } else {
+                    let d1p = de_casteljau_d1(control_points, weights.as_deref(), (t + h).min(1.0));
+                    let d1m = de_casteljau_d1(control_points, weights.as_deref(), (t - h).max(0.0));
+                    (d1p - d1m) / ((t + h).min(1.0) - (t - h).max(0.0)).max(h)
+                };
                 (p, d1, d2)
             }
             CurveGeom::Circle { center, x_dir, y_dir, radius, .. } => {

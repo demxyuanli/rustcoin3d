@@ -247,7 +247,10 @@ impl Curve2d {
             }
             Curve2d::Trimmed { basis, t_min, t_max } => {
                 let all = basis.to_beziers();
-                clip_beziers_to_range(&all, *t_min, *t_max)
+                // Pass knots=None: for BSpline bases, knots should be threaded
+                // through from decompose_bspline_to_beziers for correct non-uniform
+                // parameter-space mapping (H15). Currently uses uniform assumption.
+                clip_beziers_to_range(&all, *t_min, *t_max, None)
             }
             Curve2d::Ellipse { center, semi_major, semi_minor } => {
                 // Approximate ellipse with 4 cubic Bézier arcs (90° each)
@@ -825,13 +828,37 @@ fn decompose_bspline_to_beziers(
 }
 
 /// Clip a list of Bézier segments to a parameter range [t_min, t_max].
-fn clip_beziers_to_range(beziers: &[Bezier2d], t_min: Real, t_max: Real) -> Vec<Bezier2d> {
+///
+/// When `knots` is provided (non-uniform BSpline decomposition), each segment
+/// spans one knot interval and the knot vector is used to map parameter space
+/// to segment indices. When `knots` is None (uniform decomposition: Line,
+/// Circle, Ellipse approximated arcs), uniform segment distribution is assumed.
+fn clip_beziers_to_range(beziers: &[Bezier2d], t_min: Real, t_max: Real, knots: Option<&[Real]>) -> Vec<Bezier2d> {
     if beziers.is_empty() {
         return vec![];
     }
-    let n = beziers.len() as Real;
-    let idx_min = ((t_min * n).floor() as usize).min(beziers.len() - 1);
-    let idx_max = ((t_max * n).ceil() as usize).min(beziers.len() - 1);
+    let (idx_min, idx_max) = if let Some(k) = knots {
+        // Use knot vector: segment i spans [k[i+p], k[i+p+1]] in original param space.
+        // After Bézier decomposition (full multiplicity), each segment = one knot interval.
+        // Find the segment range containing [t_min, t_max].
+        let find_seg = |t: Real| -> usize {
+            let mut seg = 0usize;
+            for w in k.windows(2) {
+                if t >= w[0] - 1e-12 && t <= w[1] + 1e-12 {
+                    return seg.min(beziers.len().saturating_sub(1));
+                }
+                if t < w[1] { break; }
+                seg += 1;
+            }
+            if t <= k[0] { 0 } else { beziers.len().saturating_sub(1) }
+        };
+        (find_seg(t_min), find_seg(t_max))
+    } else {
+        let n = beziers.len() as Real;
+        let imin = ((t_min * n).floor() as usize).min(beziers.len().saturating_sub(1));
+        let imax = ((t_max * n).ceil() as usize).min(beziers.len().saturating_sub(1));
+        (imin, imax)
+    };
     beziers[idx_min..=idx_max].to_vec()
 }
 
