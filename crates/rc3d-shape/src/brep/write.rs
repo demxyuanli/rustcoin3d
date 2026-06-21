@@ -787,6 +787,7 @@ fn occ_curve_type(curve: &CurveGeom) -> usize {
 
 /// Compute the natural parameter range for a 2D curve.
 /// Returns (umin, umax) — the curve's natural parameterization bounds.
+#[allow(dead_code)]
 fn curve2d_param_range(curve: &Curve2d) -> (Real, Real) {
     match curve {
         Curve2d::Line { direction, .. } => {

@@ -442,6 +442,7 @@ fn edge_aabb(edge: &crate::topo::BRepEdge, tol: Real) -> super::aabb::AABB {
 }
 
 /// Quick AABB check: does the edge's bounding box intersect the face bbox?
+#[allow(dead_code)]
 fn edge_bbox_touches(
     edge: &crate::topo::BRepEdge, face_bbox: &super::aabb::AABB, tol: Real, _reg: &BRepStore,
 ) -> bool {
