@@ -110,6 +110,7 @@ fn check_nurbs_self_intersect(nurbs: &NurbsSurface, grid_res: usize) -> usize {
 
 /// Report from face self-intersection fix pass.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct FaceSelfIntersectFixReport {
     pub faces_checked: usize,
     pub faces_fixed: usize,

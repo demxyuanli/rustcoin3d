@@ -9,12 +9,9 @@
 //! 3. Check for open wire: if start ≠ end vertex in any loop
 //! 4. Generate a preprocessor report with flagged face keys
 
-use std::collections::HashSet;
-
-use crate::mesh_result::MeshResult;
 use crate::store::BRepStore;
 use crate::topo::{FaceKey, Orientation, ShellKey, WireKey};
-use rc3d_core::math::{Real, PVec3};
+use rc3d_core::math::Real;
 
 /// Status flags per face after preprocessing.
 #[derive(Debug, Clone, Default)]

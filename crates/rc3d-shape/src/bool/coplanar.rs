@@ -312,6 +312,7 @@ pub fn polygon_difference(
 
 /// An intersection point between two polygon edges.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Intersection {
     edge_a: usize,
     t_a: Real,

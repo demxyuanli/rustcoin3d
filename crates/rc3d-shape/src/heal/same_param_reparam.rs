@@ -164,7 +164,7 @@ fn adjust_line_pcurve(samples: &[DeviationSample], surface: &SurfaceGeom) -> Opt
 /// For surfaces with u-periodic parameterization (cylinder, sphere, cone, torus),
 /// ensures the u values are in the same 2π-wide band to avoid wrap-around.
 fn normalize_periodic_uv_pair(
-    mut uv_a: (Real, Real),
+    uv_a: (Real, Real),
     mut uv_b: (Real, Real),
     surface: &SurfaceGeom,
 ) -> ((Real, Real), (Real, Real)) {

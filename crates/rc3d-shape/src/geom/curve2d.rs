@@ -536,6 +536,7 @@ fn lerp_2d(a: (Real, Real), b: (Real, Real), t: Real) -> (Real, Real) {
 ///
 /// For coincident curves, subdivision would produce O(2^depth) spurious points.
 /// A guard limit prevents unbounded result explosion.
+#[allow(dead_code)]
 const MAX_CLIP_RESULTS: usize = 64;
 
 pub fn bezier_clip_intersect(

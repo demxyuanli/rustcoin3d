@@ -51,6 +51,7 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
     w.write_all(output)
 }
 
+#[allow(dead_code)]
 struct PCurveEntry {
     edge_abs_pos: usize,  // 1-based edge position in TShapes
     face_abs_pos: usize,  // 1-based face position in TShapes
@@ -193,6 +194,7 @@ impl<'a> BrepWriter<'a> {
             .map(|p| p + 1).unwrap_or(0)
     }
 
+    #[allow(dead_code)]
     fn compound_pos(&self, ck: CompoundKey) -> usize {
         self.shapes.iter().position(|s| matches!(s, ShapeEntry::Compound(k) if *k == ck))
             .map(|p| p + 1).unwrap_or(0)
@@ -267,7 +269,6 @@ impl<'a> BrepWriter<'a> {
                 Curve2d::Composite { .. } => {
                     writeln!(output, "1 0 1 1 0")?;
                 }
-                _ => writeln!(output, "1 0 1 1 0")?,
             }
         }
         Ok(())
