@@ -78,9 +78,17 @@ fn check_edge_continuity(
         let t = s as Real / samples as Real;
         let p3d = edge.curve.d0(t);
 
-        // Project onto each face surface using native UV
-        let (ua, va) = face_a.surface.project(p3d)?;
-        let (ub, vb) = face_b.surface.project(p3d)?;
+        // Use PCurve UV coordinates for surface evaluation, not project().
+        // project() may find a different point on highly curved surfaces
+        // (e.g., opposite side of a torus), producing incorrect normals.
+        let (ua, va) = match edge.pcurves.get(&fa) {
+            Some(pc) => { let uv = pc.d0(t); (uv.0, uv.1) }
+            None => face_a.surface.project(p3d)?,
+        };
+        let (ub, vb) = match edge.pcurves.get(&fb) {
+            Some(pc) => { let uv = pc.d0(t); (uv.0, uv.1) }
+            None => face_b.surface.project(p3d)?,
+        };
 
         let pa = face_a.surface.d0_native(ua, va);
         let pb = face_b.surface.d0_native(ub, vb);

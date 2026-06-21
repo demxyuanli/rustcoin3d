@@ -269,8 +269,10 @@ pub fn close_free_bounds(
                         }
                     }
                 }
-                // Deduplicate consecutive identical edges
-                wire.edges.dedup_by(|a, b| a.0 == b.0);
+                // Remove all duplicate edge references (not just consecutive ones).
+                // After merging, the same EdgeKey may appear at non-consecutive positions.
+                let mut seen = std::collections::HashSet::new();
+                wire.edges.retain(|(ek, _)| seen.insert(*ek));
             }
         }
     }

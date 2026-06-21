@@ -235,15 +235,20 @@ fn merge_intersecting_inner_wires(
         let mut j = i + 1;
         while j < result.len() {
             if wires_intersect_2d(result[i], result[j], face_key, reg) {
-                // Merge wire j into wire i: concatenate edge lists
+                // Merge wire j into wire i: concatenate and reorder into a
+                // connected chain. Concatenation alone may create a gap at
+                // the join point if the wires are not end-to-end adjacent.
                 if let (Some(wire_i), Some(wire_j)) = (
                     reg.wires.get(result[i]),
                     reg.wires.get(result[j]),
                 ) {
                     let mut merged_edges = wire_i.edges.clone();
                     merged_edges.extend(wire_j.edges.clone());
-                    if let Some(w) = reg.wires.get_mut(result[i]) {
-                        w.edges = merged_edges;
+                    // Reorder into a connected chain; skip merge if disconnected
+                    if let Some(reordered) = super::wire_ops::reorder_wire_edges(&merged_edges, reg) {
+                        if let Some(w) = reg.wires.get_mut(result[i]) {
+                            w.edges = reordered;
+                        }
                     }
                 }
                 result.remove(j);
