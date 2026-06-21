@@ -101,11 +101,10 @@ pub fn newton_refine_ssi(
             }
         }
         if !accepted {
-            // No step reduced the residual — use damped fallback.
-            uv_a.0 += du_a_dot * 0.2;
-            uv_a.1 += dv_a_dot * 0.2;
-            uv_b.0 -= du_b_dot * 0.2;
-            uv_b.1 -= dv_b_dot * 0.2;
+            // No backtracking step reduced the residual — Gauss-Newton
+            // has stalled. OCC math_GaussNewtonOptimizer rejects such steps
+            // (Armijo condition). Return None to signal non-convergence.
+            return None;
         }
 
         // Clamp to reasonable parameter ranges

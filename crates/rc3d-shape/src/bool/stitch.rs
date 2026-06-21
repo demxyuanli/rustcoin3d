@@ -98,6 +98,19 @@ pub fn weld_shell_vertices(shell_key: ShellKey, reg: &mut BRepStore, tolerance: 
         }
     }
 
+    // Resolve transitive chains to their ultimate canonical vertex.
+    // e.g. {v2→v1, v1→v0} → {v2→v0, v1→v0} so no intermediate keys are removed
+    // while still referenced by edges from earlier iterations.
+    for (replace, keep) in to_replace.clone() {
+        let mut ultimate = keep;
+        while let Some(&next) = to_replace.get(&ultimate) {
+            ultimate = next;
+        }
+        if ultimate != keep {
+            to_replace.insert(replace, ultimate);
+        }
+    }
+
     // Apply merges: update edge vertex references, remove replaced vertices
     for (replace, keep) in &to_replace {
         for (_, edge) in reg.edges.iter_mut() {

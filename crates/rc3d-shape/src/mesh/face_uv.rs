@@ -177,7 +177,8 @@ fn pip_even_odd(x: Real, y: Real, poly: &[(Real, Real)]) -> bool {
         let (x0, y0) = poly[i];
         let (x1, y1) = poly[(i + 1) % n];
         if ((y0 > y) != (y1 > y))
-            && (x < (x1 - x0) * (y - y0) / (y1 - y0 + 1e-20) + x0)
+            && (y1 - y0).abs() > 1e-12
+            && (x < (x1 - x0) * (y - y0) / (y1 - y0) + x0)
         {
             inside = !inside;
         }

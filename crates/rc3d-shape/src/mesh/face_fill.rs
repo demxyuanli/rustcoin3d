@@ -1131,10 +1131,7 @@ pub fn measure_face_chord_error(
     } else {
         1
     };
-    // Per-measurement projection cache: the same boundary vertices and edge
-    // midpoints are sampled across multiple triangles; cache avoids redundant
-    // Newton-Raphson surface projections (9 seeds × 20 iters each).
-    let mut proj_cache: ProjectionCache = HashMap::with_capacity(MAX_CHORD_SAMPLES * 4);
+    let mut proj_cache: () = ();
     for ti in (0..tri_count).step_by(step) {
         let ci = ti * 4;
         let chunk = &tris[ci..(ci + 4).min(tris.len())];
@@ -1154,44 +1151,23 @@ pub fn measure_face_chord_error(
     max_chord
 }
 
-/// Projection cache keyed by quantized 3D position.
-/// Eliminates redundant `surface.project()` calls when the same 3D point
-/// is sampled across multiple triangles during chord error measurement.
-type ProjectionCache = HashMap<[u64; 3], Option<(Real, Real)>>;
-
 fn surface_point_deviation_cached(
     p: PVec3,
     surface: &SurfaceGeom,
     inv_tol: Real,
-    cache: &mut ProjectionCache,
+    _cache: &mut (),
 ) -> Real {
-    let key = rc3d_core::utils::hash::f64x3_quantized_bits([p.x, p.y, p.z]);
-    if let Some(cached) = cache.get(&key) {
-        return match cached {
-            Some((u, v)) => (p - surface.d0_at_native_uv(*u, *v)).length(),
-            None => 0.0,
-        };
-    }
-    // Fast path: project() alone is sufficient for most surface types.
-    
     if let Some((u, v)) = surface.project(p) {
         let dev = (p - surface.d0_at_native_uv(u, v)).length();
-        // Sub-micron accuracy is good enough — skip grid-search fallback.
         if dev < 1e-6 {
-            cache.insert(key, Some((u, v)));
             return dev;
         }
-        cache.insert(key, Some((u, v)));
         dev
     } else {
-        // Fallback: grid-search inverse (handles edge cases where Newton diverges).
         let search_tol = inv_tol.max(0.01).min(1.0);
         if let Some((u, v)) = surface.inverse_native_uv(p, search_tol.max(0.5)) {
-            let dev = (p - surface.d0_at_native_uv(u, v)).length();
-            cache.insert(key, Some((u, v)));
-            dev
+            (p - surface.d0_at_native_uv(u, v)).length()
         } else {
-            cache.insert(key, None);
             0.0
         }
     }
@@ -1204,7 +1180,7 @@ fn tri_max_chord_error(
     verts: &[PVec3],
     surface: &SurfaceGeom,
     inv_tol: Real,
-    cache: &mut ProjectionCache,
+    cache: &mut (),
 ) -> Real {
     let p0 = verts[i0 as usize];
     let p1 = verts[i1 as usize];

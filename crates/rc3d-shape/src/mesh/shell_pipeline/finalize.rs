@@ -333,14 +333,8 @@ pub(crate) fn finalize_shell_mesh(
 }
 
 fn surface_chord_error_is_trivial(surface: &SurfaceGeom) -> bool {
-    matches!(
-        surface,
-        SurfaceGeom::Plane { .. }
-            | SurfaceGeom::Cylinder { .. }
-            | SurfaceGeom::Cone { .. }
-            | SurfaceGeom::Sphere { .. }
-            | SurfaceGeom::Torus { .. }
-            | SurfaceGeom::Revolution { .. }
-            | SurfaceGeom::Extrusion { .. }
-    )
+    // Only Plane is exactly representable by triangles; all curved surfaces
+    // (Cylinder, Cone, Sphere, Torus, Revolution, Extrusion, BSpline)
+    // need chord error measurement to enforce deflection quality.
+    matches!(surface, SurfaceGeom::Plane { .. })
 }

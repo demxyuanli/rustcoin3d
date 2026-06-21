@@ -336,11 +336,34 @@ fn plane_plane(o1: PVec3, n1: PVec3, o2: PVec3, n2: PVec3) -> Option<Vec<CurveGe
     let dir = cross.normalize();
     let d1 = n1.dot(o1);
     let d2 = n2.dot(o2);
-    let det = n1.x * n2.y - n1.y * n2.x;
-    let origin = if det.abs() > 1e-10 {
-        PVec3::new((d1 * n2.y - d2 * n1.y) / det, (n1.x * d2 - n2.x * d1) / det, 0.0)
-    } else {
-        o1
+
+    // Find a point on the intersection line.
+    // Set the coordinate with the largest |dir| component to 0
+    // and solve the resulting 2×2 system for the other two coordinates.
+    // This finds the point on the line closest to the origin.
+    let origin = {
+        let abs_dir = [dir.x.abs(), dir.y.abs(), dir.z.abs()];
+        let (i, j, k) = if abs_dir[0] >= abs_dir[1] && abs_dir[0] >= abs_dir[2] {
+            (1, 2, 0) // largest=x, set x=0, solve for y,z
+        } else if abs_dir[1] >= abs_dir[2] {
+            (0, 2, 1) // largest=y, set y=0, solve for x,z
+        } else {
+            (0, 1, 2) // largest=z, set z=0, solve for x,y
+        };
+        let a = [n1[i], n1[j]];
+        let b = [n2[i], n2[j]];
+        let det2 = a[0] * b[1] - a[1] * b[0];
+        if det2.abs() > 1e-12 {
+            let v0 = (d1 * b[1] - d2 * a[1]) / det2;
+            let v1 = (a[0] * d2 - b[0] * d1) / det2;
+            let mut p = [0.0_f64; 3];
+            p[i] = v0;
+            p[j] = v1;
+            p[k] = 0.0;
+            PVec3::new(p[0], p[1], p[2])
+        } else {
+            o1
+        }
     };
     Some(vec![CurveGeom::Line { origin, direction: dir }])
 }

@@ -53,14 +53,15 @@ pub fn fix_degenerated_edges(
         face.outer_wire
     };
 
-    let wire_edges = {
-        let Some(wire) = reg.wires.get(outer_wire) else { return report; };
-        wire.edges.clone()
-    };
-
     let mut degen_edges = Vec::new();
 
     for singularity in &singularities {
+        // Re-read wire_edges each iteration — the wire may have been
+        // modified by previous singularity processing (split/replace).
+        let wire_edges = {
+            let Some(wire) = reg.wires.get(outer_wire) else { return report; };
+            wire.edges.clone()
+        };
         for &(ek, orient) in &wire_edges {
             let (tolerance, pc) = {
                 let edge = match reg.edges.get(ek) {
