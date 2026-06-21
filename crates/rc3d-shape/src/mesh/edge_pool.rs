@@ -278,7 +278,10 @@ pub fn build_edge_boundary_pool(
                         t_q: quantize_t(arc_s),
                     };
                     if let Some(&existing) = topo_sample_idx.get(&key) {
-                        return existing;
+                        let weld_tol2 = 1e-8_f64; // arc-key dedup tolerance
+                        if (global_vertices[existing] - pt).length_squared() < weld_tol2 {
+                            return existing;
+                        }
                     }
                     let created = register_boundary_point_indexed(
                         pt,

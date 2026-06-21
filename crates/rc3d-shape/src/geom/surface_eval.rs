@@ -354,7 +354,8 @@ impl SurfaceGeom {
                 nurbs.evaluate(u_k, v_k)
             }
             SurfaceGeom::Extrusion { generatrix, direction } => {
-                generatrix.d0(u) + *direction * v
+                let dir = if direction.length_squared() > 1e-12 { direction.normalize() } else { *direction };
+                generatrix.d0(u) + dir * v
             }
             SurfaceGeom::Revolution { generatrix, axis_origin, axis_dir } => {
                 let axis = axis_dir.normalize();
