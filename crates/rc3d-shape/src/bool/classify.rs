@@ -491,6 +491,14 @@ fn point_in_polygon_2d(point: (Real, Real), polygon: &[(Real, Real)]) -> bool {
     inside
 }
 
+/// Classify sub-face regions against the opposite solid's shells.
+///
+/// NOTE: Currently classifies a point as Inside if ANY of `other_shells`
+/// contains it. For multi-shell arguments (e.g., a solid with multiple
+/// disconnected shells), this overestimates Inside for the Difference
+/// operation. Single-shell usage (the current boolean pipeline) is correct.
+/// Multi-shell support would require per-shell classification with
+/// per-operation combination semantics.
 pub fn classify_brep_regions(
     regions: &[SplitFaceRegion],
     other_shells: &[ShellKey],

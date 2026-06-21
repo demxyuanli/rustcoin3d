@@ -313,6 +313,14 @@ pub fn mesh_trimmed_uv_grid(
                     if i0 == i1 || i1 == i2 || i2 == i0 {
                         continue;
                     }
+                    // Skip sliver triangles (near-zero area) from fan triangulation
+                    let v0 = global_vertices[i0 as usize];
+                    let v1 = global_vertices[i1 as usize];
+                    let v2 = global_vertices[i2 as usize];
+                    let area2 = (v1 - v0).cross(v2 - v0).length_squared();
+                    if area2 < 1e-20 {
+                        continue;
+                    }
                     fix_tri_winding(
                         &mut i0,
                         &mut i1,

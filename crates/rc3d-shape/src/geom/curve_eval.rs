@@ -272,7 +272,7 @@ fn de_casteljau_d0(points: &[PVec3], weights: Option<&[Real]>, t: Real) -> PVec3
                 p[i] = (w_new, v_new);
             }
         }
-        p[0].1 / p[0].0
+        if p[0].0.abs() < 1e-20 { PVec3::ZERO } else { p[0].1 / p[0].0 }
     } else {
         let mut p = points.to_vec();
         for r in 1..n {

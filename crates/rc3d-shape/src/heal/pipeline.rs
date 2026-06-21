@@ -31,6 +31,10 @@ pub enum HealPassId {
 }
 
 /// Tier-driven heal policy — derived from `TessellationTier` via `for_tier()`.
+///
+/// NOTE: `passes` is populated but not consumed by `auto_heal_shell`;
+/// pass selection is driven by `HealLevel` + `select_fixes()` instead.
+/// `apply_pass_to_config()` provides the mapping for future fine-grained control.
 #[derive(Debug, Clone)]
 pub struct HealPolicy {
     pub level: HealLevel,

@@ -292,8 +292,8 @@ pub fn fix_t_junctions(mesh: &mut MeshResult, tolerance: Real) -> usize {
 
     // Build edge map for this single mesh
     let mut edge_map: HashMap<EdgeKey, Vec<usize>> = HashMap::new();
-    // tri_ref[i] = (tri_base, i0, i1, i2) for the triangle vertex i belongs to
-    let mut tri_ref: Vec<(usize, usize, usize, usize)> = vec![];
+    // tri_ref[i] = list of (tri_base, i0, i1, i2) for all triangles vertex i belongs to
+    let mut tri_ref: Vec<Vec<(usize, usize, usize, usize)>> = vec![];
 
     for (tri_idx, chunk) in mesh.indices.chunks(4).enumerate() {
         if chunk.len() < 4 || chunk[3] != -1 {
@@ -312,11 +312,11 @@ pub fn fix_t_junctions(mesh: &mut MeshResult, tolerance: Real) -> usize {
         // Extend tri_ref if needed
         let max_idx = i0.max(i1).max(i2);
         if max_idx >= tri_ref.len() {
-            tri_ref.resize(max_idx + 1, (usize::MAX, usize::MAX, usize::MAX, usize::MAX));
+            tri_ref.resize(max_idx + 1, Vec::new());
         }
-        tri_ref[i0] = tri_info;
-        tri_ref[i1] = tri_info;
-        tri_ref[i2] = tri_info;
+        tri_ref[i0].push(tri_info);
+        tri_ref[i1].push(tri_info);
+        tri_ref[i2].push(tri_info);
 
         for &(a, b) in &[(i0, i1), (i1, i2), (i2, i0)] {
             let key = make_edge_key(mesh.vertices[a], mesh.vertices[b]);
@@ -375,8 +375,8 @@ pub fn fix_t_junctions(mesh: &mut MeshResult, tolerance: Real) -> usize {
             if v == ea || v == eb || v == ec {
                 continue;
             }
-            // Skip vertices from the same triangle
-            if tri_ref.get(v).map_or(false, |&(tb, _, _, _)| tb == tri_base) {
+            // Skip vertices from the same triangle (vertex may be shared by multiple tris)
+            if tri_ref.get(v).map_or(false, |tris| tris.iter().any(|&(tb, _, _, _)| tb == tri_base)) {
                 continue;
             }
             let (dist2, t) = point_segment_dist2(mesh.vertices[v], pos_a, pos_b);

@@ -315,6 +315,10 @@ pub(crate) fn merge_face_pair(
         wire.edges.clone()
     };
 
+    // Collect all edge keys from both faces before consuming outer_a/outer_b
+    let all_edges_a: Vec<EdgeKey> = outer_a.iter().map(|(e, _)| *e).collect();
+    let all_edges_b: Vec<EdgeKey> = outer_b.iter().map(|(e, _)| *e).collect();
+
     let mut merged_outer: Vec<(EdgeKey, Orientation)> = Vec::new();
     let removed: Vec<EdgeKey> = shared.iter().copied().collect();
 
@@ -371,13 +375,16 @@ pub(crate) fn merge_face_pair(
 
     let new_fk = reg.faces.insert(new_face);
 
-    // Update edge_to_faces index for all outer edges of the new face
-    if let Some(wire) = reg.wires.get(new_outer_wire) {
-        for &(ek, _) in &wire.edges {
-            let entry = reg.edge_to_faces.entry(ek).or_default();
-            if !entry.contains(&new_fk) {
-                entry.push(new_fk);
-            }
+    // Update edge_to_faces index for ALL edges from both source faces,
+    // including shared edges that were removed from the merged outer wire.
+    // If shared edges aren't propagated, subsequent cluster merges can't
+    // find adjacency and skip merging, leaving the cluster incomplete.
+    for ek in all_edges_a.iter().copied()
+        .chain(all_edges_b.iter().copied())
+    {
+        let entry = reg.edge_to_faces.entry(ek).or_default();
+        if !entry.contains(&new_fk) {
+            entry.push(new_fk);
         }
     }
 
