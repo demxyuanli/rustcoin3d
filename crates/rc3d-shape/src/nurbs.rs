@@ -353,8 +353,15 @@ impl NurbsSurface {
         let dvv = (p_vv * w_sum - 2.0 * p_v * w_v - p * w_vv
                    + 2.0 * p * w_v * w_v * inv_w) * inv_w2;
 
-        // NaN safety
-        let safe = |v: PVec3| if v.is_nan() { PVec3::ZERO } else { v };
+        // NaN safety — log warning for diagnostics (consistent with bspline_d012)
+        let safe = |v: PVec3| {
+            if v.is_nan() {
+                log::warn!("[NURBS] evaluate_with_hessian: NaN detected at (u={}, v={})", u, v);
+                PVec3::ZERO
+            } else {
+                v
+            }
+        };
         (safe(pos), safe(du), safe(dv), safe(duu), safe(duv), safe(dvv))
     }
 

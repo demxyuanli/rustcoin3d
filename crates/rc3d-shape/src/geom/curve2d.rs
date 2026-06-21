@@ -530,12 +530,33 @@ fn lerp_2d(a: (Real, Real), b: (Real, Real), t: Real) -> (Real, Real) {
 /// Returns a list of intersection points as ((x, y) on curve A, (x, y) on curve B).
 ///
 /// OCC: IntRes2d_Intersection using Bézier clipping (BndLib + math_FunctionRoots)
+///
+/// For coincident curves, subdivision would produce O(2^depth) spurious points.
+/// A guard limit prevents unbounded result explosion.
+const MAX_CLIP_RESULTS: usize = 64;
+
 pub fn bezier_clip_intersect(
     a: &Bezier2d,
     b: &Bezier2d,
     tol: Real,
     max_depth: usize,
 ) -> Vec<((Real, Real), (Real, Real))> {
+    // Guard against coincident-curve explosion: after 4+ subdivisions,
+    // if curves still overlap, they are likely coincident. Return a single
+    // midpoint intersection instead of continuing to subdivide.
+    if max_depth <= 3 {
+        let a_diag_mid = ((a.bbox().0 - a.bbox().1).powi(2) + (a.bbox().2 - a.bbox().3).powi(2)).sqrt();
+        let b_diag_mid = ((b.bbox().0 - b.bbox().1).powi(2) + (b.bbox().2 - b.bbox().3).powi(2)).sqrt();
+        if a_diag_mid < tol * 0.1 && b_diag_mid < tol * 0.1 {
+            let am = a.eval(0.5);
+            let bm = b.eval(0.5);
+            let dist_sq = (am.0 - bm.0).powi(2) + (am.1 - bm.1).powi(2);
+            if dist_sq < tol * tol * 16.0 {
+                return vec![(am, bm)];
+            }
+        }
+    }
+
     // Phase 1: Bounding box rejection
     let (ax0, ax1, ay0, ay1) = a.bbox();
     let (bx0, bx1, by0, by1) = b.bbox();
