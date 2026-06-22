@@ -80,7 +80,10 @@ fn newton_curve(curve: &CurveGeom, target: PVec3, mut t: Real) -> Option<(Real, 
             break;
         }
         let dt = f_val / f_prime;
-        t = (t - dt).clamp(0.0, 1.0);
+        // Allow convergence beyond [0,1]; many STEP curves (lines, circles)
+        // have natural parameter ranges well outside the unit interval.
+        // Clamp to a generous range to prevent runaway Newton on degenerate data.
+        t = (t - dt).clamp(-1e4, 1e4);
 
         if f_val.abs() < TOL_F || dt.abs() < TOL_DT {
             return Some((t, (curve.d012(t).0 - target).length_squared()));
@@ -113,7 +116,7 @@ fn grid_fallback_curve(curve: &CurveGeom, target: PVec3) -> Vec<(Real, Real)> {
     let mut step = 1.0 / (N as Real * 2.0);
     for _ in 0..5 {
         for &dt in &[-step, step] {
-            let nt = (t + dt).clamp(0.0, 1.0);
+            let nt = (t + dt).clamp(-1e4, 1e4);
             let d2 = (curve.d0(nt) - target).length_squared();
             if d2 < best.1 { best = (nt, d2); t = nt; }
         }
@@ -296,12 +299,14 @@ mod tests {
             origin: PVec3::ZERO,
             direction: PVec3::new(10.0, 0.0, 0.0),
         };
-        // Point at x=11 — closest is x=10 (t=1)
+        // Point at x=11 — closest point on the infinite line is at x=11 (t=1.1).
+        // The Newton projection should converge to the true closest point,
+        // not clamp to [0,1].
         let results = project_point_on_curve(&line, PVec3::new(11.0, 1.0, 0.0));
         assert!(!results.is_empty());
         let (t, d2) = results[0];
-        assert!((t - 1.0).abs() < 0.01, "endpoint expected, got t={:.4}", t);
-        assert!((d2.sqrt() - (1.0_f64 + 1.0_f64).sqrt()).abs() < 0.01);
+        assert!((t - 1.1).abs() < 0.02, "closest point t expected, got t={:.4}", t);
+        assert!((d2.sqrt() - 1.0_f64).abs() < 0.01); // 1 unit perpendicular distance
     }
 
     #[test]

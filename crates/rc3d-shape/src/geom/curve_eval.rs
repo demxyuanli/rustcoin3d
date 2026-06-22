@@ -1141,7 +1141,6 @@ pub fn normalize_edge_curve_to_vertices(
     }
 
     // Keep original geometry — PCurve on each face provides correct surface trajectory.
-    // Replacing with a straight line destroys geometric fidelity.
     let c0_err = (curve.d0(0.0) - p_lo).length();
     let c1_err = (curve.d0(1.0) - p_hi).length();
     if c0_err > match_tol || c1_err > match_tol {
