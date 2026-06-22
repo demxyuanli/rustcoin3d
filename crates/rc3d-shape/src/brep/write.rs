@@ -20,9 +20,9 @@ use crate::store::BRepStore;
 use crate::topo::*;
 
 /// Round a float for BREP output to avoid tiny FP artifacts that confuse OCC.
-/// Values below 1e-7 are snapped to zero.
+/// Values below 1e-12 are snapped to zero.
 fn rnd(x: Real) -> Real {
-    if x.abs() < 1e-7 { 0.0 } else { (x * 1e7).round() / 1e7 }
+    if x.abs() < 1e-12 { 0.0 } else { (x * 1e12).round() / 1e12 }
 }
 
 /// Extract unique knot values and their multiplicities from a full knot vector.
@@ -589,11 +589,11 @@ impl<'a> BrepWriter<'a> {
     }
 
     fn write_ve(&self, output: &mut impl Write, vk: VertexKey) -> io::Result<()> {
-        let v = self.store.vertices.get(vk).map(|v| (v.position, v.tolerance.max(1e-7)))
-            .unwrap_or((PVec3::ZERO, 1e-7));
+        let v = self.store.vertices.get(vk).map(|v| v.position)
+            .unwrap_or(PVec3::ZERO);
         writeln!(output, "Ve")?;
-        writeln!(output, "{}", v.1)?;
-        writeln!(output, "{} {} {}", rnd(v.0.x), rnd(v.0.y), rnd(v.0.z))?;
+        writeln!(output, "1e-07")?;
+        writeln!(output, "{} {} {}", rnd(v.x), rnd(v.y), rnd(v.z))?;
         writeln!(output, "0 0")?;
         writeln!(output)?;
         writeln!(output, "0101101")?; // free, modified, checked, orientable, closed, infinite, convex
@@ -624,17 +624,15 @@ impl<'a> BrepWriter<'a> {
         let rv1 = self.rev_idx(v1_pos);
         let rv2 = self.rev_idx(v2_pos);
 
-        // OCC edges should have tight tolerances. If ensure_same_parameter
-        // inflated the tolerance to chord length (large deviation), clamp to
-        // a reasonable geometric tolerance for the BREP file.
-        let raw_tol = edge.tolerance.max(1e-7);
-        let tol = if raw_tol > 0.1 {
-            1e-4_f64  // clamp inflated tolerances to reasonable default
+        // OCC convention: edges use 1e-07 unless the tolerance is already
+        // inflated (e.g. by same-parameter healing). Clamp large tolerances.
+        let tol_str = if edge.tolerance > 0.1 {
+            "1e-04".to_string()
         } else {
-            raw_tol
+            "1e-07".to_string()
         };
         writeln!(output, "Ed")?;
-        writeln!(output, " {} 1 1 0", tol)?;
+        writeln!(output, " {} 1 1 0", tol_str)?;
         // OCC format: curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
 
