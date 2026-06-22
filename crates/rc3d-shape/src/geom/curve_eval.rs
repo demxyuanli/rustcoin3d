@@ -1047,6 +1047,23 @@ pub fn curve_param_range_from_vertices(
         return (*t_min, *t_max);
     }
 
+    // Closed (seam) edge: both vertices at same 3D point on a periodic curve.
+    // Return one full period. For non-periodic curves, fall through.
+    let chord = (v_high - v_low).length();
+    let is_closed = chord < 1e-6;
+    if is_closed {
+        match curve {
+            CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => {
+                return (0.0, std::f64::consts::TAU);
+            }
+            CurveGeom::BSpline { .. } => {
+                // A closed BSpline curve — use the full knot domain.
+                return curve.native_param_range();
+            }
+            _ => {}
+        }
+    }
+
     // For analytic curves use fast closed-form inversion.
     match curve {
         CurveGeom::Line { origin, direction } => {
