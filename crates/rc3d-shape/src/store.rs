@@ -141,13 +141,14 @@ impl BRepStore {
             }
         }
         // No matching curve — create a new edge
+        let (t_min, t_max) = crate::geom::curve_eval::curve_param_range_from_vertices(&curve, p_lo, p_hi);
         let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
             v_low: v_lo,
             v_high: v_hi,
-            t_min: 0.0,
-            t_max: 1.0,
+            t_min,
+            t_max,
             cached_deflection: None,
             pcurves: {
                 let mut m = HashMap::new();
@@ -187,13 +188,18 @@ impl BRepStore {
             normalize_edge_curve_to_vertices(curve, p_lo, p_hi, tolerance)
         };
         let pcurve = if same_sense { pcurve } else { pcurve.reversed() };
+        let (t_min, t_max) = if v_lo == v_hi {
+            (0.0, 1.0)
+        } else {
+            crate::geom::curve_eval::curve_param_range_from_vertices(&curve, p_lo, p_hi)
+        };
         let ek = self.edges.insert(BRepEdge {
             curve,
             tolerance,
             v_low: v_lo,
             v_high: v_hi,
-            t_min: 0.0,
-            t_max: 1.0,
+            t_min,
+            t_max,
             cached_deflection: None,
             pcurves: {
                 let mut m = HashMap::new();

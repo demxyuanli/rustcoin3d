@@ -1031,6 +1031,65 @@ pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3) -> Real {
     results.first().map(|(t, _)| *t).unwrap_or(0.5)
 }
 
+/// Compute the curve parameter range that corresponds to the edge
+/// bounded by `v_low` and `v_high`. For a `Trimmed` curve this is the
+/// trim bounds; for other curves we project the vertices onto the curve.
+///
+/// The returned `(t_min, t_max)` satisfies:
+///   curve.d0(t_min) ≈ v_low   and   curve.d0(t_max) ≈ v_high
+pub fn curve_param_range_from_vertices(
+    curve: &CurveGeom,
+    v_low: PVec3,
+    v_high: PVec3,
+) -> (Real, Real) {
+    // Trimmed curves already carry the correct bounds.
+    if let CurveGeom::Trimmed { t_min, t_max, .. } = curve {
+        return (*t_min, *t_max);
+    }
+
+    // For analytic curves use fast closed-form inversion.
+    match curve {
+        CurveGeom::Line { origin, direction } => {
+            let len2 = direction.length_squared();
+            if len2 < 1e-20 {
+                return (0.0, 1.0);
+            }
+            let inv_len2 = 1.0 / len2;
+            let t_lo = (v_low - origin).dot(*direction) * inv_len2;
+            let t_hi = (v_high - origin).dot(*direction) * inv_len2;
+            (t_lo.min(t_hi), t_lo.max(t_hi))
+        }
+        CurveGeom::Circle { center, x_dir, y_dir, .. } => {
+            let to_local = |p: PVec3| -> (Real, Real) {
+                let d = p - center;
+                (d.dot(*x_dir), d.dot(*y_dir))
+            };
+            let (x0, y0) = to_local(v_low);
+            let (x1, y1) = to_local(v_high);
+            let t_lo = Real::atan2(y0, x0);
+            let t_hi = Real::atan2(y1, x1);
+            (t_lo.min(t_hi), t_lo.max(t_hi))
+        }
+        CurveGeom::Ellipse { center, x_dir, y_dir, .. } => {
+            let to_local = |p: PVec3| -> (Real, Real) {
+                let d = p - center;
+                (d.dot(*x_dir), d.dot(*y_dir))
+            };
+            let (x0, y0) = to_local(v_low);
+            let (x1, y1) = to_local(v_high);
+            let t_lo = Real::atan2(y0, x0);
+            let t_hi = Real::atan2(y1, x1);
+            (t_lo.min(t_hi), t_lo.max(t_hi))
+        }
+        _ => {
+            // Generic fallback: project vertices onto curve via Newton.
+            let t_lo = find_param_on_curve(curve, v_low);
+            let t_hi = find_param_on_curve(curve, v_high);
+            (t_lo.min(t_hi), t_lo.max(t_hi))
+        }
+    }
+}
+
 /// STEP `LINE` entities often reference a unit `VECTOR`; the actual edge span is
 /// defined by `VERTEX_POINT` coordinates, not vector magnitude.
 pub fn normalize_edge_curve_to_vertices(
