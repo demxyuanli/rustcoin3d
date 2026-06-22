@@ -62,7 +62,6 @@ struct BrepWriter<'a> {
     store: &'a BRepStore,
     shapes: Vec<ShapeEntry>,
     total_shapes: usize,
-    needs_default_compound: bool,
     pcurve_entries: Vec<PCurveEntry>,
     pcurve_count: usize,
 }
@@ -106,13 +105,9 @@ impl<'a> BrepWriter<'a> {
         for (sk, _) in &store.solids {
             shapes.push(ShapeEntry::Solid(sk));
         }
-        let has_compounds = !store.compounds.is_empty();
         for (ck, _) in &store.compounds {
             shapes.push(ShapeEntry::Compound(ck));
         }
-        // If no compounds exist but we have solids, create a single default compound
-        // referencing all solids (matching OCC convention).
-        let needs_default_compound = !has_compounds && !store.solids.is_empty();
 
         // Pre-collect all PCurve entries from edges.
         // Stored PCurves were validated and normalized during STEP import.
@@ -137,8 +132,8 @@ impl<'a> BrepWriter<'a> {
         }
         let pcurve_count = pcurve_entries.len();
 
-        let total = shapes.len() + if needs_default_compound { 1 } else { 0 };
-        Self { store, shapes, total_shapes: total, needs_default_compound, pcurve_entries, pcurve_count }
+        let total = shapes.len();
+        Self { store, shapes, total_shapes: total, pcurve_entries, pcurve_count }
     }
 
     fn write_all(&mut self, output: &mut impl Write) -> io::Result<()> {
@@ -574,12 +569,6 @@ impl<'a> BrepWriter<'a> {
                     self.write_co(output, &solid_keys)?;
                 }
             }
-        }
-
-        // Write default compound if none existed (wraps all solids)
-        if self.needs_default_compound {
-            let solid_keys: Vec<SolidKey> = self.store.solids.keys().collect();
-            self.write_co(output, &solid_keys)?;
         }
 
         // Final references line: +1 0
