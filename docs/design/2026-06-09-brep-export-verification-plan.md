@@ -222,7 +222,7 @@ git add -A && git commit -m "feat(brep): add same_sense field to PCurve storage"
 **Files:**
 - Modify: `crates/rc3d-shape/src/geom/curve_eval.rs:327-800`
 - Modify: `crates/rc3d-shape/src/geom/curve2d.rs:268-329`
-- Modify: `crates/rc3d-io/tests/shape_topology.rs:111-143`
+- Modify: (removed — `shape_topology.rs` was a diagnostic-only test, deleted 2026-06)
 
 **背景:** 6 个穷举 match 站点会导致编译错误。其余 23 个使用 wildcard，不受影响。
 
@@ -371,13 +371,9 @@ CurveGeom::BezierCurve { .. } => {
 }
 ```
 
-- [ ] **Step 8: 在 shape_topology.rs 测试的 disc_val 加分支**
+- [ ] **Step 8: ~~在 shape_topology.rs 测试的 disc_val 加分支~~ (文件已删除, 2026-06)**
 
-`crates/rc3d-io/tests/shape_topology.rs:111`：
-
-```rust
-CurveGeom::BezierCurve { .. } => "Bézier",
-```
+已删除——`shape_topology.rs` 是纯诊断测试（无断言），已从仓库移除。BezierCurve 变体的 match 分支应在其余穷举 match 站点添加。
 
 - [ ] **Step 9: 运行测试**
 
