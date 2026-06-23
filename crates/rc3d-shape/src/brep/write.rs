@@ -620,8 +620,10 @@ impl<'a> BrepWriter<'a> {
         } else {
             "1e-07".to_string()
         };
+        let is_degen = edge.v_low == edge.v_high;
+        let same_range = if is_degen { 0 } else { 1 };
         writeln!(output, "Ed")?;
-        writeln!(output, " {} 1 1 0", tol_str)?;
+        writeln!(output, " {} 1 {} 0", tol_str, same_range)?;
         // OCC format: curve_type curve_idx 0 0 param_range
         writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
 
@@ -646,7 +648,8 @@ impl<'a> BrepWriter<'a> {
             }
         }
         writeln!(output)?;
-        writeln!(output, "0101000")?;
+        let tshape_flags = if is_degen { "0101100" } else { "0101000" };
+        writeln!(output, "{}", tshape_flags)?;
         writeln!(output, "+{} 0 -{} 0 *", rv1, rv2)?;
         Ok(())
     }
