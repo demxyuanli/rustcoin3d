@@ -20,6 +20,7 @@ fn vhash(v: &[Real; 3]) -> u64 {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, depends on non-existent test_data/faces/ STL files"]
 fn verify_face_stls() {
     let faces_dir = test_data("faces");
     let mut entries: Vec<_> = fs::read_dir(&faces_dir).unwrap()

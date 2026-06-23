@@ -126,6 +126,7 @@ fn run_file(step_file: &str) {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn shape_mesh_quality_report() {
     for f in [
         "Shape.step",

@@ -287,6 +287,10 @@ fn upgrade_line_edges_to_circles(reg: &mut BRepStore) -> usize {
                 for ek in edge_keys {
                     let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
                     if !matches!(edge.curve, CurveGeom::Line { .. }) { continue; }
+                    // Skip degenerated edges (zero-length Lines at cylinder seam poles)
+                    if let CurveGeom::Line { direction, .. } = &edge.curve {
+                        if direction.length() < 1e-12 { continue; }
+                    }
                     if let Some(pc) = edge.pcurves.get(&fk) {
                         let uv_mid = pc.d0(0.5);
                         let v = uv_mid.1;
@@ -311,6 +315,10 @@ fn upgrade_line_edges_to_circles(reg: &mut BRepStore) -> usize {
                 for ek in edge_keys {
                     let edge = match reg.edges.get(ek) { Some(e) => e, None => continue };
                     if !matches!(edge.curve, CurveGeom::Line { .. }) { continue; }
+                    // Skip degenerated edges (zero-length Lines at sphere poles)
+                    if let CurveGeom::Line { direction, .. } = &edge.curve {
+                        if direction.length() < 1e-12 { continue; }
+                    }
                     if let Some(pc) = edge.pcurves.get(&fk) {
                         let uv = pc.d0(0.5);
                         let v_norm = uv.1 / std::f64::consts::PI;

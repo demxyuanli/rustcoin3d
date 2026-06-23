@@ -5,6 +5,7 @@
 use rc3d_io::step::bool::{BoolOp, BRepBoolOptions, boolean_brep};
 
 #[test]
+#[ignore = "stub test for unimplemented feature; real tests in rc3d-shape/tests/boolean_regression.rs"]
 fn test_bool_op_enum() {
     let op = BoolOp::Union;
     assert_eq!(op, BoolOp::Union);
@@ -13,6 +14,7 @@ fn test_bool_op_enum() {
 }
 
 #[test]
+#[ignore = "stub test for unimplemented feature; real tests in rc3d-shape/tests/boolean_regression.rs"]
 fn test_boolean_brep_stub() {
     // boolean_brep is a stub that returns empty result
     // Full implementation comes in Phase 3

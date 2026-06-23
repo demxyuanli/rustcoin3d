@@ -26,6 +26,7 @@ fn curve_name(c: &CurveGeom) -> &'static str {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn inspect_shape_topology() {
     let path = test_data("Shape.step");
     let text = std::fs::read_to_string(&path).expect("read step");

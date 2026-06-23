@@ -233,6 +233,7 @@ fn print_diag(d: &BrepDiag) {
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn diag_cube() {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output/brep/Cube.brep");
     if !p.exists() { eprintln!("SKIP"); return; }
@@ -241,6 +242,7 @@ fn diag_cube() {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn diag_cs() {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output/brep/cs.brep");
     if !p.exists() { eprintln!("SKIP"); return; }
@@ -249,6 +251,7 @@ fn diag_cs() {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn diag_all() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test_output/brep");
     let Ok(entries) = fs::read_dir(&dir) else { return; };
@@ -262,6 +265,7 @@ fn diag_all() {
 }
 
 #[test]
+#[ignore = "diagnostic tool: no assertions, manual inspection only"]
 fn diag_occ() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../steps/comp");
     let Ok(entries) = fs::read_dir(&dir) else { return; };
