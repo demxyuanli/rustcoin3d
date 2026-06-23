@@ -152,13 +152,12 @@ pub(crate) fn build_shell_from_step(shell: &topology::StepShell, ctx: &mut Shell
 
 /// Build a complete single-face sphere topology from a VERTEX_LOOP at one pole.
 ///
-/// A sphere parameterized as U=[0,2π] (longitude), V=[0,π] (latitude) needs:
-/// - A seam edge at U=0 connecting the two poles (half-circle meridian)
-/// - Degenerated edges at both poles
-/// - A wire: [seam_forward, degenerated_north, seam_reversed, degenerated_south]
-///
-/// The VERTEX_LOOP gives us one pole (typically south, V=π).
-/// We create the opposite pole and build the full cyclic boundary.
+/// OCC reference format for a sphere of radius 5 with axis Z:
+/// - 2 vertices: south pole (0,0,-5), north pole (0,0,5)
+/// - 1 curve: great circle in XZ plane, center=(0,0,0), axis=(0,1,0), radius=5
+/// - Seam edge at U=0: uses great circle trimmed t=[-π/2, π/2]
+/// - 2 degenerated edges (flags 0101100): zero-length 3D curves at poles
+/// - Wire: [seam_forward, degen_south, seam_reversed, degen_north]
 pub(crate) fn build_sphere_pole_wire(
     pole_anchor: PVec3,
     surface: &SurfaceGeom,
@@ -166,106 +165,81 @@ pub(crate) fn build_sphere_pole_wire(
     ctx: &mut ShellBuildCtx<'_>,
 ) -> WireKey {
     let tol = ctx.tol;
-    let (pole_given, pole_opposite) = match surface {
-        SurfaceGeom::Sphere { center, radius } => {
-            // The pole_anchor is one pole. The opposite pole is center + (center - anchor).
-            let pole_dir = (pole_anchor - center).normalize();
-            let given = center + pole_dir * *radius;
-            let opposite = center - pole_dir * *radius;
-            (given, opposite)
-        }
-        _ => {
-            return build_vertex_loop_wire(pole_anchor, surface, face_key, ctx);
-        }
+    let (center, radius) = match surface {
+        SurfaceGeom::Sphere { center, radius } => (*center, *radius),
+        _ => return build_vertex_loop_wire(pole_anchor, surface, face_key, ctx),
     };
 
-    // Create vertices at both poles
-    let v_pole_given = ctx.reg.find_or_add_vertex(pole_given, tol);
-    let v_pole_opposite = ctx.reg.find_or_add_vertex(pole_opposite, tol);
+    // The pole axis direction (from center toward the given pole).
+    let pole_dir = (pole_anchor - center).normalize();
+    let south = center - pole_dir * radius;
+    let north = center + pole_dir * radius;
 
-    // Create the seam edge: a half-circle from given pole to opposite pole.
-    // This is the meridian at U=0 (or U=2π).
-    let (x_dir, y_dir) = rc3d_shape::geom::curve_eval::build_ortho_axes(
-        (pole_opposite - pole_given).normalize()
-    );
-    let seam_center = (pole_given + pole_opposite) * 0.5;
-    let seam_curve = CurveGeom::Circle {
-        center: seam_center,
-        axis: y_dir,
-        radius: (pole_opposite - pole_given).length() * 0.5,
-        x_dir,
-        y_dir: y_dir.cross(x_dir).normalize(),
+    // Create both pole vertices.
+    let v_south = ctx.reg.find_or_add_vertex(south, tol);
+    let v_north = ctx.reg.find_or_add_vertex(north, tol);
+
+    // Great circle passing through both poles — centered at sphere center,
+    // axis perpendicular to the pole axis (so the circle lies in a plane
+    // containing the poles).
+    let (gc_x, gc_y) = rc3d_shape::geom::curve_eval::build_ortho_axes(pole_dir);
+    let great_circle = CurveGeom::Circle {
+        center,
+        axis: gc_x.cross(gc_y).normalize(),  // = pole_dir
+        radius,
+        x_dir: gc_x,
+        y_dir: gc_y,
     };
-    // The seam is a trimmed half-circle arc from pole_given to pole_opposite
-    let seam_trim = CurveGeom::Trimmed {
-        basis: Box::new(seam_curve),
-        t_min: 0.0,
-        t_max: std::f64::consts::PI,
+    // Seam: half-circle arc from south pole to north pole.
+    // On the great circle: south pole at t = -π/2, north pole at t = +π/2.
+    let seam_curve = CurveGeom::Trimmed {
+        basis: Box::new(great_circle),
+        t_min: -std::f64::consts::FRAC_PI_2,
+        t_max: std::f64::consts::FRAC_PI_2,
     };
 
-    // Build a synthetic 2D pcurve for the seam edge on the sphere face
-    let pcurve_2d = build_sphere_seam_pcurve(surface, pole_given, pole_opposite, tol);
+    // Seam pcurve: at U=0, V runs from V_south to V_north.
+    let seam_pc = Curve2d::Line {
+        origin: (0.0, -std::f64::consts::FRAC_PI_2),
+        direction: (0.0, std::f64::consts::PI),
+    };
 
     let ek_seam = ctx.reg.add_seam_edge(
-        v_pole_given, v_pole_opposite, seam_trim, tol, face_key,
-        pcurve_2d, true,
+        v_south, v_north, seam_curve, tol, face_key, seam_pc, true,
     );
 
-    // Create degenerated edges at each pole
-    let uv_given = surface.project(pole_given)
-        .or_else(|| surface.inverse_native_uv(pole_given, tol.max(1e-3)))
-        .unwrap_or((0.0, std::f64::consts::PI)); // south pole V=π
-    let uv_opposite = surface.project(pole_opposite)
-        .or_else(|| surface.inverse_native_uv(pole_opposite, tol.max(1e-3)))
-        .unwrap_or((0.0, 0.0)); // north pole V=0
-
-    let ek_degen_given = add_degenerated_edge_at_pole(
-        v_pole_given, uv_given, uv_given, pole_given, tol, face_key, ctx.reg,
+    // Degenerated edges at each pole: 3D curve is a zero-length line
+    // (the CAD kernel ignores it due to the degeneracy flag).
+    // 2D pcurve must span the U range [0, 2π] at the pole's V.
+    let degen_south = add_degenerated_edge_at_pole(
+        v_south,
+        (0.0, -std::f64::consts::FRAC_PI_2),
+        (std::f64::consts::TAU, -std::f64::consts::FRAC_PI_2),
+        south, tol, face_key, ctx.reg,
     );
-    let ek_degen_opposite = add_degenerated_edge_at_pole(
-        v_pole_opposite, uv_opposite, uv_opposite, pole_opposite, tol, face_key, ctx.reg,
+    let degen_north = add_degenerated_edge_at_pole(
+        v_north,
+        (std::f64::consts::TAU, std::f64::consts::FRAC_PI_2),
+        (0.0, std::f64::consts::FRAC_PI_2),
+        north, tol, face_key, ctx.reg,
     );
 
-    // Register degenerated edges on the face
+    // Register on face
     if let Some(face) = ctx.reg.faces.get_mut(face_key) {
-        if !face.degenerated_edges.contains(&ek_degen_given) {
-            face.degenerated_edges.push(ek_degen_given);
-        }
-        if !face.degenerated_edges.contains(&ek_degen_opposite) {
-            face.degenerated_edges.push(ek_degen_opposite);
-        }
-        if !face.seam_edges.contains(&ek_seam) {
-            face.seam_edges.push(ek_seam);
-        }
+        if !face.seam_edges.contains(&ek_seam) { face.seam_edges.push(ek_seam); }
+        if !face.degenerated_edges.contains(&degen_south) { face.degenerated_edges.push(degen_south); }
+        if !face.degenerated_edges.contains(&degen_north) { face.degenerated_edges.push(degen_north); }
     }
 
-    // Wire: [seam_forward, degen_opposite, seam_reversed, degen_given]
+    // Wire: [seam_forward, degen_south, seam_reversed, degen_north]
     ctx.reg.wires.insert(BRepWire {
         edges: vec![
             (ek_seam, Orientation::Forward),
-            (ek_degen_opposite, Orientation::Forward),
+            (degen_south, Orientation::Forward),
             (ek_seam, Orientation::Reversed),
-            (ek_degen_given, Orientation::Forward),
+            (degen_north, Orientation::Forward),
         ],
     })
-}
-
-/// Build a synthetic 2D Line pcurve for the sphere seam edge.
-/// The seam follows the U=0 isoparametric line from V=π (south) to V=0 (north).
-fn build_sphere_seam_pcurve(
-    _surface: &SurfaceGeom,
-    pole_given: PVec3,
-    pole_opposite: PVec3,
-    _tol: Real,
-) -> Curve2d {
-    // The seam at U=0: V goes from π (south) to 0 (north)
-    // Determine which pole is which by looking at the axis
-    let _chord = pole_opposite - pole_given;
-    // Use a 2D Line pcurve: (U=0, V) from V=max to V=min
-    Curve2d::Line {
-        origin: (0.0, std::f64::consts::PI),  // start at south pole V=π
-        direction: (0.0, -std::f64::consts::PI), // go to north pole V=0
-    }
 }
 
 /// OCC StepToTopoDS_TranslateVertexLoop: wire with one degenerated edge at the loop vertex.
