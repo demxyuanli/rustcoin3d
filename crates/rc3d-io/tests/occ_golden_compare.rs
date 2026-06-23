@@ -72,13 +72,13 @@ fn import_and_check(path: &PathBuf, mode: StepImportMode, min_tris: usize) {
 // ── Cube (simplest geometry) ────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "no OCC golden reference to compare against; import_and_check only validates self-consistency"]
 fn occ_cube_preview() {
     import_and_check(&step_path("Cube.step"), StepImportMode::Preview, 12);
 }
 
 #[test]
-#[ignore]
+#[ignore = "no OCC golden reference to compare against; import_and_check only validates self-consistency"]
 fn occ_cube_strict() {
     import_and_check(&step_path("Cube.step"), StepImportMode::Strict, 12);
 }
@@ -93,7 +93,7 @@ fn occ_offset_plane_hole_strict() {
 // ── Cross-section curve (cs) ────────────────────────────────────────────
 
 #[test]
-#[ignore]
+#[ignore = "no OCC golden reference for cs.step; cross-section curve mesh validation not a release gate"]
 fn occ_cs_strict() {
     import_and_check(&step_path("cs.step"), StepImportMode::Strict, 2);
 }

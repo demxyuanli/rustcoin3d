@@ -414,10 +414,13 @@ mod tests {
 
     #[test]
     fn validate_cube_brep() {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../test_output/brep/Cube.brep")
-        ).expect("read cube.brep");
+        let brep_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test_output/brep/Cube.brep");
+        if !brep_path.exists() {
+            eprintln!("SKIP: Cube.brep not found (run brep_export tests first)");
+            return;
+        }
+        let text = std::fs::read_to_string(&brep_path).expect("read cube.brep");
 
         let v = validate_brep(&text);
         println!("Cube: {} shapes, {} errors, {} warnings",
@@ -431,10 +434,16 @@ mod tests {
     fn validate_all_brep_files() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../test_output/brep");
+        if !dir.exists() {
+            eprintln!("SKIP: test_output/brep/ not found (run brep_export tests first)");
+            return;
+        }
         let mut all_ok = true;
+        let mut any = false;
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().and_then(|e| e.to_str()) != Some("brep") { continue; }
+            any = true;
             let text = std::fs::read_to_string(&path).unwrap();
             let v = validate_brep(&text);
             let status = if v.is_valid() { "✓" } else { "✗" };
@@ -446,6 +455,8 @@ mod tests {
             for w in &v.warnings { println!("    WARN: {}", w); }
             if !v.is_valid() { all_ok = false; }
         }
-        assert!(all_ok, "some BREP files have validation errors");
+        if any {
+            assert!(all_ok, "some BREP files have validation errors");
+        }
     }
 }

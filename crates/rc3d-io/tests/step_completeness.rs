@@ -29,9 +29,13 @@ fn b1_assembly_instance_count_nonzero() {
             assert!(count > 0, "assembly should have at least 1 shell instance");
         }
         Err(e) => {
-            eprintln!("  import failed (known limitation): {e}");
-            // Assembly import may fail on large files with tessellation issues
-            // The iterative DFS conversion still succeeds — this is a tessellation issue
+            // Accept only known tessellation-only geometry failures.
+            // Any other import error is a regression.
+            if e.to_string().contains("tessellated") {
+                eprintln!("  SKIP (known tessellation limitation): {e}");
+            } else {
+                panic!("unexpected import failure for asse.step: {e}");
+            }
         }
     }
 }

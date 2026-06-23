@@ -349,7 +349,7 @@ fn strict_fidelity_mesh_optional() {
 }
 
 #[test]
-#[ignore] // Shape.step meshes 0 tris with default config — pre-existing mesh pipeline issue
+#[ignore = "Shape.step produces 0 tris with default mesh config — known pipeline defect, not a test issue"]
 fn t2_shape_bottle() {
     println!("\n=== T2 Shape.step ===");
     let run = run_corpus_brep("Shape.step");

@@ -1,7 +1,8 @@
 //! Multi-hole plate STEP solid test: square hole + circular hole + hexagonal hole.
 //!
-//! Reads `steps/HoledPlate.step` (hand-written closed-shell BRep) and verifies
-//! top/bottom face triangles do not fall inside the holes after meshing.
+//! Reads `compare/step/step-holedPlate.step` (hand-written closed-shell BRep)
+//! and verifies top/bottom face triangles do not fall inside the holes after
+//! meshing.
 
 use rc3d_core::math::PVec3;
 use rc3d_io::step::brep::heal::HealLevel;
@@ -12,16 +13,21 @@ use rc3d_io::step::{
 use rc3d_shape::ToleranceContext;
 use std::path::PathBuf;
 
-fn steps_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("steps")
+fn resolve_holed_plate() -> PathBuf {
+    // Prefer compare/step/ (new location), fall back to steps/ (legacy).
+    let compare_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../compare/step/step-holedPlate.step");
+    if compare_path.exists() {
+        return compare_path;
+    }
+    let legacy = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../steps/HoledPlate.step");
+    legacy
 }
 
 #[test]
 fn test_multi_hole_step_import_and_mesh() {
-    let step_path = steps_dir().join("HoledPlate.step");
+    let step_path = resolve_holed_plate();
     assert!(step_path.exists(), "HoledPlate.step not found at {:?}", step_path);
 
     let mut import_options = StepImportOptions::default();
