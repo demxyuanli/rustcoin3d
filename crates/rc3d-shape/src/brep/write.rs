@@ -620,7 +620,13 @@ impl<'a> BrepWriter<'a> {
         } else {
             "1e-07".to_string()
         };
-        let is_degen = edge.v_low == edge.v_high;
+        // A degenerated edge is a self-loop whose 3D curve is a zero-length
+        // entity (point). Self-loop circles/ellipses (e.g. cone base) are NOT
+        // degenerated — they represent proper closed curves.
+        let is_degen = edge.v_low == edge.v_high && match &edge.curve {
+            CurveGeom::Line { direction, .. } => direction.length() < 1e-12,
+            _ => false,
+        };
         let same_range = if is_degen { 0 } else { 1 };
         writeln!(output, "Ed")?;
         writeln!(output, " {} 1 {} 0", tol_str, same_range)?;
