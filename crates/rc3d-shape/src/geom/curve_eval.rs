@@ -1048,16 +1048,16 @@ pub fn curve_param_range_from_vertices(
     }
 
     // Closed (seam) edge: both vertices at same 3D point on a periodic curve.
-    // Return one full period. For non-periodic curves, fall through.
+    // Return one full period. Use a generous tolerance — vertex positions may
+    // differ by FP noise when vertices are split across faces.
     let chord = (v_high - v_low).length();
-    let is_closed = chord < 1e-6;
+    let is_closed = chord < 1e-4;
     if is_closed {
         match curve {
             CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => {
                 return (0.0, std::f64::consts::TAU);
             }
             CurveGeom::BSpline { .. } => {
-                // A closed BSpline curve — use the full knot domain.
                 return curve.native_param_range();
             }
             _ => {}
@@ -1085,6 +1085,10 @@ pub fn curve_param_range_from_vertices(
             let (x1, y1) = to_local(v_high);
             let t_lo = Real::atan2(y0, x0);
             let t_hi = Real::atan2(y1, x1);
+            // If angles are within ~1° of each other, treat as full circle
+            if (t_lo - t_hi).abs() < 1e-2 {
+                return (0.0, std::f64::consts::TAU);
+            }
             (t_lo.min(t_hi), t_lo.max(t_hi))
         }
         CurveGeom::Ellipse { center, x_dir, y_dir, .. } => {
@@ -1096,6 +1100,9 @@ pub fn curve_param_range_from_vertices(
             let (x1, y1) = to_local(v_high);
             let t_lo = Real::atan2(y0, x0);
             let t_hi = Real::atan2(y1, x1);
+            if (t_lo - t_hi).abs() < 1e-2 {
+                return (0.0, std::f64::consts::TAU);
+            }
             (t_lo.min(t_hi), t_lo.max(t_hi))
         }
         _ => {
