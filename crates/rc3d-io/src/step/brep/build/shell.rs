@@ -179,49 +179,51 @@ pub(crate) fn build_sphere_pole_wire(
     let v_south = ctx.reg.find_or_add_vertex(south, tol);
     let v_north = ctx.reg.find_or_add_vertex(north, tol);
 
-    // Great circle passing through both poles — centered at sphere center,
-    // axis perpendicular to the pole axis (so the circle lies in a plane
-    // containing the poles).
-    let (gc_x, gc_y) = rc3d_shape::geom::curve_eval::build_ortho_axes(pole_dir);
+    // Great circle passing through both poles:
+    // axis is one ortho axis (perpendicular to pole_dir),
+    // x_dir = pole_dir (so at t=0 the circle hits the north pole),
+    // y_dir completes the right-handed frame.
+    let (ortho_x, ortho_y) = rc3d_shape::geom::curve_eval::build_ortho_axes(pole_dir);
+    // ortho_x is perpendicular to pole_dir. The circle axis is ortho_y,
+    // so the circle lies in the plane spanned by (pole_dir, ortho_x).
     let great_circle = CurveGeom::Circle {
         center,
-        axis: gc_x.cross(gc_y).normalize(),  // = pole_dir
+        axis: ortho_y,
         radius,
-        x_dir: gc_x,
-        y_dir: gc_y,
+        x_dir: pole_dir,   // at t=0: north pole
+        y_dir: ortho_x,    // at t=π/2: rotates into ortho_x
     };
-    // Seam: half-circle arc from south pole to north pole.
-    // On the great circle: south pole at t = -π/2, north pole at t = +π/2.
+    // At t = 0:  center + r*(pole_dir*cos(0) + ortho_x*sin(0)) = center + r*pole_dir = north ✓
+    // At t = π:  center + r*(pole_dir*cos(π) + ortho_x*sin(π)) = center - r*pole_dir = south ✓
     let seam_curve = CurveGeom::Trimmed {
         basis: Box::new(great_circle),
-        t_min: -std::f64::consts::FRAC_PI_2,
-        t_max: std::f64::consts::FRAC_PI_2,
+        t_min: 0.0,
+        t_max: std::f64::consts::PI,
     };
 
-    // Seam pcurve: at U=0, V runs from V_south to V_north.
+    // Seam pcurve: at U=0, V runs from V_north=0 to V_south=π (native sphere coords).
     let seam_pc = Curve2d::Line {
-        origin: (0.0, -std::f64::consts::FRAC_PI_2),
+        origin: (0.0, 0.0),
         direction: (0.0, std::f64::consts::PI),
     };
 
     let ek_seam = ctx.reg.add_seam_edge(
-        v_south, v_north, seam_curve, tol, face_key, seam_pc, true,
+        v_north, v_south, seam_curve, tol, face_key, seam_pc, true,
     );
 
-    // Degenerated edges at each pole: 3D curve is a zero-length line
-    // (the CAD kernel ignores it due to the degeneracy flag).
-    // 2D pcurve must span the U range [0, 2π] at the pole's V.
-    let degen_south = add_degenerated_edge_at_pole(
-        v_south,
-        (0.0, -std::f64::consts::FRAC_PI_2),
-        (std::f64::consts::TAU, -std::f64::consts::FRAC_PI_2),
-        south, tol, face_key, ctx.reg,
-    );
+    // Degenerated edges: 2D pcurve spans the U range at the pole's V.
+    // Sphere native V ∈ [0, π]: north pole V=0, south pole V=π.
     let degen_north = add_degenerated_edge_at_pole(
         v_north,
-        (std::f64::consts::TAU, std::f64::consts::FRAC_PI_2),
-        (0.0, std::f64::consts::FRAC_PI_2),
+        (0.0, 0.0),
+        (std::f64::consts::TAU, 0.0),
         north, tol, face_key, ctx.reg,
+    );
+    let degen_south = add_degenerated_edge_at_pole(
+        v_south,
+        (std::f64::consts::TAU, std::f64::consts::PI),
+        (0.0, std::f64::consts::PI),
+        south, tol, face_key, ctx.reg,
     );
 
     // Register on face
@@ -231,7 +233,7 @@ pub(crate) fn build_sphere_pole_wire(
         if !face.degenerated_edges.contains(&degen_north) { face.degenerated_edges.push(degen_north); }
     }
 
-    // Wire: [seam_forward, degen_south, seam_reversed, degen_north]
+    // Wire: [seam_forward(north→south), degen_south(V=π), seam_reversed(south→north), degen_north(V=0)]
     ctx.reg.wires.insert(BRepWire {
         edges: vec![
             (ek_seam, Orientation::Forward),

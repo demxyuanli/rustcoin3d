@@ -1031,6 +1031,45 @@ pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3) -> Real {
     results.first().map(|(t, _)| *t).unwrap_or(0.5)
 }
 
+/// Compute angular parameter range for a circle or ellipse edge.
+/// Uses eccentric anomaly for ellipses (divides by semi-axes).
+/// Correctly handles the atan2 branch cut at ±π via `min(|d|, 2π-|d|)`.
+fn angular_param_range(
+    center: &PVec3,
+    x_dir: &PVec3,
+    y_dir: &PVec3,
+    scale_x: Real,
+    scale_y: Real,
+    v_low: PVec3,
+    v_high: PVec3,
+) -> (Real, Real) {
+    let to_angle = |p: PVec3| -> Real {
+        let d = p - *center;
+        let sx = scale_x.max(1e-12);
+        let sy = scale_y.max(1e-12);
+        Real::atan2(d.dot(*y_dir) / sy, d.dot(*x_dir) / sx)
+    };
+    let t0 = to_angle(v_low);
+    let t1 = to_angle(v_high);
+    let diff = (t0 - t1).abs();
+    // Handle atan2 branch cut at ±π: use angular distance on the circle
+    let angular_dist = if diff > std::f64::consts::PI {
+        std::f64::consts::TAU - diff
+    } else {
+        diff
+    };
+    if angular_dist < 1e-2 {
+        return (0.0, std::f64::consts::TAU);
+    }
+    // Return the shorter arc that contains both vertices
+    if diff > std::f64::consts::PI {
+        // Vertices straddle the branch cut; the range wraps through ±π
+        (t0.max(t1), t0.min(t1) + std::f64::consts::TAU)
+    } else {
+        (t0.min(t1), t0.max(t1))
+    }
+}
+
 /// Compute the curve parameter range that corresponds to the edge
 /// bounded by `v_low` and `v_high`. For a `Trimmed` curve this is the
 /// trim bounds; for other curves we project the vertices onto the curve.
@@ -1076,34 +1115,12 @@ pub fn curve_param_range_from_vertices(
             let t_hi = (v_high - origin).dot(*direction) * inv_len2;
             (t_lo.min(t_hi), t_lo.max(t_hi))
         }
-        CurveGeom::Circle { center, x_dir, y_dir, .. } => {
-            let to_local = |p: PVec3| -> (Real, Real) {
-                let d = p - center;
-                (d.dot(*x_dir), d.dot(*y_dir))
-            };
-            let (x0, y0) = to_local(v_low);
-            let (x1, y1) = to_local(v_high);
-            let t_lo = Real::atan2(y0, x0);
-            let t_hi = Real::atan2(y1, x1);
-            // If angles are within ~1° of each other, treat as full circle
-            if (t_lo - t_hi).abs() < 1e-2 {
-                return (0.0, std::f64::consts::TAU);
-            }
-            (t_lo.min(t_hi), t_lo.max(t_hi))
+        CurveGeom::Circle { center, radius, x_dir, y_dir, .. } => {
+            let r = *radius;
+            angular_param_range(center, x_dir, y_dir, r, r, v_low, v_high)
         }
-        CurveGeom::Ellipse { center, x_dir, y_dir, .. } => {
-            let to_local = |p: PVec3| -> (Real, Real) {
-                let d = p - center;
-                (d.dot(*x_dir), d.dot(*y_dir))
-            };
-            let (x0, y0) = to_local(v_low);
-            let (x1, y1) = to_local(v_high);
-            let t_lo = Real::atan2(y0, x0);
-            let t_hi = Real::atan2(y1, x1);
-            if (t_lo - t_hi).abs() < 1e-2 {
-                return (0.0, std::f64::consts::TAU);
-            }
-            (t_lo.min(t_hi), t_lo.max(t_hi))
+        CurveGeom::Ellipse { center, semi_major, semi_minor, x_dir, y_dir, .. } => {
+            angular_param_range(center, x_dir, y_dir, *semi_major, *semi_minor, v_low, v_high)
         }
         _ => {
             // Generic fallback: project vertices onto curve via Newton.
