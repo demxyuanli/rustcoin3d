@@ -1035,30 +1035,24 @@ pub fn find_param_on_curve(curve: &CurveGeom, target: PVec3) -> Real {
 /// Uses eccentric anomaly for ellipses (divides by semi-axes).
 /// Correctly handles the atan2 branch cut at ±π via `min(|d|, 2π-|d|)`.
 fn angular_param_range(
-    center: &PVec3,
-    x_dir: &PVec3,
-    y_dir: &PVec3,
+    center: PVec3,
+    x_dir: PVec3,
+    y_dir: PVec3,
     scale_x: Real,
     scale_y: Real,
     v_low: PVec3,
     v_high: PVec3,
 ) -> (Real, Real) {
     let to_angle = |p: PVec3| -> Real {
-        let d = p - *center;
+        let d = p - center;
         let sx = scale_x.max(1e-12);
         let sy = scale_y.max(1e-12);
-        Real::atan2(d.dot(*y_dir) / sy, d.dot(*x_dir) / sx)
+        Real::atan2(d.dot(y_dir) / sy, d.dot(x_dir) / sx)
     };
     let t0 = to_angle(v_low);
     let t1 = to_angle(v_high);
     let diff = (t0 - t1).abs();
-    // Handle atan2 branch cut at ±π: use angular distance on the circle
-    let angular_dist = if diff > std::f64::consts::PI {
-        std::f64::consts::TAU - diff
-    } else {
-        diff
-    };
-    if angular_dist < 1e-2 {
+    if diff.min(std::f64::consts::TAU - diff) < 1e-2 {
         return (0.0, std::f64::consts::TAU);
     }
     // Return the shorter arc that contains both vertices
@@ -1116,11 +1110,10 @@ pub fn curve_param_range_from_vertices(
             (t_lo.min(t_hi), t_lo.max(t_hi))
         }
         CurveGeom::Circle { center, radius, x_dir, y_dir, .. } => {
-            let r = *radius;
-            angular_param_range(center, x_dir, y_dir, r, r, v_low, v_high)
+            angular_param_range(*center, *x_dir, *y_dir, *radius, *radius, v_low, v_high)
         }
         CurveGeom::Ellipse { center, semi_major, semi_minor, x_dir, y_dir, .. } => {
-            angular_param_range(center, x_dir, y_dir, *semi_major, *semi_minor, v_low, v_high)
+            angular_param_range(*center, *x_dir, *y_dir, *semi_major, *semi_minor, v_low, v_high)
         }
         _ => {
             // Generic fallback: project vertices onto curve via Newton.

@@ -51,7 +51,6 @@ pub fn write_brep(store: &BRepStore, output: &mut impl Write) -> io::Result<()> 
     w.write_all(output)
 }
 
-#[allow(dead_code)]
 struct PCurveEntry {
     edge_abs_pos: usize,  // 1-based edge position in TShapes
     face_abs_pos: usize,  // 1-based face position in TShapes
@@ -822,20 +821,6 @@ fn occ_curve_type(curve: &CurveGeom) -> usize {
     }
 }
 
-/// Compute the natural parameter range for a 2D curve.
-/// Returns (umin, umax) — the curve's natural parameterization bounds.
-#[allow(dead_code)]
-fn curve2d_param_range(curve: &Curve2d) -> (Real, Real) {
-    match curve {
-        Curve2d::Line { direction, .. } => {
-            let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
-            (0.0, len.max(1e-12))
-        }
-        Curve2d::Circle { .. } => (0.0, std::f64::consts::TAU),
-        Curve2d::Ellipse { .. } => (0.0, std::f64::consts::TAU),
-        _ => (0.0, 1.0),
-    }
-}
 
 fn nurbs_is_rational(weights: &[Vec<Real>]) -> bool {
     weights.iter().any(|row| row.iter().any(|&w| (w - 1.0).abs() > 1e-6))
@@ -893,167 +878,6 @@ fn write_expanded_offset_surface(
         }
     }
     Ok(())
-}
-
-/// Sample generatrix curve and write extrusion as BSpline surface.
-#[allow(dead_code)]
-fn write_extrusion_as_bspline(
-    output: &mut impl Write,
-    generatrix: &CurveGeom,
-    direction: PVec3,
-) -> io::Result<()> {
-    // Sample the generatrix at N points
-    let n = 8usize;
-    let mut pts: Vec<PVec3> = (0..=n).map(|i| {
-        generatrix.d0(i as Real / n as Real)
-    }).collect();
-    // Top row = generatrix + direction
-    let top: Vec<PVec3> = pts.iter().map(|p| *p + direction).collect();
-    pts.extend(top);
-
-    let u_count = 2usize; // 2 rows (bottom, top)
-    let v_count = n + 1;  // control points per row
-    let degree_u = 1usize;
-    let degree_v = 1usize;
-    let knots_u = vec![0.0, 0.0, 1.0, 1.0];
-    let knots_v: Vec<Real> = {
-        let mut k = vec![0.0, 0.0];
-        for i in 1..v_count-1 { k.push(i as Real); }
-        k.push((v_count - 1) as Real);
-        k.push((v_count - 1) as Real);
-        k
-    };
-
-    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
-        degree_u, degree_v, u_count, v_count,
-        knots_u.len(), knots_v.len())?;
-    for p in &pts {
-        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
-    }
-    for k in &knots_u { write!(output, " {}", k)?; }
-    writeln!(output)?;
-    for k in &knots_v { write!(output, " {}", k)?; }
-    writeln!(output)?;
-    Ok(())
-}
-
-/// Sample generatrix and revolve around axis to write as BSpline surface.
-#[allow(dead_code)]
-fn write_revolution_as_bspline(
-    output: &mut impl Write,
-    generatrix: &CurveGeom,
-    axis_origin: PVec3,
-    axis_dir: PVec3,
-) -> io::Result<()> {
-    let n_u = 16usize;
-    let n_v = 8usize;
-
-    let gen_pts: Vec<PVec3> = (0..=n_v).map(|i| {
-        generatrix.d0(i as Real / n_v as Real)
-    }).collect();
-
-    let axis = axis_dir.normalize();
-    let mut all_pts = Vec::new();
-    for i in 0..=n_u {
-        let angle = (i as Real / n_u as Real) * std::f64::consts::TAU;
-        for p in &gen_pts {
-            // Rodrigues rotation: p' = origin + R * (p - origin)
-            let rel = *p - axis_origin;
-            let cos_a = angle.cos();
-            let sin_a = angle.sin();
-            let rotated = rel * cos_a + axis.cross(rel) * sin_a + axis * axis.dot(rel) * (1.0 - cos_a);
-            all_pts.push(axis_origin + rotated);
-        }
-    }
-
-    let u_count = n_u + 1;
-    let v_count = n_v + 1;
-    let degree_u = 2usize;
-    let degree_v = 1usize;
-    let ku_count = u_count + degree_u + 1;
-    let kv_count = v_count + degree_v + 1;
-
-    writeln!(output, "8 {} {} {} {} {} {} 0 0 0",
-        degree_u, degree_v, u_count, v_count, ku_count, kv_count)?;
-    for p in &all_pts {
-        writeln!(output, "{} {} {}", p.x, p.y, p.z)?;
-    }
-    // u-knots (periodic-like for full revolution)
-    for i in 0..ku_count {
-        write!(output, " {}", i as Real)?;
-    }
-    writeln!(output)?;
-    // v-knots (clamped)
-    for i in 0..kv_count {
-        if i <= degree_v { write!(output, " 0")?; }
-        else if i >= kv_count - degree_v - 1 { write!(output, " {}", (v_count - degree_v) as Real)?; }
-        else { write!(output, " {}", (i - degree_v) as Real)?; }
-    }
-    writeln!(output)?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn is_planar_surface(surface: &SurfaceGeom) -> bool {
-    match surface {
-        SurfaceGeom::Plane { .. } => true,
-        SurfaceGeom::Offset { basis, .. } => is_planar_surface(basis),
-        _ => false,
-    }
-}
-
-/// Project 3D point to UV coordinates on a surface. Returns None if projection fails.
-#[allow(dead_code)]
-fn project_point_to_uv(point: PVec3, surface: &SurfaceGeom) -> Option<(Real, Real)> {
-    match surface {
-        SurfaceGeom::Plane { origin, normal, u_dir } => {
-            let rel = point - *origin;
-            let n = normal.normalize();
-            let u = u_dir.normalize();
-            let v = n.cross(u);
-            Some((rel.dot(u), rel.dot(v)))
-        }
-        SurfaceGeom::Cylinder { origin, axis, radius: _, x_dir: _, y_dir: _ } => {
-            let rel = point - *origin;
-            let ax = axis.normalize();
-            let v = rel.dot(ax); // height along axis
-            let radial = rel - ax * v;
-            let u = radial.y.atan2(radial.x); // angle
-            Some((u, v))
-        }
-        SurfaceGeom::Revolution { axis_origin, axis_dir, .. } => {
-            let rel = point - *axis_origin;
-            let ax = axis_dir.normalize();
-            let v = rel.dot(ax);
-            let radial = rel - ax * v;
-            let u = radial.y.atan2(radial.x);
-            Some((u, v))
-        }
-        SurfaceGeom::Sphere { center, radius: _ } => {
-            let rel = point - *center;
-            let r = rel.length();
-            let u = rel.y.atan2(rel.x); // azimuth
-            let v = (rel.z / r).acos(); // polar angle
-            Some((u, v))
-        }
-        SurfaceGeom::Cone { apex, axis, semi_angle: _, .. } => {
-            let rel = point - *apex;
-            let ax = axis.normalize();
-            let v = rel.dot(ax);
-            let radial = rel - ax * v;
-            let u = radial.y.atan2(radial.x);
-            Some((u, v))
-        }
-        SurfaceGeom::Torus { center, axis, major_r: _, minor_r: _, .. } => {
-            let rel = point - *center;
-            let ax = axis.normalize();
-            let v = rel.dot(ax);
-            let radial = rel - ax * v;
-            let u = radial.y.atan2(radial.x);
-            Some((u, v))
-        }
-        _ => None,
-    }
 }
 /// Estimate the center of a shell by averaging all vertex positions of its faces.
 fn shell_center(faces: &[(FaceKey, Orientation)], store: &BRepStore) -> PVec3 {
