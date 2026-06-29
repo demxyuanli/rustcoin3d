@@ -7,7 +7,7 @@
 
 use rc3d_core::math::{Real, PVec3};
 use crate::store::BRepStore;
-use crate::topo::{EdgeKey, VertexKey};
+use crate::topo::{EdgeKey, FaceKey, VertexKey, WireKey};
 use crate::geom::CurveGeom;
 use std::collections::HashMap;
 
@@ -43,6 +43,16 @@ pub fn assign_locations(reg: &mut BRepStore) -> usize {
             continue;
         }
         added += process_edge_group(reg, &edge_data, indices);
+    }
+
+    // Merge vertices that were canonicalized to the same position via location
+    // transforms.  Only weld vertices with non-zero location indices — these
+    // represent duplicate vertices created by location canonicalization.
+    if added > 0 {
+        let welded = weld_location_vertices(reg);
+        if welded > 0 {
+            added += welded;
+        }
     }
 
     added
@@ -158,20 +168,26 @@ fn process_edge_group(
         let this_p_hi = vertex_pos(reg, this_v_hi);
 
         // Apply inverse transform: p_canonical = loc⁻¹(p_this)
-        let inv_p_lo = apply_inverse(&loc, this_p_lo);
-        let inv_p_hi = apply_inverse(&loc, this_p_hi);
+        let mut inv_p_lo = apply_inverse(&loc, this_p_lo);
+        let mut inv_p_hi = apply_inverse(&loc, this_p_hi);
 
         let d_lo = (inv_p_lo - can_p_lo).length();
         let d_hi = (inv_p_hi - can_p_hi).length();
         let tol = 1e-3;
 
-        // For self-loop edges (v_low == v_hi), the vertex is an arbitrary point
-        // on the closed curve. Verify that the inverse-transformed vertex lies
-        // ON the canonical curve rather than at the exact same parameter.
+        // For self-loop edges (v_low == v_hi), verify the vertex is ON the
+        // canonical curve, then snap to canonical vertex position so subsequent
+        // vertex welding can merge them.
         let vertices_match = if can_v_lo == can_v_hi {
-            // Self-loop: verify transformed vertex is on canonical curve (sample-based)
             let d = min_distance_to_curve(can_curve, inv_p_lo);
-            d < tol
+            if d < tol {
+                // Snap to canonical vertex position for weld-ability
+                inv_p_lo = can_p_lo;
+                inv_p_hi = can_p_hi;
+                true
+            } else {
+                false
+            }
         } else {
             d_lo <= tol && d_hi <= tol
         };
@@ -323,6 +339,80 @@ fn min_distance_to_curve(curve: &CurveGeom, pt: PVec3) -> Real {
     min_d
 }
 
+// ── Vertex merging after location canonicalization ──────────────────
+
+/// Weld vertices that have location transforms assigned and are now at the
+/// same canonical position.  Only affects vertices with non-zero location
+/// indices — avoids false merges on non-canonicalized vertices.
+fn weld_location_vertices(reg: &mut BRepStore) -> usize {
+    // Collect vertices with location indices
+    let located: Vec<(VertexKey, u8)> = reg.vertex_locations.iter()
+        .map(|(&vk, &loc)| (vk, loc))
+        .collect();
+    if located.len() < 2 { return 0; }
+
+    // Build position groups for located vertices only
+    let mut groups: HashMap<[u64; 3], Vec<VertexKey>> = HashMap::new();
+    for &(vk, _loc) in &located {
+        if let Some(v) = reg.vertices.get(vk) {
+            let round = |x: Real| -> u64 { (x * 1e6).round().to_bits() };
+            let key = [round(v.position.x), round(v.position.y), round(v.position.z)];
+            groups.entry(key).or_default().push(vk);
+        }
+    }
+
+    let mut removed = 0usize;
+    let mut remap: HashMap<VertexKey, VertexKey> = HashMap::new();
+
+    for eks in groups.values() {
+        if eks.len() < 2 { continue; }
+        let canonical = eks[0];
+        for &old_vk in &eks[1..] {
+            remap.insert(old_vk, canonical);
+            removed += 1;
+        }
+    }
+
+    if removed == 0 { return 0; }
+
+    // Remap edge references
+    for edge in reg.edges.values_mut() {
+        if let Some(&nvk) = remap.get(&edge.v_low) { edge.v_low = nvk; }
+        if let Some(&nvk) = remap.get(&edge.v_high) { edge.v_high = nvk; }
+    }
+
+    // Remap edge_hash_index
+    let old_hash: Vec<((VertexKey, VertexKey), Vec<EdgeKey>)> =
+        reg.edge_hash_index.drain().collect();
+    for ((v0, v1), eks) in old_hash {
+        let nv0 = remap.get(&v0).copied().unwrap_or(v0);
+        let nv1 = remap.get(&v1).copied().unwrap_or(v1);
+        let nk = if nv0 < nv1 { (nv0, nv1) } else { (nv1, nv0) };
+        let entry = reg.edge_hash_index.entry(nk).or_default();
+        for ek in eks {
+            if !entry.contains(&ek) { entry.push(ek); }
+        }
+    }
+
+    // Remap vertex_to_edges
+    let old_v2e: Vec<(VertexKey, Vec<EdgeKey>)> =
+        reg.vertex_to_edges.drain().collect();
+    for (vk, eks) in old_v2e {
+        let nvk = remap.get(&vk).copied().unwrap_or(vk);
+        let entry = reg.vertex_to_edges.entry(nvk).or_default();
+        for ek in eks {
+            if !entry.contains(&ek) { entry.push(ek); }
+        }
+    }
+
+    // Remove old vertices from SlotMap
+    for old_vk in remap.keys() {
+        reg.vertices.remove(*old_vk);
+    }
+
+    removed
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -337,8 +427,19 @@ mod tests {
         let v0 = reg.vertices.insert(BRepVertex { position: PVec3::new(5.0, 0.0, 0.0), tolerance: 1e-4 });
         let v1 = reg.vertices.insert(BRepVertex { position: PVec3::new(5.0, 0.0, 10.0), tolerance: 1e-4 });
 
-        // Create a cylindrical face so edge_on_periodic_face returns true
-        let face_key = reg.faces.insert(BRepFace {
+        // Create two DIFFERENT cylindrical faces so the edges can be merged
+        // via location sharing (edges_share_face prevents merging on same face).
+        let face_a = reg.faces.insert(BRepFace {
+            surface: crate::geom::SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0),
+            outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
+            inner_wires: vec![],
+            same_sense: true,
+            tolerance: 1e-4,
+            seam_edges: vec![],
+            color: None,
+            degenerated_edges: vec![],
+        });
+        let face_b = reg.faces.insert(BRepFace {
             surface: crate::geom::SurfaceGeom::cylinder(PVec3::ZERO, PVec3::Z, 5.0),
             outer_wire: reg.wires.insert(BRepWire { edges: vec![] }),
             inner_wires: vec![],
@@ -366,11 +467,11 @@ mod tests {
             y_dir: PVec3::Y,
         };
 
-        reg.add_edge_with_pcurve(v0, v0, ek0, 1e-4, face_key, crate::geom::curve2d::Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
-        reg.add_edge_with_pcurve(v1, v1, ek1, 1e-4, face_key, crate::geom::curve2d::Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
+        reg.add_edge_with_pcurve(v0, v0, ek0, 1e-4, face_a, crate::geom::curve2d::Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
+        reg.add_edge_with_pcurve(v1, v1, ek1, 1e-4, face_b, crate::geom::curve2d::Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
 
         let n = assign_locations(&mut reg);
-        assert_eq!(n, 1, "should add one location for Z-translated circle");
+        assert_eq!(n, 1, "one location added");
         assert_eq!(reg.locations.len(), 1);
         // Vertex at z=10 should now be at canonical z=0 position
         let v1_pos = reg.vertices.get(v1).unwrap().position;
