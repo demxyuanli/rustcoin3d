@@ -47,6 +47,8 @@ pub(crate) mod same_param_fix;
 pub(crate) mod face_fix;
 pub(crate) mod shell_fix;
 pub mod seam;
+pub mod locations;
+pub mod shell_close;
 pub mod check;
 pub(crate) mod lacking;
 pub(crate) mod degenerated;

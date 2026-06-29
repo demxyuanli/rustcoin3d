@@ -30,6 +30,7 @@ use crate::step::StepError;
 use crate::step::entity_geom as geom;
 use crate::step::topology;
 use rc3d_shape::BRepStore;
+use rc3d_shape::tolerance::DEFAULT_MODEL_TOLERANCE;
 use rc3d_shape::topo::*;
 use super::geom::{CurveGeom, SurfaceGeom, plane_tangent_basis};
 use rc3d_shape::geom::curve2d::Curve2d;
@@ -431,6 +432,33 @@ pub fn build_brep_with_options(
     if seams_added > 0 {
         log::info!("[STEP] Added {} seam edges to closed surfaces", seams_added);
     }
+
+    // Weld duplicate vertices (e.g., poles shared by multiple faces, or seam
+    // vertices that differ by floating-point error from circular-edge vertices).
+    {
+        let weld_tol = DEFAULT_MODEL_TOLERANCE;
+        let welded = reg.weld_vertices(weld_tol);
+        if welded > 0 {
+            log::info!("[STEP] Welded {} duplicate vertices (tol={:e})", welded, weld_tol);
+        }
+    }
+
+    // Assign Location transforms for edge/vertex sharing on periodic surfaces
+    // (cylinder, cone, sphere, torus).  Reduces V/E counts for revolved/curved
+    // models where identical curve geometry appears at different positions.
+    {
+        let locs = rc3d_shape::heal::locations::assign_locations(&mut reg);
+        if locs > 0 {
+            log::info!("[STEP] Assigned {} location transforms for edge sharing", locs);
+        }
+    }
+
+    // NOTE: close_open_shells() is available in rc3d_shape::heal::shell_close
+    // but not called by default.  Cone/cylinder shells built from STEP are
+    // typically watertight; OCC's extra faces come from surface reparameterization
+    // (e.g., changing cone radius_at_apex), not from missing closure geometry.
+    //
+    // To force closure-face detection, call close_open_shells(&mut reg) here.
 
     // Phase: Void shell subtraction (when strict_voids enabled)
     let mut void_shells_subtracted = 0usize;

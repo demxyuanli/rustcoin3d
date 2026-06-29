@@ -9,6 +9,21 @@ use crate::topo::{EdgeKey, FaceKey, Orientation};
 /// Sampling resolution for isoparametric seam curves on closed surfaces.
 const CLOSED_SURFACE_SEGS: u32 = 48;
 
+/// Check whether a 3D curve is a closed circle (or closed ellipse) — i.e.,
+/// its parameter range covers a full 2π revolution. Used to detect that a
+/// face wire already wraps around the full U period of a periodic surface.
+fn is_full_circle_3d(curve: &CurveGeom, t_min: Real, t_max: Real) -> bool {
+    let period = match curve {
+        CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => std::f64::consts::TAU,
+        CurveGeom::Trimmed { basis, .. } => match basis.as_ref() {
+            CurveGeom::Circle { .. } | CurveGeom::Ellipse { .. } => std::f64::consts::TAU,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    (t_max - t_min - period).abs() < 1e-6
+}
+
 /// Add parametric seam edges for closed faces and trimmed periodic faces.
 pub fn fix_missing_seams(reg: &mut BRepStore, face_key: FaceKey) -> usize {
     let (surface, tolerance, _wire_empty) = {
@@ -120,9 +135,15 @@ fn wire_has_parametric_seam(reg: &BRepStore, face_key: FaceKey) -> bool {
                 .map(|e| e.v_low != e.v_high)
                 .unwrap_or(false);
         }
+        // A non-degenerate edge (v_low != v_high) always counts.
+        // A closed circular edge (v_low == v_high, full circle) also counts —
+        // it wraps a full period of the surface parameterization.
         reg.edges
             .get(ek)
-            .map(|e| e.v_low != e.v_high)
+            .map(|e| {
+                e.v_low != e.v_high
+                    || is_full_circle_3d(&e.curve, e.t_min, e.t_max)
+            })
             .unwrap_or(false)
     })
 }
@@ -191,6 +212,20 @@ fn fix_trimmed_periodic_seam(
         (false, false)
     };
     if touches_low && touches_high {
+        return 0;
+    }
+
+    // Full-circle detection: a closed circular edge on this face wraps the
+    // full U period even when BSpline PCurve sampling undershoots u_max.
+    // This prevents duplicate seam edges on STEP cylinders/cones/tori where
+    // the circular boundary edges already cover the entire U range.
+    let has_full_circle_on_face = wire.edges.iter().any(|&(ek, _)| {
+        reg.edges.get(ek).map_or(false, |e| {
+            is_full_circle_3d(&e.curve, e.t_min, e.t_max)
+                && e.pcurves.contains_key(&face_key)
+        })
+    });
+    if touches_low && has_full_circle_on_face {
         return 0;
     }
 

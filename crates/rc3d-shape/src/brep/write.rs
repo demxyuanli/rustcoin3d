@@ -197,7 +197,23 @@ impl<'a> BrepWriter<'a> {
     // ── Sections ──────────────────────────────────────────────────
 
     fn write_locations(&self, output: &mut impl Write) -> io::Result<()> {
-        writeln!(output, "Locations 0")?;
+        let n = self.store.locations.len();
+        if n == 0 {
+            writeln!(output, "Locations 0")?;
+            return Ok(());
+        }
+        writeln!(output, "Locations {}", n)?;
+        for (i, loc) in self.store.locations.iter().enumerate() {
+            let idx = i + 1; // 1-based location index
+            // Full 3×4 affine matrix form: 3 rows of (r11,r12,r13,t)
+            writeln!(output, "{}", idx)?;
+            writeln!(output, "{} {} {} {}",
+                rnd(loc[0]), rnd(loc[1]), rnd(loc[2]), rnd(loc[3]))?;
+            writeln!(output, "{} {} {} {}",
+                rnd(loc[4]), rnd(loc[5]), rnd(loc[6]), rnd(loc[7]))?;
+            writeln!(output, "{} {} {} {}",
+                rnd(loc[8]), rnd(loc[9]), rnd(loc[10]), rnd(loc[11]))?;
+        }
         Ok(())
     }
 
@@ -609,6 +625,8 @@ impl<'a> BrepWriter<'a> {
         let curve_type = occ_curve_type(expand_curve(&edge.curve));
         let v1_pos = self.vertex_pos(edge.v_low);
         let v2_pos = self.vertex_pos(edge.v_high);
+        let v1_loc = self.store.vertex_locations.get(&edge.v_low).copied().unwrap_or(0);
+        let v2_loc = self.store.vertex_locations.get(&edge.v_high).copied().unwrap_or(0);
         let rv1 = self.rev_idx(v1_pos);
         let rv2 = self.rev_idx(v2_pos);
 
@@ -655,7 +673,7 @@ impl<'a> BrepWriter<'a> {
         writeln!(output)?;
         let tshape_flags = if is_degen { "0101100" } else { "0101000" };
         writeln!(output, "{}", tshape_flags)?;
-        writeln!(output, "+{} 0 -{} 0 *", rv1, rv2)?;
+        writeln!(output, "+{} {} -{} {} *", rv1, v1_loc, rv2, v2_loc)?;
         Ok(())
     }
 
