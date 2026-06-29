@@ -453,12 +453,14 @@ pub fn build_brep_with_options(
         }
     }
 
-    // NOTE: close_open_shells() is available in rc3d_shape::heal::shell_close
-    // but not called by default.  Cone/cylinder shells built from STEP are
-    // typically watertight; OCC's extra faces come from surface reparameterization
-    // (e.g., changing cone radius_at_apex), not from missing closure geometry.
-    //
-    // To force closure-face detection, call close_open_shells(&mut reg) here.
+    // Detect and fill missing planar closure faces for watertight solids.
+    // Skips internal seams (edges used F+R within the same face wire).
+    {
+        let closed = rc3d_shape::heal::shell_close::close_open_shells(&mut reg);
+        if closed > 0 {
+            log::info!("[STEP] Added {} closure faces for open shells", closed);
+        }
+    }
 
     // Phase: Void shell subtraction (when strict_voids enabled)
     let mut void_shells_subtracted = 0usize;

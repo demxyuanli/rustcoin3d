@@ -12,6 +12,10 @@ use std::collections::HashMap;
 
 /// Scan all solids and add missing planar closure faces for free circular
 /// edges. Returns the number of faces added.
+///
+/// Fully-periodic surfaces (Torus, Sphere) are excluded — all their wire
+/// edges are internal seams that wrap around the parameter domain, never
+/// physical openings that need closure.
 pub fn close_open_shells(reg: &mut BRepStore) -> usize {
     let solid_keys: Vec<SolidKey> = reg.solids.keys().collect();
     let mut added = 0usize;
@@ -25,6 +29,12 @@ pub fn close_open_shells(reg: &mut BRepStore) -> usize {
     }
 
     added
+}
+
+/// Fully-periodic surfaces have no natural boundaries — every wire edge
+/// is an internal seam wrapping around the U/V parameter domain.
+fn is_fully_periodic(surf: &SurfaceGeom) -> bool {
+    matches!(surf, SurfaceGeom::Torus { .. } | SurfaceGeom::Sphere { .. })
 }
 
 fn close_shell(reg: &mut BRepStore, shell_key: ShellKey) -> usize {
@@ -63,9 +73,9 @@ fn close_shell(reg: &mut BRepStore, shell_key: ShellKey) -> usize {
             }
         }
         // Edges that appear both F and R in the same face are internal seams
-        for (ek, (fwd, rev)) in face_orients {
-            if fwd && rev {
-                internal_seam.insert(ek, true);
+        for (ek, (fwd, rev)) in &face_orients {
+            if *fwd && *rev {
+                internal_seam.insert(*ek, true);
             }
         }
         // Also count seam and degenerated edges
@@ -84,7 +94,14 @@ fn close_shell(reg: &mut BRepStore, shell_key: ShellKey) -> usize {
 
     for (&ek, face_keys) in &edge_face_count {
         if face_keys.len() >= 2 { continue; }
-        if internal_seam.contains_key(&ek) { continue; } // F+R in same wire = not a boundary
+        if internal_seam.contains_key(&ek) { continue; }
+
+        // Skip edges whose faces are ALL fully-periodic (Torus, Sphere).
+        // These have no physical openings — every edge is an internal seam.
+        let all_periodic = face_keys.iter().all(|&fk| {
+            reg.faces.get(fk).map_or(false, |f| is_fully_periodic(&f.surface))
+        });
+        if all_periodic { continue; }
 
         let edge = match reg.edges.get(ek) {
             Some(e) => e,
@@ -221,5 +238,73 @@ mod tests {
         // Verify the shell now has 2 faces
         let sh = reg.shells.get(sh_key).unwrap();
         assert_eq!(sh.faces.len(), 2, "shell should have 2 faces after closure");
+    }
+
+    #[test]
+    fn torus_like_internal_seam_skipped() {
+        // Replicate torus topology: two self-loop circle edges, each used
+        // both Forward and Reversed in the same face wire. Both are internal
+        // seams — no closure faces should be added.
+        let mut reg = BRepStore::new();
+        let tol = 1e-4;
+
+        let v0 = reg.vertices.insert(BRepVertex {
+            position: PVec3::new(8.0, 0.0, 0.0),
+            tolerance: tol,
+        });
+
+        let inner_circle = CurveGeom::Circle {
+            center: PVec3::new(0.0, 0.0, 0.0),
+            axis: PVec3::Z,
+            radius: 8.0,
+            x_dir: PVec3::X,
+            y_dir: PVec3::Y,
+        };
+        let minor_circle = CurveGeom::Circle {
+            center: PVec3::new(10.0, 0.0, 0.0),
+            axis: PVec3::Y,
+            radius: 2.0,
+            x_dir: PVec3::X,
+            y_dir: PVec3::Z,
+        };
+
+        let face_key = reg.add_face(
+            SurfaceGeom::Torus { center: PVec3::ZERO, axis: PVec3::Z, major_r: 10.0, minor_r: 2.0, x_dir: PVec3::X, y_dir: PVec3::Y },
+            tol,
+        );
+
+        let ek0 = reg.add_edge_with_pcurve(v0, v0, inner_circle, tol, face_key,
+            Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
+        let ek1 = reg.add_edge_with_pcurve(v0, v0, minor_circle, tol, face_key,
+            Curve2d::Line { origin: (0.0, 0.0), direction: (1.0, 0.0) }, true);
+
+        // Wire: inner F → minor R → inner R → minor F (torus-style)
+        let wire_key = reg.wires.insert(BRepWire {
+            edges: vec![
+                (ek0, Orientation::Forward),
+                (ek1, Orientation::Reversed),
+                (ek0, Orientation::Reversed),
+                (ek1, Orientation::Forward),
+            ],
+        });
+        if let Some(face) = reg.faces.get_mut(face_key) {
+            face.outer_wire = wire_key;
+        }
+
+        let sh_key = reg.shells.insert(BRepShell {
+            faces: vec![(face_key, Orientation::Forward)],
+            closed: false,
+            step_id: None,
+        });
+        reg.solids.insert(BRepSolid {
+            outer_shell: sh_key,
+            void_shells: vec![],
+        });
+
+        let n = close_open_shells(&mut reg);
+        assert_eq!(n, 0, "torus-like internal seams should NOT get closure faces");
+
+        let sh = reg.shells.get(sh_key).unwrap();
+        assert_eq!(sh.faces.len(), 1, "shell should still have 1 face");
     }
 }
