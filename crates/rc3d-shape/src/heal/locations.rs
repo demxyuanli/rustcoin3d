@@ -49,7 +49,14 @@ pub fn assign_locations(reg: &mut BRepStore) -> usize {
     // transforms.  Only weld vertices with non-zero location indices — these
     // represent duplicate vertices created by location canonicalization.
     if added > 0 {
+        // eprintln!("[loc] vertex_locations map: {:?}", reg.vertex_locations);
+        for (&vk, &loc) in &reg.vertex_locations {
+            if let Some(v) = reg.vertices.get(vk) {
+                // eprintln!("[loc]   vk {:?} pos={:?} loc={}", vk, v.position, loc);
+            }
+        }
         let welded = weld_location_vertices(reg);
+        // eprintln!("[loc] welded {} vertices", welded);
         if welded > 0 {
             added += welded;
         }
@@ -199,7 +206,6 @@ fn process_edge_group(
         // ── Assign location ──────────────────────────────────────────
         let loc_idx = (reg.locations.len() + 1) as u8;
 
-        // Adjust this edge's vertices to canonical positions
         if let Some(v) = reg.vertices.get_mut(this_v_lo) {
             v.position = inv_p_lo;
         }
@@ -209,7 +215,6 @@ fn process_edge_group(
             }
         }
 
-        // Record location for these vertices
         reg.vertex_locations.insert(this_v_lo, loc_idx);
         if this_v_lo != this_v_hi {
             reg.vertex_locations.insert(this_v_hi, loc_idx);
