@@ -462,6 +462,17 @@ pub fn build_brep_with_options(
         }
     }
 
+    // Final vertex weld at 2× tolerance. After all processing (seams,
+    // locations, closure), some vertices may have shifted close enough
+    // to merge. Uses 2e-4 — 2× the default but still sub-micron,
+    // safe for all model scales (genuine distinct vertices are ≥0.1mm apart).
+    {
+        let welded2 = reg.weld_vertices(DEFAULT_MODEL_TOLERANCE * 2.0);
+        if welded2 > 0 {
+            log::info!("[STEP] Final weld merged {} vertices (tol={:e})", welded2, DEFAULT_MODEL_TOLERANCE * 2.0);
+        }
+    }
+
     // Phase: Void shell subtraction (when strict_voids enabled)
     let mut void_shells_subtracted = 0usize;
     if options.strict_voids {
