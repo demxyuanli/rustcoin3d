@@ -1,6 +1,6 @@
 # BREP Export Regression Tests
 
-Last updated: 2026-06-29
+Last updated: 2026-06-30
 
 ## Quick Reference
 
@@ -10,6 +10,14 @@ cargo test -p rc3d-shape -- seam locations shell_close && cargo test -p rc3d-io 
 
 # Fast feedback loop (< 5s)
 cargo test -p rc3d-shape -- seam
+
+# Structural validation (no OCC needed, <1s)
+rustc compare/validate_brep.rs -o target/debug/validate_brep.exe
+target/debug/validate_brep.exe compare/out/step-*.brep
+
+# OCC topology check (requires Open CASCADE SDK)
+# Build instructions in compare/validate_brep_occ.cpp header
+# validate_brep_occ.exe compare/out/step-*.brep
 
 # Full comparison (11 files, ~4s)
 cargo test -p rc3d-io -- brep_compare_all_files_export_and_check -- --nocapture
