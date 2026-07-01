@@ -306,27 +306,50 @@ pub fn simplify_polyline_to_line(pts: &[(Real, Real)]) -> Option<Curve2d> {
     }
     let first = pts[0];
     let last = pts[pts.len() - 1];
-    let is_closed = (last.0 - first.0).abs() < 1e-4 && (last.1 - first.1).abs() < 1e-4;
+    let is_closed = (last.0 - first.0).abs() < 1e-3 && (last.1 - first.1).abs() < 1e-3;
+
+    // Detect periodic U-wrap: first≈last but mid-U ≈ 2π vs first-U ≈ 0.
+    // Unwrap U-coordinates around TAU (2π) before collinearity check.
+    let tau = std::f64::consts::TAU;
+    let has_u_wrap = is_closed && pts.len() >= 4 &&
+        pts.iter().any(|p| (p.0 - first.0).abs() > tau * 0.9);
 
     let dir = if is_closed {
-        // Closed loop: first≈last. Use points[0]→points[mid] as direction
-        // (handles periodic PCurves like full-circle edges on cylinders).
+        // Compute spans AFTER U-unwrapping to detect vertical/horizontal lines
+        let mut u_vals: Vec<f64> = pts.iter().map(|p| {
+            let mut u = p.0 - first.0;
+            if has_u_wrap && u > tau * 0.5 { u -= tau; }
+            if has_u_wrap && u < -tau * 0.5 { u += tau; }
+            u
+        }).collect();
+        let umin = u_vals.iter().cloned().fold(f64::MAX, f64::min);
+        let umax = u_vals.iter().cloned().fold(f64::MIN, f64::max);
+        let vmin = pts.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+        let vmax = pts.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+        let u_span = umax - umin;
+        let v_span = vmax - vmin;
         let mid = pts.len() / 2;
-        (pts[mid].0 - first.0, pts[mid].1 - first.1)
+        let dv = pts[mid].1 - first.1;
+        if u_span < 1e-3 && v_span > 1e-3 { (0.0, dv) }
+        else if v_span < 1e-3 && u_span > 1e-3 { (u_vals[mid], 0.0) }
+        else { (u_vals[mid], dv) }
     } else {
         (last.0 - first.0, last.1 - first.1)
     };
     let len_sq = dir.0 * dir.0 + dir.1 * dir.1;
     if len_sq < 1e-12 { return None; }
 
-    // Check ALL points (including last for closed loops) lie on the line
+    // Check all points lie on the line (with U-unwrapping tolerance)
     let len = len_sq.sqrt();
     let end_idx = if is_closed { pts.len() } else { pts.len() - 1 };
     for i in 1..end_idx {
-        let dx = pts[i].0 - first.0;
+        let mut dx = pts[i].0 - first.0;
         let dy = pts[i].1 - first.1;
+        // Unwrap U for points near 2π
+        if has_u_wrap && dx > tau * 0.5 { dx -= tau; }
+        if has_u_wrap && dx < -tau * 0.5 { dx += tau; }
         let cross = (dir.0 * dy - dir.1 * dx).abs();
-        if cross / len > 1e-4 { return None; }
+        if cross / len > 1e-3 { return None; }
     }
     Some(Curve2d::Line { origin: first, direction: dir })
 }

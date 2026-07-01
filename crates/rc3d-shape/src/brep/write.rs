@@ -637,11 +637,14 @@ impl<'a> BrepWriter<'a> {
         } else {
             "1e-07".to_string()
         };
-        // OCC convention: all self-loop edges (v_low == v_high) are
-        // degenerated regardless of 3D curve geometry. For degenerated
-        // edges same_range=1 (OCC default) and no PCurves are emitted.
-        let is_degen = edge.v_low == edge.v_high;
-        let same_range = if is_degen { 1 } else { 1 };
+        // Degenerated: self-loop with zero-length curve, OR listed in
+        // face.degenerated_edges (sphere poles, cone apex). Self-loop
+        // circles on non-singular surfaces (torus) are NOT degenerated.
+        let is_degen = edge.v_low == edge.v_high && (
+            matches!(&edge.curve, CurveGeom::Line { direction, .. } if direction.length() < 1e-12)
+            || self.store.faces.iter().any(|(_fk, f)| f.degenerated_edges.contains(&ek))
+        );
+        let same_range = if is_degen { 0 } else { 1 };
         writeln!(output, "Ed")?;
         let degen_flag: u8 = if is_degen { 1 } else { 0 };
         writeln!(output, " {} 1 {} {}", tol_str, same_range, degen_flag)?;
@@ -670,25 +673,7 @@ impl<'a> BrepWriter<'a> {
                 writeln!(output, "0")?;
             } else {
                 for (pc_idx, entry_idx) in &pc_lines {
-                    let entry = &self.pcurve_entries[*entry_idx];
-                    match &entry.curve {
-                        Curve2d::Line { origin: _, direction } => {
-                            let t1 = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
-                            writeln!(output, "1 {} 0 {} {}", pc_idx,
-                                rnd(0.0f64), rnd(t1))?;
-                        }
-                        Curve2d::Circle { radius, .. } => {
-                            let r = radius.max(1e-6);
-                            let t1 = std::f64::consts::TAU * r;
-                            writeln!(output, "2 {} 1 0 0 {}", pc_idx, rnd(t1))?;
-                        }
-                        Curve2d::Ellipse { semi_major, semi_minor, .. } => {
-                            let t1 = std::f64::consts::TAU * semi_major.max(*semi_minor);
-                            writeln!(output, "3 {} 1 0 0 {}", pc_idx, rnd(t1))?;
-                        }
-                        // BSpline, Polyline, Trimmed — use generic format
-                        _ => writeln!(output, "4 C0 {} 0 2 0", pc_idx)?,
-                    }
+                    write_pcurve_ref(output, pc_idx, &self.pcurve_entries[*entry_idx].curve)?;
                 }
                 writeln!(output, "0")?;
             }
@@ -983,6 +968,74 @@ fn expand_curve(curve: &CurveGeom) -> &CurveGeom {
 }
 
 /// Write a 2D polyline as a 2D BSpline degree 1.
+/// Return the effective OCC curve2d type after applying the same simplification
+/// as write_curve2ds. Used by write_ed for consistent PCurve reference types.
+fn occ_pcurve_type(curve: &Curve2d) -> u8 {
+    match curve {
+        Curve2d::Line { .. } => 1,
+        Curve2d::Circle { .. } => 2,
+        Curve2d::Ellipse { .. } => 3,
+        Curve2d::BSpline { .. } => 7,
+        Curve2d::Polyline { points } => {
+            // Polyline simplifies to Line if collinear, else BSpline
+            if crate::geom::curve2d::simplify_polyline_to_line(points).is_some() { 1 } else { 7 }
+        }
+        Curve2d::Trimmed { basis, .. } => occ_pcurve_type(basis),
+        Curve2d::Composite { .. } => 7,
+    }
+}
+
+/// Write a single PCurve reference line in OCC V1 format, consistent with
+/// the simplified form used by write_curve2ds.
+fn write_pcurve_ref(output: &mut impl Write, pc_idx: &usize, curve: &Curve2d) -> io::Result<()> {
+    match occ_pcurve_type(curve) {
+        1 => {
+            // Line pcurve: type 1, idx, orient=0, t0, t1
+            // Approximate t1 from stored curve direction/length
+            let (t0, t1) = match curve {
+                Curve2d::Line { direction, .. } => {
+                    let len = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
+                    (0.0, len)
+                }
+                Curve2d::Polyline { points } => {
+                    // Simplified to line: use first-to-last length as approx
+                    if points.len() >= 2 {
+                        let dx = points[points.len()-1].0 - points[0].0;
+                        let dy = points[points.len()-1].1 - points[0].1;
+                        (0.0, (dx * dx + dy * dy).sqrt())
+                    } else { (0.0, 1.0) }
+                }
+                _ => (0.0, 1.0),
+            };
+            writeln!(output, "1 {} 0 {} {}", pc_idx, rnd(t0), rnd(t1))
+        }
+        2 => {
+            // Circle pcurve: 2 idx 1 0 0 t1
+            let t1 = match curve {
+                Curve2d::Circle { radius, .. } => std::f64::consts::TAU * radius.max(1e-6),
+                Curve2d::Polyline { points } => {
+                    if points.len() >= 2 {
+                        let dx = points[points.len()-1].0 - points[0].0;
+                        let dy = points[points.len()-1].1 - points[0].1;
+                        (dx * dx + dy * dy).sqrt()
+                    } else { 1.0 }
+                }
+                _ => 1.0,
+            };
+            writeln!(output, "2 {} 1 0 0 {}", pc_idx, rnd(t1))
+        }
+        _ => {
+            // BSpline/other: 7 idx num_poles degree flags
+            let (n_poles, deg) = match curve {
+                Curve2d::BSpline { degree, control_points, .. } => (control_points.len(), *degree),
+                Curve2d::Polyline { points } => (points.len(), 1),
+                _ => (2, 1),
+            };
+            writeln!(output, "7 {} {} {} 0", pc_idx, n_poles, deg)
+        }
+    }
+}
+
 fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(Real, Real)]) -> io::Result<()> {
     if points.len() < 2 {
         return writeln!(output, "1 0 1 1 0");
