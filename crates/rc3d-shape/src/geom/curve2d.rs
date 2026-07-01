@@ -297,40 +297,36 @@ impl Curve2d {
 /// Simplify a polyline to a Line if all points are collinear within tolerance.
 /// Returns None for degenerate (closed-loop or zero-length) polylines.
 pub fn simplify_polyline_to_line(pts: &[(Real, Real)]) -> Option<Curve2d> {
-    if pts.len() < 2 {
-        return None;
-    }
+    if pts.len() < 2 { return None; }
     if pts.len() == 2 {
         let dx = pts[1].0 - pts[0].0;
         let dy = pts[1].1 - pts[0].1;
-        if dx * dx + dy * dy < 1e-12 {
-            return None; // degenerate
-        }
-        return Some(Curve2d::Line {
-            origin: pts[0],
-            direction: (dx, dy),
-        });
+        if dx * dx + dy * dy < 1e-12 { return None; }
+        return Some(Curve2d::Line { origin: pts[0], direction: (dx, dy) });
     }
     let first = pts[0];
     let last = pts[pts.len() - 1];
-    let dir = (last.0 - first.0, last.1 - first.1);
-    let len_sq = dir.0 * dir.0 + dir.1 * dir.1;
-    // Do NOT simplify closed loops (first ≈ last): the Line direction
-    // would be zero, producing invalid Curve2ds that break OCC import.
     let is_closed = (last.0 - first.0).abs() < 1e-4 && (last.1 - first.1).abs() < 1e-4;
-    if len_sq < 1e-12 || is_closed {
-        return None;
-    }
-    // Check all intermediate points lie on the line segment
-    for i in 1..pts.len() - 1 {
+
+    let dir = if is_closed {
+        // Closed loop: first≈last. Use points[0]→points[mid] as direction
+        // (handles periodic PCurves like full-circle edges on cylinders).
+        let mid = pts.len() / 2;
+        (pts[mid].0 - first.0, pts[mid].1 - first.1)
+    } else {
+        (last.0 - first.0, last.1 - first.1)
+    };
+    let len_sq = dir.0 * dir.0 + dir.1 * dir.1;
+    if len_sq < 1e-12 { return None; }
+
+    // Check ALL points (including last for closed loops) lie on the line
+    let len = len_sq.sqrt();
+    let end_idx = if is_closed { pts.len() } else { pts.len() - 1 };
+    for i in 1..end_idx {
         let dx = pts[i].0 - first.0;
         let dy = pts[i].1 - first.1;
-        // Cross product: |dir × (pt - first)| / |dir| < tol
         let cross = (dir.0 * dy - dir.1 * dx).abs();
-        let dist = cross / len_sq.sqrt();
-        if dist > 1e-4 {
-            return None; // not collinear
-        }
+        if cross / len > 1e-4 { return None; }
     }
     Some(Curve2d::Line { origin: first, direction: dir })
 }

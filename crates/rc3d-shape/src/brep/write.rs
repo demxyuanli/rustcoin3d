@@ -672,11 +672,10 @@ impl<'a> BrepWriter<'a> {
                 for (pc_idx, entry_idx) in &pc_lines {
                     let entry = &self.pcurve_entries[*entry_idx];
                     match &entry.curve {
-                        Curve2d::Line { origin, direction } => {
-                            let t0 = 0.0f64;
+                        Curve2d::Line { origin: _, direction } => {
                             let t1 = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
                             writeln!(output, "1 {} 0 {} {}", pc_idx,
-                                rnd(t0), rnd(t1))?;
+                                rnd(0.0f64), rnd(t1))?;
                         }
                         Curve2d::Circle { radius, .. } => {
                             let r = radius.max(1e-6);
@@ -988,16 +987,12 @@ fn write_polyline2d_as_bspline(output: &mut impl Write, points: &[(Real, Real)])
     if points.len() < 2 {
         return writeln!(output, "1 0 1 1 0");
     }
-    let n = points.len();
-    let degree = 1usize;
-    let knot_len = n + degree + 1;
-    write!(output, "7 {} {} {} 0", degree, n, knot_len)?;
-    for p in points { write!(output, " {} {}", p.0, p.1)?; }
-    // Clamped knot vector: [0,0,1,2,...,n-2,n-1,n-1]
-    write!(output, " 0 0")?;
-    for i in 1..n-1 { write!(output, " {}", i)?; }
-    writeln!(output, " {} {}", n-1, n-1)?;
-    Ok(())
+    // OCC-compatible: degree-1 2-pole BSpline. num_knots=1 means
+    // implicit knot vector; OCC auto-computes multiplicities.
+    let first = points[0];
+    let last = points[points.len() - 1];
+    writeln!(output, "7 1 2 1 0 {} {} {} {}",
+        rnd(first.0), rnd(first.1), rnd(last.0), rnd(last.1))
 }
 
 fn write_polyline_as_bspline(output: &mut impl Write, points: &[PVec3]) -> io::Result<()> {
