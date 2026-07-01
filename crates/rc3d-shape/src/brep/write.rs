@@ -637,35 +637,59 @@ impl<'a> BrepWriter<'a> {
         } else {
             "1e-07".to_string()
         };
-        // A degenerated edge is a self-loop whose 3D curve is a zero-length
-        // entity (point). Self-loop circles/ellipses (e.g. cone base) are NOT
-        // degenerated — they represent proper closed curves.
-        let is_degen = edge.v_low == edge.v_high && match &edge.curve {
-            CurveGeom::Line { direction, .. } => direction.length() < 1e-12,
-            _ => false,
-        };
-        let same_range = if is_degen { 0 } else { 1 };
+        // OCC convention: all self-loop edges (v_low == v_high) are
+        // degenerated regardless of 3D curve geometry. For degenerated
+        // edges same_range=1 (OCC default) and no PCurves are emitted.
+        let is_degen = edge.v_low == edge.v_high;
+        let same_range = if is_degen { 1 } else { 1 };
         writeln!(output, "Ed")?;
-        writeln!(output, " {} 1 {} 0", tol_str, same_range)?;
-        // OCC format: curve_type curve_idx 0 0 param_range
-        writeln!(output, "{}  {} 0 0 {}", curve_type, curve_idx, param_range)?;
+        let degen_flag: u8 = if is_degen { 1 } else { 0 };
+        writeln!(output, " {} 1 {} {}", tol_str, same_range, degen_flag)?;
+        // OCC format (V1): curve_type curve_idx orient flag t_min t_max
+        // orient: 1 = same parameter direction as edge, 0 = opposite
+        // flag: 0 = polynomial, 2 = rational, etc.
+        writeln!(output, "{}  {} 1 0 {} {}",
+            curve_type, curve_idx,
+            rnd(edge.t_min), rnd(edge.t_max))?;
 
-        // PCurve references — OCC format: 4 C0 curve2d_idx 0 2 0 per pcurve
-        if self.pcurve_count == 0 {
+        // PCurve references — OCC V1 format varies by curve2d type.
+        // Degenerated edges have no PCurves (OCC writes just "0").
+        if is_degen {
+            writeln!(output, "0")?;
+        } else if self.pcurve_count == 0 {
             writeln!(output, "0")?;
         } else {
             let edge_abs = self.edge_pos(ek);
-            let mut pc_lines: Vec<usize> = Vec::new();
+            let mut pc_lines: Vec<(usize, usize)> = Vec::new(); // (1-based curve2d index, 0-based entry index)
             for (idx, entry) in self.pcurve_entries.iter().enumerate() {
                 if entry.edge_abs_pos == edge_abs {
-                    pc_lines.push(idx + 1);
+                    pc_lines.push((idx + 1, idx));
                 }
             }
             if pc_lines.is_empty() {
                 writeln!(output, "0")?;
             } else {
-                for pc_idx in &pc_lines {
-                    writeln!(output, "4 C0 {} 0 2 0", pc_idx)?;
+                for (pc_idx, entry_idx) in &pc_lines {
+                    let entry = &self.pcurve_entries[*entry_idx];
+                    match &entry.curve {
+                        Curve2d::Line { origin, direction } => {
+                            let t0 = 0.0f64;
+                            let t1 = (direction.0 * direction.0 + direction.1 * direction.1).sqrt();
+                            writeln!(output, "1 {} 0 {} {}", pc_idx,
+                                rnd(t0), rnd(t1))?;
+                        }
+                        Curve2d::Circle { radius, .. } => {
+                            let r = radius.max(1e-6);
+                            let t1 = std::f64::consts::TAU * r;
+                            writeln!(output, "2 {} 1 0 0 {}", pc_idx, rnd(t1))?;
+                        }
+                        Curve2d::Ellipse { semi_major, semi_minor, .. } => {
+                            let t1 = std::f64::consts::TAU * semi_major.max(*semi_minor);
+                            writeln!(output, "3 {} 1 0 0 {}", pc_idx, rnd(t1))?;
+                        }
+                        // BSpline, Polyline, Trimmed — use generic format
+                        _ => writeln!(output, "4 C0 {} 0 2 0", pc_idx)?,
+                    }
                 }
                 writeln!(output, "0")?;
             }
