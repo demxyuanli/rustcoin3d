@@ -1011,25 +1011,16 @@ fn write_pcurve_ref(output: &mut impl Write, pc_idx: &usize, curve: &Curve2d) ->
             writeln!(output, "1 {} 0 {} {}", pc_idx, rnd(t0), rnd(t1))
         }
         2 => {
-            // Circle pcurve: 2 idx 1 0 0 t1
-            let t1 = match curve {
-                Curve2d::Circle { radius, .. } => std::f64::consts::TAU * radius.max(1e-6),
-                Curve2d::Polyline { points } => {
-                    if points.len() >= 2 {
-                        let dx = points[points.len()-1].0 - points[0].0;
-                        let dy = points[points.len()-1].1 - points[0].1;
-                        (dx * dx + dy * dy).sqrt()
-                    } else { 1.0 }
-                }
-                _ => 1.0,
-            };
+            // Circle pcurve: 2 idx 1 0 0 t1 (t1 = period = TAU for full circle)
+            let t1 = std::f64::consts::TAU;
             writeln!(output, "2 {} 1 0 0 {}", pc_idx, rnd(t1))
         }
         _ => {
-            // BSpline/other: 7 idx num_poles degree flags
+            // BSpline/other: 7 idx num_poles degree flags.
+            // Use simplified counts to match the Curve2ds section.
             let (n_poles, deg) = match curve {
                 Curve2d::BSpline { degree, control_points, .. } => (control_points.len(), *degree),
-                Curve2d::Polyline { points } => (points.len(), 1),
+                Curve2d::Polyline { .. } => (2, 1), // always simplified to 2 poles in write_curve2ds
                 _ => (2, 1),
             };
             writeln!(output, "7 {} {} {} 0", pc_idx, n_poles, deg)
