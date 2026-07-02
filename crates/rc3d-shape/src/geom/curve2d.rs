@@ -314,44 +314,92 @@ pub fn simplify_polyline_to_line(pts: &[(Real, Real)]) -> Option<Curve2d> {
     let has_u_wrap = is_closed && pts.len() >= 4 &&
         pts.iter().any(|p| (p.0 - first.0).abs() > tau * 0.9);
 
-    let dir = if is_closed {
-        // Compute spans AFTER U-unwrapping to detect vertical/horizontal lines
-        let mut u_vals: Vec<f64> = pts.iter().map(|p| {
-            let mut u = p.0 - first.0;
-            if has_u_wrap && u > tau * 0.5 { u -= tau; }
-            if has_u_wrap && u < -tau * 0.5 { u += tau; }
-            u
-        }).collect();
-        let umin = u_vals.iter().cloned().fold(f64::MAX, f64::min);
-        let umax = u_vals.iter().cloned().fold(f64::MIN, f64::max);
-        let vmin = pts.iter().map(|p| p.1).fold(f64::MAX, f64::min);
-        let vmax = pts.iter().map(|p| p.1).fold(f64::MIN, f64::max);
-        let u_span = umax - umin;
-        let v_span = vmax - vmin;
-        let mid = pts.len() / 2;
-        let dv = pts[mid].1 - first.1;
-        if u_span < 1e-3 && v_span > 1e-3 { (0.0, dv) }
-        else if v_span < 1e-3 && u_span > 1e-3 { (u_vals[mid], 0.0) }
-        else { (u_vals[mid], dv) }
-    } else {
-        (last.0 - first.0, last.1 - first.1)
+    // Detect periodic jump: mid-points share one U/V, ends share another.
+    // E.g. cone generatrix: (0,0), (TAU,dv),...,(TAU,10-dv), (0,10) or (TAU,10)
+    let u_jump = pts.len() >= 4 && !is_closed && {
+        let mid_u = pts[1].0;
+        pts[1..pts.len()-1].iter().all(|p| (p.0 - mid_u).abs() < 1e-4)
+        && (mid_u - first.0).abs() > tau * 0.5
+        && ((last.0 - first.0).abs() < 1e-4 || (last.0 - mid_u).abs() < 1e-4)
+    };
+    let v_jump = pts.len() >= 4 && !is_closed && {
+        let mid_v = pts[1].1;
+        pts[1..pts.len()-1].iter().all(|p| (p.1 - mid_v).abs() < 1e-2)
+        && (mid_v - first.1).abs() > 1e-2
+        && ((last.1 - first.1).abs() < 1e-4 || (last.1 - mid_v).abs() < 1e-4)
+    };
+
+    let dir = {
+        let du = last.0 - first.0;
+        let dv = last.1 - first.1;
+
+        if u_jump && (last.1 - first.1).abs() > 1e-3 {
+            // Jump in U at start; actual line is vertical at const U=last.U
+            (0.0, dv)
+        } else if v_jump && (last.0 - first.0).abs() > 1e-3 {
+            // Jump in V at start; actual line is horizontal at const V=last.V
+            (du, 0.0)
+        } else if is_closed {
+            let mut u_vals: Vec<f64> = pts.iter().map(|p| {
+                let mut u = p.0 - first.0;
+                if has_u_wrap && u > tau * 0.5 { u -= tau; }
+                if has_u_wrap && u < -tau * 0.5 { u += tau; }
+                u
+            }).collect();
+            let umin = u_vals.iter().cloned().fold(f64::MAX, f64::min);
+            let umax = u_vals.iter().cloned().fold(f64::MIN, f64::max);
+            let vmin = pts.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+            let vmax = pts.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+            let u_span = umax - umin;
+            let v_span = vmax - vmin;
+            let mid = pts.len() / 2;
+            let mdv = pts[mid].1 - first.1;
+            if u_span < 1e-3 && v_span > 1e-3 { (0.0, mdv) }
+            else if v_span < 1e-3 && u_span > 1e-3 { (u_vals[mid], 0.0) }
+            else { (u_vals[mid], mdv) }
+        } else {
+            (du, dv)
+        }
     };
     let len_sq = dir.0 * dir.0 + dir.1 * dir.1;
     if len_sq < 1e-12 { return None; }
 
-    // Check all points lie on the line (with U-unwrapping tolerance)
+    // Check all points lie on the line (with U/V-unwrapping tolerance)
     let len = len_sq.sqrt();
     let end_idx = if is_closed { pts.len() } else { pts.len() - 1 };
+    let need_u_unwrap = has_u_wrap || u_jump;
     for i in 1..end_idx {
         let mut dx = pts[i].0 - first.0;
         let dy = pts[i].1 - first.1;
-        // Unwrap U for points near 2π
-        if has_u_wrap && dx > tau * 0.5 { dx -= tau; }
-        if has_u_wrap && dx < -tau * 0.5 { dx += tau; }
+        if need_u_unwrap && dx > tau * 0.5 { dx -= tau; }
+        if need_u_unwrap && dx < -tau * 0.5 { dx += tau; }
         let cross = (dir.0 * dy - dir.1 * dx).abs();
         if cross / len > 1e-3 { return None; }
     }
     Some(Curve2d::Line { origin: first, direction: dir })
+}
+
+#[test]
+fn simplify_vertical_u_wrap_polyline() {
+    let tau = std::f64::consts::TAU;
+    // Simulate cone generatrix PCurve: const U=TAU, V varies 0→10
+    let n = 17;
+    let pts: Vec<(f64, f64)> = (0..n).map(|i| {
+        let t = i as f64 / (n - 1) as f64;
+        if i == 0 || i == n - 1 { (0.0, t * 10.0) }
+        else { (tau, t * 10.0) }
+    }).collect();
+    let result = simplify_polyline_to_line(&pts);
+    assert!(result.is_some(), "vertical U-wrap polyline should simplify to Line, got None");
+    match result {
+        Some(Curve2d::Line { origin, direction }) => {
+            assert!((origin.0).abs() < 0.1, "origin U≈0, got {}", origin.0);
+            assert!((origin.1).abs() < 0.1, "origin V≈0, got {}", origin.1);
+            assert!((direction.0).abs() < 0.1, "dir U≈0 (vertical line), got {}", direction.0);
+            assert!((direction.1 - 10.0).abs() < 0.1, "dir V≈10, got {}", direction.1);
+        }
+        _ => panic!("wrong variant"),
+    }
 }
 
 impl Curve2d {

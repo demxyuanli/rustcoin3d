@@ -470,13 +470,14 @@ impl<'a> BrepWriter<'a> {
                         rnd(x_dir.x), rnd(x_dir.y), rnd(x_dir.z),
                         rnd(y_dir.x), rnd(y_dir.y), rnd(y_dir.z), rnd(*radius))?;
                 }
-                SurfaceGeom::Cone { apex, axis, semi_angle: _, radius_at_apex, x_dir, y_dir } => {
+                SurfaceGeom::Cone { apex, axis, semi_angle, radius_at_apex, x_dir, y_dir } => {
                     writeln!(output, "3 {} {} {} {} {} {} {} {} {} {} {} {} {}",
                         rnd(apex.x), rnd(apex.y), rnd(apex.z),
                         rnd(axis.x), rnd(axis.y), rnd(axis.z),
                         rnd(x_dir.x), rnd(x_dir.y), rnd(x_dir.z),
                         rnd(y_dir.x), rnd(y_dir.y), rnd(y_dir.z),
                         rnd(*radius_at_apex))?;
+                    writeln!(output, "{}", rnd(*semi_angle))?;
                 }
                 SurfaceGeom::Sphere { center, radius } => {
                     // OCC Sphere format: 4 cx cy cz nx ny nz ux uy uz vx vy vz r
