@@ -4,21 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-# Agent NDJSON trace (also RC3D_AGENT_DEBUG=1); off in normal builds.
-step-agent-debug = []
-
 [dependencies]
 rc3d-core = { workspace = true }
-rc3d-shape = { workspace = true }
 rc3d-scene = { workspace = true }
-slotmap = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 gltf = { version = "1", default-features = false, features = ["import", "KHR_lights_punctual", "names", "utils"] }
 base64 = "0.22"
 image = { workspace = true }
 fbxcel = { version = "0.9", features = ["writer"] }
-rayon = { workspace = true }
 

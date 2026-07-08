@@ -10,7 +10,6 @@ members = [
     "crates/rc3d-render",
     "crates/rc3d-engine",
     "crates/rc3d-io",
-    "crates/rc3d-shape",
     "crates/rc3d-app",
     "crates/rc3d-cli-editor",
     "crates/rc3d-gizmo",
@@ -60,7 +59,6 @@ rc3d-actions = { path = "crates/rc3d-actions" }
 rc3d-mesh = { path = "crates/rc3d-mesh" }
 rc3d-render = { path = "crates/rc3d-render" }
 rc3d-engine = { path = "crates/rc3d-engine" }
-rc3d-shape = { path = "crates/rc3d-shape" }
 rc3d-io = { path = "crates/rc3d-io" }
 rc3d-app = { path = "crates/rc3d-app" }
 rc3d-gizmo = { path = "crates/rc3d-gizmo" }

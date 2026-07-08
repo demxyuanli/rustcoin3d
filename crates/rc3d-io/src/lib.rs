@@ -3,7 +3,6 @@
 //! Minimal I/O layer: B-Rep binary serialization and basic mesh export.
 //! Geometry parsing (STEP, IGES) has been removed.
 
-pub mod brep_binary;
 pub mod gltf;
 pub mod obj;
 pub mod stl;
@@ -13,7 +12,6 @@ pub use obj::{parse_obj, parse_obj_file, ObjError};
 pub use stl::{
     parse_stl, parse_stl_file, parse_stl_triangles, write_ascii_stl, write_binary_stl, StlError,
 };
-pub use brep_binary::{write_brep_binary, read_brep_binary, write_brep_file, read_brep_file};
 
 use std::path::Path;
 use rc3d_scene::SceneGraph;
