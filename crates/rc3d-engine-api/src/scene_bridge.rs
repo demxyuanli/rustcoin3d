@@ -198,11 +198,6 @@ pub fn load_gltf_file(path: &std::path::Path) -> Result<SceneGraph, String> {
     rc3d_io::gltf::parse_gltf_file(path).map_err(|e| format!("glTF parse error: {e}"))
 }
 
-/// Import an FBX file into a `SceneGraph`.
-pub fn load_fbx_file(path: &std::path::Path) -> Result<SceneGraph, String> {
-    rc3d_io::fbx::parse_fbx_file(path).map_err(|e| format!("FBX parse error: {e}"))
-}
-
 /// Ensure the scene graph has at least one camera and one directional light.
 ///
 /// Prevents render-blocking failures when using `App::from_scene` with an incomplete scene:

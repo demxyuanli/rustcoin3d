@@ -1,100 +1,33 @@
 //! # rc3d-io — File Format Import/Export
 //!
-//! Readers and writers for 3D interchange formats. Converts between
-//! external file representations and the internal scene graph / B-Rep store.
-//!
-//! ## Architecture
-//! - `step` — ISO 10303 STEP AP203/AP214/AP242 reader and writer
-//! - `iges` — IGES 5.3 reader
-//! - `stl` — ASCII/binary STL reader and writer
-//! - `obj` — Wavefront OBJ reader
-//! - `gltf` — glTF 2.0 reader (via gltf crate)
-//! - `fbx` — FBX reader (ASCII and binary)
-//! - `iv` — Open Inventor reader and writer (Coin3D format)
-//! - `brep_binary` — Internal binary B-Rep serialization for caching
-//! - `mesh_export` — Unified tessellation + mesh export pipeline
-//!
-//! ## Key types
-//! - `ImportError` — unified error type for all format errors
-//! - `import_file(path)` — auto-detect format and import into `SceneGraph`
-//! - `export_step_to_ascii_stl()` — STEP-to-STL conversion with per-face material grouping
-//!
-//! ## OCC alignment
-//! Corresponds to OpenCASCADE `STEPControl`, `IGESControl`, `StlAPI`, and
-//! `BRepTools` serialization layers.
-//!
-//! ## Usage
-//! ```ignore
-//! use rc3d_io::step::{import_step_file_with_options, StepImportOptions, StepImportMode};
-//! let result = import_step_file_with_options("model.stp", &mut scene, options)?;
-//! ```
+//! Minimal I/O layer: B-Rep binary serialization and basic mesh export.
+//! Geometry parsing (STEP, IGES) has been removed.
 
 pub mod brep_binary;
-pub mod mesh_export;
-pub mod fbx;
 pub mod gltf;
-pub mod iges;
-pub mod iges_writer;
-pub mod iv;
 pub mod obj;
-pub mod step;
 pub mod stl;
-pub mod vrml;
 
-pub use fbx::{parse_fbx_file, FbxError};
 pub use gltf::{parse_gltf_file, GltfError};
-pub use iv::{parse_iv, write_iv, IvError};
 pub use obj::{parse_obj, parse_obj_file, ObjError};
-pub use step::{
-    decode_step_bytes, import_step_file_with_options, import_step_with_options, parse_step,
-    parse_step_file, parse_step_file_with_options, parse_step_with_options, write_step_file,
-    write_step_entities_file, AdapterMode, StepError, StepImportMode, StepImportOptions,
-    StepImportReport, StepImportResult,
-};
-pub use step::write::{write_step_from_entities, write_step_from_graph, write_step_parametric};
-pub use step::validate::{validate as validate_step, quick_check as quick_check_step, ValidationReport};
-pub use step::xml::{write_xml_step, parse_xml_step};
-pub use step::bool::BoolOp;
-pub use step::brep;
-pub use step::tree::{AssemblyTree, AssemblyNode, ProductMetadata};
-pub use step::header::HeaderInfo;
-pub use step::lod;
 pub use stl::{
     parse_stl, parse_stl_file, parse_stl_triangles, write_ascii_stl, write_binary_stl, StlError,
 };
-pub use vrml::{import_vrml, parse_vrml_str, VrmlError};
-pub use iges::{import_iges, parse_iges_str, IgesError};
-pub use iges_writer::{write_iges, write_iges_string};
 pub use brep_binary::{write_brep_binary, read_brep_binary, write_brep_file, read_brep_file};
-pub use mesh_export::{
-    convert_stl_to_ascii, default_stl_output, export_file_to_ascii_stl,
-    export_step_per_face_ascii_stl, export_step_to_ascii_stl, mesh_step_file, ExportSummary,
-    MeshExportError, MeshExportOptions, StepMeshResult,
-};
 
 use std::path::Path;
-use rc3d_scene::{NodeData, SceneGraph};
-use rc3d_scene::node_data::SeparatorNode;
-use rc3d_shape::{ShapeDocument, EmitPlanOptions};
+use rc3d_scene::SceneGraph;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("IV error: {0}")]
-    Iv(#[from] IvError),
     #[error("STL error: {0}")]
     Stl(#[from] StlError),
     #[error("OBJ error: {0}")]
     Obj(#[from] ObjError),
     #[error("glTF error: {0}")]
     Gltf(#[from] GltfError),
-    #[error("FBX error: {0}")]
-    Fbx(#[from] FbxError),
-    #[error("STEP error: {0}")]
-    Step(#[from] StepError),
-    #[error("IGES error: {0}")]
-    Iges(#[from] IgesError),
     #[error("Unknown format: {0}")]
     UnknownFormat(String),
 }
@@ -106,41 +39,9 @@ pub fn import_file(path: &Path) -> Result<SceneGraph, ImportError> {
         .to_lowercase();
 
     match ext.as_str() {
-        "iv" => {
-            let content = std::fs::read_to_string(path)?;
-            Ok(parse_iv(&content)?)
-        }
-        "stl" => {
-            Ok(parse_stl_file(path)?)
-        }
-        "obj" => {
-            Ok(parse_obj_file(path)?)
-        }
-        "gltf" | "glb" => {
-            Ok(parse_gltf_file(path)?)
-        }
-        "fbx" => {
-            Ok(parse_fbx_file(path)?)
-        }
-        "step" | "stp" => {
-            Ok(parse_step_file(path)?)
-        }
-        "iges" | "igs" => {
-            let store = import_iges(path)?;
-            let mut document = ShapeDocument::new();
-            document.store = store;
-            let plan_options = EmitPlanOptions::default();
-            let plan = document.build_emit_plan(&plan_options)
-                .map_err(|e| IgesError::Parse(format!("build emit plan: {e}")))?;
-            let mut graph = SceneGraph::new();
-            let root = graph.add_root(NodeData::Separator(SeparatorNode));
-            step::apply_plan(
-                &mut graph, root, &plan,
-                &step::SceneEmitOptions::default(),
-                &Default::default(),
-            )?;
-            Ok(graph)
-        }
+        "stl" => Ok(parse_stl_file(path)?),
+        "obj" => Ok(parse_obj_file(path)?),
+        "gltf" | "glb" => Ok(parse_gltf_file(path)?),
         _ => Err(ImportError::UnknownFormat(ext)),
     }
 }

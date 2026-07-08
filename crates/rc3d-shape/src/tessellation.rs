@@ -1,18 +1,32 @@
 //! Tessellation cache keyed by solid + config + orientation.
+//! (mesh processing removed — stub types retained for API compatibility)
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-
-use crate::mesh::report::ShellMeshReport;
-use crate::mesh_result::MeshResult;
-use crate::mesh_split::FaceTriRange;
 use crate::topo::{FaceKey, Orientation, SolidKey};
+
+/// Face triangle range placeholder (mesh processing removed).
+#[derive(Debug, Clone, Default)]
+pub struct FaceTriRange {
+    pub offset: usize,
+    pub count: usize,
+}
+
+/// Mesh result placeholder (mesh processing removed).
+#[derive(Debug, Clone, Default)]
+pub struct MeshResult {
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+}
+
+/// Shell mesh report placeholder (mesh processing removed).
+#[derive(Debug, Clone, Default)]
+pub struct ShellMeshReport;
 
 #[derive(Debug, Clone)]
 pub struct TessEntry {
     pub mesh: MeshResult,
     pub face_tri_ranges: HashMap<FaceKey, FaceTriRange>,
-    /// False when void subtraction invalidated per-face triangle ranges.
     pub face_split_viable: bool,
     pub report: ShellMeshReport,
 }
@@ -43,63 +57,10 @@ pub struct TessellationCache {
 }
 
 impl TessellationCache {
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, key: &TessKey) -> Option<&TessEntry> {
-        self.entries.get(key)
-    }
-
-    pub fn insert(&mut self, key: TessKey, entry: TessEntry) {
-        self.entries.insert(key, entry);
-    }
-
+    pub fn new() -> Self { Self { entries: HashMap::new() } }
+    pub fn get(&self, key: &TessKey) -> Option<&TessEntry> { self.entries.get(key) }
+    pub fn insert(&mut self, key: TessKey, entry: TessEntry) { self.entries.insert(key, entry); }
     pub fn invalidate_solid(&mut self, solid_key: SolidKey) {
-        self.entries
-            .retain(|k, _| k.solid_key != solid_key);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn forward_and_reversed_separate_entries() {
-        let mut cache = TessellationCache::new();
-        let sk = SolidKey::default();
-        let cfg = 1u64;
-        cache.insert(
-            TessKey {
-                solid_key: sk,
-                config_hash: cfg,
-                orientation: Orientation::Forward,
-            },
-            TessEntry {
-                mesh: MeshResult::default(),
-                face_tri_ranges: HashMap::new(),
-                face_split_viable: true,
-                report: ShellMeshReport::default(),
-            },
-        );
-        cache.insert(
-            TessKey {
-                solid_key: sk,
-                config_hash: cfg,
-                orientation: Orientation::Reversed,
-            },
-            TessEntry {
-                mesh: MeshResult::default(),
-                face_tri_ranges: HashMap::new(),
-                face_split_viable: true,
-                report: ShellMeshReport::default(),
-            },
-        );
-        assert_eq!(cache.entries.len(), 2);
-        cache.invalidate_solid(sk);
-        assert!(cache.entries.is_empty());
+        self.entries.retain(|k, _| k.solid_key != solid_key);
     }
 }

@@ -33,3 +33,5 @@ harness = false
 name = "spatial_index"
 harness = false
 
+[[bench]]
+harness = false

@@ -40,33 +40,11 @@ impl ToleranceContext {
         self.vertex_dedup()
     }
 
-    /// Boundary vertex dedup radius for shell meshing spatial pools.
-    pub fn boundary_dedup(&self, mesh: &crate::mesh::BRepMeshConfig) -> Real {
-        self.model
-            .max(mesh.weld_tolerance)
-            .max(mesh.same_parameter_tol)
-            .max(TOLERANCE_FLOOR)
-    }
-
-    /// Apply model tolerance to mesh config fields that default to hard-coded values.
-    pub fn apply_to_mesh_config(&self, mesh: &mut crate::mesh::BRepMeshConfig) {
-        mesh.same_parameter_tol = mesh.same_parameter_tol.max(self.model);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::BRepMeshConfig;
-
-    #[test]
-    fn boundary_dedup_composes_mesh_and_model() {
-        let ctx = ToleranceContext::from_model(2e-4);
-        let mut mesh = BRepMeshConfig::default();
-        mesh.weld_tolerance = 1e-5;
-        mesh.same_parameter_tol = 1e-4;
-        assert!((ctx.boundary_dedup(&mesh) - 2e-4).abs() < 1e-8);
-    }
 
     #[test]
     fn from_model_clamps_extremes() {

@@ -33,3 +33,6 @@ harness = false
 name = "spatial_index"
 harness = false
 
+[[bench]]
+name = "mesh_gen"
+harness = false
