@@ -72,7 +72,7 @@ rc3d-io (mesh I/O)
 | SoBaseColor / SoDiffuseColor | Via `MaterialNode` PBR | No legacy Phong color model |
 | SoComplexity | `ShapeHints` | Limited tessellation control (mesh engine removed) |
 | SoDrawStyle | `DisplayMode` (Flat/Wireframe/Points) | Missing FILLED+WIREFRAME overlay |
-| SoRayTracing | `RayTracing` node exists | No RT backend (wgpu doesn't support DXR yet) |
+| SoRayTracing | `RayTracing` node exists | No DXR full pipeline; inline ray queries available (wgpu PR #6291) |
 | SoShaderProgram | N/A | No custom shader node |
 
 ### Missing ✗
@@ -96,7 +96,7 @@ rc3d-io (mesh I/O)
 | three.js | rustcoin3d | Gap |
 |----------|------------|-----|
 | MeshStandardMaterial | `MaterialNode` (PBR metallic-roughness) | ✓ Covered |
-| MeshPhysicalMaterial | N/A | ✗ Clearcoat, sheen, transmission, anisotropy |
+| MeshPhysicalMaterial | N/A | ✗ Clearcoat (HIGH), sheen (MEDIUM), transmission (MEDIUM), anisotropy (LOW), iridescence (LOW) |
 | MeshPhongMaterial | N/A | ✗ Legacy Phong (low priority for PBR engine) |
 | MeshToonMaterial | N/A | ✗ Cel shading |
 | MeshNormalMaterial | N/A | ✗ Debug normals |
@@ -121,7 +121,7 @@ rc3d-io (mesh I/O)
 | LUTPass | ✓ `color_grading` | |
 | AdaptiveToneMappingPass | ✓ `auto_exposure` | |
 | UnrealBloomPass | ✓ `bloom_prefilter` | |
-| SMAAPass | ✗ | SMAA alternative to FXAA |
+| SMAAPass | ✗ | 1-2 day from three.js reference; complementary to existing TAA (no ghosting) |
 | OutlinePass | ✓ `outline` / `selection_outline` | |
 | FilmPass | ✗ | Film grain |
 | GlitchPass | ✗ | Glitch effect |
@@ -138,7 +138,7 @@ rc3d-io (mesh I/O)
 | BufferAttribute | Via GPU buffer uploads | ✓ |
 | InterleavedBuffer | `Vertex` interleaved layout | ✓ |
 | Geometry groups (materialIndex) | `FaceMaterialGroup` (removed with emit_plan) | ✗ Per-face materials |
-| EdgesGeometry | `edge_detect.wgsl` | ✓ Screen-space edges |
+| EdgesGeometry | `edge_detect.wgsl` | ✓ Screen-space edges; add CPU-side extraction for CAD wireframe export if needed |
 | WireframeGeometry | `pass_wireframe` | ✓ |
 | LineSegments | `IndexedLineSet` | ✓ |
 
@@ -199,7 +199,7 @@ The mesh topology is flat — no concept of:
 - Adjacency queries beyond ray-pick BVH
 - Edge highlighting / selection (done via screen-space `edge_detect.wgsl`)
 
-**Assessment**: For a visualization engine, flat mesh topology is adequate. three.js operates the same way (BufferGeometry has no adjacency — edges are extracted from index buffer in EdgesGeometry). The current screen-space edge detection is a valid approximation.
+**Assessment**: For a visualization engine, flat mesh topology is adequate. three.js operates the same way (BufferGeometry has no adjacency — edges are extracted from index buffer via `EdgesGeometry` on CPU side, or `WireframeGeometry` for all edges). The current screen-space edge detection (`edge_detect.wgsl`) is a valid visualization approach. For CAD-precision wireframe output, CPU-side index-buffer-based edge extraction (like three.js `EdgesGeometry`) should be available as an alternative.
 
 ---
 
@@ -209,37 +209,41 @@ The mesh topology is flat — no concept of:
 
 | # | Feature | Effort | Impact |
 |---|---------|--------|--------|
-| 1 | MeshPhysicalMaterial (clearcoat, sheen) | Medium | High — PBR materials look flat without clearcoat |
-| 2 | Forward rendering path (transparent, single-pass) | High | High — transparent sorting is currently limited |
-| 3 | SMAA (better AA than FXAA) | Low | Medium |
-| 4 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL currently requires pre-processed envmaps |
-| 5 | Anisotropic filtering for PBR | Low | Medium |
+| 1 | File node → glTF loader wiring | Low | High — models can't be loaded via scene graph |
+| 2 | MeshPhysicalMaterial extensions (clearcoat + transmission) | Medium | High — automotive clearcoat, glass panels; broad applicability |
+| 3 | Forward rendering path (transparent, single-pass) | High | High — transparent sorting is currently limited |
+| 4 | SMAA anti-aliasing | Low | Medium — 1-2 day from three.js reference; TAA complement (no ghosting) |
 
 ### MEDIUM — Feature completeness
 
 | # | Feature | Effort | Impact |
 |---|---------|--------|--------|
-| 6 | File node → glTF loader wiring | Low | High — models can't be loaded via scene graph |
-| 7 | Per-face material groups (multi-material meshes) | Medium | Medium |
-| 8 | SDF font rendering (Text3 quality) | Medium | Medium |
-| 9 | Soft shadows (PCSS) | High | Medium |
+| 5 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL currently requires pre-processed envmaps |
+| 6 | Per-face material groups (multi-material meshes) | Medium | Medium |
+| 7 | MeshPhysicalMaterial sheen extension | Medium | Medium — fabric/furniture surfaces |
+| 8 | Soft shadows (PCSS) | High | Medium |
+| 9 | SDF font rendering (Text3 quality) | Medium | Medium |
 | 10 | Light probes / reflection probes | Medium | Medium |
 
 ### LOW — Nice to have
 
 | # | Feature | Effort | Impact |
 |---|---------|--------|--------|
-| 11 | Cel shading (MeshToonMaterial) | Low | Low |
-| 12 | Film grain post-effect | Low | Low |
-| 13 | DRACO mesh compression | Medium | Low |
-| 14 | KTX2 texture compression | Medium | Low |
+| 11 | MeshPhysicalMaterial anisotropy | Low | Low — brushed metal, niche |
+| 12 | CPU-side edge extraction (EdgesGeometry-style) | Low | Low — needed only for CAD wireframe export |
+| 13 | Cel shading (MeshToonMaterial) | Low | Low |
+| 14 | Inline ray queries for RayTracing node | Medium | Low — basic ray-cast without DXR |
+| 15 | Film grain post-effect | Low | Low |
+| 16 | DRACO mesh compression | Medium | Low |
+| 17 | KTX2 texture compression | Medium | Low |
 
 ---
 
 ## 5. Recommendations
 
 1. **Immediate**: Wire `FileNode` to glTF/OBJ/STL loaders — enables scene-graph-driven model loading
-2. **This sprint**: SMAA anti-aliasing (replaces FXAA, low effort, visible quality improvement)
-3. **Next sprint**: MeshPhysicalMaterial extensions (clearcoat, sheen) — match three.js PBR quality
-4. **Architecture decision**: Forward rendering path for transparent objects (or continue with deferred-only)
-5. **Topology**: Flat mesh topology is sufficient — no B-Rep reconstruction needed. Screen-space edges cover most use cases.
+2. **This sprint**: MeshPhysicalMaterial clearcoat + transmission (highest visual PBR gap per audit)
+3. **This sprint**: SMAA anti-aliasing (1-2 day, three.js `SMAAPass` reference, complements TAA)
+4. **Next sprint**: HDR envmap loading (EXR) for improved IBL quality
+5. **Architecture decision**: Forward rendering path for transparent objects (or continue with deferred-only)
+6. **Topology**: Flat mesh topology sufficient — three.js `BufferGeometry` same model. Screen-space edges for visualization; CPU-side index extraction added only if CAD wireframe export needed.
