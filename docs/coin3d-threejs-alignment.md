@@ -218,9 +218,9 @@ The mesh topology is flat — no concept of:
 
 | # | Feature | Effort | Impact |
 |---|---------|--------|--------|
-| 5 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL currently requires pre-processed envmaps |
+| 5 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL requires pre-processed envmaps | **DONE** |
 | 6 | Per-face material groups (multi-material meshes) | Medium | Medium |
-| 7 | MeshPhysicalMaterial sheen extension | Medium | Medium — fabric/furniture surfaces |
+| 7 | MeshPhysicalMaterial sheen extension | Medium | Medium — fabric/furniture surfaces | **DONE** |
 | 8 | Soft shadows (PCSS) | High | Medium |
 | 9 | SDF font rendering (Text3 quality) | Medium | Medium |
 | 10 | Light probes / reflection probes | Medium | Medium |
