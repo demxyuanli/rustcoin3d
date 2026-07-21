@@ -26,6 +26,7 @@ impl ShaderFeatures {
     pub const HAS_MR_TEX: Self = Self { bits: 1 << 4 };
     pub const HAS_EMISSIVE_TEX: Self = Self { bits: 1 << 5 };
     pub const HAS_OCCLUSION_TEX: Self = Self { bits: 1 << 6 };
+    pub const HAS_CLEARCOAT: Self = Self { bits: 1 << 7 };
 
     pub fn contains(&self, other: ShaderFeatures) -> bool {
         self.bits & other.bits == other.bits
@@ -44,6 +45,7 @@ impl ShaderFeatures {
         ("HAS_MR_TEX", ShaderFeatures::HAS_MR_TEX),
         ("HAS_EMISSIVE_TEX", ShaderFeatures::HAS_EMISSIVE_TEX),
         ("HAS_OCCLUSION_TEX", ShaderFeatures::HAS_OCCLUSION_TEX),
+        ("HAS_CLEARCOAT", ShaderFeatures::HAS_CLEARCOAT),
     ];
 }
 

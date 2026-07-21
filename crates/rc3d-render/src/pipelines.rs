@@ -17,6 +17,7 @@ bitflags! {
         const HAS_IBL           = 1 << 5;
         const HAS_SHADOWS       = 1 << 6;
         const IS_TRANSPARENT    = 1 << 7;
+        const HAS_CLEARCOAT     = 1 << 8;
     }
 }
 
