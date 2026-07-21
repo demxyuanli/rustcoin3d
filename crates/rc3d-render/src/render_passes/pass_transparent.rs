@@ -29,7 +29,12 @@ fn emit_transparent_draws(
             clip_arr[i] = *cp;
         }
     }
-    let clip_count = [renderer.frame.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
+    let clip_count = [
+        renderer.frame.clip_planes.len().min(6) as f32,
+        0.0,
+        0.0,
+        0.0,
+    ];
 
     let mut last_bound_mesh = None;
 
@@ -40,17 +45,48 @@ fn emit_transparent_draws(
             mvp: dc.mvp.to_cols_array_2d(),
             model: dc.model_matrix.to_cols_array_2d(),
             camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
-            diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
-            ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-            specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
+            diffuse_color: [
+                dc.diffuse_color.x,
+                dc.diffuse_color.y,
+                dc.diffuse_color.z,
+                1.0,
+            ],
+            ambient_color: [
+                dc.ambient_color.x,
+                dc.ambient_color.y,
+                dc.ambient_color.z,
+                1.0,
+            ],
+            specular_color: [
+                dc.specular_color.x,
+                dc.specular_color.y,
+                dc.specular_color.z,
+                1.0,
+            ],
             shininess: [dc.shininess, 0.0, 0.0, 0.0],
             clip_planes: clip_arr,
             clip_count,
-            pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, dc.opacity],
+            pbr_base_color: [
+                dc.base_color.x,
+                dc.base_color.y,
+                dc.base_color.z,
+                dc.opacity,
+            ],
             pbr_metallic_roughness: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
-            pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-            pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+            pbr_emissive_alpha: [
+                dc.emissive_color.x,
+                dc.emissive_color.y,
+                dc.emissive_color.z,
+                dc.alpha_cutoff,
+            ],
+            pbr_alpha_flags: [
+                alpha_mode_to_f32(dc.alpha_mode),
+                dc.opacity,
+                if dc.double_sided { 1.0 } else { 0.0 },
+                0.0,
+            ],
+            pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+            pbr_sheen: [0.0, 0.0, 0.0, 0.0],
             light_set_index: [dc.light_set_id as f32, 0.0, 0.0, 0.0],
         };
 
@@ -60,7 +96,12 @@ fn emit_transparent_draws(
                 let mut h = twox_hash::XxHash64::with_seed(0);
                 h.write(dc.albedo_path.as_deref().unwrap_or("").as_bytes());
                 h.write(dc.normal_path.as_deref().unwrap_or("").as_bytes());
-                h.write(dc.metallic_roughness_path.as_deref().unwrap_or("").as_bytes());
+                h.write(
+                    dc.metallic_roughness_path
+                        .as_deref()
+                        .unwrap_or("")
+                        .as_bytes(),
+                );
                 h.write(dc.emissive_path.as_deref().unwrap_or("").as_bytes());
                 h.write(dc.occlusion_path.as_deref().unwrap_or("").as_bytes());
                 h.write_u64(dc.base_color.x.to_bits() as u64);
@@ -183,7 +224,12 @@ pub(super) fn pass_transparent_wboit(
                 view: accum_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             }),
@@ -191,7 +237,12 @@ pub(super) fn pass_transparent_wboit(
                 view: revealage_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             }),
@@ -238,15 +289,26 @@ pub(super) fn pass_wboit_composite(
     let post_pl = &renderer.gpu.post_fx_pipelines;
 
     // Bind group: accum + revealage textures + sampler (shader group 1)
-    let accum_bg = renderer.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("WBOIT Accum BG"),
-        layout: &post_pl.wboit_accum_bgl,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(revealage_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&post_pl.tonemap_sampler) },
-        ],
-    });
+    let accum_bg = renderer
+        .device
+        .create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("WBOIT Accum BG"),
+            layout: &post_pl.wboit_accum_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(accum_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(revealage_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&post_pl.tonemap_sampler),
+                },
+            ],
+        });
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("WBOIT Composite"),

@@ -1,5 +1,7 @@
 use crate::render_action::DrawCall;
-use crate::vertex::{FlatUniforms, InstanceData, SceneUniforms, MAX_MORPH_WEIGHTS, CSM_CASCADE_COUNT};
+use crate::vertex::{
+    FlatUniforms, InstanceData, SceneUniforms, CSM_CASCADE_COUNT, MAX_MORPH_WEIGHTS,
+};
 use rc3d_core::DisplayMode;
 use rc3d_scene::AlphaMode;
 use slotmap::Key;
@@ -27,7 +29,12 @@ fn material_key(dc: &DrawCall) -> u64 {
     let mut h = twox_hash::XxHash64::with_seed(0);
     h.write(dc.albedo_path.as_deref().unwrap_or("").as_bytes());
     h.write(dc.normal_path.as_deref().unwrap_or("").as_bytes());
-    h.write(dc.metallic_roughness_path.as_deref().unwrap_or("").as_bytes());
+    h.write(
+        dc.metallic_roughness_path
+            .as_deref()
+            .unwrap_or("")
+            .as_bytes(),
+    );
     h.write(dc.emissive_path.as_deref().unwrap_or("").as_bytes());
     h.write(dc.occlusion_path.as_deref().unwrap_or("").as_bytes());
     h.write_u64(dc.base_color.x.to_bits() as u64);
@@ -69,8 +76,13 @@ pub(super) fn albedo_material_bind_group<'a>(
         Some(p) => texture_cache.load_path(device, queue, p.as_ref()),
     };
     texture_cache.pbr_material_bind_group(
-        device, layout,
-        albedo_handle, normal_handle, mr_handle, emissive_handle, occlusion_handle,
+        device,
+        layout,
+        albedo_handle,
+        normal_handle,
+        mr_handle,
+        emissive_handle,
+        occlusion_handle,
     )
 }
 
@@ -85,9 +97,12 @@ fn draw_flat_triangle_batches(
     let mut last_bound_mesh = None;
     for &i in ctx.solid_order {
         let dc = ctx.visible[i];
-        let face_color = renderer.flat_face_color.unwrap_or(
-            [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
-        );
+        let face_color = renderer.flat_face_color.unwrap_or([
+            dc.diffuse_color.x,
+            dc.diffuse_color.y,
+            dc.diffuse_color.z,
+            1.0,
+        ]);
         let uniforms = FlatUniforms {
             mvp: dc.mvp.to_cols_array_2d(),
             color: face_color,
@@ -125,11 +140,36 @@ pub(super) fn draw_opaque_triangle_batches(
 
     // Pre-load textures for all visible draws (avoids synchronous I/O in draw loop).
     for dc in ctx.visible {
-        if let Some(ref p) = dc.albedo_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
-        if let Some(ref p) = dc.normal_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
-        if let Some(ref p) = dc.metallic_roughness_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
-        if let Some(ref p) = dc.emissive_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
-        if let Some(ref p) = dc.occlusion_path { renderer.gpu.texture_cache.load_path(&renderer.device, &renderer.queue, p); }
+        if let Some(ref p) = dc.albedo_path {
+            renderer
+                .gpu
+                .texture_cache
+                .load_path(&renderer.device, &renderer.queue, p);
+        }
+        if let Some(ref p) = dc.normal_path {
+            renderer
+                .gpu
+                .texture_cache
+                .load_path(&renderer.device, &renderer.queue, p);
+        }
+        if let Some(ref p) = dc.metallic_roughness_path {
+            renderer
+                .gpu
+                .texture_cache
+                .load_path(&renderer.device, &renderer.queue, p);
+        }
+        if let Some(ref p) = dc.emissive_path {
+            renderer
+                .gpu
+                .texture_cache
+                .load_path(&renderer.device, &renderer.queue, p);
+        }
+        if let Some(ref p) = dc.occlusion_path {
+            renderer
+                .gpu
+                .texture_cache
+                .load_path(&renderer.device, &renderer.queue, p);
+        }
     }
 
     pass.set_pipeline(solid_pipeline);
@@ -148,13 +188,20 @@ pub(super) fn draw_opaque_triangle_batches(
             clip_arr[i] = *cp;
         }
     }
-    let clip_count = [renderer.frame.clip_planes.len().min(6) as f32, 0.0, 0.0, 0.0];
+    let clip_count = [
+        renderer.frame.clip_planes.len().min(6) as f32,
+        0.0,
+        0.0,
+        0.0,
+    ];
 
     {
         let mb = &mut renderer.gpu.draw_bufs.meshlet_bitmask;
         mb.resize(ctx.visible.len(), false);
         mb.fill(false);
-        for &i in ctx.meshlet_indices { mb[i] = true; }
+        for &i in ctx.meshlet_indices {
+            mb[i] = true;
+        }
     }
     {
         let mk = &mut renderer.gpu.draw_bufs.mat_keys;
@@ -167,7 +214,8 @@ pub(super) fn draw_opaque_triangle_batches(
 
     // Phase 1: collect instance data for all subgroups into a single buffer.
     // Phase 2: issue draw calls (avoiding many small write_buffer calls).
-    let mut draw_batches: Vec<(u32, u32, Option<crate::gpu_resource::MeshId>, u64, usize)> = Vec::new();
+    let mut draw_batches: Vec<(u32, u32, Option<crate::gpu_resource::MeshId>, u64, usize)> =
+        Vec::new();
     {
         let all_instances = &mut renderer.gpu.draw_bufs.instances;
         all_instances.clear();
@@ -184,12 +232,27 @@ pub(super) fn draw_opaque_triangle_batches(
             all_instances.push(InstanceData {
                 model: dc.model_matrix.to_cols_array_2d(),
                 mvp: dc.mvp.to_cols_array_2d(),
-                diffuse_color: [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0],
+                diffuse_color: [
+                    dc.diffuse_color.x,
+                    dc.diffuse_color.y,
+                    dc.diffuse_color.z,
+                    1.0,
+                ],
                 base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
                 metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                emissive_alpha: [
+                    dc.emissive_color.x,
+                    dc.emissive_color.y,
+                    dc.emissive_color.z,
+                    dc.alpha_cutoff,
+                ],
                 morph_weights: pack_morph_weights(&dc.morph_weights),
-                morph_count: [dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
+                morph_count: [
+                    dc.morph_weights.len().min(MAX_MORPH_WEIGHTS) as f32,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             });
             instance_cursor = instance_stride; // standard draws start at slot 1
         }
@@ -201,14 +264,17 @@ pub(super) fn draw_opaque_triangle_batches(
             let mut end = start + 1;
             while end < ctx.solid_order.len() {
                 let idx = ctx.solid_order[end];
-                if ctx.visible[idx].light_key != light_key { break; }
+                if ctx.visible[idx].light_key != light_key {
+                    break;
+                }
                 end += 1;
             }
 
             {
                 let md = &mut renderer.gpu.draw_bufs.meshlet_draws;
                 let sd = &mut renderer.gpu.draw_bufs.standard_draws;
-                md.clear(); sd.clear();
+                md.clear();
+                sd.clear();
                 // Meshlet draw path requires HZB (even for frustum-only cull, the
                 // bind group layout binds HZB texture views). Without HZB, fall
                 // back to standard instanced draws for meshlet-indexed geometry.
@@ -216,8 +282,14 @@ pub(super) fn draw_opaque_triangle_batches(
                 let can_meshlet_draw = renderer.gpu.hzb.is_some();
                 for &i in &ctx.solid_order[start..end] {
                     if renderer.gpu.draw_bufs.meshlet_bitmask[i] {
-                        if can_meshlet_draw { md.push(i); } else { sd.push(i); }
-                    } else { sd.push(i); }
+                        if can_meshlet_draw {
+                            md.push(i);
+                        } else {
+                            sd.push(i);
+                        }
+                    } else {
+                        sd.push(i);
+                    }
                 }
             }
 
@@ -227,38 +299,73 @@ pub(super) fn draw_opaque_triangle_batches(
             // depth with its own prepass pipeline (keeps HZB occluder coverage).
             for &i in renderer.gpu.draw_bufs.meshlet_draws.iter() {
                 let dc = ctx.visible[i];
-                let md = match dc.meshlet_data.as_ref() { Some(md) => md, None => continue };
+                let md = match dc.meshlet_data.as_ref() {
+                    Some(md) => md,
+                    None => continue,
+                };
                 let ptr = std::sync::Arc::as_ptr(md) as u64;
-                if !(renderer.gpu.cluster_renderer.is_some() && renderer.gpu.assets.cluster_contains(&ptr)) {
+                if !(renderer.gpu.cluster_renderer.is_some()
+                    && renderer.gpu.assets.cluster_contains(&ptr))
+                {
                     continue;
                 }
                 let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                     [0.08, 0.08, 0.08, 1.0]
                 } else {
-                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+                    [
+                        dc.diffuse_color.x,
+                        dc.diffuse_color.y,
+                        dc.diffuse_color.z,
+                        1.0,
+                    ]
                 };
                 let uniforms = SceneUniforms {
                     mvp: dc.mvp.to_cols_array_2d(),
                     model: dc.model_matrix.to_cols_array_2d(),
                     camera_pos: [dc.camera_pos.x, dc.camera_pos.y, dc.camera_pos.z, 1.0],
                     diffuse_color,
-                    ambient_color: [dc.ambient_color.x, dc.ambient_color.y, dc.ambient_color.z, 1.0],
-                    specular_color: [dc.specular_color.x, dc.specular_color.y, dc.specular_color.z, 1.0],
+                    ambient_color: [
+                        dc.ambient_color.x,
+                        dc.ambient_color.y,
+                        dc.ambient_color.z,
+                        1.0,
+                    ],
+                    specular_color: [
+                        dc.specular_color.x,
+                        dc.specular_color.y,
+                        dc.specular_color.z,
+                        1.0,
+                    ],
                     shininess: [dc.shininess, 0.0, 0.0, 0.0],
-                    clip_planes: clip_arr, clip_count,
+                    clip_planes: clip_arr,
+                    clip_count,
                     pbr_base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
                     pbr_metallic_roughness: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
-                    pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
-                    pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    pbr_emissive_alpha: [
+                        dc.emissive_color.x,
+                        dc.emissive_color.y,
+                        dc.emissive_color.z,
+                        dc.alpha_cutoff,
+                    ],
+                    pbr_alpha_flags: [
+                        alpha_mode_to_f32(dc.alpha_mode),
+                        dc.opacity,
+                        if dc.double_sided { 1.0 } else { 0.0 },
+                        0.0,
+                    ],
                     pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+                    pbr_sheen: [0.0, 0.0, 0.0, 0.0],
                     light_set_index: [head_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
                 if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
                     let key = renderer.gpu.draw_bufs.mat_keys[i];
                     if renderer.last_material_bg_key != key || renderer.last_material_bg.is_none() {
                         let bg = albedo_material_bind_group(
-                            &mut renderer.gpu.texture_cache, &renderer.device,
-                            &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, dc,
+                            &mut renderer.gpu.texture_cache,
+                            &renderer.device,
+                            &renderer.gpu.pipelines.pbr_material_bgl,
+                            &renderer.queue,
+                            dc,
                         );
                         renderer.last_material_bg_key = key;
                         renderer.last_material_bg = Some(bg.clone());
@@ -287,7 +394,12 @@ pub(super) fn draw_opaque_triangle_batches(
             // Standard path: accumulate instance data for batched write
             if !renderer.gpu.draw_bufs.standard_draws.is_empty() {
                 let sd = &mut renderer.gpu.draw_bufs.standard_draws;
-                sd.sort_by_key(|&i| (ctx.mesh_handles[i].map(|m| m.data().as_ffi()), renderer.gpu.draw_bufs.mat_keys[i]));
+                sd.sort_by_key(|&i| {
+                    (
+                        ctx.mesh_handles[i].map(|m| m.data().as_ffi()),
+                        renderer.gpu.draw_bufs.mat_keys[i],
+                    )
+                });
                 let mut sub_start = 0usize;
                 while sub_start < sd.len() {
                     let first_mesh = ctx.mesh_handles[sd[sub_start]];
@@ -295,7 +407,11 @@ pub(super) fn draw_opaque_triangle_batches(
                     let mut sub_end = sub_start + 1;
                     while sub_end < sd.len() {
                         let idx = sd[sub_end];
-                        if ctx.mesh_handles[idx] != first_mesh || renderer.gpu.draw_bufs.mat_keys[idx] != first_mat { break; }
+                        if ctx.mesh_handles[idx] != first_mesh
+                            || renderer.gpu.draw_bufs.mat_keys[idx] != first_mat
+                        {
+                            break;
+                        }
                         sub_end += 1;
                     }
                     let subgroup = &sd[sub_start..sub_end];
@@ -309,23 +425,50 @@ pub(super) fn draw_opaque_triangle_batches(
                                 let diffuse = if ctx.mode == DisplayMode::HiddenLine {
                                     [0.08, 0.08, 0.08, 1.0]
                                 } else {
-                                    [dc.diffuse_color.x, dc.diffuse_color.y, dc.diffuse_color.z, 1.0]
+                                    [
+                                        dc.diffuse_color.x,
+                                        dc.diffuse_color.y,
+                                        dc.diffuse_color.z,
+                                        1.0,
+                                    ]
                                 };
                                 all_instances.push(InstanceData {
                                     model: dc.model_matrix.to_cols_array_2d(),
                                     mvp: dc.mvp.to_cols_array_2d(),
                                     diffuse_color: diffuse,
-                                    base_color: [dc.base_color.x, dc.base_color.y, dc.base_color.z, 1.0],
+                                    base_color: [
+                                        dc.base_color.x,
+                                        dc.base_color.y,
+                                        dc.base_color.z,
+                                        1.0,
+                                    ],
                                     metallic_roughness: [dc.metallic, dc.roughness, 0.0, 0.0],
-                                    emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
+                                    emissive_alpha: [
+                                        dc.emissive_color.x,
+                                        dc.emissive_color.y,
+                                        dc.emissive_color.z,
+                                        dc.alpha_cutoff,
+                                    ],
                                     morph_weights: pack_morph_weights(&dc.morph_weights),
-                                    morph_count: [dc.morph_weights.len().min(crate::vertex::MAX_MORPH_WEIGHTS) as f32, 0.0, 0.0, 0.0],
+                                    morph_count: [
+                                        dc.morph_weights.len().min(crate::vertex::MAX_MORPH_WEIGHTS)
+                                            as f32,
+                                        0.0,
+                                        0.0,
+                                        0.0,
+                                    ],
                                 });
                                 instance_cursor += instance_stride;
                             }
                             let n = subgroup.len() as u32;
                             let rep_dc_idx = subgroup[0];
-                            draw_batches.push((first_instance, n, first_mesh, renderer.gpu.draw_bufs.mat_keys[rep_dc_idx], rep_dc_idx));
+                            draw_batches.push((
+                                first_instance,
+                                n,
+                                first_mesh,
+                                renderer.gpu.draw_bufs.mat_keys[rep_dc_idx],
+                                rep_dc_idx,
+                            ));
                         }
                     }
                 }
@@ -338,7 +481,8 @@ pub(super) fn draw_opaque_triangle_batches(
         // has meshlet data when the render pass starts.
         if upload_buffers && !renderer.gpu.draw_bufs.instances.is_empty() {
             renderer.queue.write_buffer(
-                &renderer.gpu.instance_buffer, 0,
+                &renderer.gpu.instance_buffer,
+                0,
                 bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
             );
         }
@@ -347,17 +491,22 @@ pub(super) fn draw_opaque_triangle_batches(
             // Multi-draw indirect path: build DrawIndexedIndirectArgs args, write to GPU buffer,
             // then batch by (mesh, mat_key, light_set_id) to minimise state changes.
             // Collect mesh index_counts before mutable borrow of standard_indirect_args.
-            let mesh_index_counts: Vec<u32> = draw_batches.iter().map(|&(_, _n, mesh_id, _, _)| {
-                match mesh_id.and_then(|m| renderer.get_mesh(m)) {
-                    Some(mesh) if mesh.index_buffer.is_some() => mesh.index_count,
-                    _ => 0,
-                }
-            }).collect();
+            let mesh_index_counts: Vec<u32> = draw_batches
+                .iter()
+                .map(
+                    |&(_, _n, mesh_id, _, _)| match mesh_id.and_then(|m| renderer.get_mesh(m)) {
+                        Some(mesh) if mesh.index_buffer.is_some() => mesh.index_count,
+                        _ => 0,
+                    },
+                )
+                .collect();
 
             let indirect_args = &mut renderer.gpu.draw_bufs.standard_indirect_args;
             indirect_args.clear();
 
-            for (bi, &(first_instance, n, _mesh_id, _first_mat_key, _rep_dc_idx)) in draw_batches.iter().enumerate() {
+            for (bi, &(first_instance, n, _mesh_id, _first_mat_key, _rep_dc_idx)) in
+                draw_batches.iter().enumerate()
+            {
                 // Build 1:1 with draw_batches so offsets align in the batching loop.
                 // Zero-instance draws are skipped by the GPU and only exist for alignment.
                 let ic = mesh_index_counts[bi];
@@ -372,10 +521,16 @@ pub(super) fn draw_opaque_triangle_batches(
             }
 
             if !indirect_args.is_empty() {
-                let indirect_buf = renderer.gpu.draw_bufs.standard_indirect_buf.as_ref().unwrap();
+                let indirect_buf = renderer
+                    .gpu
+                    .draw_bufs
+                    .standard_indirect_buf
+                    .as_ref()
+                    .unwrap();
                 let arg_stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>();
                 if upload_buffers {
-                    let mut indirect_bytes: Vec<u8> = Vec::with_capacity(indirect_args.len() * arg_stride);
+                    let mut indirect_bytes: Vec<u8> =
+                        Vec::with_capacity(indirect_args.len() * arg_stride);
                     for arg in indirect_args.iter() {
                         indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.index_count));
                         indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.instance_count));
@@ -383,14 +538,18 @@ pub(super) fn draw_opaque_triangle_batches(
                         indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.base_vertex));
                         indirect_bytes.extend_from_slice(bytemuck::bytes_of(&arg.first_instance));
                     }
-                    renderer.queue.write_buffer(indirect_buf, 0, &indirect_bytes);
+                    renderer
+                        .queue
+                        .write_buffer(indirect_buf, 0, &indirect_bytes);
                 }
                 let mut batch_start = 0u32;
                 let mut current_mesh: Option<crate::gpu_resource::MeshId> = None;
                 let mut current_mat_key: Option<u64> = None;
                 let mut current_light_set: Option<u32> = None;
 
-                for (i, &(_first_instance, n, mesh_id, first_mat_key, rep_dc_idx)) in draw_batches.iter().enumerate() {
+                for (i, &(_first_instance, n, mesh_id, first_mat_key, rep_dc_idx)) in
+                    draw_batches.iter().enumerate()
+                {
                     // Flush previous batch on invalid entry or state change.
                     let mesh_valid = mesh_id.is_some() && n > 0;
                     if !mesh_valid {
@@ -399,9 +558,12 @@ pub(super) fn draw_opaque_triangle_batches(
                         if count > 0 {
                             if let Some(prev_mesh) = current_mesh {
                                 renderer.draw_mesh_multi_indirect(
-                                    pass, prev_mesh, indirect_buf,
+                                    pass,
+                                    prev_mesh,
+                                    indirect_buf,
                                     batch_start as u64 * arg_stride as u64,
-                                    count, &mut last_bound_mesh,
+                                    count,
+                                    &mut last_bound_mesh,
                                 );
                             }
                         }
@@ -422,9 +584,12 @@ pub(super) fn draw_opaque_triangle_batches(
                         if count > 0 {
                             if let Some(prev_mesh) = current_mesh {
                                 renderer.draw_mesh_multi_indirect(
-                                    pass, prev_mesh, indirect_buf,
+                                    pass,
+                                    prev_mesh,
+                                    indirect_buf,
                                     batch_start as u64 * arg_stride as u64,
-                                    count, &mut last_bound_mesh,
+                                    count,
+                                    &mut last_bound_mesh,
                                 );
                             }
                         }
@@ -435,33 +600,79 @@ pub(super) fn draw_opaque_triangle_batches(
                         let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                             [0.08, 0.08, 0.08, 1.0]
                         } else {
-                            [rep_dc.diffuse_color.x, rep_dc.diffuse_color.y, rep_dc.diffuse_color.z, 1.0]
+                            [
+                                rep_dc.diffuse_color.x,
+                                rep_dc.diffuse_color.y,
+                                rep_dc.diffuse_color.z,
+                                1.0,
+                            ]
                         };
                         let uniforms = SceneUniforms {
                             mvp: rep_dc.mvp.to_cols_array_2d(),
                             model: rep_dc.model_matrix.to_cols_array_2d(),
-                            camera_pos: [rep_dc.camera_pos.x, rep_dc.camera_pos.y, rep_dc.camera_pos.z, 1.0],
+                            camera_pos: [
+                                rep_dc.camera_pos.x,
+                                rep_dc.camera_pos.y,
+                                rep_dc.camera_pos.z,
+                                1.0,
+                            ],
                             diffuse_color,
-                            ambient_color: [rep_dc.ambient_color.x, rep_dc.ambient_color.y, rep_dc.ambient_color.z, 1.0],
-                            specular_color: [rep_dc.specular_color.x, rep_dc.specular_color.y, rep_dc.specular_color.z, 1.0],
+                            ambient_color: [
+                                rep_dc.ambient_color.x,
+                                rep_dc.ambient_color.y,
+                                rep_dc.ambient_color.z,
+                                1.0,
+                            ],
+                            specular_color: [
+                                rep_dc.specular_color.x,
+                                rep_dc.specular_color.y,
+                                rep_dc.specular_color.z,
+                                1.0,
+                            ],
                             shininess: [rep_dc.shininess, 0.0, 0.0, 0.0],
-                            clip_planes: clip_arr, clip_count,
-                            pbr_base_color: [rep_dc.base_color.x, rep_dc.base_color.y, rep_dc.base_color.z, 1.0],
-                            pbr_metallic_roughness: [rep_dc.metallic, rep_dc.roughness, rep_dc.anisotropic, 0.0],
-                            pbr_emissive_alpha: [rep_dc.emissive_color.x, rep_dc.emissive_color.y, rep_dc.emissive_color.z, rep_dc.alpha_cutoff],
-                            pbr_alpha_flags: [alpha_mode_to_f32(rep_dc.alpha_mode), rep_dc.opacity, if rep_dc.double_sided { 1.0 } else { 0.0 }, 0.0],
-                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+                            clip_planes: clip_arr,
+                            clip_count,
+                            pbr_base_color: [
+                                rep_dc.base_color.x,
+                                rep_dc.base_color.y,
+                                rep_dc.base_color.z,
+                                1.0,
+                            ],
+                            pbr_metallic_roughness: [
+                                rep_dc.metallic,
+                                rep_dc.roughness,
+                                rep_dc.anisotropic,
+                                0.0,
+                            ],
+                            pbr_emissive_alpha: [
+                                rep_dc.emissive_color.x,
+                                rep_dc.emissive_color.y,
+                                rep_dc.emissive_color.z,
+                                rep_dc.alpha_cutoff,
+                            ],
+                            pbr_alpha_flags: [
+                                alpha_mode_to_f32(rep_dc.alpha_mode),
+                                rep_dc.opacity,
+                                if rep_dc.double_sided { 1.0 } else { 0.0 },
+                                0.0,
+                            ],
+                            pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+                            pbr_sheen: [0.0, 0.0, 0.0, 0.0],
                             light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                         };
-                        let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {
+                        let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms)
+                        else {
                             // Uniform pool full: flush batch, skip remaining.
                             let count = i as u32 - batch_start;
                             if count > 0 {
                                 if let Some(prev_mesh) = current_mesh {
                                     renderer.draw_mesh_multi_indirect(
-                                        pass, prev_mesh, indirect_buf,
+                                        pass,
+                                        prev_mesh,
+                                        indirect_buf,
                                         batch_start as u64 * arg_stride as u64,
-                                        count, &mut last_bound_mesh,
+                                        count,
+                                        &mut last_bound_mesh,
                                     );
                                 }
                             }
@@ -471,11 +682,20 @@ pub(super) fn draw_opaque_triangle_batches(
                             current_light_set = None;
                             continue;
                         };
-                        pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[phong_offset]);
-                        if renderer.last_material_bg_key != first_mat_key || renderer.last_material_bg.is_none() {
+                        pass.set_bind_group(
+                            0,
+                            renderer.gpu.phong_pool.bind_group(),
+                            &[phong_offset],
+                        );
+                        if renderer.last_material_bg_key != first_mat_key
+                            || renderer.last_material_bg.is_none()
+                        {
                             let mat_bg = albedo_material_bind_group(
-                                &mut renderer.gpu.texture_cache, &renderer.device,
-                                &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, rep_dc,
+                                &mut renderer.gpu.texture_cache,
+                                &renderer.device,
+                                &renderer.gpu.pipelines.pbr_material_bgl,
+                                &renderer.queue,
+                                rep_dc,
                             );
                             renderer.last_material_bg_key = first_mat_key;
                             renderer.last_material_bg = Some(mat_bg.clone());
@@ -495,9 +715,12 @@ pub(super) fn draw_opaque_triangle_batches(
                 if final_count > 0 {
                     if let Some(mesh_id) = current_mesh {
                         renderer.draw_mesh_multi_indirect(
-                            pass, mesh_id, indirect_buf,
+                            pass,
+                            mesh_id,
+                            indirect_buf,
                             batch_start as u64 * arg_stride as u64,
-                            final_count, &mut last_bound_mesh,
+                            final_count,
+                            &mut last_bound_mesh,
                         );
                     }
                 }
@@ -505,36 +728,89 @@ pub(super) fn draw_opaque_triangle_batches(
         } else {
             // Fallback: per-draw draw_indexed when multi-draw indirect is not supported.
             for &(first_instance, n, mesh_id, first_mat_key, rep_dc_idx) in &draw_batches {
-                let Some(mesh_id) = mesh_id else { continue; };
-                if n == 0 { continue; }
+                let Some(mesh_id) = mesh_id else {
+                    continue;
+                };
+                if n == 0 {
+                    continue;
+                }
                 let rep_dc = ctx.visible[rep_dc_idx];
                 let diffuse_color = if ctx.mode == DisplayMode::HiddenLine {
                     [0.08, 0.08, 0.08, 1.0]
                 } else {
-                    [rep_dc.diffuse_color.x, rep_dc.diffuse_color.y, rep_dc.diffuse_color.z, 1.0]
+                    [
+                        rep_dc.diffuse_color.x,
+                        rep_dc.diffuse_color.y,
+                        rep_dc.diffuse_color.z,
+                        1.0,
+                    ]
                 };
                 let uniforms = SceneUniforms {
                     mvp: rep_dc.mvp.to_cols_array_2d(),
                     model: rep_dc.model_matrix.to_cols_array_2d(),
-                    camera_pos: [rep_dc.camera_pos.x, rep_dc.camera_pos.y, rep_dc.camera_pos.z, 1.0],
+                    camera_pos: [
+                        rep_dc.camera_pos.x,
+                        rep_dc.camera_pos.y,
+                        rep_dc.camera_pos.z,
+                        1.0,
+                    ],
                     diffuse_color,
-                    ambient_color: [rep_dc.ambient_color.x, rep_dc.ambient_color.y, rep_dc.ambient_color.z, 1.0],
-                    specular_color: [rep_dc.specular_color.x, rep_dc.specular_color.y, rep_dc.specular_color.z, 1.0],
+                    ambient_color: [
+                        rep_dc.ambient_color.x,
+                        rep_dc.ambient_color.y,
+                        rep_dc.ambient_color.z,
+                        1.0,
+                    ],
+                    specular_color: [
+                        rep_dc.specular_color.x,
+                        rep_dc.specular_color.y,
+                        rep_dc.specular_color.z,
+                        1.0,
+                    ],
                     shininess: [rep_dc.shininess, 0.0, 0.0, 0.0],
-                    clip_planes: clip_arr, clip_count,
-                    pbr_base_color: [rep_dc.base_color.x, rep_dc.base_color.y, rep_dc.base_color.z, 1.0],
-                    pbr_metallic_roughness: [rep_dc.metallic, rep_dc.roughness, rep_dc.anisotropic, 0.0],
-                    pbr_emissive_alpha: [rep_dc.emissive_color.x, rep_dc.emissive_color.y, rep_dc.emissive_color.z, rep_dc.alpha_cutoff],
-                    pbr_alpha_flags: [alpha_mode_to_f32(rep_dc.alpha_mode), rep_dc.opacity, if rep_dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    clip_planes: clip_arr,
+                    clip_count,
+                    pbr_base_color: [
+                        rep_dc.base_color.x,
+                        rep_dc.base_color.y,
+                        rep_dc.base_color.z,
+                        1.0,
+                    ],
+                    pbr_metallic_roughness: [
+                        rep_dc.metallic,
+                        rep_dc.roughness,
+                        rep_dc.anisotropic,
+                        0.0,
+                    ],
+                    pbr_emissive_alpha: [
+                        rep_dc.emissive_color.x,
+                        rep_dc.emissive_color.y,
+                        rep_dc.emissive_color.z,
+                        rep_dc.alpha_cutoff,
+                    ],
+                    pbr_alpha_flags: [
+                        alpha_mode_to_f32(rep_dc.alpha_mode),
+                        rep_dc.opacity,
+                        if rep_dc.double_sided { 1.0 } else { 0.0 },
+                        0.0,
+                    ],
                     pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+                    pbr_sheen: [0.0, 0.0, 0.0, 0.0],
                     light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
-                let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else { continue; };
+                let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {
+                    continue;
+                };
                 pass.set_bind_group(0, renderer.gpu.phong_pool.bind_group(), &[phong_offset]);
-                if renderer.last_material_bg_key != first_mat_key || renderer.last_material_bg.is_none() {
+                if renderer.last_material_bg_key != first_mat_key
+                    || renderer.last_material_bg.is_none()
+                {
                     let mat_bg = albedo_material_bind_group(
-                        &mut renderer.gpu.texture_cache, &renderer.device,
-                        &renderer.gpu.pipelines.pbr_material_bgl, &renderer.queue, rep_dc,
+                        &mut renderer.gpu.texture_cache,
+                        &renderer.device,
+                        &renderer.gpu.pipelines.pbr_material_bgl,
+                        &renderer.queue,
+                        rep_dc,
                     );
                     renderer.last_material_bg_key = first_mat_key;
                     renderer.last_material_bg = Some(mat_bg.clone());
@@ -542,7 +818,13 @@ pub(super) fn draw_opaque_triangle_batches(
                 if let Some(ref mat_bg) = renderer.last_material_bg {
                     pass.set_bind_group(1, mat_bg, &[]);
                 }
-                renderer.draw_mesh_instanced(pass, mesh_id, first_instance, n, &mut last_bound_mesh);
+                renderer.draw_mesh_instanced(
+                    pass,
+                    mesh_id,
+                    first_instance,
+                    n,
+                    &mut last_bound_mesh,
+                );
             }
         }
     }
