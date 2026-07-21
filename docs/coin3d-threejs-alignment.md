@@ -221,21 +221,7 @@ The mesh topology is flat — no concept of:
 | 5 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL requires pre-processed envmaps | **DONE** |
 | 6 | Per-face material groups (multi-material meshes) | Medium | Medium |
 | 7 | MeshPhysicalMaterial sheen extension | Medium | Medium — fabric/furniture surfaces | **DONE** |
-| 8 | Soft shadows (PCSS) | High | Medium |
-| 9 | SDF font rendering (Text3 quality) | Medium | Medium |
-| 10 | Light probes / reflection probes | Medium | Medium |
-
-### LOW — Nice to have
-
-| # | Feature | Effort | Impact |
-|---|---------|--------|--------|
-| 11 | MeshPhysicalMaterial anisotropy | Low | Low — brushed metal, niche |
-| 12 | CPU-side edge extraction (EdgesGeometry-style) | Low | Low — needed only for CAD wireframe export |
-| 13 | Cel shading (MeshToonMaterial) | Low | Low |
-| 14 | Inline ray queries for RayTracing node | Medium | Low — basic ray-cast without DXR |
-| 15 | Film grain post-effect | Low | Low |
-| 16 | DRACO mesh compression | Medium | Low |
-| 17 | KTX2 texture compression | Medium | Low |
+| 8-17 | All remaining MEDIUM+LOW | — | — | **DEFERRED** — outside CAD visualization scope |
 
 ---
 
