@@ -93,6 +93,9 @@ pub struct Renderer {
     pub enable_cluster_lights: bool,
     pub enable_omni_shadows: bool,
     pub enable_ldr_fxaa: bool,
+    /// Enable SMAA (Subpixel Morphological Anti-Aliasing) instead of FXAA.
+    /// Mutually exclusive with enable_ldr_fxaa for LDR path.
+    pub enable_ldr_smaa: bool,
     pub hdr_post_processing: bool,
     /// Enable WBOIT (Weighted Blended Order-Independent Transparency) for
     /// transparent objects instead of traditional back-to-front alpha blend.
@@ -873,6 +876,7 @@ impl Renderer {
             enable_cluster_lights: true,
             enable_omni_shadows: true,
             enable_ldr_fxaa: true,
+            enable_ldr_smaa: false,
             hdr_post_processing: false,
             enable_wboit: false,
             global_display_mode: DisplayMode::Shaded,

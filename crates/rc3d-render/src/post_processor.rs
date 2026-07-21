@@ -39,6 +39,8 @@ pub struct PostFxPipelines {
     pub post_params_buf: wgpu::Buffer,
     pub fxaa_ldr_bgl: wgpu::BindGroupLayout,
     pub fxaa_ldr_pipeline: wgpu::RenderPipeline,
+    pub smaa_edge_pipeline: wgpu::RenderPipeline,
+    pub smaa_blend_pipeline: wgpu::RenderPipeline,
     pub blit_bgl: wgpu::BindGroupLayout,
     pub blit_pipeline: wgpu::RenderPipeline,
     pub copy_pipeline: wgpu::ComputePipeline,
@@ -94,6 +96,14 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     let fxaa_ldr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("FXAA LDR"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fxaa_ldr.wgsl").into()),
+    });
+    let smaa_edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("SMAA Edge"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/smaa_edge.wgsl").into()),
+    });
+    let smaa_blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("SMAA Blend"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/smaa_blend.wgsl").into()),
     });
 
     let tonemap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -431,6 +441,66 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         cache: None,
     });
 
+    // ── SMAA Edge Detection Pipeline ──
+    let smaa_edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("SMAA Edge"),
+        layout: Some(&fxaa_ldr_pll), // same single-texture BGL
+        vertex: wgpu::VertexState {
+            module: &smaa_edge_shader,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &smaa_edge_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::R8Unorm,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    // ── SMAA Blend Pipeline ──
+    let smaa_blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("SMAA Blend"),
+        layout: Some(&fxaa_ldr_pll),
+        vertex: wgpu::VertexState {
+            module: &smaa_blend_shader,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &smaa_blend_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
     // ── WBOIT Composite Pipeline ──
     let wboit_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("WBOIT Composite"),
@@ -508,6 +578,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         post_params_buf,
         fxaa_ldr_bgl,
         fxaa_ldr_pipeline,
+        smaa_edge_pipeline,
+        smaa_blend_pipeline,
         blit_bgl,
         blit_pipeline,
         bloom_bgl,
