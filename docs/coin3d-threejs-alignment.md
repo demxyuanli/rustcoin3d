@@ -121,7 +121,7 @@ rc3d-io (mesh I/O)
 | LUTPass | ✓ `color_grading` | |
 | AdaptiveToneMappingPass | ✓ `auto_exposure` | |
 | UnrealBloomPass | ✓ `bloom_prefilter` | |
-| SMAAPass | ✗ | 1-2 day from three.js reference; complementary to existing TAA (no ghosting) |
+| SMAAPass | ✗ | **DONE** — 2-pass simplified SMAA (edge-detect + blend) |
 | OutlinePass | ✓ `outline` / `selection_outline` | |
 | FilmPass | ✗ | Film grain |
 | GlitchPass | ✗ | Glitch effect |
@@ -212,7 +212,7 @@ The mesh topology is flat — no concept of:
 | 1 | File node → glTF loader wiring | Low | High — models loadable via scene graph | **DONE** |
 | 2 | MeshPhysicalMaterial clearcoat + transmission | Medium | High — automotive & glass PBR | **DONE** — clearcoat shader + fields, transmission deferred |
 | 3 | Forward rendering path | High | High — transparent sorting | **DEFERRED** — see analysis |
-| 4 | SMAA anti-aliasing | Low | Medium — 1-2 day, TAA complement | pending |
+| 4 | SMAA anti-aliasing | Low | Medium — TAA complement | **DONE** |
 
 ### MEDIUM — Feature completeness
 
