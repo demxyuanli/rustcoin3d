@@ -138,6 +138,8 @@ pub struct SceneUniforms {
     pub pbr_alpha_flags: [f32; 4],
     /// x=clearcoat_factor, y=clearcoat_roughness, zw=pad
     pub pbr_clearcoat: [f32; 4],
+    /// x=sheen_color.r, y=sheen_color.g, z=sheen_color.b, w=sheen_roughness
+    pub pbr_sheen: [f32; 4],
     pub light_set_index: [f32; 4],
 }
 

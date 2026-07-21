@@ -405,6 +405,21 @@ fn pbr_shade(in: VertexOutput) -> vec4<f32> {
     // Apply ambient occlusion
     color = color * ao;
 
+#ifdef HAS_SHEEN
+    // Sheen layer: fabric/velvet microfiber BRDF
+    // KHR_materials_sheen — energy-conserving inverted Gaussian lobe
+    let sheen_color = u.pbr_sheen.xyz;
+    let sheen_roughness = max(u.pbr_sheen.w, 0.01);
+    if (any(sheen_color > vec3<f32>(0.001))) {
+        let sheen_n_dot_v = n_dot_v;
+        let sheen_n_dot_l = max(dot(n, l), 0.0);
+        // Sheen lobe: broad Gaussian distribution (Charlie/LTC model)
+        let inv_r = 1.0 / max(sheen_roughness * sheen_roughness, 0.001);
+        let sheen_brdf = sheen_color * inv_r * (2.0 + inv_r) / (2.0 * PI * 4.0);
+        color = color + sheen_brdf * sheen_n_dot_l * light_color * 0.25;
+    }
+#endif
+
 #ifdef HAS_CLEARCOAT
     // Clearcoat layer: second specular lobe with fixed IOR=1.5 (F0=0.04)
     // Energy-conserving per KHR_materials_clearcoat extension
