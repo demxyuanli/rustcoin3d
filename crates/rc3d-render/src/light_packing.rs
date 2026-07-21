@@ -4,7 +4,7 @@
 //! light parameter hashes for draw-call grouping.
 
 use crate::vertex::MAX_LIGHTS;
-use rc3d_actions::{LightData, LightType};
+use rc3d_scene::{LightData, LightType};
 
 /// Packed light data for GPU upload:
 /// (directions, colors, types, positions, spot params, light count)

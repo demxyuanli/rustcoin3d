@@ -405,6 +405,56 @@ fn pbr_shade(in: VertexOutput) -> vec4<f32> {
     // Apply ambient occlusion
     color = color * ao;
 
+#ifdef HAS_CLEARCOAT
+    // Clearcoat layer: second specular lobe with fixed IOR=1.5 (F0=0.04)
+    // Energy-conserving per KHR_materials_clearcoat extension
+    let cc_factor = u.pbr_clearcoat.x;
+    let cc_roughness = clamp(u.pbr_clearcoat.y, 0.01, 1.0);
+    if (cc_factor > 0.01) {
+        let cc_n = N;
+        let cc_n_dot_v = max(dot(cc_n, v), 0.0001);
+        let cc_f0 = 0.04;  // Fixed index ~1.5
+        // Two-layer Fresnel: attenuate base specular by clearcoat absorption
+        let cc_fresnel = fresnel_schlick(cc_n_dot_v, vec3<f32>(cc_f0));
+        // Base layer loses energy to clearcoat
+        color = color * (1.0 - cc_fresnel * cc_factor);
+
+        // Recompute specular lighting for clearcoat layer
+        var cc_lo = vec3<f32>(0.0);
+        for (var j = 0u; j < light_count; j = j + 1u) {
+            let lt = i32(g.light_types[j].x + 0.5);
+            let raw_ldir = normalize(g.light_dirs[j].xyz);
+            let ptl = g.light_positions[j].xyz - in.world_pos;
+            let dst = max(length(ptl), 0.0001);
+            let tl = ptl / dst;
+            let att = 1.0 / (1.0 + 0.09 * dst + 0.032 * dst * dst);
+            var ldir = -raw_ldir;
+            var l_scale = 1.0;
+            if (lt == 1) { ldir = tl; l_scale = att; }
+            else if (lt == 2) {
+                ldir = tl;
+                let cos_cut = g.spot_params[j].x;
+                if (dot(normalize(-raw_ldir), ldir) < cos_cut) { continue; }
+                l_scale = att * pow(dot(normalize(-raw_ldir), ldir), max(g.spot_params[j].y, 0.0));
+            }
+            let cl = normalize(ldir);
+            let ch = normalize(v + cl);
+            let cl_n_dot_l = max(dot(cc_n, cl), 0.0);
+            let cl_n_dot_h = max(dot(cc_n, ch), 0.0);
+            let cl_h_dot_v = max(dot(ch, v), 0.0);
+            let cl_ndf = distribution_ggx(cl_n_dot_h, cc_roughness);
+            let cl_g = geometry_smith(cc_n_dot_v, cl_n_dot_l, cc_roughness);
+            let cl_spec = (cl_ndf * cl_g / max(4.0 * cc_n_dot_v * cl_n_dot_l, 0.001))
+                * fresnel_schlick(cl_h_dot_v, vec3<f32>(cc_f0));
+            cc_lo += cl_spec * g.light_colors[j].xyz * l_scale * cl_n_dot_l;
+        }
+        // IBL for clearcoat layer (simplified: sample envmap at fixed roughness)
+        let cc_r = reflect(-v, cc_n);
+        let cc_env = textureSampleLevel(t_envmap, s_ibl, direction_to_uv(cc_r), cc_roughness * 2.0).rgb * 0.5;
+        color = color + (cc_lo + cc_env) * cc_factor;
+    }
+#endif
+
     let final_alpha = select(alpha_sample, 1.0, alpha_mode == 0);
     return vec4<f32>(color, final_alpha);
 }

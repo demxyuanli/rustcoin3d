@@ -7,7 +7,9 @@
 use rc3d_core::aabb::Aabb;
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::{
+    scene_traverse, ChildPolicy, NodeData, NodeEntry, SceneGraph, SceneVisitor, TraversalMatrices,
+};
 
 /// Result of an intersection test between two shapes.
 #[derive(Clone, Debug)]
@@ -59,7 +61,7 @@ impl IntersectionDetectionAction {
         self.results.clear();
 
         for &root in graph.roots() {
-            self.traverse(graph, root);
+            scene_traverse(self, graph, root);
         }
 
         // Pairwise test with AABB pre-filter
@@ -88,123 +90,152 @@ impl IntersectionDetectionAction {
             }
         }
     }
+}
 
-    fn traverse(&mut self, graph: &SceneGraph, node: NodeId) {
-        let Some(entry) = graph.get(node) else { return };
+impl TraversalMatrices for IntersectionDetectionAction {
+    fn model_matrix(&self) -> Mat4 {
+        self.model()
+    }
 
+    fn set_model_matrix(&mut self, matrix: Mat4) {
+        if let Some(top) = self.model_stack.last_mut() {
+            *top = matrix;
+        } else {
+            self.model_stack.push(matrix);
+        }
+    }
+
+    fn view_matrix(&self) -> Mat4 {
+        Mat4::IDENTITY
+    }
+}
+
+impl SceneVisitor for IntersectionDetectionAction {
+    fn enter_separator(&mut self) {
+        let m = self.model();
+        self.model_stack.push(m);
+    }
+
+    fn leave_separator(&mut self) {
+        if self.model_stack.len() > 1 {
+            self.model_stack.pop();
+        }
+    }
+
+    fn visit_node(
+        &mut self,
+        _graph: &SceneGraph,
+        node: NodeId,
+        entry: &NodeEntry,
+    ) -> ChildPolicy {
         match &entry.data {
-            NodeData::Separator(_) => {
-                let saved = self.model();
-                for &child in &entry.children { self.traverse(graph, child); }
-                self.model_stack.pop();
-                self.model_stack.push(saved);
-            }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::EventCallback(_) | NodeData::SectionPlane(_) | NodeData::Text2(_) | NodeData::Text3(_) | NodeData::Markup(_) | NodeData::Measurement(_) | NodeData::MorphTarget(_) | NodeData::SkinnedMesh(_) => {
-                for &child in &entry.children { self.traverse(graph, child); }
-            }
-            NodeData::Switch(sw) => {
-                match sw.which_child {
-                    -2 => {},
-                    -1 => { for &child in &sw.children { self.traverse(graph, child); } }
-                    idx if idx >= 0 => {
-                        let i = idx as usize;
-                        if i < sw.children.len() { self.traverse(graph, sw.children[i]); }
-                    }
-                    _ => {}
-                }
-            }
-            NodeData::Lod(lod) => {
-                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
-                if let Some(level_data) = lod.levels.get(level) {
-                    for &child in &level_data.children { self.traverse(graph, child); }
-                }
-            }
-            NodeData::MultipleCopy(mc) => {
-                let base = self.model();
-                for &copy_mat in &mc.copies {
-                    self.model_stack.pop(); self.model_stack.push(base * copy_mat);
-                    for &child in &mc.children { self.traverse(graph, child); }
-                }
-                self.model_stack.pop(); self.model_stack.push(base);
-            }
-            NodeData::Billboard(_) | NodeData::ResetTransform(_) | NodeData::ExplodedView(_) => {
-                for &child in &entry.children { self.traverse(graph, child); }
-            }
-            NodeData::HandlerNode(h) => {
-                h.traverse(graph, node, &entry.children, &mut |id| self.traverse(graph, id));
-            }
-            NodeData::Transform(t) => {
-                let m = self.model() * t.to_matrix();
-                self.model_stack.push(m);
-                for &child in &entry.children {
-                    self.traverse(graph, child);
-                }
-                self.model_stack.pop();
-            }
             NodeData::Coordinate3(c) => {
                 self.current_coords = c.point.clone();
-                for &child in &entry.children {
-                    self.traverse(graph, child);
-                }
+                ChildPolicy::Recurse
             }
-            // Shape nodes: collect geometry
             NodeData::Cube(cube) => {
                 let hw = cube.width * 0.5;
                 let hh = cube.height * 0.5;
                 let hd = cube.depth * 0.5;
                 let verts = vec![
-                    Vec3::new(-hw, -hh, -hd), Vec3::new(hw, -hh, -hd),
-                    Vec3::new(hw, -hh, hd), Vec3::new(-hw, -hh, hd),
-                    Vec3::new(-hw, hh, -hd), Vec3::new(hw, hh, -hd),
-                    Vec3::new(hw, hh, hd), Vec3::new(-hw, hh, hd),
+                    Vec3::new(-hw, -hh, -hd),
+                    Vec3::new(hw, -hh, -hd),
+                    Vec3::new(hw, -hh, hd),
+                    Vec3::new(-hw, -hh, hd),
+                    Vec3::new(-hw, hh, -hd),
+                    Vec3::new(hw, hh, -hd),
+                    Vec3::new(hw, hh, hd),
+                    Vec3::new(-hw, hh, hd),
                 ];
                 let idx: Vec<u32> = vec![
-                    0,1,2,0,2,3,4,6,5,4,7,6,
-                    0,4,5,0,5,1,1,5,6,1,6,2,
-                    2,6,7,2,7,3,3,7,4,3,4,0,
+                    0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 1, 5, 6, 1, 6, 2, 2, 6,
+                    7, 2, 7, 3, 3, 7, 4, 3, 4, 0,
                 ];
                 self.shapes.push(ShapeData {
                     node,
                     world_transform: self.model(),
-                    local_aabb: Aabb { min: Vec3::new(-hw, -hh, -hd), max: Vec3::new(hw, hh, hd) },
+                    local_aabb: Aabb {
+                        min: Vec3::new(-hw, -hh, -hd),
+                        max: Vec3::new(hw, hh, hd),
+                    },
                     vertices: verts,
                     indices: idx,
                 });
+                ChildPolicy::Skip
             }
             NodeData::Sphere(s) => {
                 let r = s.radius;
-                let aabb = Aabb { min: Vec3::splat(-r), max: Vec3::splat(r) };
                 self.shapes.push(ShapeData {
                     node,
                     world_transform: self.model(),
-                    local_aabb: aabb,
+                    local_aabb: Aabb {
+                        min: Vec3::splat(-r),
+                        max: Vec3::splat(r),
+                    },
                     vertices: Vec::new(),
                     indices: Vec::new(),
                 });
+                ChildPolicy::Skip
             }
             NodeData::Cylinder(cyl) => {
                 let r = cyl.radius;
                 let hh = cyl.height * 0.5;
-                let aabb = Aabb { min: Vec3::new(-r, -hh, -r), max: Vec3::new(r, hh, r) };
                 self.shapes.push(ShapeData {
                     node,
                     world_transform: self.model(),
-                    local_aabb: aabb,
+                    local_aabb: Aabb {
+                        min: Vec3::new(-r, -hh, -r),
+                        max: Vec3::new(r, hh, r),
+                    },
                     vertices: Vec::new(),
                     indices: Vec::new(),
                 });
+                ChildPolicy::Skip
             }
             NodeData::Cone(c) => {
                 let r = c.bottom_radius;
                 let hh = c.height * 0.5;
-                let aabb = Aabb { min: Vec3::new(-r, -hh, -r), max: Vec3::new(r, hh, r) };
                 self.shapes.push(ShapeData {
                     node,
                     world_transform: self.model(),
-                    local_aabb: aabb,
+                    local_aabb: Aabb {
+                        min: Vec3::new(-r, -hh, -r),
+                        max: Vec3::new(r, hh, r),
+                    },
                     vertices: Vec::new(),
                     indices: Vec::new(),
                 });
+                ChildPolicy::Skip
+            }
+            NodeData::Torus(torus) => {
+                let r = torus.major_radius + torus.minor_radius;
+                self.shapes.push(ShapeData {
+                    node,
+                    world_transform: self.model(),
+                    local_aabb: Aabb {
+                        min: Vec3::new(-r, -torus.minor_radius, -r),
+                        max: Vec3::new(r, torus.minor_radius, r),
+                    },
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                });
+                ChildPolicy::Skip
+            }
+            NodeData::Volume(vol) => {
+                let hx = vol.dimensions[0] as f32 * 0.5;
+                let hy = vol.dimensions[1] as f32 * 0.5;
+                let hz = vol.dimensions[2] as f32 * 0.5;
+                self.shapes.push(ShapeData {
+                    node,
+                    world_transform: self.model(),
+                    local_aabb: Aabb {
+                        min: Vec3::new(-hx, -hy, -hz),
+                        max: Vec3::new(hx, hy, hz),
+                    },
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                });
+                ChildPolicy::Recurse
             }
             NodeData::Triangle(_) => {
                 if self.current_coords.len() >= 3 {
@@ -224,6 +255,7 @@ impl IntersectionDetectionAction {
                         indices: idx,
                     });
                 }
+                ChildPolicy::Skip
             }
             NodeData::IndexedFaceSet(ifs) => {
                 if !self.current_coords.is_empty() {
@@ -234,13 +266,14 @@ impl IntersectionDetectionAction {
                         aabb.min = aabb.min.min(*p);
                         aabb.max = aabb.max.max(*p);
                     }
-                    // Fan-triangulate polygon faces (split on -1 separators)
                     let mut indices = Vec::new();
                     let mut face_start = 0;
                     for (k, &ci) in ifs.coord_index.iter().enumerate() {
                         if ci == -1 {
                             let face: Vec<u32> = ifs.coord_index[face_start..k]
-                                .iter().map(|&x| x as u32).collect();
+                                .iter()
+                                .map(|&x| x as u32)
+                                .collect();
                             if face.len() >= 3 {
                                 for m in 1..face.len() - 1 {
                                     indices.push(face[0]);
@@ -251,9 +284,11 @@ impl IntersectionDetectionAction {
                             face_start = k + 1;
                         }
                     }
-                    // Handle last face (no trailing -1)
                     let tail: Vec<u32> = ifs.coord_index[face_start..]
-                        .iter().filter(|&&x| x >= 0).map(|&x| x as u32).collect();
+                        .iter()
+                        .filter(|&&x| x >= 0)
+                        .map(|&x| x as u32)
+                        .collect();
                     if tail.len() >= 3 {
                         for m in 1..tail.len() - 1 {
                             indices.push(tail[0]);
@@ -269,8 +304,18 @@ impl IntersectionDetectionAction {
                         indices,
                     });
                 }
+                ChildPolicy::Skip
             }
-            _ => {}
+            NodeData::Material(_)
+            | NodeData::Normal(_)
+            | NodeData::TextureCoordinate2(_)
+            | NodeData::PerspectiveCamera(_)
+            | NodeData::OrthographicCamera(_)
+            | NodeData::DirectionalLight(_)
+            | NodeData::PointLight(_)
+            | NodeData::SpotLight(_)
+            | NodeData::PointCloud(_) => ChildPolicy::Skip,
+            _ => ChildPolicy::Recurse,
         }
     }
 }

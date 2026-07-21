@@ -1,0 +1,323 @@
+use glam::Mat4;
+use rc3d_scene::SceneGraph;
+use crate::adaptive_quality::AdaptiveQuality;
+use crate::render_action::DrawCall;
+use crate::render_passes;
+use super::types::FrameStats;
+
+impl super::Renderer {
+    pub fn render_draw_calls_with_overlay(
+        &mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> FrameStats {
+        let scale_active = self.interaction_active
+            && self.interaction_render_scale < 0.999
+            && self.gpu.upscale_pipeline.is_some();
+        if !scale_active {
+            return self.render_draw_calls_core(
+                draw_calls, scene, post_swapchain_overlay,
+                render_passes::FramePresentation::Swapchain, None,
+            );
+        }
+
+        // Dynamic resolution: render to downscaled intermediate, then upscale to swapchain.
+        let (ew, eh) = (self.config.width, self.config.height);
+        self.ensure_interaction_downscale_targets(ew, eh);
+
+        // Take intermediate textures out to avoid borrow conflicts with render_draw_calls_core
+        let down_tex = self.gpu.interaction_downscale_tex.take();
+        let down_view = self.gpu.interaction_downscale_view.take();
+        let down_depth = self.gpu.interaction_downscale_depth.take();
+        let down_depth_view = self.gpu.interaction_downscale_depth_view.take();
+        let down_depth_read_view = self.gpu.interaction_downscale_depth_read_view.take();
+
+        let (down_tex, down_view, down_depth, down_depth_view, down_depth_read_view) =
+            match (down_tex, down_view, down_depth, down_depth_view, down_depth_read_view) {
+                (Some(t), Some(v), Some(d), Some(dv), Some(drv)) => (t, v, d, dv, drv),
+                _ => return self.render_draw_calls_core(
+                    draw_calls, scene, post_swapchain_overlay,
+                    render_passes::FramePresentation::Swapchain, None,
+                ),
+            };
+        let down_w = down_tex.width();
+        let down_h = down_tex.height();
+
+        // Swap in the cached downscaled depth texture for the offscreen render
+        // (avoids creating/destroying a depth texture every interaction frame).
+        let saved_depth = self.gpu.depth_texture.take();
+        self.gpu.depth_texture = Some((down_depth, down_depth_view, down_depth_read_view));
+
+        // Downscaled depth mismatches full-res intermediate targets (LDR shade, HDR post-fx).
+        // Save and disable both so execute_passes renders directly to the offscreen surface.
+        let saved_ldr_fxaa = self.enable_ldr_fxaa;
+        let saved_hdr = self.hdr_post_processing;
+        self.enable_ldr_fxaa = false;
+        self.hdr_post_processing = false;
+
+        let stats = self.render_draw_calls_core(
+            draw_calls, scene, None,
+            render_passes::FramePresentation::OffscreenSurface {
+                output_texture: &down_tex,
+                output_view: &down_view,
+                width_px: down_w,
+                height_px: down_h,
+            },
+            None,
+        );
+
+        self.hdr_post_processing = saved_hdr;
+        self.enable_ldr_fxaa = saved_ldr_fxaa;
+
+        // Restore original depth + intermediate textures (the downscaled depth
+        // and its views go back into the interaction cache for reuse).
+        if let Some((d, dv, drv)) = self.gpu.depth_texture.take() {
+            // Guard against the core render having replaced the depth texture.
+            if d.width() == down_w && d.height() == down_h {
+                self.gpu.interaction_downscale_depth = Some(d);
+                self.gpu.interaction_downscale_depth_view = Some(dv);
+                self.gpu.interaction_downscale_depth_read_view = Some(drv);
+            }
+        }
+        self.gpu.depth_texture = saved_depth;
+        self.gpu.interaction_downscale_tex = Some(down_tex);
+        self.gpu.interaction_downscale_view = Some(down_view);
+
+        // Upscale from intermediate to swapchain
+        let swapchain_frame = match self.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(_) => return stats,
+        };
+        let swapchain_view = swapchain_frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let upscale_bgl = self.gpu.upscale_bgl.as_ref().unwrap();
+        let upscale_sampler = self.gpu.upscale_sampler.as_ref().unwrap();
+        let intermediate_view = self
+            .gpu
+            .interaction_downscale_view
+            .as_ref()
+            .expect("Intermediate view must exist");
+        let upscale_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Upscale BindGroup"),
+            layout: upscale_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(intermediate_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(upscale_sampler),
+                },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Upscale Encoder"),
+        });
+        {
+            let mut upscale_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Upscale to Swapchain"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &swapchain_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            upscale_pass.set_pipeline(self.gpu.upscale_pipeline.as_ref().unwrap());
+            upscale_pass.set_bind_group(0, &upscale_bg, &[]);
+            upscale_pass.draw(0..3, 0..1);
+        }
+        // Post-swapchain overlay (e.g. egui) runs on the upscaled swapchain view
+        if let Some(ref mut hook) = post_swapchain_overlay {
+            hook(&mut encoder, &swapchain_view);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        // Occlusion depth readback is handled non-blockingly inside
+        // execute_passes (async map kicked after submit, harvested next frame).
+        swapchain_frame.present();
+
+        stats
+    }
+
+    pub fn render_draw_calls_to_viewport_texture<'t>(
+        &'t mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        viewport_texture: &'t wgpu::Texture,
+        viewport_view: &'t wgpu::TextureView,
+        viewport_width_px: u32,
+        viewport_height_px: u32,
+        projection: Mat4,
+        inverse_projection: Mat4,
+    ) -> FrameStats {
+        let vw = viewport_width_px.max(1);
+        let vh = viewport_height_px.max(1);
+
+        let saved_depth = self.gpu.depth_texture.take();
+        self.create_depth_texture_at(vw, vh);
+
+        let saved_hdr = self.hdr_post_processing;
+        let saved_fxaa = self.enable_ldr_fxaa;
+        let saved_hud = self.hud_enabled;
+        let saved_hzb = self.gpu.hzb.take();
+
+        self.hdr_post_processing = false;
+        self.enable_ldr_fxaa = false;
+        self.hud_enabled = false;
+
+        if let Some(ref baker) = self.gpu.hzb_baker {
+            let bgl = &baker.downsample_bgl;
+            self.gpu.hzb = Some(crate::hzb::HzbPyramids::new(&self.device, bgl, vw, vh));
+        }
+
+        let stats = self.render_draw_calls_core(
+            draw_calls,
+            scene,
+            None,
+            render_passes::FramePresentation::OffscreenSurface {
+                output_texture: viewport_texture,
+                output_view: viewport_view,
+                width_px: vw,
+                height_px: vh,
+            },
+            Some((projection, inverse_projection)),
+        );
+
+        self.gpu.depth_texture = saved_depth;
+        self.hdr_post_processing = saved_hdr;
+        self.enable_ldr_fxaa = saved_fxaa;
+        self.hud_enabled = saved_hud;
+        self.gpu.hzb = saved_hzb;
+        stats
+    }
+
+    pub fn render_draw_calls(&mut self, draw_calls: &[DrawCall], scene: &SceneGraph) -> FrameStats {
+        self.render_draw_calls_with_overlay(draw_calls, scene, None)
+    }
+
+    pub fn update_hud(&mut self, fps: f32, frame_time_ms: f32, stats: &FrameStats, mode_name: &str) {
+        if !self.hud_enabled {
+            return;
+        }
+        let interval = match self.gpu.adaptive_quality {
+            AdaptiveQuality::High => 1,
+            AdaptiveQuality::Medium => 2,
+            AdaptiveQuality::Low => 6,
+        };
+        if self.frame.frame_counter.saturating_sub(self.frame.last_hud_update_frame) < interval {
+            return;
+        }
+        self.frame.last_hud_update_frame = self.frame.frame_counter;
+        let quality_name = self.adaptive_quality_name();
+        let hud_mode_name = format!("{mode_name} [{quality_name}]");
+        if let Some(hud) = &mut self.gpu.hud {
+            hud.set_fps_buffer_text(fps, frame_time_ms, stats, &hud_mode_name);
+        }
+    }
+
+    /// Render section caps from scene context (called from render_passes).
+    pub fn render_section_caps_from_ctx(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        shade_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        draw_calls: &[&crate::render_action::DrawCall],
+        solid_order: &[usize],
+        mesh_handles: &[Option<crate::gpu_resource::MeshId>],
+        scene_pl: &crate::pipelines::DepthModePipelines,
+    ) {
+        let cap_specs: Vec<([f32; 4], [f32; 4])> = self
+            .frame
+            .section_cap_tints
+            .iter()
+            .zip(self.frame.clip_planes.iter())
+            .filter_map(|(t, p)| t.map(|c| (*p, c)))
+            .collect();
+        if cap_specs.is_empty() {
+            return;
+        }
+        let entries: Vec<(usize, crate::gpu_resource::MeshId)> =
+            solid_order.iter().filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
+        if entries.is_empty() {
+            return;
+        }
+        self.render_section_caps(
+            encoder,
+            shade_view,
+            depth_view,
+            scene_pl,
+            &cap_specs,
+            &entries,
+            draw_calls,
+        );
+    }
+
+    /// Fills the open cross section with flat color using the mesh's back faces
+    /// with clip plane. Since cull=Front, only back faces render; the clip plane
+    /// discards fragments above the plane, leaving only the cross-section disc.
+    pub fn render_section_caps(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        shade_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        scene_pl: &crate::pipelines::DepthModePipelines,
+        cap_specs: &[([f32; 4], [f32; 4])],
+        entries: &[(usize, crate::gpu_resource::MeshId)],
+        draw_calls: &[&crate::render_action::DrawCall],
+    ) {
+        if cap_specs.is_empty() || entries.is_empty() {
+            return;
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Section cap fill (back faces)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: shade_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&scene_pl.section_cap_fill);
+        let mut last_bound_mesh = None;
+        for &(plane, cap_color) in cap_specs {
+            for &(i, mesh_id) in entries {
+                let dc = draw_calls[i];
+                let mut clip_planes = [[0.0f32; 4]; 6];
+                clip_planes[0] = plane;
+                let uniforms = crate::vertex::FlatUniforms {
+                    mvp: dc.mvp.to_cols_array_2d(),
+                    color: cap_color,
+                    model: dc.model_matrix.to_cols_array_2d(),
+                    clip_planes,
+                    clip_count: [1.0, 0.0, 0.0, 0.0],
+                };
+                if let Some(offset) = self.gpu.flat_pool.push_flat(&uniforms) {
+                    pass.set_bind_group(0, self.gpu.flat_pool.bind_group(), &[offset]);
+                    self.draw_mesh_instanced(&mut pass, mesh_id, 0, 1, &mut last_bound_mesh);
+                }
+            }
+        }
+    }
+}

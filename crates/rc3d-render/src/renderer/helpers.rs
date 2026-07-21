@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use crate::gpu_resource::{EdgeLineKind, GpuMesh, GpuUniformPool};
 use crate::render_action::DrawCall;
 use crate::vertex::LineVertex;
-use super::renderer_types::{BatchAnalysis, FrameDiagnostics, MemoryBudget, NodeTypeDrawStat};
+use super::types::{BatchAnalysis, FrameDiagnostics, MemoryBudget, NodeTypeDrawStat};
 use super::Renderer;
 
 impl Renderer {

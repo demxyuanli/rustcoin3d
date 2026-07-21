@@ -27,7 +27,7 @@ use crate::vertex::MarkupVertex;
 use crate::viewport::ViewportLayout;
 use crate::volumetric_fog::VolumetricFogPass;
 
-use super::renderer_types::{FrameDiagnostics, FrameStats};
+use super::types::{FrameDiagnostics, FrameStats};
 
 /// CAD workflow display tier — controls which rendering passes are active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

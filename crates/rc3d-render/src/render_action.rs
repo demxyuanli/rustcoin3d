@@ -1,7 +1,9 @@
-use rc3d_actions::{LightData, LightType, State};
 use rc3d_core::math::{Mat4, Vec3, Vec4};
 use rc3d_core::{DisplayMode, NodeId};
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::{
+    scene_traverse, ChildPolicy, LightData, LightType, MaterialElement, NodeData, NodeEntry,
+    SceneGraph, SceneVisitor, SeparatorPolicy, State, TraversalMatrices,
+};
 use slotmap::Key;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -31,13 +33,13 @@ fn material_element_for_node(
     mat: &rc3d_scene::MaterialNode,
     entry_name: Option<&str>,
     library: Option<&MaterialLibrary>,
-) -> rc3d_actions::MaterialElement {
+) -> MaterialElement {
     let src = if let (Some(name), Some(lib)) = (entry_name, library) {
         lib.get(name).unwrap_or(mat)
     } else {
         mat
     };
-    rc3d_actions::MaterialElement {
+    MaterialElement {
         diffuse: src.diffuse_color,
         ambient: src.ambient_color,
         specular: src.specular_color,
@@ -344,7 +346,7 @@ impl RenderCollector {
     }
 
     pub fn traverse(&mut self, graph: &SceneGraph, root: NodeId) {
-        self.traverse_node(graph, root);
+        scene_traverse(self, graph, root);
     }
 
     /// Push a GpuDrawData entry to the cache from a freshly-built DrawCall.
@@ -381,41 +383,57 @@ impl RenderCollector {
         self.hidden_nodes = hidden_nodes.clone();
     }
 
-    fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
-        if self.hidden_nodes.contains(&node) {
-            return;
-        }
-        let Some(entry) = graph.get(node) else {
-            return;
-        };
+
+}
+
+impl TraversalMatrices for RenderCollector {
+    fn model_matrix(&self) -> Mat4 {
+        self.state.model_matrix()
+    }
+
+    fn set_model_matrix(&mut self, matrix: Mat4) {
+        self.state.set_model_matrix(matrix);
+    }
+
+    fn view_matrix(&self) -> Mat4 {
+        self.state.view_matrix()
+    }
+}
+
+impl SceneVisitor for RenderCollector {
+    fn enter_separator(&mut self) {
+        self.state.push_all();
+    }
+
+    fn leave_separator(&mut self) {
+        self.state.pop_all();
+    }
+
+    fn separator_policy(&self) -> SeparatorPolicy {
+        SeparatorPolicy::FlattenDirectTransforms
+    }
+
+    fn should_visit(&self, node: NodeId) -> bool {
+        !self.hidden_nodes.contains(&node)
+    }
+
+    fn visit_node(
+        &mut self,
+        graph: &SceneGraph,
+        node: NodeId,
+        entry: &NodeEntry,
+    ) -> ChildPolicy {
         let is_selected = graph.is_selected(node);
         let node_display_mode = entry.display_mode;
         let node_type_label = entry.data.type_name();
 
         match &entry.data {
-            NodeData::Separator(_) => {
-                self.state.push_all();
-                let base = self.state.model_matrix();
-                let mut accum = base;
-                for &child in &entry.children {
-                    let Some(ce) = graph.get(child) else { continue };
-                    if let NodeData::Transform(t) = &ce.data {
-                        accum *= t.to_matrix();
-                        self.state.set_model_matrix(accum);
-                        for &gc in &ce.children {
-                            self.traverse_node(graph, gc);
-                        }
-                    } else {
-                        self.state.set_model_matrix(accum);
-                        self.traverse_node(graph, child);
-                    }
-                }
-                self.state.pop_all();
+
+NodeData::Group(_) | NodeData::File(_) => {
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::Group(_) | NodeData::File(_) => {
-                for &child in &entry.children { self.traverse_node(graph, child); }
-            }
-            NodeData::Decal(decal) => {
+NodeData::Decal(decal) => {
                 self.effect_commands.decals.push(crate::render_passes::pass_effects::DecalDrawCommand {
                     model_matrix: self.state.model_matrix(),
                     position: decal.position,
@@ -427,11 +445,14 @@ impl RenderCollector {
                     is_overlay: self.inside_annotation,
                 });
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
             NodeData::ReflectionPlane(rp) => {
-                if !rp.enabled { for &child in &entry.children { self.traverse_node(graph, child); } return; }
+                if !rp.enabled {
+                    return ChildPolicy::Recurse;
+                }
                 // Mirror view matrix across the reflection plane
                 let view = self.state.view_matrix();
                 let n = rp.normal.normalize();
@@ -447,14 +468,21 @@ impl RenderCollector {
                 let mirrored = view * refl;
                 let saved = self.state.view_matrix();
                 self.state.set_view_matrix(mirrored);
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children {
+                    scene_traverse(self, graph, child);
+                }
                 self.state.set_view_matrix(saved);
+                ChildPolicy::Skip
             }
-            // TODO: Stereo dual-viewport — needs second render pass with offset eye matrices
-            NodeData::StereoCamera(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
-            // TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
-            NodeData::RayTracing(_) => { for &child in &entry.children { self.traverse_node(graph, child); } }
-            NodeData::Volume(volume) => {
+// TODO: Stereo dual-viewport — needs second render pass with offset eye matrices
+            NodeData::StereoCamera(_) => { for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
+            }
+// TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
+            NodeData::RayTracing(_) => { for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
+            }
+NodeData::Volume(volume) => {
                 self.effect_commands.volumes.push(crate::render_passes::pass_effects::VolumeDrawCommand {
                     model_matrix: self.state.model_matrix(),
                     dimensions: volume.dimensions,
@@ -464,10 +492,11 @@ impl RenderCollector {
                     is_overlay: self.inside_annotation,
                 });
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::PointCloud(point_cloud) => {
+NodeData::PointCloud(point_cloud) => {
                 self.effect_commands.point_clouds.push(crate::render_passes::pass_effects::PointCloudDrawCommand {
                     model_matrix: self.state.model_matrix(),
                     file_path: point_cloud.file_path.clone(),
@@ -477,46 +506,20 @@ impl RenderCollector {
                     is_overlay: self.inside_annotation,
                 });
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::Billboard(b) => {
-                let current = self.state.model_matrix();
-                let inv = self.state.view_matrix().inverse();
-                let facing = if b.axis_aligned {
-                    let fwd = Vec3::new(inv.w_axis.x, 0.0, inv.w_axis.z).normalize();
-                    Mat4::look_at_rh(Vec3::ZERO, fwd, Vec3::Y)
-                } else {
-                    Mat4::from_cols(inv.x_axis, inv.y_axis, inv.z_axis, Mat4::IDENTITY.w_axis)
-                };
-                self.state.set_model_matrix(current * facing);
-                for &child in &entry.children { self.traverse_node(graph, child); }
-                self.state.set_model_matrix(current);
-            }
-            NodeData::ResetTransform(_) => {
-                let saved = self.state.model_matrix();
-                self.state.set_model_matrix(Mat4::IDENTITY);
-                for &child in &entry.children { self.traverse_node(graph, child); }
-                self.state.set_model_matrix(saved);
-            }
-            NodeData::ExplodedView(ev) => {
-                let base = self.state.model_matrix();
-                for &child in &entry.children {
-                    let offset = ev.direction * ev.factor;
-                    self.state.set_model_matrix(base * Mat4::from_translation(offset));
-                    self.traverse_node(graph, child);
-                }
-                self.state.set_model_matrix(base);
-            }
-            NodeData::ShapeHints(sh) => {
+NodeData::ShapeHints(sh) => {
                 self.vertex_ordering = match sh.vertex_ordering {
                     rc3d_scene::node_data::VertexOrdering::Clockwise => 1,
                     rc3d_scene::node_data::VertexOrdering::CounterClockwise => 2,
                     _ => 0,
                 };
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::MaterialBinding(mb) => {
+NodeData::MaterialBinding(mb) => {
                 self.material_binding = match mb.value {
                     rc3d_scene::node_data::MaterialBinding::Overall => 1,
                     rc3d_scene::node_data::MaterialBinding::PerPart => 2,
@@ -524,23 +527,26 @@ impl RenderCollector {
                     rc3d_scene::node_data::MaterialBinding::PerVertex => 4,
                     _ => 0,
                 };
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::Texture2Transform(t2t) => {
+NodeData::Texture2Transform(t2t) => {
                 self.tex2_transform = Some((
                     rc3d_core::math::Vec2::new(t2t.translation[0], t2t.translation[1]),
                     t2t.rotation,
                     rc3d_core::math::Vec2::new(t2t.scale[0], t2t.scale[1]),
                 ));
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::Annotation(_) => {
+NodeData::Annotation(_) => {
                 let was_inside_annotation = self.inside_annotation;
                 self.inside_annotation = true;
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
                 self.inside_annotation = was_inside_annotation;
+                ChildPolicy::Skip
             }
-            NodeData::AnnotationSet(ann) => {
+NodeData::AnnotationSet(ann) => {
                 if ann.visible {
                     let set_matrix = self.state.model_matrix();
                     for el in &ann.elements {
@@ -558,17 +564,19 @@ impl RenderCollector {
                         );
                     }
                 }
+                ChildPolicy::Skip
             }
-            NodeData::Environment(env) => {
+NodeData::Environment(env) => {
                 self.ambient_intensity = env.ambient_intensity;
                 self.ambient_color = env.ambient_color;
                 if env.fog_visibility > 0.0 {
                     self.fog_color = env.fog_color;
                     self.fog_visibility = env.fog_visibility;
                 }
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::IndexedLineSet(ils) => {
+NodeData::IndexedLineSet(ils) => {
                 let coord = self.state.coordinate();
                 let mvp = self.state.projection_matrix() * self.state.view_matrix() * self.state.model_matrix();
                 let mut edge_positions: Vec<[f32; 3]> = Vec::new();
@@ -600,126 +608,96 @@ impl RenderCollector {
                         ..Default::default()
                     });
                 }
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::Switch(sw) => {
-                match sw.which_child {
-                    -2 => {} // none
-                    -1 => {
-                        for &child in &sw.children {
-                            self.traverse_node(graph, child);
-                        }
-                    }
-                    idx if idx >= 0 => {
-                        let i = idx as usize;
-                        if i < sw.children.len() {
-                            self.traverse_node(graph, sw.children[i]);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            NodeData::MultipleCopy(mc) => {
-                let base = self.state.model_matrix();
-                for &copy_mat in &mc.copies {
-                    self.state.set_model_matrix(base * copy_mat);
-                    for &child in &mc.children {
-                        self.traverse_node(graph, child);
-                    }
-                }
-                self.state.set_model_matrix(base);
-            }
-            NodeData::Lod(lod) => {
-                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
-                if let Some(level_data) = lod.levels.get(level) {
-                    for &child in &level_data.children {
-                        self.traverse_node(graph, child);
-                    }
-                }
-            }
-            NodeData::HandlerNode(h) => {
-                h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
-            }
-            NodeData::EventCallback(_) => {
+NodeData::EventCallback(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::PickStyle(_) => {
+NodeData::PickStyle(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::SectionPlane(_) => {
+NodeData::SectionPlane(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::Text2(_) | NodeData::Text3(_) => {
+NodeData::Text2(_) | NodeData::Text3(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::Measurement(_) => {
+NodeData::Measurement(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::Markup(_) => {
+NodeData::Markup(_) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::MorphTarget(mt) => {
+NodeData::MorphTarget(mt) => {
                 self.state.set_morph_targets(mt.clone());
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
-            NodeData::SkinnedMesh(sm) => {
+NodeData::SkinnedMesh(sm) => {
                 self.state.set_skinned_mesh(sm.clone());
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
                 self.state.clear_skinned_mesh();
+                ChildPolicy::Skip
             }
-            NodeData::Transform(t) => {
-                let current = self.state.model_matrix();
-                self.state.set_model_matrix(current * t.to_matrix());
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::Coordinate3(coord) => {
+NodeData::Coordinate3(coord) => {
                 self.state.set_coordinate(coord.point.clone());
+                ChildPolicy::Skip
             }
-            NodeData::TextureCoordinate2(tex) => {
+NodeData::TextureCoordinate2(tex) => {
                 self.state.set_texture_coordinate2(tex.point.clone());
+                ChildPolicy::Skip
             }
-            NodeData::Normal(norm) => {
+NodeData::Normal(norm) => {
                 self.state.set_normal(norm.vector.clone());
+                ChildPolicy::Skip
             }
-            NodeData::Material(mat) => {
+NodeData::Material(mat) => {
                 let el = material_element_for_node(mat, entry.name.as_deref(), self.material_library.as_ref());
                 self.state.set_material(el);
+                ChildPolicy::Skip
             }
-            NodeData::PerspectiveCamera(cam) => {
+NodeData::PerspectiveCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
                 self.view_matrix = cam.view_matrix();
                 self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
                 self.projection_orthographic = false;
+                ChildPolicy::Skip
             }
-            NodeData::OrthographicCamera(cam) => {
+NodeData::OrthographicCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
                 self.view_matrix = cam.view_matrix();
                 self.projection_matrix = cam.projection_matrix();
                 self.camera_pos = cam.position;
                 self.projection_orthographic = true;
+                ChildPolicy::Skip
             }
-            NodeData::DirectionalLight(light) => {
+NodeData::DirectionalLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Directional,
                     direction: light.direction,
@@ -729,8 +707,9 @@ impl RenderCollector {
                     cut_off_angle: 0.0,
                     drop_off_rate: 0.0,
                 });
+                ChildPolicy::Skip
             }
-            NodeData::PointLight(light) => {
+NodeData::PointLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Point,
                     direction: Vec3::ZERO,
@@ -740,8 +719,9 @@ impl RenderCollector {
                     cut_off_angle: 0.0,
                     drop_off_rate: 0.0,
                 });
+                ChildPolicy::Skip
             }
-            NodeData::SpotLight(light) => {
+NodeData::SpotLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Spot,
                     direction: light.direction,
@@ -751,20 +731,22 @@ impl RenderCollector {
                     cut_off_angle: light.cut_off_angle,
                     drop_off_rate: light.drop_off_rate,
                 });
+                ChildPolicy::Skip
             }
-            NodeData::AreaLight(light) => {
+NodeData::AreaLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Point,
                     direction: light.direction, location: light.position,
                     color: light.color, intensity: light.intensity,
                     cut_off_angle: 0.0, drop_off_rate: 0.0,
                 });
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
             }
-            NodeData::Triangle(_) => {
+NodeData::Triangle(_) => {
                 let coord = self.state.coordinate();
                 if coord.points.len() < 3 {
-                    return;
+                    return ChildPolicy::Skip;
                 }
                 let normals = self.state.normal();
                 let face_n = if normals.vectors.len() >= 3 {
@@ -801,6 +783,7 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
             NodeData::Cube(cube) => {
                 self.emit_cached_shape(
@@ -814,8 +797,9 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
-            NodeData::Sphere(sphere) => {
+NodeData::Sphere(sphere) => {
                 const SLICES: u32 = 24;
                 const STACKS: u32 = 16;
                 self.emit_cached_shape(
@@ -829,8 +813,9 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
-            NodeData::Cone(cone) => {
+NodeData::Cone(cone) => {
                 const SEGMENTS: u32 = 24;
                 self.emit_cached_shape(
                     ShapeKey::Cone {
@@ -843,8 +828,9 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
-            NodeData::Cylinder(cyl) => {
+NodeData::Cylinder(cyl) => {
                 const SEGMENTS: u32 = 24;
                 self.emit_cached_shape(
                     ShapeKey::Cylinder {
@@ -857,8 +843,9 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
-            NodeData::Torus(torus) => {
+NodeData::Torus(torus) => {
                 const MAJOR_SEGMENTS: u32 = 32;
                 const MINOR_SEGMENTS: u32 = 16;
                 self.emit_cached_shape(
@@ -873,11 +860,12 @@ impl RenderCollector {
                     node_display_mode,
                     node_type_label,
                 );
+                ChildPolicy::Skip
             }
-            NodeData::IndexedFaceSet(ifs) => {
+NodeData::IndexedFaceSet(ifs) => {
                 let coord = self.state.coordinate();
                 if coord.points.is_empty() {
-                    return;
+                    return ChildPolicy::Skip;
                 }
                 // Full-content hash: any data change invalidates the shape cache.
                 use std::hash::{Hash, Hasher};
@@ -1025,15 +1013,29 @@ impl RenderCollector {
                         node_type_label,
                     );
                 }
+                ChildPolicy::Skip
             }
             NodeData::Custom(_, _) => {
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
+                ChildPolicy::Skip
             }
+            // Structural nodes are owned by scene_traverse; never reached here.
+            NodeData::Separator(_)
+            | NodeData::Billboard(_)
+            | NodeData::ResetTransform(_)
+            | NodeData::ExplodedView(_)
+            | NodeData::Switch(_)
+            | NodeData::MultipleCopy(_)
+            | NodeData::Lod(_)
+            | NodeData::HandlerNode(_)
+            | NodeData::Transform(_) => ChildPolicy::Recurse,
         }
     }
+}
 
+impl RenderCollector {
     fn emit_cached_shape<F>(
         &mut self,
         key: ShapeKey,
@@ -1242,16 +1244,6 @@ impl RenderCollector {
 impl Default for RenderCollector {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl rc3d_actions::Action for RenderCollector {
-    fn kind(&self) -> rc3d_actions::ActionKind {
-        rc3d_actions::ActionKind::GLRender
-    }
-
-    fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
-        self.traverse(graph, root);
     }
 }
 

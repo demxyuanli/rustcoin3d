@@ -155,17 +155,11 @@ pub fn csm_light_view_projs(
 }
 
 pub fn aabb_from_scene(graph: &SceneGraph) -> Option<Aabb> {
-    let mut bb = rc3d_actions::GetBoundingBoxAction::new();
-    rc3d_actions::apply_to_all_roots(&mut bb, graph);
-    if bb.bounding_box.min.x <= bb.bounding_box.max.x {
-        Some(bb.bounding_box)
-    } else {
-        None
-    }
+    rc3d_scene::GetBoundingBoxAction::compute_scene_aabb(graph)
 }
 
 pub fn primary_directional_light_dir(graph: &SceneGraph) -> Option<Vec3> {
-    rc3d_actions::LightSubsystem::primary_directional_dir(graph)
+    rc3d_scene::LightSubsystem::primary_directional_dir(graph)
 }
 
 pub fn union_draw_call_aabbs<'a, I>(draw_calls: I) -> Option<Aabb>

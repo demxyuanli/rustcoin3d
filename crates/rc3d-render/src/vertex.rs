@@ -136,6 +136,8 @@ pub struct SceneUniforms {
     pub pbr_metallic_roughness: [f32; 4],
     pub pbr_emissive_alpha: [f32; 4],
     pub pbr_alpha_flags: [f32; 4],
+    /// x=clearcoat_factor, y=clearcoat_roughness, zw=pad
+    pub pbr_clearcoat: [f32; 4],
     pub light_set_index: [f32; 4],
 }
 

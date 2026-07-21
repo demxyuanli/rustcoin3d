@@ -250,6 +250,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     pbr_metallic_roughness: [dc.metallic, dc.roughness, dc.anisotropic, 0.0],
                     pbr_emissive_alpha: [dc.emissive_color.x, dc.emissive_color.y, dc.emissive_color.z, dc.alpha_cutoff],
                     pbr_alpha_flags: [alpha_mode_to_f32(dc.alpha_mode), dc.opacity, if dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
                     light_set_index: [head_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
                 if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
@@ -449,6 +450,7 @@ pub(super) fn draw_opaque_triangle_batches(
                             pbr_metallic_roughness: [rep_dc.metallic, rep_dc.roughness, rep_dc.anisotropic, 0.0],
                             pbr_emissive_alpha: [rep_dc.emissive_color.x, rep_dc.emissive_color.y, rep_dc.emissive_color.z, rep_dc.alpha_cutoff],
                             pbr_alpha_flags: [alpha_mode_to_f32(rep_dc.alpha_mode), rep_dc.opacity, if rep_dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
                             light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                         };
                         let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {
@@ -524,6 +526,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     pbr_metallic_roughness: [rep_dc.metallic, rep_dc.roughness, rep_dc.anisotropic, 0.0],
                     pbr_emissive_alpha: [rep_dc.emissive_color.x, rep_dc.emissive_color.y, rep_dc.emissive_color.z, rep_dc.alpha_cutoff],
                     pbr_alpha_flags: [alpha_mode_to_f32(rep_dc.alpha_mode), rep_dc.opacity, if rep_dc.double_sided { 1.0 } else { 0.0 }, 0.0],
+                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
                     light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
                 let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else { continue; };

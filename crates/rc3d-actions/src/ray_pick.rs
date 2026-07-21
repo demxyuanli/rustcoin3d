@@ -1,7 +1,9 @@
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_mesh::{Bvh, BvhTriangle};
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::{
+    scene_traverse, ChildPolicy, NodeData, NodeEntry, SceneGraph, SceneVisitor, TraversalMatrices,
+};
 
 use crate::{MaterialElement, State};
 
@@ -203,223 +205,157 @@ impl RayPickAction {
     pub fn details(&self) -> Vec<PickDetail> {
         self.hits.iter().map(PickDetail::from_hit).collect()
     }
+}
 
-    fn traverse_node(&mut self, graph: &SceneGraph, node: NodeId) {
-        let Some(entry) = graph.get(node) else {
-            return;
-        };
+impl TraversalMatrices for RayPickAction {
+    fn model_matrix(&self) -> Mat4 {
+        self.state.model_matrix()
+    }
 
+    fn set_model_matrix(&mut self, matrix: Mat4) {
+        self.state.set_model_matrix(matrix);
+    }
+
+    fn view_matrix(&self) -> Mat4 {
+        self.state.view_matrix()
+    }
+}
+
+impl SceneVisitor for RayPickAction {
+    fn enter_separator(&mut self) {
+        self.state.push_all();
+    }
+
+    fn leave_separator(&mut self) {
+        self.state.pop_all();
+    }
+
+    fn visit_node(
+        &mut self,
+        graph: &SceneGraph,
+        node: NodeId,
+        entry: &NodeEntry,
+    ) -> ChildPolicy {
         match &entry.data {
-            NodeData::Separator(_) => {
-                self.state.push_all();
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-                self.state.pop_all();
-            }
-            NodeData::Group(_) | NodeData::Environment(_) | NodeData::ShapeHints(_) | NodeData::Annotation(_) | NodeData::AnnotationSet(_) | NodeData::Texture2Transform(_) | NodeData::MaterialBinding(_) | NodeData::IndexedLineSet(_) | NodeData::File(_) | NodeData::Decal(_) | NodeData::ReflectionPlane(_) | NodeData::StereoCamera(_) | NodeData::RayTracing(_) | NodeData::Volume(_) | NodeData::PointCloud(_) => {
-                for &child in &entry.children { self.traverse_node(graph, child); }
-            }
-            NodeData::Billboard(b) => {
-                let current = self.state.model_matrix();
-                let inv = self.state.view_matrix().inverse();
-                let facing = if b.axis_aligned {
-                    let fwd = Vec3::new(inv.w_axis.x, 0.0, inv.w_axis.z).normalize();
-                    Mat4::look_at_rh(Vec3::ZERO, fwd, Vec3::Y)
-                } else { Mat4::from_cols(inv.x_axis, inv.y_axis, inv.z_axis, Mat4::IDENTITY.w_axis) };
-                self.state.set_model_matrix(current * facing);
-                for &child in &entry.children { self.traverse_node(graph, child); }
-                self.state.set_model_matrix(current);
-            }
-            NodeData::ResetTransform(_) => {
-                let saved = self.state.model_matrix();
-                self.state.set_model_matrix(Mat4::IDENTITY);
-                for &child in &entry.children { self.traverse_node(graph, child); }
-                self.state.set_model_matrix(saved);
-            }
-            NodeData::ExplodedView(ev) => {
-                let base = self.state.model_matrix();
-                for &child in &entry.children {
-                    self.state.set_model_matrix(base * Mat4::from_translation(ev.direction * ev.factor));
-                    self.traverse_node(graph, child);
-                }
-                self.state.set_model_matrix(base);
-            }
-            NodeData::Switch(sw) => {
-                match sw.which_child {
-                    -2 => {} // none
-                    -1 => {
-                        for &child in &sw.children {
-                            self.traverse_node(graph, child);
-                        }
-                    }
-                    idx if idx >= 0 => {
-                        let i = idx as usize;
-                        if i < sw.children.len() {
-                            self.traverse_node(graph, sw.children[i]);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            NodeData::MultipleCopy(mc) => {
-                let base = self.state.model_matrix();
-                for &copy_mat in &mc.copies {
-                    self.state.set_model_matrix(base * copy_mat);
-                    for &child in &mc.children {
-                        self.traverse_node(graph, child);
-                    }
-                }
-                self.state.set_model_matrix(base);
-            }
-            NodeData::Lod(lod) => {
-                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
-                if let Some(level_data) = lod.levels.get(level) {
-                    for &child in &level_data.children {
-                        self.traverse_node(graph, child);
-                    }
-                }
-            }
-            NodeData::HandlerNode(h) => {
-                h.traverse(graph, node, &entry.children, &mut |id| self.traverse_node(graph, id));
-            }
-            NodeData::EventCallback(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
             NodeData::PickStyle(ps) => {
                 self.pickable_stack.push(ps.pickable);
                 for &child in &entry.children {
-                    self.traverse_node(graph, child);
+                    scene_traverse(self, graph, child);
                 }
                 self.pickable_stack.pop();
-            }
-            NodeData::SectionPlane(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::Text2(_) | NodeData::Text3(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::Measurement(_) | NodeData::Markup(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::MorphTarget(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::SkinnedMesh(_) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
-            NodeData::Transform(t) => {
-                let current = self.state.model_matrix();
-                self.state.set_model_matrix(current * t.to_matrix());
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
+                ChildPolicy::Skip
             }
             NodeData::PerspectiveCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
+                ChildPolicy::Skip
             }
             NodeData::OrthographicCamera(cam) => {
                 self.state.set_view_matrix(cam.view_matrix());
                 self.state.set_projection_matrix(cam.projection_matrix());
+                ChildPolicy::Skip
             }
             NodeData::Coordinate3(coord) => {
                 self.state.set_coordinate(coord.point.clone());
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                ChildPolicy::Recurse
             }
             NodeData::TextureCoordinate2(tex) => {
                 self.state.set_texture_coordinate2(tex.point.clone());
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                ChildPolicy::Recurse
             }
             NodeData::Normal(norm) => {
                 self.state.set_normal(norm.vector.clone());
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                ChildPolicy::Recurse
             }
             NodeData::Material(mat) => {
                 self.state.set_material(MaterialElement {
-                    diffuse: mat.diffuse_color, ambient: mat.ambient_color,
-                    specular: mat.specular_color, shininess: mat.shininess,
-                    base_color: mat.base_color, metallic: mat.metallic, roughness: mat.roughness,
-                    albedo_texture: mat.albedo_texture.clone(), normal_texture: mat.normal_texture.clone(),
-                    opacity: mat.opacity, emissive_color: mat.emissive_color,
+                    diffuse: mat.diffuse_color,
+                    ambient: mat.ambient_color,
+                    specular: mat.specular_color,
+                    shininess: mat.shininess,
+                    base_color: mat.base_color,
+                    metallic: mat.metallic,
+                    roughness: mat.roughness,
+                    albedo_texture: mat.albedo_texture.clone(),
+                    normal_texture: mat.normal_texture.clone(),
+                    opacity: mat.opacity,
+                    emissive_color: mat.emissive_color,
                     emissive_texture: mat.emissive_texture.clone(),
                     metallic_roughness_texture: mat.metallic_roughness_texture.clone(),
                     occlusion_texture: mat.occlusion_texture.clone(),
-                    alpha_mode: mat.alpha_mode, alpha_cutoff: mat.alpha_cutoff,
-                    double_sided: mat.double_sided, anisotropic: mat.anisotropic,
+                    alpha_mode: mat.alpha_mode,
+                    alpha_cutoff: mat.alpha_cutoff,
+                    double_sided: mat.double_sided,
+                    anisotropic: mat.anisotropic,
                 });
-                for &child in &entry.children { self.traverse_node(graph, child); }
+                ChildPolicy::Recurse
             }
-            NodeData::DirectionalLight(_) | NodeData::PointLight(_) | NodeData::SpotLight(_) | NodeData::AreaLight(_) => {}
-            // Shape nodes: do intersection test
+            NodeData::DirectionalLight(_)
+            | NodeData::PointLight(_)
+            | NodeData::SpotLight(_)
+            | NodeData::AreaLight(_) => ChildPolicy::Skip,
             NodeData::Triangle(_) => {
-                if !self.is_pickable() { return; }
-                let coord = self.state.coordinate();
-                if coord.points.len() >= 3 {
-                    let model = self.state.model_matrix();
-                    let v0 = model.transform_point3(coord.points[0]);
-                    let v1 = model.transform_point3(coord.points[1]);
-                    let v2 = model.transform_point3(coord.points[2]);
-                    if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
-                        let point = self.ray.origin + self.ray.direction * t;
-                        let c = (v1 - v0).cross(v2 - v0);
-                        let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
-                        let face_index = if self.mode != PickMode::Node { Some(0) } else { None };
-                        let edge_index = if self.mode == PickMode::Edge {
-                            Some(closest_edge_from_bary(&bary))
-                        } else {
-                            None
-                        };
-                        self.hits.push(PickHit {
-                            node,
-                            point,
-                            normal,
-                            distance: t,
-                            face_index,
-                            edge_index,
-                            barycentric: Some(bary.to_array()),
-                        });
+                if self.is_pickable() {
+                    let coord = self.state.coordinate();
+                    if coord.points.len() >= 3 {
+                        let model = self.state.model_matrix();
+                        let v0 = model.transform_point3(coord.points[0]);
+                        let v1 = model.transform_point3(coord.points[1]);
+                        let v2 = model.transform_point3(coord.points[2]);
+                        if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
+                            let point = self.ray.origin + self.ray.direction * t;
+                            let c = (v1 - v0).cross(v2 - v0);
+                            let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
+                            let face_index = if self.mode != PickMode::Node { Some(0) } else { None };
+                            let edge_index = if self.mode == PickMode::Edge {
+                                Some(closest_edge_from_bary(&bary))
+                            } else {
+                                None
+                            };
+                            self.hits.push(PickHit {
+                                node,
+                                point,
+                                normal,
+                                distance: t,
+                                face_index,
+                                edge_index,
+                                barycentric: Some(bary.to_array()),
+                            });
+                        }
                     }
                 }
+                ChildPolicy::Skip
             }
             NodeData::Cube(cube) => {
                 self.pick_cube(node, cube.width, cube.height, cube.depth);
+                ChildPolicy::Skip
             }
             NodeData::Sphere(sphere) => {
                 self.pick_sphere(node, sphere.radius);
+                ChildPolicy::Skip
             }
             NodeData::Cone(cone) => {
                 self.pick_cone(node, cone.bottom_radius, cone.height);
+                ChildPolicy::Skip
             }
             NodeData::Cylinder(cyl) => {
                 self.pick_cylinder(node, cyl.radius, cyl.height);
+                ChildPolicy::Skip
             }
             NodeData::Torus(torus) => {
                 self.pick_torus(node, torus.major_radius, torus.minor_radius);
+                ChildPolicy::Skip
             }
             NodeData::IndexedFaceSet(ifs) => {
                 self.pick_indexed_face_set(node, &ifs.coord_index);
+                ChildPolicy::Skip
             }
-            NodeData::Custom(_, _) => {
-                for &child in &entry.children {
-                    self.traverse_node(graph, child);
-                }
-            }
+            _ => ChildPolicy::Recurse,
         }
     }
+}
 
+impl RayPickAction {
     fn pick_cube(&mut self, node: NodeId, w: f32, h: f32, d: f32) {
         if !self.is_pickable() { return; }
         let model = self.state.model_matrix();
@@ -842,7 +778,7 @@ impl crate::Action for RayPickAction {
     }
 
     fn apply(&mut self, graph: &SceneGraph, root: NodeId) {
-        self.traverse_node(graph, root);
+        scene_traverse(self, graph, root);
         self.hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     }
 }

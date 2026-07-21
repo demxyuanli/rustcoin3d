@@ -2,20 +2,18 @@ use std::path::{Path, PathBuf};
 
 use wgpu::util::DeviceExt;
 
-#[path = "renderer_types.rs"]
-mod renderer_types;
-#[path = "renderer_helpers.rs"]
-mod renderer_helpers;
-#[path = "renderer_render.rs"]
-mod renderer_render;
-#[path = "renderer_skinning.rs"]
-mod renderer_skinning;
-#[path = "renderer_internals.rs"]
-mod renderer_internals;
+mod types;
+mod helpers;
+mod internals;
+mod skinning;
+mod resource_lifecycle;
+mod frame_scheduler;
+mod pass_orchestration;
+mod presentation;
 
-pub use renderer_types::*;
-pub use renderer_internals::CadDisplayTier;
-pub(crate) use renderer_internals::{GpuTier, TierConfig};
+pub use types::*;
+pub use internals::CadDisplayTier;
+pub(crate) use internals::{GpuTier, TierConfig};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
@@ -41,7 +39,7 @@ use crate::taa::{TaaJitter, TaaPass};
 use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::ibl::IblPreset;
-use self::renderer_internals::{DrawBatchBufs, FrameState, GpuInternals};
+use self::internals::{DrawBatchBufs, FrameState, GpuInternals};
 use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
@@ -544,12 +542,12 @@ impl Renderer {
         // at least Standard. Integrated GPUs (e.g. Intel Arc) are capable
         // enough to run SSAO, TAA, HDR, etc.
         let tier = if matches!(adapter_info.device_type, wgpu::DeviceType::Cpu) {
-            renderer_internals::GpuTier::Basic
+            internals::GpuTier::Basic
         } else {
-            renderer_internals::GpuTier::Standard
+            internals::GpuTier::Standard
         };
         let meshlet_gpu_cull_enabled = !is_integrated;
-        let gpu_capability = renderer_internals::GpuCapability {
+        let gpu_capability = internals::GpuCapability {
             tier,
             is_integrated,
             max_draw_indirect_count: 0, // feature gated — use multi_draw_indirect_supported
@@ -638,7 +636,7 @@ impl Renderer {
         // Upscale pipeline for dynamic resolution interaction blit
         let upscale_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Upscale Shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shaders/upscale.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../shaders/upscale.wgsl"))),
         });
         let upscale_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Upscale BGL"),
@@ -707,7 +705,7 @@ impl Renderer {
         // Screen-space edge detection pipeline
         let ss_edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SS Edge Shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shaders/edge_detect.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../shaders/edge_detect.wgsl"))),
         });
         let ss_edge_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("SS Edge Sampler"),
@@ -1044,8 +1042,8 @@ impl Renderer {
                 max_gpu_cull_objects: 65536,
                 multi_draw_indirect_supported,
                 gpu_capability,
-                requested_tier: renderer_internals::CadDisplayTier::Visualization,
-                effective_tier: renderer_internals::CadDisplayTier::Visualization,
+                requested_tier: internals::CadDisplayTier::Visualization,
+                effective_tier: internals::CadDisplayTier::Visualization,
                 interaction_active: false,
                 tier_cooldown_frames: 0,
                 global_frame_buffer: Some(global_frame_buffer),
