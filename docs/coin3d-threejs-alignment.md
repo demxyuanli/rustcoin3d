@@ -219,7 +219,7 @@ The mesh topology is flat — no concept of:
 | # | Feature | Effort | Impact |
 |---|---------|--------|--------|
 | 5 | HDR envmap loading (EXR/HDR) | Low | Medium — IBL requires pre-processed envmaps | **DONE** |
-| 6 | Per-face material groups (multi-material meshes) | Medium | Medium |
+| 6 | Per-face material groups (multi-material meshes) | Medium | Medium | **DEFERRED** — single-material-per-mesh covers 90% of CAD viz |
 | 7 | MeshPhysicalMaterial sheen extension | Medium | Medium — fabric/furniture surfaces | **DONE** |
 | 8-17 | All remaining MEDIUM+LOW | — | — | **DEFERRED** — outside CAD visualization scope |
 
