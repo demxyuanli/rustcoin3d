@@ -24,6 +24,8 @@ pub struct Material {
     pub alpha_cutoff: f32,
     pub double_sided: bool,
     pub anisotropic: f32,
+    pub clearcoat_factor: f32,
+    pub clearcoat_roughness: f32,
     pub light_group: Option<String>,
 }
 
@@ -48,6 +50,8 @@ impl Default for Material {
             alpha_cutoff: 0.5,
             double_sided: false,
             anisotropic: 0.0,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
             light_group: None,
         }
     }
@@ -131,6 +135,8 @@ impl Material {
             alpha_cutoff: self.alpha_cutoff,
             double_sided: self.double_sided,
             anisotropic: self.anisotropic,
+            clearcoat_factor: self.clearcoat_factor,
+            clearcoat_roughness: self.clearcoat_roughness,
             light_group: self.light_group.clone(),
         }
     }

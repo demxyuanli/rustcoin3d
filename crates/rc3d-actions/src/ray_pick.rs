@@ -287,6 +287,8 @@ impl SceneVisitor for RayPickAction {
                     alpha_cutoff: mat.alpha_cutoff,
                     double_sided: mat.double_sided,
                     anisotropic: mat.anisotropic,
+                    clearcoat_factor: mat.clearcoat_factor,
+                    clearcoat_roughness: mat.clearcoat_roughness,
                 });
                 ChildPolicy::Recurse
             }

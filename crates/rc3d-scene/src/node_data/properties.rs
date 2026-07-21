@@ -61,6 +61,10 @@ pub struct MaterialNode {
     pub double_sided: bool,
     /// Anisotropic roughness (0.0 = isotropic GGX, 1.0 = fully anisotropic).
     pub anisotropic: f32,
+    /// Clearcoat factor (0.0–1.0) for KHR_materials_clearcoat GLTF extension.
+    pub clearcoat_factor: f32,
+    /// Clearcoat roughness (0.0–1.0).
+    pub clearcoat_roughness: f32,
     pub light_group: Option<String>,
 }
 
@@ -96,6 +100,8 @@ impl MaterialNode {
             alpha_cutoff: 0.5,
             double_sided: false,
             anisotropic: 0.0,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
             light_group: None,
         }
     }
@@ -122,6 +128,8 @@ impl Default for MaterialNode {
             alpha_cutoff: 0.5,
             double_sided: false,
             anisotropic: 0.0,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
             light_group: None,
         }
     }

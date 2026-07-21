@@ -142,6 +142,10 @@ pub struct MaterialElement {
     pub double_sided: bool,
     /// Anisotropic roughness (0.0 = isotropic).
     pub anisotropic: f32,
+    /// Clearcoat factor (0.0–1.0) for KHR_materials_clearcoat GLTF extension.
+    pub clearcoat_factor: f32,
+    /// Clearcoat roughness (0.0–1.0).
+    pub clearcoat_roughness: f32,
 }
 
 impl Default for MaterialElement {
@@ -165,6 +169,8 @@ impl Default for MaterialElement {
             alpha_cutoff: 0.5,
             double_sided: false,
             anisotropic: 0.0,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
         }
     }
 }

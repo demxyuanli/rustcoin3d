@@ -58,6 +58,8 @@ fn material_element_for_node(
         alpha_cutoff: src.alpha_cutoff,
         double_sided: src.double_sided,
         anisotropic: src.anisotropic,
+        clearcoat_factor: src.clearcoat_factor,
+        clearcoat_roughness: src.clearcoat_roughness,
     }
 }
 
@@ -103,6 +105,9 @@ pub struct DrawCall {
     pub alpha_mode: rc3d_scene::AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// Clearcoat factor [0,1] for KHR_materials_clearcoat GLTF extension.
+    pub clearcoat_factor: f32,
+    pub clearcoat_roughness: f32,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
     pub selected: bool,
@@ -160,6 +165,8 @@ impl Default for DrawCall {
             alpha_mode: rc3d_scene::AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
             aabb: None,
             display_mode: DisplayMode::ShadedWithEdges,
             selected: false,
@@ -1175,6 +1182,8 @@ impl RenderCollector {
             alpha_mode: mat.alpha_mode,
             alpha_cutoff: mat.alpha_cutoff,
             double_sided: mat.double_sided,
+            clearcoat_factor: mat.clearcoat_factor,
+            clearcoat_roughness: mat.clearcoat_roughness,
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,

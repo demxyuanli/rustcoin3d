@@ -494,6 +494,8 @@ fn build_material_node(
         alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
         double_sided: mat.double_sided(),
         anisotropic: 0.0,
+        clearcoat_factor: 0.0,
+        clearcoat_roughness: 0.0,
         light_group: None,
     })
 }

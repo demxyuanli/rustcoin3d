@@ -206,6 +206,8 @@ fn build_variant_scene() -> SceneGraph {
             alpha_cutoff: 0.5,
             double_sided: false,
             anisotropic: 0.0,
+            clearcoat_factor: 0.0,
+            clearcoat_roughness: 0.0,
             ..Default::default()
         };
         configure(&mut mat);
