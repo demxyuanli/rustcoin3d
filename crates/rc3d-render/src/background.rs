@@ -402,6 +402,55 @@ fn load_image_rgba8(path: &str) -> Option<image::RgbaImage> {
     }
 }
 
+/// Load HDR/EXR environment map, returning float RGBA data suitable for
+/// cubemap IBL. Supports `.hdr` (RGBE) and `.exr` via the `image` crate.
+pub fn load_hdr_image(path: &str) -> Option<Vec<[f32; 4]>> {
+    let p = std::path::Path::new(path);
+    if !p.is_file() {
+        log::warn!("HDR envmap not found: {path}");
+        return None;
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "hdr" => {
+            match image::open(p) {
+                Ok(img) => {
+                    let rgba = img.to_rgba32f();
+                    // Convert 32f RGBA flat buffer to [f32; 4] vec
+                    let pixels: Vec<[f32; 4]> = rgba.chunks(4)
+                        .map(|c| [c[0], c[1], c[2], c[3]])
+                        .collect();
+                    Some(pixels)
+                }
+                Err(e) => {
+                    log::warn!("failed to load HDR {path}: {e}");
+                    None
+                }
+            }
+        }
+        "exr" => {
+            log::info!("EXR envmap loading via image crate: {path}");
+            match image::open(p) {
+                Ok(img) => {
+                    let rgba = img.to_rgba32f();
+                    let pixels: Vec<[f32; 4]> = rgba.chunks(4)
+                        .map(|c| [c[0], c[1], c[2], c[3]])
+                        .collect();
+                    Some(pixels)
+                }
+                Err(e) => {
+                    log::warn!("failed to load EXR {path}: {e}");
+                    None
+                }
+            }
+        }
+        _ => {
+            log::warn!("unsupported HDR format: {ext}");
+            None
+        }
+    }
+}
+
 fn make_tex_2d(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, data: &[u8]) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture_with_data(
         queue,

@@ -239,7 +239,27 @@ The mesh topology is flat — no concept of:
 
 ---
 
-## 5. Recommendations
+## 5. Iteration Plan (Ralph Loop)
+
+Ralph loop: iterate through remaining MEDIUM+LOW items, one per iteration.
+
+### Iteration 1 — HDR envmap loading (EXR)
+
+**Effort**: Low (~50 lines)
+**Impact**: Medium — removes pre-processing step for IBL cubemaps
+**Done condition**: `parse_exr_bytes()` → HDR texture; glTF EXR extension loaded
+
+### Iteration 2 — Sheen extension
+
+**Effort**: Medium (~100 lines shader + fields)
+**Impact**: Medium — fabric/furniture PBR
+**Done condition**: `MaterialNode.sheen_color`, `MaterialNode.sheen_roughness`; `pbr.wgsl` HAS_SHEEN path
+
+### Iteration 3 — HDR envmap loading (EXR)
+
+Skip to remaining items after sheen...
+
+Remaining order: sheen → per-face materials → SDF fonts → anisotropy → CPU edges → cel shading → film grain → Draco → KTX2
 
 1. **Immediate**: Wire `FileNode` to glTF/OBJ/STL loaders — enables scene-graph-driven model loading
 2. **This sprint**: MeshPhysicalMaterial clearcoat + transmission (highest visual PBR gap per audit)
