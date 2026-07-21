@@ -207,12 +207,12 @@ The mesh topology is flat — no concept of:
 
 ### HIGH — Direct visualization gaps
 
-| # | Feature | Effort | Impact |
-|---|---------|--------|--------|
-| 1 | File node → glTF loader wiring | Low | High — models can't be loaded via scene graph |
-| 2 | MeshPhysicalMaterial extensions (clearcoat + transmission) | Medium | High — automotive clearcoat, glass panels; broad applicability |
-| 3 | Forward rendering path (transparent, single-pass) | High | High — transparent sorting is currently limited | **DEFERRED** — deferred + sorted transparent adequate. See `docs/forward-path-analysis.md` |
-| 4 | SMAA anti-aliasing | Low | Medium — 1-2 day from three.js reference; TAA complement (no ghosting) |
+| # | Feature | Effort | Impact | Status |
+|---|---------|--------|--------|--------|
+| 1 | File node → glTF loader wiring | Low | High — models loadable via scene graph | **DONE** |
+| 2 | MeshPhysicalMaterial clearcoat + transmission | Medium | High — automotive & glass PBR | **DONE** — clearcoat shader + fields, transmission deferred |
+| 3 | Forward rendering path | High | High — transparent sorting | **DEFERRED** — see analysis |
+| 4 | SMAA anti-aliasing | Low | Medium — 1-2 day, TAA complement | pending |
 
 ### MEDIUM — Feature completeness
 
