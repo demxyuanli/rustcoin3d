@@ -80,11 +80,13 @@ pub fn parse_obj(text: &str) -> Result<SceneGraph, ObjError> {
     Ok(graph)
 }
 
+type ExpandedMesh = (Vec<Vec3>, Vec<[f32; 2]>, Vec<i32>);
+
 fn expand_faces_with_uv(
     positions: &[Vec3],
     texcoords: &[[f32; 2]],
     faces: &[Vec<FaceCorner>],
-) -> Result<(Vec<Vec3>, Vec<[f32; 2]>, Vec<i32>), ObjError> {
+) -> Result<ExpandedMesh, ObjError> {
     let mut key_to_new: HashMap<(u32, u32), i32> = HashMap::new();
     let mut exp_pos = Vec::new();
     let mut exp_tex = Vec::new();

@@ -149,12 +149,14 @@ impl Command for SetScaleCommand {
     }
 }
 
+type ApplyFn<T> = Box<dyn Fn(&mut NodeEntry, T) + Send + Sync>;
+
 /// Generic field mutation command — covers material, light, camera, and section-plane properties.
 pub struct SetFieldCommand<T: Clone + std::fmt::Debug + Send + Sync + 'static> {
     pub node: NodeId,
     pub old_value: T,
     pub new_value: T,
-    apply: Box<dyn Fn(&mut NodeEntry, T) + Send + Sync>,
+    apply: ApplyFn<T>,
     desc: String,
 }
 

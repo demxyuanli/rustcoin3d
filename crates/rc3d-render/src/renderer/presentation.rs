@@ -320,4 +320,64 @@ impl super::Renderer {
             }
         }
     }
+
+    /// Render a scene to an offscreen RGBA8 image. Returns (width, height, pixels).
+    /// Useful for headless rendering, thumbnails, and automated testing.
+    pub fn render_to_image(
+        &mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        width: u32,
+        height: u32,
+    ) -> (u32, u32, Vec<u8>) {
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Offscreen target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let pres = render_passes::FramePresentation::OffscreenSurface {
+            output_texture: &tex,
+            output_view: &view,
+            width_px: width,
+            height_px: height,
+        };
+        self.render_draw_calls_core(draw_calls, scene, None, pres, None);
+
+        let bytes_per_row = width * 4;
+        let padded_bytes_per_row = bytes_per_row.div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Readback buffer"),
+            size: padded_bytes_per_row as u64 * height as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(height) } },
+            size,
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        for row in 0..height as usize {
+            let src = row * padded_bytes_per_row as usize;
+            let dst = row * bytes_per_row as usize;
+            pixels[dst..dst + bytes_per_row as usize].copy_from_slice(&data[src..src + bytes_per_row as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        (width, height, pixels)
+    }
 }

@@ -122,6 +122,7 @@ impl Bvh {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn intersect_ray_node(
         &self,
         node_idx: usize,

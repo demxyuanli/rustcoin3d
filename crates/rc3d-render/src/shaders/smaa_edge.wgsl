@@ -13,6 +13,7 @@ struct VsOut {
 @group(0) @binding(0) var t_input: texture_2d<f32>;
 @group(0) @binding(1) var s_input: sampler;
 
+@vertex
 fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VsOut {
     var out: VsOut;
     let x = f32((vi & 1u) << 2u);

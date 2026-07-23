@@ -10,6 +10,10 @@ use rc3d_render::viewport::{LayoutMode, ViewportLayout};
 use rc3d_render::{AdaptiveControl, FrameStats, Renderer};
 use rc3d_scene::SceneGraph;
 
+type PreRenderHook = Box<dyn FnMut(&mut Renderer)>;
+type PickCallback = Box<dyn FnMut(&mut SceneGraph, NodeId, Vec3)>;
+type PanelMouseHook = Box<dyn Fn(f32, f32, u32, u32) -> bool>;
+
 use crate::background::BackgroundSettings;
 use crate::camera::CameraController;
 use crate::fps_tracker::FpsTracker;
@@ -43,12 +47,12 @@ pub struct Engine {
     /// Optional callback invoked by [`render`] just before the draw calls are
     /// submitted to the GPU. Use this to modify renderer state each frame
     /// (e.g. to inject custom uniforms or toggle debug overlays).
-    pub pre_render_hook: Option<Box<dyn FnMut(&mut Renderer)>>,
+    pub pre_render_hook: Option<PreRenderHook>,
 
     /// Optional callback invoked when the user clicks on geometry in the
     /// scene. Receives the scene graph, the picked NodeId, and the
     /// world-space intersection point.
-    pub on_pick: Option<Box<dyn FnMut(&mut SceneGraph, NodeId, Vec3)>>,
+    pub on_pick: Option<PickCallback>,
 
     /// Optional keyboard event hook. Receives the physical key. Return `true`
     /// to request a redraw after handling the keypress.
@@ -57,7 +61,7 @@ pub struct Engine {
     /// Optional mouse click hook for HUD overlay interaction.
     /// Receives (x, y, window_width, window_height). Return `true` to request
     /// a redraw after handling the click.
-    pub panel_overlay_mouse_hook: Option<Box<dyn Fn(f32, f32, u32, u32) -> bool>>,
+    pub panel_overlay_mouse_hook: Option<PanelMouseHook>,
 
     /// Nodes hidden from rendering (e.g. via editor Hide command).
     pub hidden_nodes: HashSet<NodeId>,
@@ -220,6 +224,10 @@ impl Engine {
         // Viewport-camera path: update cameras bound to specific viewports
         let layout = renderer.viewport_layout();
         self.viewport_cameras.update_all(&mut self.world.graph, layout);
+
+        // 5b. Update LOD levels based on camera distance
+        let lod_cam_pos = self.controller.eye_position();
+        self.world.graph.update_lod_levels(lod_cam_pos);
 
         // 6. Traverse scene graph to populate draw calls
         self.world.traverse_all_roots();

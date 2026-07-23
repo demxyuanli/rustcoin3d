@@ -442,9 +442,36 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     });
 
     // ── SMAA Edge Detection Pipeline ──
+    // VS calls textureDimensions(t_input), so binding 0 must be VERTEX|FRAGMENT.
+    let smaa_edge_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("SMAA Edge BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let smaa_edge_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("SMAA Edge PLL"),
+        bind_group_layouts: &[&smaa_edge_bgl],
+        push_constant_ranges: &[],
+    });
     let smaa_edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SMAA Edge"),
-        layout: Some(&fxaa_ldr_pll), // same single-texture BGL
+        layout: Some(&smaa_edge_pll),
         vertex: wgpu::VertexState {
             module: &smaa_edge_shader,
             entry_point: Some("vs_fullscreen"),
@@ -472,9 +499,46 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     });
 
     // ── SMAA Blend Pipeline ──
+    // Needs color + sampler + edge mask (binding 2); cannot reuse FXAA 2-slot BGL.
+    let smaa_blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("SMAA Blend BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+        ],
+    });
+    let smaa_blend_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("SMAA Blend PLL"),
+        bind_group_layouts: &[&smaa_blend_bgl],
+        push_constant_ranges: &[],
+    });
     let smaa_blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SMAA Blend"),
-        layout: Some(&fxaa_ldr_pll),
+        layout: Some(&smaa_blend_pll),
         vertex: wgpu::VertexState {
             module: &smaa_blend_shader,
             entry_point: Some("vs_fullscreen"),

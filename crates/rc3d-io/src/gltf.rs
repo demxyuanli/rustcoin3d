@@ -496,6 +496,10 @@ fn build_material_node(
         anisotropic: 0.0,
         clearcoat_factor: 0.0,
         clearcoat_roughness: 0.0,
+        specular_factor: 1.0,
+        specular_color_factor: Vec3::ONE,
+        transmission_factor: 0.0,
+        ior: 1.5,
         light_group: None,
     })
 }

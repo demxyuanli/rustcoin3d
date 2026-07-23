@@ -60,6 +60,10 @@ fn material_element_for_node(
         anisotropic: src.anisotropic,
         clearcoat_factor: src.clearcoat_factor,
         clearcoat_roughness: src.clearcoat_roughness,
+        specular_factor: src.specular_factor,
+        specular_color_factor: src.specular_color_factor,
+        transmission_factor: src.transmission_factor,
+        ior: src.ior,
     }
 }
 
@@ -108,6 +112,10 @@ pub struct DrawCall {
     /// Clearcoat factor [0,1] for KHR_materials_clearcoat GLTF extension.
     pub clearcoat_factor: f32,
     pub clearcoat_roughness: f32,
+    pub specular_factor: f32,
+    pub specular_color_factor: Vec3,
+    pub transmission_factor: f32,
+    pub ior: f32,
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
     pub selected: bool,
@@ -167,6 +175,10 @@ impl Default for DrawCall {
             double_sided: false,
             clearcoat_factor: 0.0,
             clearcoat_roughness: 0.0,
+            specular_factor: 1.0,
+            specular_color_factor: Vec3::ONE,
+            transmission_factor: 0.0,
+            ior: 1.5,
             aabb: None,
             display_mode: DisplayMode::ShadedWithEdges,
             selected: false,
@@ -286,21 +298,11 @@ pub struct RenderCollector {
     /// Optional texture table for interning texture paths during direct-emit.
     texture_table_ptr: TextureTableTarget,
     hidden_nodes: HashSet<NodeId>,
-    /// Environment state (accumulated from EnvironmentNode)
-    pub ambient_intensity: f32,
-    pub ambient_color: rc3d_core::math::Vec3,
-    pub fog_color: rc3d_core::math::Vec3,
-    pub fog_visibility: f32,
-    /// Shape hints (vertex ordering for face culling)
-    pub vertex_ordering: i32,
-    /// Material binding mode (0=default, 1=overall, 2=per_part, 3=per_face, 4=per_vertex)
-    pub material_binding: i32,
-    /// Texture coordinate transform (2D scale+rotation+translation)
-    pub tex2_transform: Option<(rc3d_core::math::Vec2, f32, rc3d_core::math::Vec2)>,
     /// True while traversing inside an Annotation node.
     pub inside_annotation: bool,
-    /// Stereo rendering mode (set by StereoCameraNode).
-    pub stereo_mode: Option<rc3d_scene::node_data::StereoMode>,
+    /// Pending instance transforms (set by InstancedMeshNode traversal).
+    /// Applied to the next emitted draw call, then cleared.
+    pub pending_instance_transforms: Option<Arc<Vec<Mat4>>>,
     /// Effect draw commands collected during traversal (Decal, Volume, PointCloud).
     pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
 }
@@ -321,15 +323,8 @@ impl RenderCollector {
             cache_ptr: CacheTarget::null(),
             texture_table_ptr: TextureTableTarget::null(),
             hidden_nodes: HashSet::new(),
-            ambient_intensity: 0.2,
-            ambient_color: rc3d_core::math::Vec3::ONE,
-            fog_color: rc3d_core::math::Vec3::ONE,
-            fog_visibility: 0.0,
-            vertex_ordering: 0,
-            material_binding: 0,
-            tex2_transform: None,
             inside_annotation: false,
-            stereo_mode: None,
+            pending_instance_transforms: None,
             effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
         }
     }
@@ -422,6 +417,14 @@ impl SceneVisitor for RenderCollector {
 
     fn should_visit(&self, node: NodeId) -> bool {
         !self.hidden_nodes.contains(&node)
+    }
+
+    fn set_instance_transforms(&mut self, transforms: &[Mat4]) {
+        if transforms.is_empty() {
+            self.pending_instance_transforms = None;
+        } else {
+            self.pending_instance_transforms = Some(Arc::new(transforms.to_vec()));
+        }
     }
 
     fn visit_node(
@@ -517,32 +520,7 @@ NodeData::PointCloud(point_cloud) => {
                 }
                 ChildPolicy::Skip
             }
-NodeData::ShapeHints(sh) => {
-                self.vertex_ordering = match sh.vertex_ordering {
-                    rc3d_scene::node_data::VertexOrdering::Clockwise => 1,
-                    rc3d_scene::node_data::VertexOrdering::CounterClockwise => 2,
-                    _ => 0,
-                };
-                for &child in &entry.children { scene_traverse(self, graph, child); }
-                ChildPolicy::Skip
-            }
-NodeData::MaterialBinding(mb) => {
-                self.material_binding = match mb.value {
-                    rc3d_scene::node_data::MaterialBinding::Overall => 1,
-                    rc3d_scene::node_data::MaterialBinding::PerPart => 2,
-                    rc3d_scene::node_data::MaterialBinding::PerFace => 3,
-                    rc3d_scene::node_data::MaterialBinding::PerVertex => 4,
-                    _ => 0,
-                };
-                for &child in &entry.children { scene_traverse(self, graph, child); }
-                ChildPolicy::Skip
-            }
-NodeData::Texture2Transform(t2t) => {
-                self.tex2_transform = Some((
-                    rc3d_core::math::Vec2::new(t2t.translation[0], t2t.translation[1]),
-                    t2t.rotation,
-                    rc3d_core::math::Vec2::new(t2t.scale[0], t2t.scale[1]),
-                ));
+NodeData::ShapeHints(_) | NodeData::MaterialBinding(_) | NodeData::Texture2Transform(_) => {
                 for &child in &entry.children { scene_traverse(self, graph, child); }
                 ChildPolicy::Skip
             }
@@ -573,13 +551,7 @@ NodeData::AnnotationSet(ann) => {
                 }
                 ChildPolicy::Skip
             }
-NodeData::Environment(env) => {
-                self.ambient_intensity = env.ambient_intensity;
-                self.ambient_color = env.ambient_color;
-                if env.fog_visibility > 0.0 {
-                    self.fog_color = env.fog_color;
-                    self.fog_visibility = env.fog_visibility;
-                }
+NodeData::Environment(_) => {
                 for &child in &entry.children { scene_traverse(self, graph, child); }
                 ChildPolicy::Skip
             }
@@ -1031,6 +1003,7 @@ NodeData::IndexedFaceSet(ifs) => {
             // Structural nodes are owned by scene_traverse; never reached here.
             NodeData::Separator(_)
             | NodeData::Billboard(_)
+            | NodeData::InstancedMesh(_)
             | NodeData::ResetTransform(_)
             | NodeData::ExplodedView(_)
             | NodeData::Switch(_)
@@ -1184,6 +1157,10 @@ impl RenderCollector {
             double_sided: mat.double_sided,
             clearcoat_factor: mat.clearcoat_factor,
             clearcoat_roughness: mat.clearcoat_roughness,
+            specular_factor: mat.specular_factor,
+            specular_color_factor: mat.specular_color_factor,
+            transmission_factor: mat.transmission_factor,
+            ior: mat.ior,
             aabb,
             display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
             selected,
@@ -1195,7 +1172,7 @@ impl RenderCollector {
                 self.state.projection_matrix(),
             ),
             node_type_label: Arc::from(node_type_label),
-            instance_transforms: None,
+            instance_transforms: self.pending_instance_transforms.take(),
             morph_weights: self.state.morph_targets().map(|mt| mt.weights.clone()).unwrap_or_default(),
             morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
             skinning: self.skinning_payload_for_draw(),

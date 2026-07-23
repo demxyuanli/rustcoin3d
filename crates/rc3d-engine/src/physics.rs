@@ -4,7 +4,7 @@
 //! back to the scene graph each frame.
 
 use rapier3d::prelude::*;
-use rc3d_core::math::Vec3;
+use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::node_data::NodeData;
 use rc3d_scene::SceneGraph;
@@ -179,6 +179,47 @@ impl PhysicsWorld {
                 let p = rb.translation();
                 Vec3::new(p.x, p.y, p.z)
             })
+    }
+
+    /// Walk the scene graph and create Rapier colliders for shape nodes (Cube, Sphere, Cylinder).
+    /// Nodes already tracked are skipped. Call once after loading a scene, or after structural edits.
+    pub fn sync_colliders_from_scene(&mut self, graph: &SceneGraph) {
+        let roots = graph.roots().to_vec();
+        for &root in &roots {
+            self.sync_subtree(graph, root, &Mat4::IDENTITY);
+        }
+    }
+
+    fn sync_subtree(&mut self, graph: &SceneGraph, node: NodeId, parent_model: &Mat4) {
+        use rc3d_core::math::Mat4;
+        let entry = match graph.get(node) {
+            Some(e) => e,
+            None => return,
+        };
+        let local_model = if let NodeData::Transform(t) = &entry.data {
+            *parent_model * (Mat4::from_translation(-t.center)
+                * Mat4::from_scale(t.scale)
+                * t.rotation
+                * Mat4::from_translation(t.center + t.translation))
+        } else {
+            *parent_model
+        };
+        let shape: Option<SharedShape> = match &entry.data {
+            NodeData::Cube(c) => Some(shapes::cube([c.width / 2.0, c.height / 2.0, c.depth / 2.0])),
+            NodeData::Sphere(s) => Some(shapes::sphere(s.radius)),
+            NodeData::Cylinder(c) => Some(shapes::cylinder(c.height / 2.0, c.radius)),
+            _ => None,
+        };
+        if let Some(s) = shape {
+            let (_, _, trans) = local_model.to_scale_rotation_translation();
+            if !self.bodies.iter().any(|b| b.scene_node == Some(node)) {
+                self.add_dynamic_body(node, trans, s);
+            }
+        }
+        let children = entry.children.to_vec();
+        for child in children {
+            self.sync_subtree(graph, child, &local_model);
+        }
     }
 }
 

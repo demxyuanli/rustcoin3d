@@ -90,6 +90,7 @@ pub struct Renderer {
     pub enable_color_grading: bool,
     pub enable_dof: bool,
     pub enable_volumetric_fog: bool,
+    pub volumetric_fog_settings: VolumetricFogSettings,
     pub enable_cluster_lights: bool,
     pub enable_omni_shadows: bool,
     pub enable_ldr_fxaa: bool,
@@ -873,6 +874,7 @@ impl Renderer {
             enable_color_grading: false,
             enable_dof: false,
             enable_volumetric_fog: false,
+            volumetric_fog_settings: VolumetricFogSettings::default(),
             enable_cluster_lights: true,
             enable_omni_shadows: true,
             enable_ldr_fxaa: true,
@@ -1488,7 +1490,6 @@ impl Renderer {
     }
 
     // ── Internal accessors for render_passes (pub(crate)) ──
-    #[allow(dead_code)]
     pub fn viewport_layout(&self) -> &ViewportLayout {
         &self.frame.viewport_layout
     }

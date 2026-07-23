@@ -4,7 +4,7 @@
 //! on an `EditorContext` (which wraps `&mut Engine`) plus explicit window/input
 //! parameters.
 
-use rc3d_actions::{Action, Ray, RayPickAction};
+use rc3d_actions::{Ray, RayPickAction};
 use rc3d_core::math::{Mat4, Quat};
 use rc3d_core::NodeId;
 use rc3d_engine_api::{Engine, InputState};
@@ -414,15 +414,7 @@ pub fn on_cursor_moved(
     if ctx.interaction.gizmo_dragging {
         if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
             if let Some((n, old_mat)) = ctx.interaction.gizmo_pending_transform {
-                if let Some(d) = ctx.interaction.gizmo.drag_delta(
-                    &ray,
-                    Mat4::IDENTITY,
-                    Mat4::IDENTITY,
-                    1.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                ) {
+                if let Some(d) = ctx.interaction.gizmo.drag_delta(&ray) {
                     let new_mat = d * old_mat;
                     let (scale, rot, trans) = new_mat.to_scale_rotation_translation();
                     if let Some(e) = ctx.engine.world.graph.get_mut(n) {

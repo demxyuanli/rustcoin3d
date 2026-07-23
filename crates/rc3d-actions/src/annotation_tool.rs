@@ -55,8 +55,15 @@ impl AnnotationTool {
             pending_cmd: None,
         }
     }
+}
 
-    /// Set viewport dimensions and camera state.
+impl Default for AnnotationTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AnnotationTool {
     pub fn set_camera(&mut self, vp: Mat4, w: u32, h: u32) {
         self.camera_vp = vp;
         self.win_w = w.max(1);

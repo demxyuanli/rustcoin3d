@@ -353,8 +353,9 @@ pub(super) fn draw_opaque_triangle_batches(
                         if dc.double_sided { 1.0 } else { 0.0 },
                         0.0,
                     ],
-                    pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+                    pbr_clearcoat: [dc.clearcoat_factor, dc.clearcoat_roughness, 0.0, 0.0],
                     pbr_sheen: [0.0, 0.0, 0.0, 0.0],
+                    pbr_specular: [dc.specular_color_factor.x, dc.specular_color_factor.y, dc.specular_color_factor.z, dc.specular_factor],
                     light_set_index: [head_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
                 if let Some(offset) = renderer.gpu.phong_pool.push_scene(&uniforms) {
@@ -658,6 +659,7 @@ pub(super) fn draw_opaque_triangle_batches(
                             ],
                             pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
                             pbr_sheen: [0.0, 0.0, 0.0, 0.0],
+                            pbr_specular: [rep_dc.specular_color_factor.x, rep_dc.specular_color_factor.y, rep_dc.specular_color_factor.z, rep_dc.specular_factor],
                             light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                         };
                         let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms)
@@ -796,6 +798,7 @@ pub(super) fn draw_opaque_triangle_batches(
                     ],
                     pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
                     pbr_sheen: [0.0, 0.0, 0.0, 0.0],
+                    pbr_specular: [rep_dc.specular_color_factor.x, rep_dc.specular_color_factor.y, rep_dc.specular_color_factor.z, rep_dc.specular_factor],
                     light_set_index: [rep_dc.light_set_id as f32, 0.0, 0.0, 0.0],
                 };
                 let Some(phong_offset) = renderer.gpu.phong_pool.push_scene(&uniforms) else {

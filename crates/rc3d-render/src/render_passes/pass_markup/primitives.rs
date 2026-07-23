@@ -580,9 +580,11 @@ pub(super) fn project_annotation_elements(
         // Back-face culling skipped: annotation plane normal depends on arbitrary
         // point ordering (start/end, offset sign). NDC culling alone is sufficient.
         // --- visibility culling ---
-        let mut visibility = AnnotationVisibility::default();
-        visibility.outside_ndc =
-            !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z);
+        let mut visibility = AnnotationVisibility {
+            outside_ndc:
+                !element_any_point_visible(&pa.element, model, scene_vp, depth_reversed_z),
+            ..Default::default()
+        };
         // Occlusion: sample depth buffer at anchor NDC
         if let Some((depth_buf, buf_w, buf_h)) = occlusion {
             if let Some(anchor_ndc) = element_any_ndc_point(&pa.element, model, scene_vp, depth_reversed_z) {

@@ -18,6 +18,7 @@ pub mod animation;
 pub mod camera;
 pub mod geometry;
 pub mod group;
+pub mod kits;
 pub mod light;
 pub mod material;
 pub mod query;

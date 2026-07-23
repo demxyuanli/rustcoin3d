@@ -71,6 +71,7 @@ pub fn stitch_two(
 }
 
 /// Merge two already-tessellated surfaces, deduplicating shared boundary vertices.
+#[allow(clippy::too_many_arguments)]
 fn merge_tessellated_pair(
     ts_a: &TessellatedSurface,
     ts_b: &TessellatedSurface,

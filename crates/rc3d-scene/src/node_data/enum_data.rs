@@ -84,6 +84,8 @@ pub enum NodeData {
     PointCloud(PointCloudNode),
     ReflectionPlane(ReflectionPlaneNode),
     Decal(DecalNode),
+    /// GPU-instanced mesh (like Three.js InstancedMesh).
+    InstancedMesh(InstancedMeshNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
     Custom(u16, Box<dyn CustomNodeData>),
 }
@@ -141,6 +143,7 @@ impl Clone for NodeData {
             NodeData::PointCloud(v) => NodeData::PointCloud(v.clone()),
             NodeData::ReflectionPlane(v) => NodeData::ReflectionPlane(v.clone()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
+            NodeData::InstancedMesh(v) => NodeData::InstancedMesh(v.clone()),
             NodeData::File(v) => NodeData::File(v.clone()),
         }
     }
@@ -283,6 +286,9 @@ impl NodeData {
             | NodeData::MultipleCopy(_) => vec![],
             NodeData::Custom(_, d) => d.field_descriptors(),
             NodeData::Decal(_) => vec![FieldDescriptor { name: "opacity", field_index: 0 }],
+            NodeData::InstancedMesh(_) => vec![
+                FieldDescriptor { name: "transforms", field_index: 0 },
+            ],
         }
     }
 
@@ -338,6 +344,7 @@ impl NodeData {
             NodeData::PointCloud(_) => "PointCloud",
             NodeData::ReflectionPlane(_) => "ReflectionPlane",
             NodeData::Decal(_) => "Decal",
+            NodeData::InstancedMesh(_) => "InstancedMesh",
             NodeData::File(_) => "File",
         }
     }
@@ -396,6 +403,7 @@ impl Serialize for NodeData {
             NodeData::ExplodedView(v) => s.serialize_newtype_variant("NodeData", 42, "ExplodedView", v),
             NodeData::ReflectionPlane(v) => s.serialize_newtype_variant("NodeData", 43, "ReflectionPlane", v),
             NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
+            NodeData::InstancedMesh(v) => s.serialize_newtype_variant("NodeData", 51, "InstancedMesh", v),
             NodeData::File(v) => s.serialize_newtype_variant("NodeData", 35, "File", v),
             NodeData::Custom(type_id, d) => {
                 let payload = (type_id, d.serialize_custom());
@@ -450,6 +458,7 @@ impl<'de> Deserialize<'de> for NodeData {
             PointCloud(PointCloudNode),
             ReflectionPlane(ReflectionPlaneNode),
             Decal(DecalNode),
+            InstancedMesh(InstancedMeshNode),
             File(FileNode),
             EventCallback(EventCallbackNode),
             PickStyle(PickStyleNode),
@@ -504,6 +513,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::PointCloud(v) => Ok(NodeData::PointCloud(v)),
             NodeDataHelper::ReflectionPlane(v) => Ok(NodeData::ReflectionPlane(v)),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
+            NodeDataHelper::InstancedMesh(v) => Ok(NodeData::InstancedMesh(v)),
             NodeDataHelper::File(v) => Ok(NodeData::File(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {
                 // Defer to registry for deserialization; fallback to DummyHandler

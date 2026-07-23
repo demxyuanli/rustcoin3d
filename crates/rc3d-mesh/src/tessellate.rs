@@ -6,7 +6,8 @@ pub fn tessellate_cube(w: f32, h: f32, d: f32) -> TriangleMesh {
     let hw = w / 2.0;
     let hh = h / 2.0;
     let hd = d / 2.0;
-    let faces: [([[f32; 3]; 4], [[f32; 2]; 4]); 6] = [
+    type CubeFace = ([[f32; 3]; 4], [[f32; 2]; 4]);
+    let faces: [CubeFace; 6] = [
         (
             [
                 [-hw, -hh, hd],
@@ -285,4 +286,139 @@ pub fn tessellate_torus(major_radius: f32, minor_radius: f32, major_segments: u3
     }
 
     TriangleMesh::from_indexed_with_texcoords(&positions, &indices, &texcoords)
+}
+
+/// Tessellated plane in the XZ plane (facing +Y). Width along X, depth along Z.
+pub fn tessellate_plane(w: f32, d: f32, w_segments: u32, d_segments: u32) -> TriangleMesh {
+    let hw = w / 2.0;
+    let hd = d / 2.0;
+    let nx = w_segments + 1;
+    let nz = d_segments + 1;
+    let mut positions = Vec::with_capacity((nx * nz) as usize);
+    let mut indices = Vec::new();
+    for iz in 0..nz {
+        for ix in 0..nx {
+            let x = -hw + (ix as f32 / w_segments as f32) * w;
+            let z = -hd + (iz as f32 / d_segments as f32) * d;
+            positions.push(Vec3::new(x, 0.0, z));
+        }
+    }
+    for iz in 0..d_segments {
+        for ix in 0..w_segments {
+            let a = iz * nx + ix;
+            let b = a + 1;
+            let c = a + nx;
+            let d = c + 1;
+            indices.extend_from_slice(&[a, b, d, a, d, c]);
+        }
+    }
+    TriangleMesh::from_indexed(&positions, &indices)
+}
+
+/// Tessellated disc/circle in the XZ plane (facing +Y).
+pub fn tessellate_circle(radius: f32, segments: u32) -> TriangleMesh {
+    let n = segments.max(3);
+    let mut positions = vec![Vec3::ZERO];
+    let mut indices = Vec::new();
+    for i in 0..n {
+        let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+        positions.push(Vec3::new(radius * angle.cos(), 0.0, radius * angle.sin()));
+    }
+    for i in 0..n {
+        let next = (i + 1) % n;
+        indices.extend_from_slice(&[0, i + 1, next + 1]);
+    }
+    TriangleMesh::from_indexed(&positions, &indices)
+}
+
+/// Tessellated ring in the XZ plane (facing +Y).
+pub fn tessellate_ring(inner_radius: f32, outer_radius: f32, segments: u32) -> TriangleMesh {
+    let n = segments.max(3);
+    let mut positions = Vec::with_capacity((2 * n) as usize);
+    let mut indices = Vec::new();
+    for i in 0..n {
+        let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+        let c = angle.cos();
+        let s = angle.sin();
+        positions.push(Vec3::new(inner_radius * c, 0.0, inner_radius * s));
+        positions.push(Vec3::new(outer_radius * c, 0.0, outer_radius * s));
+    }
+    for i in 0..n {
+        let next = (i + 1) % n;
+        let i0 = i * 2;
+        let i1 = next * 2;
+        indices.extend_from_slice(&[i0, i1, i1 + 1, i0, i1 + 1, i0 + 1]);
+    }
+    TriangleMesh::from_indexed(&positions, &indices)
+}
+
+/// Extrude a 2D polygon along the +Z axis. The profile is a flat list of XY points forming a closed loop.
+pub fn tessellate_extrude(profile: &[[f32; 2]], height: f32) -> TriangleMesh {
+    let n = profile.len();
+    if n < 3 { return TriangleMesh::from_indexed(&[], &[]); }
+    let hh = height * 0.5;
+    let mut positions = Vec::with_capacity(n * 2);
+    let mut indices = Vec::new();
+    for p in profile { positions.push(Vec3::new(p[0], p[1], -hh)); }
+    for p in profile { positions.push(Vec3::new(p[0], p[1], hh)); }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let b0 = i as u32; let b1 = j as u32;
+        let t0 = (i + n) as u32; let t1 = (j + n) as u32;
+        indices.extend_from_slice(&[b0, b1, t1, b0, t1, t0]);
+    }
+    for i in 1..(n - 1) {
+        indices.extend_from_slice(&[0, i as u32 + 1, i as u32]);
+        indices.extend_from_slice(&[n as u32, n as u32 + i as u32, n as u32 + i as u32 + 1]);
+    }
+    TriangleMesh::from_indexed(&positions, &indices)
+}
+
+/// Revolve a 2D profile around the Y axis (lathe/revolution). The profile is XY points: x=radius, y=height.
+pub fn tessellate_lathe(profile: &[[f32; 2]], segments: u32) -> TriangleMesh {
+    let n = profile.len() as u32;
+    let segs = segments.max(3);
+    if n < 2 { return TriangleMesh::from_indexed(&[], &[]); }
+    let mut positions = Vec::with_capacity((n * segs) as usize);
+    let mut indices = Vec::new();
+    for i in 0..segs {
+        let angle = (i as f32 / segs as f32) * std::f32::consts::TAU;
+        let c = angle.cos(); let s = angle.sin();
+        for p in profile {
+            positions.push(Vec3::new(p[0] * c, p[1], p[0] * s));
+        }
+    }
+    for i in 0..segs {
+        let next = (i + 1) % segs;
+        for j in 0..n - 1 {
+            let a = i * n + j;
+            let b = next * n + j;
+            let c = next * n + j + 1;
+            let d = i * n + j + 1;
+            indices.extend_from_slice(&[a, b, c, a, c, d]);
+        }
+    }
+    TriangleMesh::from_indexed(&positions, &indices)
+}
+
+/// Icosahedron centered at origin with given radius.
+pub fn tessellate_icosahedron(radius: f32) -> TriangleMesh {
+    let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
+    let n = (1.0 + t * t).sqrt();
+    let verts = [
+        [-1.0, t, 0.0], [1.0, t, 0.0], [-1.0, -t, 0.0], [1.0, -t, 0.0],
+        [0.0, -1.0, t], [0.0, 1.0, t], [0.0, -1.0, -t], [0.0, 1.0, -t],
+        [t, 0.0, -1.0], [t, 0.0, 1.0], [-t, 0.0, -1.0], [-t, 0.0, 1.0],
+    ];
+    let positions: Vec<Vec3> = verts.iter()
+        .map(|v| Vec3::new(v[0] / n * radius, v[1] / n * radius, v[2] / n * radius))
+        .collect();
+    let tris: [usize; 60] = [
+        0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
+        1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
+        3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9,
+        4,9,5, 2,4,11, 6,2,10, 8,6,7, 9,8,1,
+    ];
+    let indices: Vec<u32> = tris.iter().map(|&i| i as u32).collect();
+    TriangleMesh::from_indexed(&positions, &indices)
 }

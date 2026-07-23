@@ -16,6 +16,10 @@ struct PerDrawUniforms {
     pbr_metallic_roughness: vec4<f32>,
     pbr_emissive_alpha: vec4<f32>,
     pbr_alpha_flags: vec4<f32>,
+    pbr_clearcoat: vec4<f32>,
+    pbr_sheen: vec4<f32>,
+    pbr_specular: vec4<f32>,
+    pbr_transmission: vec4<f32>,
     light_set_index: vec4<f32>,
 }
 
@@ -307,7 +311,9 @@ fn pbr_shade(in: VertexOutput) -> vec4<f32> {
     let metallic = clamp(u.pbr_metallic_roughness.x, 0.0, 1.0);
     let roughness = clamp(u.pbr_metallic_roughness.y, 0.04, 1.0);
 #endif
-    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    // KHR_materials_specular: tint dielectric F0 by specular_color * specular_factor
+    let dielectric_f0 = u.pbr_specular.rgb * u.pbr_specular.a * 0.08;
+    let f0 = mix(dielectric_f0, albedo, metallic);
 
     // Occlusion
 #ifdef HAS_OCCLUSION_TEX

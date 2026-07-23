@@ -66,6 +66,7 @@ pub fn toposort_layered(edges: &[(usize, usize)], node_count: usize) -> Vec<Vec<
 /// assert_eq!(order, vec![0, 1, 2]);
 /// assert!(toposort_linear(&[(0, 1), (1, 0)], 2).is_err()); // cycle
 /// ```
+#[allow(clippy::result_unit_err)]
 pub fn toposort_linear(edges: &[(usize, usize)], node_count: usize) -> Result<Vec<usize>, ()> {
     let mut in_degree = vec![0u32; node_count];
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); node_count];

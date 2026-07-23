@@ -1,11 +1,9 @@
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::render_action::DrawCall;
-use crate::render_graph::{declaration_order_is_valid, RenderGraph};
 use crate::vertex::CSM_CASCADE_COUNT;
 use crate::FrameStats;
 use glam::Mat4;
 use rc3d_core::DisplayMode;
-use std::sync::OnceLock;
 
 mod pass_edge;
 pub(crate) mod pass_effects;
@@ -31,15 +29,11 @@ mod pass_markup_tests;
 use draw_opaque::draw_opaque_triangle_batches;
 pub(crate) use meshlet_cull::submit_meshlet_cull;
 
-static RC3D_RENDER_GRAPH_OK: OnceLock<()> = OnceLock::new();
-
 pub(crate) struct PassContext<'a> {
     pub visible: &'a [&'a DrawCall],
     pub solid_order: &'a [usize],
     pub edge_order: &'a [usize],
     pub selected_order: &'a [usize],
-    /// Rendering order for transparent objects (passed to downstream functions, not read here).
-    #[allow(dead_code)]
     pub transparent_order: &'a [usize],
     pub mesh_handles: &'a [Option<crate::gpu_resource::MeshId>],
     pub mode: DisplayMode,
@@ -55,12 +49,6 @@ pub(crate) struct PassContext<'a> {
     pub depth_reversed_z: bool,
     /// CSM cascade view-projection matrices (one per cascade)
     pub csm_view_proj: [Mat4; CSM_CASCADE_COUNT],
-    /// CSM split depths in view space: [near, split1, split2, far] (4 values)
-    #[allow(dead_code)]
-    pub csm_split_depths: [f32; CSM_CASCADE_COUNT],
-    /// Shadow rendering parameters: [inverse, bias, pcf, enabled]
-    #[allow(dead_code)]
-    pub shadow_params: [f32; 4],
     pub run_shadow_pass: bool,
     /// Camera projection matrix (for SSAO depth reconstruction)
     pub camera_proj: Mat4,
@@ -95,17 +83,6 @@ pub(super) fn execute_passes(
     presentation: FramePresentation<'_>,
 ) -> FrameStats {
     let t_entry = std::time::Instant::now();
-    RC3D_RENDER_GRAPH_OK.get_or_init(|| {
-        let g = RenderGraph::rc3d_forward_default();
-        if g.topological_sort().is_err() {
-            log::error!("rc3d default render graph is cyclic; execution will continue with best-effort pass order");
-        }
-        if !declaration_order_is_valid(&g.passes) {
-            log::error!(
-                "rc3d_forward_default pass declaration order mismatches dependency order; execution continues with degraded safety"
-            );
-        }
-    });
 
     let t_surface_start = std::time::Instant::now();
     let ((scene_tex_raw, eff_width, eff_height), mut acquired_swapchain, _w, _h) = pass_shared::acquire_surface(
@@ -574,7 +551,7 @@ pub(super) fn execute_passes(
             view,
             ew,
             eh,
-            &ctx,
+            ctx,
         );
     }
     renderer.gpu_timer.end(&mut encoder, ti_post);

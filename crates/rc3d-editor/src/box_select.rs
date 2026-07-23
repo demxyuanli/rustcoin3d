@@ -1,6 +1,5 @@
 //! Two-pixel "box" selection: projects shape bounding-box centers to clip space.
 
-use rc3d_actions::Action;
 use rc3d_actions::GetBoundingBoxAction;
 use rc3d_core::math::Mat4;
 use rc3d_core::NodeId;
@@ -28,6 +27,7 @@ fn is_shape_data(data: &NodeData) -> bool {
 
 /// Selects shape nodes whose world-space AABB **center** projects into the 2D NDC band of the frustum
 /// (screen-space `corner_a` to `corner_b` in the same space as `win_w`/`win_h`).
+#[allow(clippy::too_many_arguments)]
 pub fn select_nodes_in_screen_box(
     graph: &mut SceneGraph,
     root: NodeId,

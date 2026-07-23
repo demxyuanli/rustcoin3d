@@ -65,6 +65,14 @@ pub struct MaterialNode {
     pub clearcoat_factor: f32,
     /// Clearcoat roughness (0.0–1.0).
     pub clearcoat_roughness: f32,
+    /// PBR specular factor (KHR_materials_specular) — multiplies dielectric F0. Default 1.0.
+    pub specular_factor: f32,
+    /// PBR specular color (KHR_materials_specular) — tints F0. Default [1,1,1].
+    pub specular_color_factor: Vec3,
+    /// Transmission factor (KHR_materials_transmission) — 0.0 = opaque, 1.0 = full transmission.
+    pub transmission_factor: f32,
+    /// Index of refraction for transmission (default 1.5 for glass).
+    pub ior: f32,
     pub light_group: Option<String>,
 }
 
@@ -102,6 +110,10 @@ impl MaterialNode {
             anisotropic: 0.0,
             clearcoat_factor: 0.0,
             clearcoat_roughness: 0.0,
+            specular_factor: 1.0,
+            specular_color_factor: Vec3::ONE,
+            transmission_factor: 0.0,
+            ior: 1.5,
             light_group: None,
         }
     }
@@ -130,6 +142,10 @@ impl Default for MaterialNode {
             anisotropic: 0.0,
             clearcoat_factor: 0.0,
             clearcoat_roughness: 0.0,
+            specular_factor: 1.0,
+            specular_color_factor: Vec3::ONE,
+            transmission_factor: 0.0,
+            ior: 1.5,
             light_group: None,
         }
     }

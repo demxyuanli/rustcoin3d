@@ -13,6 +13,16 @@ pub struct NurbsRenderSurface {
     pub v_degree: usize,
 }
 
+/// Quality parameters for screen-space adaptive tessellation.
+#[derive(Clone, Copy, Debug)]
+pub struct TessQuality {
+    pub max_px: f32,
+    pub silhouette_px: f32,
+    pub terminator_px: f32,
+    pub angle_tol: f32,
+    pub max_depth: usize,
+}
+
 impl NurbsRenderSurface {
     /// Create a NURBS surface from a u×v grid of homogeneous control points.
     pub fn new(
@@ -105,7 +115,7 @@ impl NurbsRenderSurface {
             let mut best = Vec3::Y;
             let mut best_len = 0.0;
             for (up, vp) in probes {
-                if up < 0.0 || up > 1.0 || vp < 0.0 || vp > 1.0 { continue; }
+                if !(0.0..=1.0).contains(&up) || !(0.0..=1.0).contains(&vp) { continue; }
                 let (du2, dv2) = self.derivative(up, vp);
                 let n2 = du2.cross(dv2);
                 let l2 = n2.length();
@@ -301,8 +311,8 @@ impl NurbsRenderSurface {
 
     /// Screen-space adaptive tessellation with analytical normals.
     ///
-    /// Subdivides quads until every projected edge is shorter than `max_px` pixels
-    /// and the normal deviation between corners is below `angle_tol` radians.
+    /// Subdivides quads until every projected edge is shorter than `quality.max_px` pixels
+    /// and the normal deviation between corners is below `quality.angle_tol` radians.
     /// Produces view-dependent triangle density: fine up close, coarse far away.
     ///
     /// `mvp` is the model-view-projection matrix, `viewport` is (width, height) in pixels.
@@ -312,11 +322,7 @@ impl NurbsRenderSurface {
         viewport: (f32, f32),
         camera_pos: glam::Vec3,
         light_dir: glam::Vec3,
-        max_px: f32,
-        silhouette_px: f32,
-        terminator_px: f32,
-        angle_tol: f32,
-        max_depth: usize,
+        quality: &TessQuality,
     ) -> TessellatedSurface {
         const VERTEX_BUDGET: usize = 80_000;
         let initial = 6usize;
@@ -385,8 +391,8 @@ impl NurbsRenderSurface {
                     u0, u1, v0, v1,
                     i00, i10, i01, i11,
                     mvp, viewport, camera_pos, light_dir,
-                    max_px, silhouette_px, terminator_px, angle_tol,
-                    0, max_depth, quad_budget,
+                    quality,
+                    0, quad_budget,
                     &mut used,
                 );
             }
@@ -430,12 +436,8 @@ fn subdivide_quad_screen(
     viewport: (f32, f32),
     camera_pos: glam::Vec3,
     light_dir: glam::Vec3,
-    max_px: f32,
-    silhouette_px: f32,
-    terminator_px: f32,
-    angle_tol: f32,
+    quality: &TessQuality,
     depth: usize,
-    max_depth: usize,
     vertex_budget: usize,
     vertices_used: &mut usize,
 ) {
@@ -465,7 +467,7 @@ fn subdivide_quad_screen(
     // Camera-crossing quads get double the per-quad budget since they need
     // finer tessellation near the camera boundary to avoid visible clipping.
     let effective_budget = if crosses_camera { vertex_budget * 2 } else { vertex_budget };
-    if depth >= max_depth || *vertices_used >= effective_budget {
+    if depth >= quality.max_depth || *vertices_used >= effective_budget {
         emit_quad(indices, idx00, idx10, idx01, idx11);
         return;
     }
@@ -527,15 +529,15 @@ fn subdivide_quad_screen(
         || l00.abs() < 0.15 || l10.abs() < 0.15 || l01.abs() < 0.15 || l11.abs() < 0.15;
 
     let effective_px = if is_silhouette {
-        silhouette_px
+        quality.silhouette_px
     } else if is_terminator {
-        terminator_px
+        quality.terminator_px
     } else {
-        max_px
+        quality.max_px
     };
 
     // Fast decision: if edge or corner deviation already triggers, skip expensive checks.
-    let fast_subdiv = max_edge > effective_px || corner_angle > angle_tol;
+    let fast_subdiv = max_edge > effective_px || corner_angle > quality.angle_tol;
 
     // ════ Phase 4: Expensive center check — ONLY for ambiguous quads ════
     // A quad is "ambiguous" when corner checks pass but the quad is large enough
@@ -559,7 +561,7 @@ fn subdivide_quad_screen(
             let n_center = surface.normal(um, vm);
             cached_n_center = Some(n_center);
             let avg_with_center = (n00 + n10 + n01 + n11 + n_center).normalize();
-            n_center.dot(avg_with_center).clamp(-1.0, 1.0).acos() > angle_tol
+            n_center.dot(avg_with_center).clamp(-1.0, 1.0).acos() > quality.angle_tol
         }
     } else {
         false
@@ -591,10 +593,10 @@ fn subdivide_quad_screen(
     *vertices_used += 5;
 
     let d = depth + 1;
-    subdivide_quad_screen(surface, positions, normals, indices, u0, um, v0, vm, idx00, idx_um0, idx_0vm, idx_center, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
-    subdivide_quad_screen(surface, positions, normals, indices, um, u1, v0, vm, idx_um0, idx10, idx_center, idx_1vm, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
-    subdivide_quad_screen(surface, positions, normals, indices, u0, um, vm, v1, idx_0vm, idx_center, idx01, idx_um1, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
-    subdivide_quad_screen(surface, positions, normals, indices, um, u1, vm, v1, idx_center, idx_1vm, idx_um1, idx11, mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, d, max_depth, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, u0, um, v0, vm, idx00, idx_um0, idx_0vm, idx_center, mvp, viewport, camera_pos, light_dir, quality, d, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, um, u1, v0, vm, idx_um0, idx10, idx_center, idx_1vm, mvp, viewport, camera_pos, light_dir, quality, d, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, u0, um, vm, v1, idx_0vm, idx_center, idx01, idx_um1, mvp, viewport, camera_pos, light_dir, quality, d, vertex_budget, vertices_used);
+    subdivide_quad_screen(surface, positions, normals, indices, um, u1, vm, v1, idx_center, idx_1vm, idx_um1, idx11, mvp, viewport, camera_pos, light_dir, quality, d, vertex_budget, vertices_used);
 }
 
 fn emit_quad(indices: &mut Vec<u32>, a: usize, b: usize, c: usize, d: usize) {
@@ -637,7 +639,7 @@ fn analytical_basis_derivs(
         let n_i = if i >= span.saturating_sub(degree - 1) {
             lookup(&lower_bases, i)
         } else { 0.0 };
-        let n_ip1 = if i + 1 <= span {
+        let n_ip1 = if i < span {
             lookup(&lower_bases, i + 1)
         } else { 0.0 };
 

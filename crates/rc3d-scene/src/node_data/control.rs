@@ -47,6 +47,21 @@ pub struct LodNode {
     pub current_level: usize,
 }
 
+impl LodNode {
+    /// Select the LOD level based on camera distance.
+    /// Each `LodLevel.max_distance` defines the threshold: pick the first level
+    /// whose `max_distance >= distance`, or the last level if none matches.
+    pub fn select_level(&mut self, distance: f32) {
+        for (i, level) in self.levels.iter().enumerate() {
+            if distance <= level.max_distance {
+                self.current_level = i;
+                return;
+            }
+        }
+        self.current_level = self.levels.len().saturating_sub(1);
+    }
+}
+
 
 /// Section/cutting plane node (Coin3D SoClipPlane pattern).
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -251,11 +266,12 @@ pub struct MarkupNode {
 pub use crate::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 
 /// GD&T geometric characteristic symbol.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GdtSymbol {
     /// — Straightness
     Straightness,
     /// ⌓ Flatness
+    #[default]
     Flatness,
     /// ○ Circularity
     Circularity,
@@ -283,12 +299,6 @@ pub enum GdtSymbol {
     TotalRunout,
 }
 
-impl Default for GdtSymbol {
-    fn default() -> Self {
-        Self::Flatness
-    }
-}
-
 /// GD&T material condition modifier.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GdtMaterialCondition {
@@ -301,9 +311,10 @@ pub enum GdtMaterialCondition {
 }
 
 /// Datum target type indicator.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DatumTargetType {
     /// Crosshair with circle
+    #[default]
     Point,
     /// Line with circles at ends
     Line,
@@ -311,15 +322,10 @@ pub enum DatumTargetType {
     Area,
 }
 
-impl Default for DatumTargetType {
-    fn default() -> Self {
-        Self::Point
-    }
-}
-
 /// Welding symbol type (ISO 2553 / AWS A2.4).
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub enum WeldType {
+    #[default]
     Fillet,           // triangle
     SquareGroove,     // vertical lines
     VGroove,          // V
@@ -329,12 +335,6 @@ pub enum WeldType {
     Plug,             // square
     Spot,             // filled circle
     Seam,             // open circles
-}
-
-impl Default for WeldType {
-    fn default() -> Self {
-        Self::Fillet
-    }
 }
 
 /// A 3D annotation element positioned in world space.

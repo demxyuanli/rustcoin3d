@@ -140,6 +140,8 @@ pub struct SceneUniforms {
     pub pbr_clearcoat: [f32; 4],
     /// x=sheen_color.r, y=sheen_color.g, z=sheen_color.b, w=sheen_roughness
     pub pbr_sheen: [f32; 4],
+    /// KHR_materials_specular: xyz=specular_color_factor, w=specular_factor
+    pub pbr_specular: [f32; 4],
     pub light_set_index: [f32; 4],
 }
 

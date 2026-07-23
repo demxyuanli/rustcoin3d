@@ -467,6 +467,7 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::Coordinate3(_) => "Coord3",
         NodeData::TextureCoordinate2(_) => "TexCoord2",
         NodeData::Normal(_) => "Normal",
+        NodeData::InstancedMesh(_) => "InstancedMesh",
         NodeData::Custom(_, d) => d.type_name(),
     }
 }

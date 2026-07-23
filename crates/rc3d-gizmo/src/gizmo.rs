@@ -7,7 +7,7 @@
 use glam::{Mat4, Vec3};
 use rc3d_core::aabb::Aabb;
 use rc3d_core::NodeId;
-use rc3d_actions::{Action, Ray};
+use rc3d_actions::Ray;
 use rc3d_render::LineVertex;
 use rc3d_scene::{NodeData, SceneGraph};
 
@@ -171,12 +171,6 @@ impl Gizmo {
     pub fn drag_delta(
         &self,
         ray: &Ray,
-        _view: Mat4,
-        _proj: Mat4,
-        _vp_w: f32,
-        _vp_h: f32,
-        _vp_x: f32,
-        _vp_y: f32,
     ) -> Option<Mat4> {
         let axis = self.active_axis?;
         let start = self.drag_start?;

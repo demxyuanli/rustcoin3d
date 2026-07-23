@@ -1,3 +1,25 @@
+/// Configurable volumetric fog parameters.
+#[derive(Clone, Debug)]
+pub struct VolumetricFogSettings {
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub height_falloff: f32,
+    pub max_distance: f32,
+    pub num_steps: u32,
+}
+
+impl Default for VolumetricFogSettings {
+    fn default() -> Self {
+        Self {
+            fog_color: [0.6, 0.7, 0.8],
+            fog_density: 0.02,
+            height_falloff: 0.5,
+            max_distance: 100.0,
+            num_steps: 32,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FrameStats {
     pub visible_triangles: u64,

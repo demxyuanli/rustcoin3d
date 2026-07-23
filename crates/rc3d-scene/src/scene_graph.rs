@@ -258,6 +258,57 @@ impl SceneGraph {
         }
         out
     }
+
+    /// Update all `LodNode` current_level fields based on camera distance.
+    /// Walk from each root accumulating Transform matrices, then call
+    /// `LodNode::select_level(distance)` for each LodNode found.
+    pub fn update_lod_levels(&mut self, camera_pos: rc3d_core::math::Vec3) {
+        let roots = self.roots().to_vec();
+        for &root in &roots {
+            self.update_lod_recursive(root, camera_pos, rc3d_core::math::Mat4::IDENTITY);
+        }
+    }
+
+    fn update_lod_recursive(
+        &mut self,
+        node: NodeId,
+        camera_pos: rc3d_core::math::Vec3,
+        model: rc3d_core::math::Mat4,
+    ) -> rc3d_core::math::Mat4 {
+        // Read transform and children under immutable borrow
+        let (local_model, is_lod, children) = {
+            let entry = match self.get(node) {
+                Some(e) => e,
+                None => return model,
+            };
+            let local_model = if let NodeData::Transform(t) = &entry.data {
+                let xform = rc3d_core::math::Mat4::from_translation(-t.center)
+                    * rc3d_core::math::Mat4::from_scale(t.scale)
+                    * t.rotation
+                    * rc3d_core::math::Mat4::from_translation(t.center + t.translation);
+                model * xform
+            } else {
+                model
+            };
+            let is_lod = matches!(&entry.data, NodeData::Lod(_));
+            let children = entry.children.to_vec();
+            (local_model, is_lod, children)
+        };
+        // Update LOD level under mutable borrow
+        if is_lod {
+            if let Some(entry) = self.get_mut(node) {
+                if let NodeData::Lod(lod) = &mut entry.data {
+                    let (_, _, trans) = local_model.to_scale_rotation_translation();
+                    let distance = (trans - camera_pos).length();
+                    lod.select_level(distance);
+                }
+            }
+        }
+        for child in children {
+            self.update_lod_recursive(child, camera_pos, local_model);
+        }
+        local_model
+    }
 }
 
 impl Default for SceneGraph {

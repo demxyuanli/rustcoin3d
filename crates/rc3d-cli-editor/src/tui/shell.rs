@@ -51,7 +51,6 @@ pub fn run_tui_thread(
         return;
     }
 
-    drop(out);
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = match Terminal::new(backend) {
         Ok(t) => t,

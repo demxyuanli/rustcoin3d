@@ -280,8 +280,6 @@ impl super::Renderer {
             camera_pos: [first.camera_pos.x, first.camera_pos.y, first.camera_pos.z],
             depth_reversed_z: first.depth_reversed_z,
             csm_view_proj,
-            csm_split_depths,
-            shadow_params,
             run_shadow_pass,
             camera_proj,
             camera_inv_proj,

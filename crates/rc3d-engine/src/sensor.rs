@@ -1,8 +1,10 @@
 use std::time::Instant;
 
+use rc3d_core::FieldId;
 use rc3d_scene::SceneGraph;
 
 type AlarmCallback = Box<dyn FnMut(&mut SceneGraph)>;
+type FieldCallback = Box<dyn FnMut(&mut SceneGraph)>;
 type TimerCallback = Box<dyn FnMut(&mut SceneGraph, f64)>;
 
 /// A sensor fires a callback when triggered (by time or field change).
@@ -83,6 +85,44 @@ impl Sensor for TimerSensor {
         self.next_fire = time + self.interval;
         if let Some(cb) = &mut self.callback {
             cb(graph, time);
+        }
+    }
+}
+
+/// Fires when a connected field's value changes (Coin3D SoFieldSensor pattern).
+pub struct FieldSensor {
+    pub field_id: FieldId,
+    pub callback: Option<FieldCallback>,
+    pub fired: bool,
+}
+
+impl std::fmt::Debug for FieldSensor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldSensor")
+            .field("field_id", &self.field_id)
+            .field("fired", &self.fired)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FieldSensor {
+    pub fn new(field_id: FieldId, callback: impl FnMut(&mut SceneGraph) + 'static) -> Self {
+        Self { field_id, callback: Some(Box::new(callback)), fired: false }
+    }
+
+    pub fn with_field(field_id: FieldId) -> Self {
+        Self { field_id, callback: None, fired: false }
+    }
+}
+
+impl Sensor for FieldSensor {
+    fn should_fire(&self, _time: f64) -> bool {
+        !self.fired
+    }
+
+    fn fire(&mut self, graph: &mut SceneGraph, _time: f64) {
+        if let Some(cb) = &mut self.callback {
+            cb(graph);
         }
     }
 }

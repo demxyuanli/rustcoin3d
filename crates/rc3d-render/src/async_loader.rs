@@ -138,7 +138,7 @@ impl AsyncAssetManager {
                         match req.kind {
                             LoadKind::Scene => {
                                 let result = loader(&req.path)
-                                    .map_err(|e| EngineError::Parse(e));
+                                    .map_err(EngineError::Parse);
                                 let _ = tx.send(LoadResult::Scene {
                                     path: req.path,
                                     result,

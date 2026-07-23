@@ -220,7 +220,7 @@ pub fn localize_element_points(element: &AnnotationElement) -> AnnotationElement
             datum_secondary: datum_secondary.clone(),
             material_condition: *material_condition,
             position: loc(position),
-            leader_target: leader_target.as_ref().map(|lt| loc(lt)),
+            leader_target: leader_target.as_ref().map(loc),
             color: *color,
         },
         AnnotationElement::GdtDatumTarget {

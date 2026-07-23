@@ -148,3 +148,12 @@ pub struct MorphTargetNode {
     /// Current weight for each target (same length as targets).
     pub weights: Vec<f32>,
 }
+
+/// GPU-instanced mesh: renders one reference geometry N times with per-instance transforms.
+/// Each transform is a 4×4 model matrix in column-major order.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct InstancedMeshNode {
+    /// Instance model matrices (column-major 4×4).
+    pub transforms: Vec<[[f32; 4]; 4]>,
+}
+

@@ -85,8 +85,9 @@ fn emit_transparent_draws(
                 if dc.double_sided { 1.0 } else { 0.0 },
                 0.0,
             ],
-            pbr_clearcoat: [0.0, 0.0, 0.0, 0.0],
+            pbr_clearcoat: [dc.clearcoat_factor, dc.clearcoat_roughness, 0.0, 0.0],
             pbr_sheen: [0.0, 0.0, 0.0, 0.0],
+            pbr_specular: [dc.specular_color_factor.x, dc.specular_color_factor.y, dc.specular_color_factor.z, dc.specular_factor],
             light_set_index: [dc.light_set_id as f32, 0.0, 0.0, 0.0],
         };
 
@@ -133,7 +134,11 @@ fn emit_transparent_draws(
             }
 
             if let Some(mesh_id) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_instanced(pass, mesh_id, 0, 1, &mut last_bound_mesh);
+                let inst_count = match &dc.instance_transforms {
+                    Some(t) if !t.is_empty() => t.len() as u32,
+                    _ => 1,
+                };
+                renderer.draw_mesh_instanced(pass, mesh_id, 0, inst_count, &mut last_bound_mesh);
             }
         }
     }

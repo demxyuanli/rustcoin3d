@@ -124,6 +124,10 @@ pub trait SceneVisitor: TraversalMatrices {
         true
     }
 
+    /// Called when an `InstancedMeshNode` is encountered. The visitor should store
+    /// the transforms so they can be applied to the next emitted draw call.
+    fn set_instance_transforms(&mut self, _transforms: &[rc3d_core::math::Mat4]) {}
+
     /// Handle a node that is not driven by the structural kernel.
     ///
     /// Return [`ChildPolicy::Recurse`] to walk `entry.children`, or [`ChildPolicy::Skip`]
@@ -266,6 +270,16 @@ pub fn scene_traverse<V: SceneVisitor>(visitor: &mut V, graph: &SceneGraph, node
             for &child in &entry.children {
                 scene_traverse(visitor, graph, child);
             }
+        }
+        NodeData::InstancedMesh(im) => {
+            let transforms: Vec<rc3d_core::math::Mat4> = im.transforms.iter()
+                .map(rc3d_core::math::Mat4::from_cols_array_2d)
+                .collect();
+            visitor.set_instance_transforms(&transforms);
+            for &child in &entry.children {
+                scene_traverse(visitor, graph, child);
+            }
+            visitor.set_instance_transforms(&[]);
         }
         _ => {
             let policy = visitor.visit_node(graph, node, entry);

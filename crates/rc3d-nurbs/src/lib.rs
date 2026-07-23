@@ -9,4 +9,4 @@ pub use basis::bspline_basis;
 pub use curve::NurbsCurve;
 pub use knot::{find_span, open_uniform_knots, uniform_knots};
 pub use stitch::{stitch_grid, stitch_two, StitchError, StitchMode};
-pub use surface::{BoundaryEdge, NurbsRenderSurface, TessellatedSurface};
+pub use surface::{BoundaryEdge, NurbsRenderSurface, TessQuality, TessellatedSurface};

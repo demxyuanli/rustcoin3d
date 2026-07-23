@@ -289,6 +289,10 @@ impl SceneVisitor for RayPickAction {
                     anisotropic: mat.anisotropic,
                     clearcoat_factor: mat.clearcoat_factor,
                     clearcoat_roughness: mat.clearcoat_roughness,
+                    specular_factor: mat.specular_factor,
+                    specular_color_factor: mat.specular_color_factor,
+                    transmission_factor: mat.transmission_factor,
+                    ior: mat.ior,
                 });
                 ChildPolicy::Recurse
             }

@@ -26,6 +26,10 @@ pub struct Material {
     pub anisotropic: f32,
     pub clearcoat_factor: f32,
     pub clearcoat_roughness: f32,
+    pub specular_factor: f32,
+    pub specular_color_factor: Vec3,
+    pub transmission_factor: f32,
+    pub ior: f32,
     pub light_group: Option<String>,
 }
 
@@ -52,6 +56,10 @@ impl Default for Material {
             anisotropic: 0.0,
             clearcoat_factor: 0.0,
             clearcoat_roughness: 0.0,
+            specular_factor: 1.0,
+            specular_color_factor: Vec3::ONE,
+            transmission_factor: 0.0,
+            ior: 1.5,
             light_group: None,
         }
     }
@@ -137,6 +145,10 @@ impl Material {
             anisotropic: self.anisotropic,
             clearcoat_factor: self.clearcoat_factor,
             clearcoat_roughness: self.clearcoat_roughness,
+            specular_factor: self.specular_factor,
+            specular_color_factor: self.specular_color_factor,
+            transmission_factor: self.transmission_factor,
+            ior: self.ior,
             light_group: self.light_group.clone(),
         }
     }

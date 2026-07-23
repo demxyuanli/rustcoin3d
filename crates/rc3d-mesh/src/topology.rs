@@ -601,9 +601,8 @@ fn earclip_polygon(verts: &[usize], positions: &[Vec3], out: &mut Vec<u32>) {
 
             // Check if triangle contains any other vertex
             let mut contains = false;
-            for j in 0..poly.len() {
+            for (j, &(px, py, _)) in poly.iter().enumerate() {
                 if j == prev || j == i || j == next { continue; }
-                let (px, py, _) = poly[j];
                 if point_in_tri_2d(px, py, p0x, p0y, p1x, p1y, p2x, p2y) {
                     contains = true;
                     break;
@@ -629,6 +628,7 @@ fn earclip_polygon(verts: &[usize], positions: &[Vec3], out: &mut Vec<u32>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn point_in_tri_2d(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> bool {
     let d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
     let d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);

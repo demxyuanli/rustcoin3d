@@ -78,15 +78,16 @@ pub(super) fn encode_post_processing(
             let ti = renderer.gpu_timer.begin(encoder, "PP VolFog");
             let (src, dst) = if hdr_is_src { (hdr, alt) } else { (alt, hdr) };
             if let Some(ref fog) = renderer.gpu.volumetric_fog {
+                let fs = &renderer.volumetric_fog_settings;
                 fog.compute(
                     &renderer.device, &renderer.queue, encoder,
                     depth_read_view, src, dst, w, h,
                     ctx.camera_inv_proj,
                     Vec3::from(ctx.camera_pos),
-                    Vec3::new(0.5, -0.8, 0.3),
-                    Vec3::new(1.0, 0.9, 0.7),
-                    Vec3::new(0.6, 0.7, 0.8),
-                    0.02, 0.5, 100.0, 32,
+                    Vec3::new(0.5, -0.8, 0.3), // light_dir
+                    Vec3::new(1.0, 0.9, 0.7), // light_color
+                    Vec3::from_array(fs.fog_color),
+                    fs.fog_density, fs.height_falloff, fs.max_distance, fs.num_steps,
                 );
                 hdr_is_src = !hdr_is_src;
             }

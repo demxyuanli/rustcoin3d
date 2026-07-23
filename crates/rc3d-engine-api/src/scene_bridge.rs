@@ -60,8 +60,9 @@ impl DynamicSurface {
     ) -> Self {
         use rc3d_scene::node_data::*;
 
+        let quality = rc3d_nurbs::TessQuality { max_px, silhouette_px, terminator_px, angle_tol, max_depth };
         let ts = surface.tessellate_screen_space(
-            mvp, viewport, camera_pos, light_dir, max_px, silhouette_px, terminator_px, angle_tol, max_depth,
+            mvp, viewport, camera_pos, light_dir, &quality,
         );
 
         let sep = graph.add_child(parent, NodeData::Separator(SeparatorNode));
@@ -130,10 +131,15 @@ impl DynamicSurface {
         }
         self.last_tess_eye = camera_pos;
 
+        let quality = rc3d_nurbs::TessQuality {
+            max_px: self.max_px,
+            silhouette_px: self.silhouette_px,
+            terminator_px: self.terminator_px,
+            angle_tol: self.angle_tol,
+            max_depth: self.max_depth,
+        };
         let ts = self.surface.tessellate_screen_space(
-            mvp, viewport, camera_pos, self.light_dir,
-            self.max_px, self.silhouette_px, self.terminator_px,
-            self.angle_tol, self.max_depth,
+            mvp, viewport, camera_pos, self.light_dir, &quality,
         );
 
         // Update Coordinate3 in-place
