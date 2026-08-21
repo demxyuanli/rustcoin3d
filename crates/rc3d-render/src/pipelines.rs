@@ -33,14 +33,11 @@ pub struct DepthModePipelines {
     pub wireframe: wgpu::RenderPipeline,
     pub edge_overlay: wgpu::RenderPipeline,
     pub edge_overlay_aa: wgpu::RenderPipeline,
-    pub selection_fill: wgpu::RenderPipeline,
-    pub selection_edge: wgpu::RenderPipeline,
     /// Procedural fill for mesh / section-plane intersection (triangle mesh + plane-distance discard).
     pub section_cap_fill: wgpu::RenderPipeline,
     /// Stencil prepass for section caps: marks cross-section interior (stencil=2)
     /// by rendering complete (unclipped) front faces with depth NotEqual.
     pub section_cap_stencil: wgpu::RenderPipeline,
-    pub outline: wgpu::RenderPipeline,
     /// WBOIT accumulate: PBR with MRT output (accum + revealage), additive + multiplicative blending.
     pub wboit_accum: wgpu::RenderPipeline,
 }
@@ -51,7 +48,6 @@ pub struct PipelineSet {
     pub shadow_draw_bgl: wgpu::BindGroupLayout,
     pub shadow_resource_bgl: wgpu::BindGroupLayout,
     pub flat_bgl: wgpu::BindGroupLayout,
-    pub outline_bgl: wgpu::BindGroupLayout,
     pub ibl_instance_bgl: wgpu::BindGroupLayout,
     /// Directional shadow depth pass (forward-Z depth only, not tied to reverse-Z camera).
     pub shadow_depth: wgpu::RenderPipeline,
@@ -140,10 +136,6 @@ impl PipelineSet {
             label: Some("Section Cap Mesh Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/section_cap_mesh.wgsl").into()),
         });
-        let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Outline Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/outline.wgsl").into()),
-        });
         let line_aa_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Line AA Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/line_aa.wgsl").into()),
@@ -165,20 +157,6 @@ impl PipelineSet {
 
         let flat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Flat BGL"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let outline_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Outline BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -437,11 +415,6 @@ impl PipelineSet {
             bind_group_layouts: &[&flat_bgl],
             push_constant_ranges: &[],
         });
-        let outline_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Outline PLL"),
-            bind_group_layouts: &[&outline_bgl],
-            push_constant_ranges: &[],
-        });
 
         let forward = build_depth_mode_pipelines(
             device,
@@ -450,12 +423,10 @@ impl PipelineSet {
             false,
             &lit_pll,
             &flat_pll,
-            &outline_pll,
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &section_cap_mesh_shader,
-            &outline_shader,
             &line_aa_shader,
         );
         let reverse = build_depth_mode_pipelines(
@@ -465,12 +436,10 @@ impl PipelineSet {
             true,
             &lit_pll,
             &flat_pll,
-            &outline_pll,
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &section_cap_mesh_shader,
-            &outline_shader,
             &line_aa_shader,
         );
 
@@ -482,12 +451,10 @@ impl PipelineSet {
             false,
             &lit_pll,
             &flat_pll,
-            &outline_pll,
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &section_cap_mesh_shader,
-            &outline_shader,
             &line_aa_shader,
         );
         let reverse_hdr = build_depth_mode_pipelines(
@@ -497,12 +464,10 @@ impl PipelineSet {
             true,
             &lit_pll,
             &flat_pll,
-            &outline_pll,
             pbr_shader,
             &flat_shader,
             &section_cap_shader,
             &section_cap_mesh_shader,
-            &outline_shader,
             &line_aa_shader,
         );
 
@@ -767,7 +732,6 @@ impl PipelineSet {
             shadow_draw_bgl,
             shadow_resource_bgl,
             flat_bgl,
-            outline_bgl,
             ibl_instance_bgl,
             shadow_depth,
             forward,

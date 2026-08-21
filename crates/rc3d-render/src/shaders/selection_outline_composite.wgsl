@@ -1,13 +1,12 @@
-@group(0) @binding(0) var scene_tex: texture_2d<f32>;
+struct OverlayParams {
+    edge_strength: f32,
+    _pad: vec3<f32>,
+};
+
+@group(0) @binding(0) var mask_tex: texture_2d<f32>;
 @group(0) @binding(1) var edge_tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
-@group(0) @binding(3) var<uniform> strength: CompositeStrength;
-
-struct CompositeStrength {
-    params: vec4<f32>,
-    texel_size: vec2<f32>,
-    _pad: vec2<f32>,
-}
+@group(0) @binding(3) var<uniform> params: OverlayParams;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -33,21 +32,15 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 @fragment
-fn fs_composite(i: VsOut) -> @location(0) vec4<f32> {
-    let scene = textureSample(scene_tex, samp, i.uv);
-    let t = strength.texel_size;
-    var best_a = 0.0;
-    var best_rgb = vec3<f32>(0.0, 0.0, 0.0);
-    for (var j = 0u; j < 25u; j = j + 1u) {
-        let dx = i32(j % 5u) - 2;
-        let dy = i32(j / 5u) - 2;
-        let o = vec2<f32>(f32(dx), f32(dy)) * t;
-        let e = textureSample(edge_tex, samp, i.uv + o);
-        if e.a > best_a {
-            best_a = e.a;
-            best_rgb = e.rgb;
-        }
-    }
-    let s = best_a * strength.params.x;
-    return vec4<f32>(scene.rgb + best_rgb * s, scene.a);
+fn fs_overlay(i: VsOut) -> @location(0) vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(mask_tex));
+    let p = vec2<i32>(
+        clamp(i32(i.clip_pos.x), 0, dims.x - 1),
+        clamp(i32(i.clip_pos.y), 0, dims.y - 1),
+    );
+    let mask_r = textureLoad(mask_tex, p, 0).r;
+    let edge = textureSample(edge_tex, samp, i.uv);
+    // mask.r is 1 outside the selection (clear white) and 0 inside.
+    let rgb = edge.rgb * mask_r * params.edge_strength;
+    return vec4<f32>(rgb, 1.0);
 }

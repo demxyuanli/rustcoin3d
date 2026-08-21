@@ -61,7 +61,7 @@ pub(super) fn pass_edge_overlay(
     let mut last_bound_edge_mesh = None;
     for &i in ctx.edge_order {
         let dc = ctx.visible[i];
-        if !edge_worthy && dc.overlay_color.is_none() {
+        if dc.overlay_color.is_none() && !dc.display_mode.wants_feature_edges() {
             continue;
         }
         let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
@@ -111,7 +111,7 @@ fn pass_fallback_edge(
     view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
     ctx: &PassContext<'_>,
-    edge_worthy: bool,
+    _edge_worthy: bool,
     scene_pl: &crate::pipelines::DepthModePipelines,
     edge_kind: EdgeLineKind,
 ) {
@@ -151,7 +151,7 @@ fn pass_fallback_edge(
     let mut last_bound_edge_mesh = None;
     for &i in ctx.edge_order {
         let dc = ctx.visible[i];
-        if !edge_worthy && dc.overlay_color.is_none() {
+        if dc.overlay_color.is_none() && !dc.display_mode.wants_feature_edges() {
             continue;
         }
         let edge_color = dc.overlay_color.unwrap_or(default_edge_color);

@@ -849,7 +849,7 @@ fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnM
 
     let mut ow = ui_ctx.outline_width;
     if ui
-        .add(egui::Slider::new(&mut ow, 0.0..=8.0).text("outline width"))
+        .add(egui::Slider::new(&mut ow, 1.0..=4.0).text("outline thickness"))
         .changed()
     {
         push(EditorCommand::SetOutlineWidth(ow));

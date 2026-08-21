@@ -14,7 +14,6 @@ impl super::Renderer {
         self.gpu.flat_pool.reset();
         self.gpu.line_pool.reset();
         self.gpu.section_cap_pool.reset();
-        self.gpu.outline_pool.reset();
         if let Some(ref mut pool) = self.gpu.assets.mesh_pool {
             pool.begin_frame();
         }

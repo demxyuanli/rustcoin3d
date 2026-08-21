@@ -811,7 +811,7 @@ Mesh upload (GpuMeshPool)             ← LRU + budget, max 16/frame
     ▼
 execute_passes() ── single command encoder:
     Background → CSM Shadows → Omni Shadows → HZB Prepass → Cluster Cull →
-    Solid+Outline → Section Caps → Transparent (WBOIT) → Effects →
+    Solid → Section Caps → Transparent (WBOIT) → Effects →
     Wireframe → Selection → Edge Overlay → Post-FX → HUD → Swapchain
     │
     ▼

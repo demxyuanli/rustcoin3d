@@ -194,6 +194,11 @@ fn main() {
             r.hdr_post_processing = true;
         }
 
+        engine.on_pick = Some(Box::new(|graph, node, _point| {
+            graph.clear_selection();
+            graph.select(node);
+        }));
+
         if !no_panel {
             let panel_for_text = panel_state.clone();
             let panel_for_key = panel_state.clone();

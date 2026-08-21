@@ -6,7 +6,7 @@
 
 use rc3d_engine_api::Engine;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowAttributes;
 
@@ -60,6 +60,7 @@ impl<F: FnOnce(&mut Engine)> ApplicationHandler for ExampleApp<F> {
         if let Some(setup) = self.setup.take() {
             setup(&mut engine);
         }
+        maybe_screenshot(&mut engine, &self.title);
 
         self.engine = Some(engine);
         self.window = Some(window);
@@ -99,22 +100,29 @@ impl<F: FnOnce(&mut Engine)> ApplicationHandler for ExampleApp<F> {
                 self.cursor_prev = (position.x, position.y);
                 self.cursor_pos = Some((position.x as f32, position.y as f32));
             }
-            WindowEvent::MouseInput { .. } => {
-                if self.with_hooks {
-                    if let WindowEvent::MouseInput { state, .. } = &event {
-                        if *state == ElementState::Pressed {
-                            if let (Some(engine), Some((x, y))) =
-                                (self.engine.as_mut(), self.cursor_pos)
-                            {
-                                if let Some(ref hook) = engine.panel_overlay_mouse_hook {
-                                    let _ = hook(
-                                        x,
-                                        y,
-                                        self.window_size.0,
-                                        self.window_size.1,
-                                    );
-                                }
-                            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let mut overlay_consumed = false;
+                if self.with_hooks && state == ElementState::Pressed {
+                    if let (Some(engine), Some((x, y))) =
+                        (self.engine.as_mut(), self.cursor_pos)
+                    {
+                        if let Some(ref hook) = engine.panel_overlay_mouse_hook {
+                            overlay_consumed = hook(
+                                x,
+                                y,
+                                self.window_size.0,
+                                self.window_size.1,
+                            );
+                        }
+                    }
+                }
+                if !overlay_consumed
+                    && state == ElementState::Pressed
+                    && button == MouseButton::Left
+                {
+                    if let (Some(engine), Some((x, y))) = (self.engine.as_mut(), self.cursor_pos) {
+                        if engine.on_pick.is_some() {
+                            engine.pick_at(x, y, self.window_size.0, self.window_size.1);
                         }
                     }
                 }
@@ -187,4 +195,51 @@ pub fn run_example_with_hooks(title: &str, setup: impl FnOnce(&mut Engine)) {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = ExampleApp::new(title, setup, true);
     event_loop.run_app(&mut app).expect("event loop failed");
+}
+
+fn arg_value(flag: &str) -> Option<String> {
+    let mut args = std::env::args();
+    while let Some(a) = args.next() {
+        if a == flag {
+            return args.next();
+        }
+    }
+    None
+}
+
+fn screenshot_default_path(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("target/{slug}.png")
+}
+
+/// `--screenshot` writes an offscreen PNG; `--screenshot-path` overrides the
+/// file; `--screenshot-exit` quits after the write.
+fn maybe_screenshot(engine: &mut Engine, title: &str) {
+    if !std::env::args().any(|a| a == "--screenshot") {
+        return;
+    }
+    engine.render();
+    let dcs = engine.world.cached_draw_calls.clone();
+    let Some(renderer) = engine.renderer.as_mut() else {
+        return;
+    };
+    let (w, h, pixels) = renderer.render_to_image(&dcs, &engine.world.graph, 800, 600);
+    let path = arg_value("--screenshot-path").unwrap_or_else(|| screenshot_default_path(title));
+    if let Err(err) = image::save_buffer(&path, &pixels, w, h, image::ExtendedColorType::Rgba8) {
+        eprintln!("screenshot failed: {err}");
+        return;
+    }
+    eprintln!("wrote {path}");
+    if std::env::args().any(|a| a == "--screenshot-exit") {
+        std::process::exit(0);
+    }
 }

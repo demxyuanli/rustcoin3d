@@ -202,7 +202,6 @@ pub(crate) struct GpuInternals {
     pub flat_pool: GpuUniformPool,
     pub line_pool: GpuUniformPool,
     pub section_cap_pool: GpuUniformPool,
-    pub outline_pool: GpuUniformPool,
     pub gpu_meshes: GpuResourceManager,
     pub gpu_skinning_pass: Option<GpuSkinningPass>,
     pub skinned_mesh_resources:

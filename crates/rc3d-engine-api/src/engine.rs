@@ -363,6 +363,34 @@ impl Engine {
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
+
+    /// Ray-pick at a window pixel and invoke [`Self::on_pick`] on the nearest hit.
+    /// Empty space clears the scene-graph selection.
+    pub fn pick_at(&mut self, screen_x: f32, screen_y: f32, width: u32, height: u32) {
+        let vw = width.max(1) as f32;
+        let vh = height.max(1) as f32;
+        let view = if self.world.collector.view_matrix != Mat4::IDENTITY {
+            self.world.collector.view_matrix
+        } else {
+            self.controller.view_matrix()
+        };
+        let proj = if self.world.collector.projection_matrix != Mat4::IDENTITY {
+            self.world.collector.projection_matrix
+        } else {
+            Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, vw / vh.max(1.0), 0.1, 1000.0)
+        };
+        let ray = rc3d_actions::Ray::from_screen_point(screen_x, screen_y, vw, vh, view, proj);
+        let mut picker = rc3d_actions::RayPickAction::new(ray);
+        rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
+        if let Some(hit) = picker.hits.first().cloned() {
+            if let Some(mut cb) = self.on_pick.take() {
+                cb(&mut self.world.graph, hit.node, hit.point);
+                self.on_pick = Some(cb);
+            }
+        } else {
+            self.world.graph.clear_selection();
+        }
+    }
 }
 
 #[cfg(test)]

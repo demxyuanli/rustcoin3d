@@ -2,7 +2,7 @@ use slotmap::new_key_type;
 use wgpu::util::DeviceExt;
 
 use crate::vertex::{
-    FlatUniforms, LineUniforms, LineVertex, LineVertexExpanded, OutlineUniforms, SceneUniforms,
+    FlatUniforms, LineUniforms, LineVertex, LineVertexExpanded, SceneUniforms,
     SectionCapUniforms, ShadowDrawUniforms, Vertex,
 };
 
@@ -13,7 +13,7 @@ new_key_type! {
 /// Which line-list buffer to use on [`GpuMesh`] / fall back data on [`crate::render_action::DrawCall`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeLineKind {
-    /// Crease + boundary edges (shaded overlay, selection edges).
+    /// Crease + boundary edges (shaded overlay).
     Feature,
     /// Full triangle mesh topology (wireframe mode).
     WireframeFull,
@@ -437,54 +437,6 @@ impl GpuUniformPool {
         }
     }
 
-    pub fn new_outline(device: &wgpu::Device, capacity: usize) -> Self {
-        let raw_stride = std::mem::size_of::<OutlineUniforms>() as u64;
-        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let stride = raw_stride.div_ceil(alignment) * alignment;
-        let size = stride * capacity as u64;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Outline Uniform Pool"),
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Outline BGL Pool"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &buffer,
-                    offset: 0,
-                    size: Some(std::num::NonZero::new(stride).expect("uniform stride must be non-zero")),
-                }),
-            }],
-            label: Some("Outline Uniform Pool BG"),
-        });
-        Self {
-            buffer,
-            bind_group_layout,
-            bind_group,
-            stride,
-            capacity,
-            cursor: 0,
-            staging: vec![0; size as usize],
-            written_end: 0,
-        }
-    }
-
     pub fn reset(&mut self) {
         self.cursor = 0;
         self.written_end = 0;
@@ -521,10 +473,6 @@ impl GpuUniformPool {
     }
 
     pub fn push_section_cap(&mut self, uniforms: &SectionCapUniforms) -> Option<u32> {
-        self.push_bytes(bytemuck::bytes_of(uniforms))
-    }
-
-    pub fn push_outline(&mut self, uniforms: &OutlineUniforms) -> Option<u32> {
         self.push_bytes(bytemuck::bytes_of(uniforms))
     }
 

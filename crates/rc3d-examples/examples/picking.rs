@@ -1,13 +1,23 @@
-//! Picking example — demonstrates ray-picking into the scene graph.
+//! Picking example — click a shape to outline it (three.js OutlinePass).
+//!
+//! Left-click selects; click empty space clears. Orbit with the right mouse button.
 //!
 //! Usage: cargo run -p rc3d-examples --example picking
+//!   --screenshot --screenshot-exit  writes target/picking.png with the red cube outlined
 
 use rc3d_core::math::Vec3;
+use rc3d_core::DisplayMode;
 use rc3d_examples::common::run_example;
 use rc3d_scene::node_data::*;
 
 fn main() {
     run_example("Picking", |engine| {
+        engine.set_display_mode(DisplayMode::Shaded);
+        if let Some(renderer) = engine.renderer.as_mut() {
+            renderer.set_outline_width(1.0);
+            renderer.set_outline_color([1.0, 0.5, 0.0, 1.0]);
+        }
+
         let graph = engine.scene_mut();
         let root = graph.add_root(NodeData::Separator(SeparatorNode));
 
@@ -42,7 +52,7 @@ fn main() {
             sep1,
             NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.9, 0.2, 0.2))),
         );
-        graph.add_child(sep1, NodeData::Cube(CubeNode::default()));
+        let red_cube = graph.add_child(sep1, NodeData::Cube(CubeNode::default()));
 
         // Green sphere
         let sep2 = graph.add_child(root, NodeData::Separator(SeparatorNode));
@@ -94,5 +104,15 @@ fn main() {
         graph.add_child(sep5, NodeData::Cube(CubeNode::default()));
 
         graph.add_child(root, NodeData::EventCallback(EventCallbackNode::default()));
+
+        graph.select(red_cube);
+
+        engine.on_pick = Some(Box::new(|graph, node, _point| {
+            graph.clear_selection();
+            graph.select(node);
+        }));
+        engine.hud_text_hook = Some(Box::new(|| {
+            "Left-click a shape to outline it".to_string()
+        }));
     });
 }

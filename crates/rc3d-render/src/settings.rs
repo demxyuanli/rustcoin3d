@@ -99,7 +99,7 @@ impl Default for DisplaySettings {
             display_mode: DisplayMode::ShadedWithEdges,
             grid_enabled: false,
             hud_enabled: true,
-            outline_width: 0.022,
+            outline_width: 1.0,
             outline_color: [1.0, 0.5, 0.0, 1.0],
             xray_mode: false,
             vsync_enabled: true,

@@ -11,7 +11,6 @@ mod pass_grid;
 pub(crate) mod pass_markup;
 mod meshlet_cull;
 mod pass_post;
-mod pass_selection;
 mod pass_shadow;
 mod pass_solid;
 mod pass_transparent;
@@ -37,7 +36,6 @@ pub(crate) struct PassContext<'a> {
     pub transparent_order: &'a [usize],
     pub mesh_handles: &'a [Option<crate::gpu_resource::MeshId>],
     pub mode: DisplayMode,
-    pub run_outline: bool,
     pub bg_color: wgpu::Color,
     pub performance_mode_active: bool,
     pub wireframe_supported: bool,
@@ -85,10 +83,11 @@ pub(super) fn execute_passes(
     let t_entry = std::time::Instant::now();
 
     let t_surface_start = std::time::Instant::now();
-    let ((scene_tex_raw, eff_width, eff_height), mut acquired_swapchain, _w, _h) = pass_shared::acquire_surface(
+    // Texture pointer is unused: outline composites onto shade_view; FXAA/HDR use shade_view/view.
+    let (_, mut acquired_swapchain, eff_width, eff_height) = pass_shared::acquire_surface(
         renderer,
         &presentation,
-        |tex_ptr, w, h| (tex_ptr, w, h),
+        |_, _, _| (),
     );
 
     let view: &wgpu::TextureView = match &acquired_swapchain {
@@ -307,7 +306,7 @@ pub(super) fn execute_passes(
         );
     }
 
-    let ti_solid = renderer.gpu_timer.begin(&mut encoder, "Solid+Outline");
+    let ti_solid = renderer.gpu_timer.begin(&mut encoder, "Solid");
     if solid_mode {
         #[cfg(feature = "profiler")]
         let _span_solid = tracy_client::span!("solid");
@@ -423,13 +422,9 @@ pub(super) fn execute_passes(
         pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
     }
 
-    let has_selection = ctx.visible.iter().any(|dc| dc.selected);
-    let ss_outline = renderer.screen_space_selection_outline
-        && ctx.adaptive_quality != AdaptiveQuality::Low;
-    let run_geom_sel_edge = has_selection
+    let run_selection_outline = ctx.visible.iter().any(|dc| dc.selected)
         && !ctx.performance_mode_active
-        && !ss_outline
-        && ctx.wireframe_supported
+        && renderer.screen_space_selection_outline
         && ctx.adaptive_quality != AdaptiveQuality::Low;
 
     let edge_worthy = !ctx.performance_mode_active
@@ -443,37 +438,21 @@ pub(super) fn execute_passes(
         pass_edge::pass_edge_overlay(renderer, &mut encoder, shade_view, &depth_view, ctx, edge_worthy, &scene_pl);
     }
 
-    if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
-        pass_selection::pass_selection_fill(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
-        if ss_outline {
-            let shade_fmt = if renderer.hdr_post_processing {
-                wgpu::TextureFormat::Rgba16Float
-            } else {
-                renderer.config.format
-            };
-            let scene_tex_ptr: *const wgpu::Texture = if renderer.hdr_post_processing {
-                std::ptr::from_ref(&renderer.gpu.post_fx.as_ref().unwrap().hdr_tex)
-            } else if use_ldr_fxaa {
-                std::ptr::from_ref(renderer.gpu.ldr_shade_tex.as_ref().expect("LDR shade texture: enable_taa or enable_fxaa requires post-processing to be initialized"))
-            } else {
-                scene_tex_raw
-            };
-            crate::selection_outline::encode_selection_outline_pass(
-                renderer,
-                &mut encoder,
-                ctx,
-                shade_view,
-                shade_fmt,
-                scene_tex_ptr,
-                ew,
-                eh,
-            );
-        } else if run_geom_sel_edge && !defer_line_overlays {
-            pass_selection::pass_selection_edge(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
-        }
-        if !defer_line_overlays {
-            pass_selection::pass_selection_bbox(&mut encoder, shade_view, &depth_view, ctx, &scene_pl, &mut renderer.gpu.flat_pool, ctx.wireframe_supported);
-        }
+    if run_selection_outline {
+        let shade_fmt = if renderer.hdr_post_processing {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            renderer.config.format
+        };
+        crate::selection_outline::encode_selection_outline_pass(
+            renderer,
+            &mut encoder,
+            ctx,
+            shade_view,
+            shade_fmt,
+            ew,
+            eh,
+        );
     }
 
     // Transparent pass: sorted draw calls with alpha blend pipeline.
@@ -526,20 +505,6 @@ pub(super) fn execute_passes(
         if edge_worthy || has_overlay {
             pass_edge::pass_edge_overlay(renderer, &mut encoder, view, &depth_view, ctx, edge_worthy, &scene_pl);
         }
-        if has_selection && !ctx.performance_mode_active && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge {
-            if run_geom_sel_edge {
-                pass_selection::pass_selection_edge(renderer, &mut encoder, view, &depth_view, ctx, &scene_pl);
-            }
-            pass_selection::pass_selection_bbox(
-                &mut encoder,
-                view,
-                &depth_view,
-                ctx,
-                &scene_pl,
-                &mut renderer.gpu.flat_pool,
-                ctx.wireframe_supported,
-            );
-        }
     }
 
     let ti_post = renderer.gpu_timer.begin(&mut encoder, "PostProcess");
@@ -556,7 +521,6 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_post);
 
-    renderer.gpu.outline_pool.flush(&renderer.queue);
     renderer.gpu.phong_pool.flush(&renderer.queue);
     renderer.gpu.shadow_pool.flush(&renderer.queue);
     renderer.gpu.flat_pool.flush(&renderer.queue);

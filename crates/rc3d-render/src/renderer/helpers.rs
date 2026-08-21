@@ -324,7 +324,6 @@ impl Renderer {
             + pool_bytes(&self.gpu.shadow_pool)
             + pool_bytes(&self.gpu.flat_pool)
             + pool_bytes(&self.gpu.section_cap_pool)
-            + pool_bytes(&self.gpu.outline_pool)
     }
 
     fn estimate_gpu_mesh_bytes(&self, visible: &[&DrawCall]) -> u64 {

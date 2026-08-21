@@ -122,7 +122,7 @@ rc3d-io (mesh I/O)
 | AdaptiveToneMappingPass | ✓ `auto_exposure` | |
 | UnrealBloomPass | ✓ `bloom_prefilter` | |
 | SMAAPass | ✗ | **DONE** — 2-pass simplified SMAA (edge-detect + blend) |
-| OutlinePass | ✓ `outline` / `selection_outline` | |
+| OutlinePass | ✓ `selection_outline` | Screen-space nearest mask + half-res Sobel + separable blur; pixel thickness via `outline_width`. Example: `picking` (left-click selects). |
 | FilmPass | ✗ | Film grain |
 | GlitchPass | ✗ | Glitch effect |
 | HalftonePass | ✗ | Halftone |

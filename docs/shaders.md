@@ -95,7 +95,6 @@ struct MaterialUniform {  // 48 bytes
 | `decal_project.wgsl` | Screen-space projected texture decal. Uses depth buffer for projection, supports angle cutoff and fade. |
 | `volume_raymarch.wgsl` | 3D volume raymarching. Samples 3D texture with transfer function. |
 | `point_cloud.wgsl` | Large-scale point cloud vertex shader. Reads from octree tile buffer. |
-| `outline.wgsl` | Edge outline rendering (depth-tested line overlay) |
 | `reflection_plane.wgsl` | Planar reflection rendering. Renders mirrored geometry to reflection texture. |
 | `section_cap.wgsl` | Section plane cap rendering. Renders colored triangle caps where geometry is clipped. |
 
@@ -103,10 +102,11 @@ struct MaterialUniform {  // 48 bytes
 
 | Shader | Description |
 |--------|-------------|
-| `selection_outline_depth.wgsl` | Renders selected objects to separate depth buffer |
-| `selection_outline_edge.wgsl` | Sobel edge detection on selection depth for outline |
-| `selection_outline_mask.wgsl` | Renders selection mask to stencil |
-| `selection_outline_composite.wgsl` | Composites selection outline with main scene |
+| `selection_outline_depth.wgsl` | Non-selected occluder depth for hidden/visible split |
+| `selection_outline_mask.wgsl` | Selected-object mask (R=inside, G=visible) |
+| `selection_outline_edge.wgsl` | Half-res Sobel on the downsampled mask |
+| `selection_outline_blur.wgsl` | Separable Gaussian blur for outline thickness |
+| `selection_outline_composite.wgsl` | Additive overlay; `mask.r` keeps the stroke outside the object |
 
 ## 9. Skinning & Geometry
 

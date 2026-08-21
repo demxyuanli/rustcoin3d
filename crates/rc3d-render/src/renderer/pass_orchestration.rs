@@ -145,10 +145,6 @@ impl super::Renderer {
         } else {
             base_mode
         };
-        let run_outline = !self.frame.performance_mode_active
-            && self.gpu.adaptive_quality == AdaptiveQuality::High
-            && self.tier_wants_edges
-            && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine);
 
         let solid_wants_shadow = !self.frame.performance_mode_active
             && matches!(
@@ -269,7 +265,6 @@ impl super::Renderer {
             transparent_order: &transparent_order,
             mesh_handles: &mesh_handles,
             mode,
-            run_outline,
             bg_color: wgpu::Color { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
             performance_mode_active: self.frame.performance_mode_active,
             wireframe_supported: self.wireframe_supported,
@@ -322,7 +317,7 @@ impl super::Renderer {
                     let label = labels.get(i / 2).copied().unwrap_or("?");
                     match label {
                         "CSM Shadow" => shadow = dur_us,
-                        "Solid+Outline" => solid = dur_us,
+                        "Solid" => solid = dur_us,
                         "PostProcess" => post = dur_us,
                         _ => {}
                     }

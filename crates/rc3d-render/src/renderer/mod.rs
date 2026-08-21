@@ -616,7 +616,6 @@ impl Renderer {
         let shadow_pool = GpuUniformPool::new_shadow_pool(&device, &pipelines.shadow_draw_bgl, 32768);
         let flat_pool = GpuUniformPool::new_flat(&device, 32768);
         let section_cap_pool = GpuUniformPool::new_section_cap(&device, &pipelines.flat_bgl, 16384);
-        let outline_pool = GpuUniformPool::new_outline(&device, 16384);
         let line_pool = GpuUniformPool::new_line(&device, &pipelines.flat_bgl, 65536);
         let texture_cache = TextureCache::new(&device, &queue);
         let shadow_compare_sampler = shadow_pass::create_shadow_compare_sampler(&device);
@@ -888,7 +887,7 @@ impl Renderer {
             wireframe_overlay: false,
             grid_enabled: false,
             hud_enabled: true,
-            outline_width: 0.022,
+            outline_width: 1.0,
             outline_color: [1.0, 0.5, 0.0, 1.0], // orange
             feature_edge_color: [0.9, 0.15, 0.1, 1.0], // red
             wireframe_edge_color: [0.15, 0.25, 0.7, 1.0], // dark blue
@@ -968,7 +967,6 @@ impl Renderer {
                 shadow_pool,
                 flat_pool,
                 section_cap_pool,
-                outline_pool,
                 line_pool,
                 gpu_meshes: GpuResourceManager::new(),
                 gpu_skinning_pass: None,
