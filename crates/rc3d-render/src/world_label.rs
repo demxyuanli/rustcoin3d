@@ -7,7 +7,9 @@ use wgpu::util::DeviceExt;
 use crate::render_passes::pass_markup::projection::{ndc_to_screen, project_point_ndc};
 use crate::gpu_resource::GpuUniformPool;
 use crate::pipelines::PipelineSet;
+use crate::sdf;
 use crate::vertex::{FlatUniforms, WorldLabelVertex};
+use rc3d_scene::node_data::FontStyle;
 
 /// Label drawn as a 3D quad on the annotation plane (model-local space).
 #[derive(Clone, Debug)]
@@ -22,6 +24,9 @@ pub struct WorldLabelCommand {
     /// Target full label height on screen (pixels), from `AnnotationStyle::font_size`.
     pub screen_height_px: f32,
     pub color: [f32; 4],
+    /// Empty uses [`FontStyle`] generic family (Coin3D `SoFont::name`).
+    pub font_name: String,
+    pub font_style: FontStyle,
 }
 
 /// Camera-facing basis for world-space text (Text3 / billboards).
@@ -320,13 +325,16 @@ struct LabelRaster {
 fn raster_label_mask(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
-    label_attrs: glyphon::Attrs<'static>,
+    font_name: &str,
+    font_style: FontStyle,
     text: &str,
     raster_px: f32,
 ) -> Option<LabelRaster> {
+    crate::font_loader::ensure_named_font(font_system, font_name);
+    let attrs = crate::font_loader::attrs_from_font(font_name, font_style);
     let mut buffer = Buffer::new(font_system, Metrics::new(raster_px, raster_px * 1.2));
     buffer.set_size(font_system, Some(4096.0), Some(4096.0));
-    buffer.set_text(font_system, text, label_attrs, Shaping::Advanced);
+    buffer.set_text(font_system, text, attrs, Shaping::Advanced);
     buffer.shape_until_scroll(font_system, false);
 
     let mut min_x = i32::MAX;
@@ -373,8 +381,9 @@ fn raster_label_mask(
             blit_mask(&mut mask, w, h, pg.x as f32, pg.y as f32, image);
         }
     }
+    let sdf = sdf::coverage_to_sdf(&mask, w, h, 8.0);
     Some(LabelRaster {
-        data: mask,
+        data: sdf,
         width: w,
         height: h,
     })
@@ -455,7 +464,7 @@ pub fn draw_world_labels(
     camera_world: Vec3,
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
-    label_attrs: glyphon::Attrs<'static>,
+    _label_attrs: glyphon::Attrs<'static>,
 ) {
     if labels.is_empty() {
         return;
@@ -467,9 +476,16 @@ pub fn draw_world_labels(
     };
     pass.set_pipeline(pipeline);
 
-    let raster_px = 48.0_f32;
+    let raster_px = 64.0_f32;
     for cmd in labels {
-        let Some(raster) = raster_label_mask(font_system, swash_cache, label_attrs, &cmd.string, raster_px)
+        let Some(raster) = raster_label_mask(
+            font_system,
+            swash_cache,
+            &cmd.font_name,
+            cmd.font_style,
+            &cmd.string,
+            raster_px,
+        )
         else {
             continue;
         };
@@ -542,6 +558,7 @@ pub fn draw_world_labels(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         let Some(offset) = flat_pool.push_flat(&uniforms) else {
             continue;

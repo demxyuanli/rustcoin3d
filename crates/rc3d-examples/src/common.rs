@@ -1,12 +1,12 @@
 //! Shared event-loop wrapper for all examples.
 //!
 //! Every example calls [`run_example`] with a title and a setup closure.
-//! The closure receives `&mut Engine` so it can build the scene graph,
-//! configure the renderer, and register engines before the event loop starts.
+//! Window input goes through [`Engine::handle_window_event`] (`HandleEventAction`
+//! + camera + click pick).
 
-use rc3d_engine_api::Engine;
+use rc3d_engine_api::{Engine, EventRouteOpts};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowAttributes;
 
@@ -16,9 +16,6 @@ struct ExampleApp<F> {
     with_hooks: bool,
     engine: Option<Engine>,
     window: Option<winit::window::Window>,
-    cursor_prev: (f64, f64),
-    cursor_pos: Option<(f32, f32)>,
-    window_size: (u32, u32),
 }
 
 impl<F: FnOnce(&mut Engine)> ExampleApp<F> {
@@ -29,20 +26,7 @@ impl<F: FnOnce(&mut Engine)> ExampleApp<F> {
             with_hooks,
             engine: None,
             window: None,
-            cursor_prev: (0.0, 0.0),
-            cursor_pos: None,
-            window_size: (800, 600),
         }
-    }
-
-    fn dispatch_camera(&mut self, event: &WindowEvent) -> bool {
-        let Some(engine) = self.engine.as_mut() else {
-            return false;
-        };
-        let left_orbit = engine.on_pick.is_none();
-        engine
-            .controller
-            .dispatch_window_event(event, self.cursor_prev, left_orbit)
     }
 }
 
@@ -86,75 +70,25 @@ impl<F: FnOnce(&mut Engine)> ApplicationHandler for ExampleApp<F> {
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                self.window_size = (size.width, size.height);
                 if let Some(engine) = self.engine.as_mut() {
                     engine.resize(size.width, size.height);
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                if self.dispatch_camera(&event) {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                }
-                self.cursor_prev = (position.x, position.y);
-                self.cursor_pos = Some((position.x as f32, position.y as f32));
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let mut overlay_consumed = false;
-                if self.with_hooks && state == ElementState::Pressed {
-                    if let (Some(engine), Some((x, y))) =
-                        (self.engine.as_mut(), self.cursor_pos)
-                    {
-                        if let Some(ref hook) = engine.panel_overlay_mouse_hook {
-                            overlay_consumed = hook(
-                                x,
-                                y,
-                                self.window_size.0,
-                                self.window_size.1,
-                            );
-                        }
-                    }
-                }
-                if !overlay_consumed
-                    && state == ElementState::Pressed
-                    && button == MouseButton::Left
-                {
-                    if let (Some(engine), Some((x, y))) = (self.engine.as_mut(), self.cursor_pos) {
-                        if engine.on_pick.is_some() {
-                            engine.pick_at(x, y, self.window_size.0, self.window_size.1);
-                        }
-                    }
-                }
-                if self.dispatch_camera(&event) {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                }
-            }
-            WindowEvent::MouseWheel { .. } => {
-                if self.dispatch_camera(&event) {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if self.with_hooks && event.state == ElementState::Pressed {
-                    let mut requested = false;
-                    if let Some(engine) = self.engine.as_mut() {
-                        if let Some(ref mut hook) = engine.panel_overlay_key_hook {
-                            requested = hook(event.physical_key);
-                        }
-                    }
-                    if requested {
+            _ => {
+                if let Some(engine) = self.engine.as_mut() {
+                    let opts = EventRouteOpts {
+                        pick_on_click: engine.on_pick.is_some()
+                            || engine.on_pick_hit.is_some(),
+                        ..EventRouteOpts::default()
+                    };
+                    let routed = engine.handle_window_event(&event, opts);
+                    if routed.redraw {
                         if let Some(window) = self.window.as_ref() {
                             window.request_redraw();
                         }
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -189,7 +123,7 @@ pub fn run_example(title: &str, setup: impl FnOnce(&mut Engine)) {
     event_loop.run_app(&mut app).expect("event loop failed");
 }
 
-/// Run a rustcoin3d example with hook support.
+/// Run a rustcoin3d example with overlay-hook / idle-redraw support.
 pub fn run_example_with_hooks(title: &str, setup: impl FnOnce(&mut Engine)) {
     let _ = env_logger::try_init();
     let event_loop = EventLoop::new().expect("failed to create event loop");
@@ -238,7 +172,12 @@ fn maybe_screenshot(engine: &mut Engine, title: &str) {
         eprintln!("screenshot failed: {err}");
         return;
     }
-    eprintln!("wrote {path}");
+    let n_sel = dcs.iter().filter(|dc| dc.selected).count();
+    let n_blend = dcs
+        .iter()
+        .filter(|dc| dc.alpha_mode == rc3d_scene::AlphaMode::Blend)
+        .count();
+    eprintln!("wrote {path}  selected={n_sel} blend={n_blend}");
     if std::env::args().any(|a| a == "--screenshot-exit") {
         std::process::exit(0);
     }

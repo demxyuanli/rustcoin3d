@@ -196,13 +196,17 @@ impl PhysicsWorld {
             Some(e) => e,
             None => return,
         };
-        let local_model = if let NodeData::Transform(t) = &entry.data {
-            *parent_model * (Mat4::from_translation(-t.center)
-                * Mat4::from_scale(t.scale)
-                * t.rotation
-                * Mat4::from_translation(t.center + t.translation))
-        } else {
-            *parent_model
+        let local_model = match &entry.data {
+            NodeData::Transform(t) => {
+                *parent_model
+                    * (Mat4::from_translation(-t.center)
+                        * Mat4::from_scale(t.scale)
+                        * t.rotation
+                        * Mat4::from_translation(t.center + t.translation))
+            }
+            NodeData::Rotation(r) => *parent_model * r.to_matrix(),
+            NodeData::RotationXYZ(r) => *parent_model * r.to_matrix(),
+            _ => *parent_model,
         };
         let shape: Option<SharedShape> = match &entry.data {
             NodeData::Cube(c) => Some(shapes::cube([c.width / 2.0, c.height / 2.0, c.depth / 2.0])),

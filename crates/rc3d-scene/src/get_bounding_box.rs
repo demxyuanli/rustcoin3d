@@ -90,6 +90,14 @@ impl SceneVisitor for GetBoundingBoxAction {
                 });
                 ChildPolicy::Skip
             }
+            NodeData::Sprite(sp) => {
+                let r = sp.size.max(0.001) * 0.5;
+                self.union_local_aabb(Aabb {
+                    min: Vec3::splat(-r),
+                    max: Vec3::splat(r),
+                });
+                ChildPolicy::Skip
+            }
             NodeData::Cone(c) => {
                 let half_h = c.height / 2.0;
                 self.union_local_aabb(Aabb {
@@ -152,6 +160,27 @@ impl SceneVisitor for GetBoundingBoxAction {
                 }
                 ChildPolicy::Skip
             }
+            NodeData::BatchedMesh(batch) => {
+                let parent = self.state.model_matrix();
+                for inst in &batch.instances {
+                    if !inst.visible {
+                        continue;
+                    }
+                    let Some(geo) = batch.geometries.get(inst.geometry as usize) else {
+                        continue;
+                    };
+                    let model = parent * Mat4::from_cols_array_2d(&inst.transform);
+                    let start = geo.index_first as usize;
+                    let end = (start + geo.index_count as usize).min(batch.indices.len());
+                    for &idx in &batch.indices[start..end] {
+                        if let Some(p) = batch.positions.get(idx as usize) {
+                            let wp = model.transform_point3(Vec3::from_array(*p));
+                            self.bounding_box = self.bounding_box.union(&Aabb::from_point(wp));
+                        }
+                    }
+                }
+                ChildPolicy::Skip
+            }
             // Property / camera / light leaves — no spatial contribution
             NodeData::Material(_)
             | NodeData::Normal(_)
@@ -161,6 +190,8 @@ impl SceneVisitor for GetBoundingBoxAction {
             | NodeData::DirectionalLight(_)
             | NodeData::PointLight(_)
             | NodeData::SpotLight(_)
+            | NodeData::HemisphereLight(_)
+            | NodeData::LightProbe(_)
             | NodeData::PointCloud(_) => ChildPolicy::Skip,
             // Group-like: recurse children
             _ => ChildPolicy::Recurse,

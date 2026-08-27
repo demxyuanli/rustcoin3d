@@ -33,6 +33,8 @@ pub struct DepthModePipelines {
     pub wireframe: wgpu::RenderPipeline,
     pub edge_overlay: wgpu::RenderPipeline,
     pub edge_overlay_aa: wgpu::RenderPipeline,
+    /// Occluded edges for Fast Hidden Line (inverted depth, dashed).
+    pub edge_overlay_hidden: wgpu::RenderPipeline,
     /// Procedural fill for mesh / section-plane intersection (triangle mesh + plane-distance discard).
     pub section_cap_fill: wgpu::RenderPipeline,
     /// Stencil prepass for section caps: marks cross-section interior (stencil=2)
@@ -109,7 +111,10 @@ impl PipelineSet {
             .with(ShaderFeatures::HAS_IBL)
             .with(ShaderFeatures::HAS_MR_TEX)
             .with(ShaderFeatures::HAS_EMISSIVE_TEX)
-            .with(ShaderFeatures::HAS_OCCLUSION_TEX);
+            .with(ShaderFeatures::HAS_OCCLUSION_TEX)
+            .with(ShaderFeatures::HAS_CLEARCOAT)
+            .with(ShaderFeatures::HAS_SHEEN)
+            .with(ShaderFeatures::HAS_TRANSMISSION);
         let pbr_shader = shader_cache.get_module(
             device,
             pbr_features.bits,
@@ -279,7 +284,7 @@ impl PipelineSet {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        view_dimension: wgpu::TextureViewDimension::CubeArray,
                         sample_type: wgpu::TextureSampleType::Depth,
                     },
                     count: None,

@@ -314,6 +314,8 @@ impl SceneVisitor for IntersectionDetectionAction {
             | NodeData::DirectionalLight(_)
             | NodeData::PointLight(_)
             | NodeData::SpotLight(_)
+            | NodeData::HemisphereLight(_)
+            | NodeData::LightProbe(_)
             | NodeData::PointCloud(_) => ChildPolicy::Skip,
             _ => ChildPolicy::Recurse,
         }

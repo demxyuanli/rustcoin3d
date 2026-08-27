@@ -61,7 +61,7 @@ pub(super) fn pass_edge_overlay(
     let mut last_bound_edge_mesh = None;
     for &i in ctx.edge_order {
         let dc = ctx.visible[i];
-        if dc.overlay_color.is_none() && !dc.display_mode.wants_feature_edges() {
+        if dc.overlay_color.is_none() && !dc.appearance().wants_edge_overlay() {
             continue;
         }
         let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
@@ -71,6 +71,27 @@ pub(super) fn pass_edge_overlay(
             drop(pass);
             pass_fallback_edge(renderer, encoder, view, depth_view, ctx, edge_worthy, scene_pl, edge_kind);
             return;
+        }
+
+        // Classified overlays (silhouette / perimeter / hard / adjacent) live on
+        // DrawCall.edge_positions, not the shared GPU crease buffer.
+        if dc.appearance().wants_cpu_edge_overlay() {
+            pass.set_pipeline(&pl.edge_overlay);
+            let uniforms = FlatUniforms {
+                mvp: dc.mvp.to_cols_array_2d(),
+                color: edge_color,
+                model: dc.model_matrix.to_cols_array_2d(),
+                clip_planes: [[0.0; 4]; 6],
+                clip_count: [0.0, 0.0, 0.0, 0.0],
+                ..Default::default()
+            };
+            if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+                pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
+                renderer.bind_and_draw_edges(&mut pass, dc, None, EdgeLineKind::Feature);
+            }
+            pass.set_pipeline(&pl.edge_overlay_aa);
+            last_bound_edge_mesh = None;
+            continue;
         }
 
         // Default line width 1.5px with 1.5px AA feather
@@ -151,7 +172,7 @@ fn pass_fallback_edge(
     let mut last_bound_edge_mesh = None;
     for &i in ctx.edge_order {
         let dc = ctx.visible[i];
-        if dc.overlay_color.is_none() && !dc.display_mode.wants_feature_edges() {
+        if dc.overlay_color.is_none() && !dc.appearance().wants_edge_overlay() {
             continue;
         }
         let edge_color = dc.overlay_color.unwrap_or(default_edge_color);
@@ -161,10 +182,13 @@ fn pass_fallback_edge(
             model: dc.model_matrix.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
-            let drawn_from_cache = if let Some(mesh_id) = ctx.mesh_handles[i] {
+            let drawn_from_cache = if dc.appearance().wants_cpu_edge_overlay() {
+                false
+            } else if let Some(mesh_id) = ctx.mesh_handles[i] {
                 renderer.draw_edges_batched(
                     &mut pass,
                     mesh_id,
@@ -178,7 +202,11 @@ fn pass_fallback_edge(
                 renderer.bind_and_draw_edges(
                     &mut pass,
                     dc,
-                    ctx.mesh_handles[i],
+                    if dc.appearance().wants_cpu_edge_overlay() {
+                        None
+                    } else {
+                        ctx.mesh_handles[i]
+                    },
                     edge_kind,
                 );
             }

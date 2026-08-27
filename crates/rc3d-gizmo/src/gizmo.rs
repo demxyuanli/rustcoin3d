@@ -81,6 +81,10 @@ pub struct Gizmo {
     pub drag_start_transform: Option<Mat4>,
     /// Whether the gizmo is visible.
     pub visible: bool,
+    /// World-from-local orientation (identity = world-aligned handles).
+    pub orientation: Mat4,
+    /// When set, these handles replace mode-based defaults (composed draggers).
+    pub handle_filter: Option<Vec<GizmoHandle>>,
 }
 
 impl Gizmo {
@@ -95,6 +99,8 @@ impl Gizmo {
             drag_start: None,
             drag_start_transform: None,
             visible: false,
+            orientation: Mat4::IDENTITY,
+            handle_filter: None,
         }
     }
 
@@ -128,7 +134,7 @@ impl Gizmo {
         for handle in handles {
             let dist = match handle {
                 GizmoHandle::TranslateArrow(axis) => {
-                    let av = axis_vector(axis);
+                    let av = self.axis_world(axis);
                     let cyl = ray_intersect_cylinder(ray, self.position, av, handle_size);
                     let cone = ray_intersect_cone(ray, self.position + av * handle_size * 4.0 * 0.7, av, handle_size * 4.0 * 0.3, handle_size * 0.12);
                     match (cyl, cone) {
@@ -139,13 +145,13 @@ impl Gizmo {
                     }
                 }
                 GizmoHandle::RotateRing(axis) => {
-                    ray_intersect_torus(ray, self.position, axis_vector(axis), handle_size * 4.0)
+                    ray_intersect_torus(ray, self.position, self.axis_world(axis), handle_size * 4.0)
                 }
                 GizmoHandle::ScaleHandle(axis) => {
-                    ray_intersect_cube(ray, self.position + axis_vector(axis) * handle_size * 4.0, handle_size * 0.5)
+                    ray_intersect_cube(ray, self.position + self.axis_world(axis) * handle_size * 4.0, handle_size * 0.5)
                 }
                 GizmoHandle::TranslatePlane(axis) => {
-                    ray_intersect_plane_rect(ray, self.position, axis_normal(axis), handle_size * 2.0)
+                    ray_intersect_plane_rect(ray, self.position, self.plane_normal_world(axis), handle_size * 2.0)
                 }
             };
 
@@ -162,7 +168,7 @@ impl Gizmo {
     pub fn start_drag(&mut self, ray: &Ray, handle: GizmoHandle) {
         self.active_axis = Some(handle.axis());
         // Compute the world-space point on the constraint plane through gizmo position.
-        let p = closest_point_on_axis_plane(ray, self.position, handle.axis());
+        let p = self.closest_point_on_axis_plane(ray, handle.axis());
         self.drag_start = Some(p);
         self.drag_start_transform = None;
     }
@@ -174,11 +180,11 @@ impl Gizmo {
     ) -> Option<Mat4> {
         let axis = self.active_axis?;
         let start = self.drag_start?;
-        let new_point = closest_point_on_axis_plane(ray, self.position, axis);
+        let new_point = self.closest_point_on_axis_plane(ray, axis);
 
         match axis {
             GizmoAxis::X | GizmoAxis::Y | GizmoAxis::Z => {
-                let av = axis_vector(axis);
+                let av = self.axis_world(axis);
                 let old_t = (start - self.position).dot(av);
                 let new_t = (new_point - self.position).dot(av);
                 let delta = new_t - old_t;
@@ -199,8 +205,11 @@ impl Gizmo {
         self.drag_start_transform = None;
     }
 
-    /// Get the list of handles visible in the current mode.
+    /// Get the list of handles visible in the current mode (or composed filter).
     fn active_handles(&self) -> Vec<GizmoHandle> {
+        if let Some(ref filter) = self.handle_filter {
+            return filter.clone();
+        }
         let axes = [GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z];
         let planes = [GizmoAxis::XY, GizmoAxis::YZ, GizmoAxis::ZX];
 
@@ -215,6 +224,47 @@ impl Gizmo {
             }
             GizmoMode::Scale => {
                 axes.iter().map(|&a| GizmoHandle::ScaleHandle(a)).collect()
+            }
+        }
+    }
+
+    fn axis_world(&self, axis: GizmoAxis) -> Vec3 {
+        let local = axis_vector(axis);
+        if local.length_squared() < 1e-12 {
+            return local;
+        }
+        let v = self.orientation.transform_vector3(local);
+        if v.length_squared() < 1e-12 {
+            local
+        } else {
+            v.normalize()
+        }
+    }
+
+    fn plane_normal_world(&self, plane: GizmoAxis) -> Vec3 {
+        let local = axis_normal(plane);
+        let v = self.orientation.transform_vector3(local);
+        if v.length_squared() < 1e-12 {
+            local
+        } else {
+            v.normalize()
+        }
+    }
+
+    fn closest_point_on_axis_plane(&self, ray: &Ray, axis: GizmoAxis) -> Vec3 {
+        match axis {
+            GizmoAxis::X | GizmoAxis::Y | GizmoAxis::Z => {
+                let av = self.axis_world(axis);
+                let to_eye = ray.origin - self.position;
+                let mut n = av.cross(to_eye.cross(av));
+                if n.length_squared() < 1e-10 {
+                    let fallback = if av.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+                    n = av.cross(fallback);
+                }
+                ray_plane_point(ray, self.position, n)
+            }
+            GizmoAxis::XY | GizmoAxis::YZ | GizmoAxis::ZX => {
+                ray_plane_point(ray, self.position, self.plane_normal_world(axis))
             }
         }
     }
@@ -234,16 +284,16 @@ impl Gizmo {
 
             let lines = match handle {
                 GizmoHandle::TranslateArrow(axis) => {
-                    handles::translate_arrow(axis_vector(axis), self.position, handle_size * 4.0)
+                    handles::translate_arrow(self.axis_world(axis), self.position, handle_size * 4.0)
                 }
                 GizmoHandle::RotateRing(axis) => {
-                    handles::rotate_ring(axis_vector(axis), self.position, handle_size * 4.0, 48)
+                    handles::rotate_ring(self.axis_world(axis), self.position, handle_size * 4.0, 48)
                 }
                 GizmoHandle::ScaleHandle(axis) => {
-                    handles::scale_handle(axis_vector(axis), self.position, handle_size * 4.0)
+                    handles::scale_handle(self.axis_world(axis), self.position, handle_size * 4.0)
                 }
                 GizmoHandle::TranslatePlane(axis) => {
-                    plane_handle_lines(self.position, axis, handle_size * 2.0)
+                    plane_handle_lines(self.position, self.plane_normal_world(axis), handle_size * 2.0)
                 }
             };
 
@@ -291,8 +341,12 @@ fn axis_normal(plane: GizmoAxis) -> Vec3 {
     }
 }
 
-fn plane_handle_lines(origin: Vec3, plane: GizmoAxis, size: f32) -> Vec<LineVertex> {
-    let n = axis_normal(plane);
+fn plane_handle_lines(origin: Vec3, normal: Vec3, size: f32) -> Vec<LineVertex> {
+    let n = if normal.length_squared() < 1e-12 {
+        Vec3::Z
+    } else {
+        normal.normalize()
+    };
     let perp = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
     let u = n.cross(perp).normalize() * size;
     let v = n.cross(u).normalize() * size;
@@ -308,14 +362,26 @@ fn plane_handle_lines(origin: Vec3, plane: GizmoAxis, size: f32) -> Vec<LineVert
     lines
 }
 
+fn aabb_usable(b: &Aabb) -> bool {
+    b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z
+}
+
 fn bbox_of_node(graph: &SceneGraph, node: NodeId) -> Aabb {
     let mut action = rc3d_actions::GetBoundingBoxAction::new();
     action.apply(graph, node);
-    let extent = (action.bounding_box.min - action.bounding_box.max).length();
-    if extent > 1e-8 {
-        action.bounding_box
-    } else {
-        Aabb { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) }
+    if aabb_usable(&action.bounding_box) {
+        return action.bounding_box;
+    }
+    if let Some(parent) = graph.get(node).and_then(|e| e.parent) {
+        let mut parent_bb = rc3d_actions::GetBoundingBoxAction::new();
+        parent_bb.apply(graph, parent);
+        if aabb_usable(&parent_bb.bounding_box) {
+            return parent_bb.bounding_box;
+        }
+    }
+    Aabb {
+        min: Vec3::splat(-1.0),
+        max: Vec3::splat(1.0),
     }
 }
 
@@ -494,17 +560,19 @@ fn ray_intersect_sphere(ray: &Ray, center: Vec3, radius: f32) -> Option<f32> {
     }
 }
 
-fn closest_point_on_axis_plane(ray: &Ray, origin: Vec3, axis: GizmoAxis) -> Vec3 {
-    match axis {
-        GizmoAxis::X | GizmoAxis::Y | GizmoAxis::Z => {
-            let av = axis_vector(axis);
-            let t = (origin - ray.origin).dot(av) / ray.direction.dot(av).max(1e-6);
-            ray.origin + ray.direction * t
-        }
-        GizmoAxis::XY | GizmoAxis::YZ | GizmoAxis::ZX => {
-            let n = axis_normal(axis);
-            let t = (origin - ray.origin).dot(n) / ray.direction.dot(n).max(1e-6);
-            ray.origin + ray.direction * t
-        }
+fn ray_plane_point(ray: &Ray, origin: Vec3, normal: Vec3) -> Vec3 {
+    let n = if normal.length_squared() < 1e-10 {
+        Vec3::Y
+    } else {
+        normal.normalize()
+    };
+    let denom = ray.direction.dot(n);
+    if denom.abs() < 1e-6 {
+        return origin;
     }
+    let t = (origin - ray.origin).dot(n) / denom;
+    if !t.is_finite() {
+        return origin;
+    }
+    ray.origin + ray.direction * t
 }

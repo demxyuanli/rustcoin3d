@@ -1,7 +1,7 @@
 use rc3d_core::math::{Mat4, Vec3, Vec4};
-use rc3d_core::{DisplayMode, NodeId};
+use rc3d_core::{Appearance, DisplayMode, EdgeStyle, FillStyle, NodeId};
 use rc3d_scene::{
-    scene_traverse, ChildPolicy, LightData, LightType, MaterialElement, NodeData, NodeEntry,
+    billboard_facing, scene_traverse, ChildPolicy, LightData, LightType, MaterialElement, NodeData, NodeEntry,
     SceneGraph, SceneVisitor, SeparatorPolicy, State, TraversalMatrices,
 };
 use slotmap::Key;
@@ -64,6 +64,17 @@ fn material_element_for_node(
         specular_color_factor: src.specular_color_factor,
         transmission_factor: src.transmission_factor,
         ior: src.ior,
+        sheen_color: src.sheen_color,
+        sheen_roughness: src.sheen_roughness,
+        iridescence_factor: src.iridescence_factor,
+        iridescence_ior: src.iridescence_ior,
+        iridescence_thickness_min: src.iridescence_thickness_min,
+        iridescence_thickness_max: src.iridescence_thickness_max,
+        toon_steps: src.toon_steps,
+        visualize_normals: src.visualize_normals,
+        visualize_depth: src.visualize_depth,
+        custom_wgsl: src.custom_wgsl.clone(),
+        custom_uniforms: src.custom_uniforms,
     }
 }
 
@@ -116,8 +127,22 @@ pub struct DrawCall {
     pub specular_color_factor: Vec3,
     pub transmission_factor: f32,
     pub ior: f32,
+    pub sheen_color: Vec3,
+    pub sheen_roughness: f32,
+    pub iridescence_factor: f32,
+    pub iridescence_ior: f32,
+    pub iridescence_thickness_min: f32,
+    pub iridescence_thickness_max: f32,
+    pub toon_steps: f32,
+    pub visualize_normals: bool,
+    pub visualize_depth: bool,
+    /// Custom WGSL (ShaderMaterial). Empty = PBR path.
+    pub custom_wgsl: Option<std::sync::Arc<str>>,
+    pub custom_uniforms: [f32; 4],
     pub aabb: Option<rc3d_core::Aabb>,
     pub display_mode: DisplayMode,
+    pub fill_style: FillStyle,
+    pub edge_style: EdgeStyle,
     pub selected: bool,
     pub overlay_color: Option<[f32; 4]>,
     pub mesh_hash: Option<u64>,
@@ -141,6 +166,51 @@ pub struct DrawCall {
     pub morph_target_deltas: Option<Arc<rc3d_scene::MorphTargetNode>>,
     /// Skeletal skinning: compute pass writes animated vertices into the mesh vertex buffer.
     pub skinning: Option<Arc<SkinnedMeshDrawPayload>>,
+    /// First index into [`Self::indices`] (three.js BufferGeometry.groups `start`).
+    /// `index_draw_count == 0` means draw the whole index buffer.
+    pub index_first: u32,
+    /// Index count for this draw. Zero = use the full uploaded index buffer.
+    pub index_draw_count: u32,
+}
+
+impl DrawCall {
+    /// `(first_index, index_count)` for this draw, or `None` to use the full GPU mesh.
+    pub fn index_draw_range(&self) -> Option<(u32, u32)> {
+        if self.index_draw_count == 0 {
+            None
+        } else {
+            Some((self.index_first, self.index_draw_count))
+        }
+    }
+
+    /// Clamp this draw's index range against an uploaded mesh `index_count`.
+    pub fn resolved_index_range(&self, mesh_index_count: u32) -> (u32, u32) {
+        if self.index_draw_count == 0 {
+            (0, mesh_index_count)
+        } else {
+            let first = self.index_first.min(mesh_index_count);
+            let end = first.saturating_add(self.index_draw_count).min(mesh_index_count);
+            (first, end.saturating_sub(first))
+        }
+    }
+
+    pub fn appearance(&self) -> Appearance {
+        Appearance {
+            fill: self.fill_style,
+            edges: self.edge_style,
+        }
+    }
+
+    /// Packed into `pbr_alpha_flags.w`: toon bands, 100+ normals, 200+ depth.
+    pub fn shade_mode_w(&self) -> f32 {
+        if self.visualize_depth {
+            200.0
+        } else if self.visualize_normals {
+            100.0
+        } else {
+            self.toon_steps
+        }
+    }
 }
 
 impl Default for DrawCall {
@@ -179,8 +249,21 @@ impl Default for DrawCall {
             specular_color_factor: Vec3::ONE,
             transmission_factor: 0.0,
             ior: 1.5,
+            sheen_color: Vec3::ZERO,
+            sheen_roughness: 0.0,
+            iridescence_factor: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            toon_steps: 0.0,
+            visualize_normals: false,
+            visualize_depth: false,
+            custom_wgsl: None,
+            custom_uniforms: [0.0; 4],
             aabb: None,
             display_mode: DisplayMode::ShadedWithEdges,
+            fill_style: FillStyle::Shaded,
+            edge_style: EdgeStyle::Crease,
             selected: false,
             overlay_color: None,
             mesh_hash: None,
@@ -193,7 +276,40 @@ impl Default for DrawCall {
             morph_weights: Vec::new(),
             morph_target_deltas: None,
             skinning: None,
+            index_first: 0,
+            index_draw_count: 0,
         }
+    }
+}
+
+/// Default HOOPS-style ghost opacity for unselected filled geometry.
+pub const GHOST_UNSELECTED_OPACITY: f32 = 0.25;
+
+/// HOOPS Isolate/Ghost: when enabled and anything is selected, unselected
+/// filled draws become translucent. Selected geometry keeps its material.
+/// No-op when the selection is empty (the rest of the scene stays shaded).
+pub fn apply_ghost_unselected(draw_calls: &mut [DrawCall], enabled: bool, opacity: f32) {
+    if !enabled {
+        return;
+    }
+    if !draw_calls.iter().any(|dc| dc.selected) {
+        return;
+    }
+    let ghost_a = opacity.clamp(0.02, 0.95);
+    for dc in draw_calls.iter_mut() {
+        if dc.selected || dc.is_overlay || dc.custom_wgsl.is_some() {
+            continue;
+        }
+        if dc.vertices.is_empty() && dc.meshlet_data.is_none() {
+            continue;
+        }
+        if !dc.appearance().wants_filled() {
+            continue;
+        }
+        dc.opacity = dc.opacity.min(ghost_a);
+        dc.alpha_mode = rc3d_scene::AlphaMode::Blend;
+        dc.double_sided = true;
+        dc.edge_style = EdgeStyle::None;
     }
 }
 
@@ -205,12 +321,22 @@ pub fn apply_world_camera(
     projection: Mat4,
     camera_pos: Vec3,
 ) {
+    apply_world_camera_ex(draw_calls, view_matrix, projection, camera_pos, false);
+}
+
+pub fn apply_world_camera_ex(
+    draw_calls: &mut [DrawCall],
+    view_matrix: Mat4,
+    projection: Mat4,
+    camera_pos: Vec3,
+    orthographic: bool,
+) {
     let depth_reversed_z = rc3d_core::depth_reversed_z_from_projection(projection);
     for dc in draw_calls.iter_mut() {
         dc.mvp = projection * view_matrix * dc.model_matrix;
         dc.camera_pos = camera_pos;
         dc.depth_reversed_z = depth_reversed_z;
-        dc.projection_orthographic = false;
+        dc.projection_orthographic = orthographic;
     }
 }
 
@@ -305,6 +431,9 @@ pub struct RenderCollector {
     pub pending_instance_transforms: Option<Arc<Vec<Mat4>>>,
     /// Effect draw commands collected during traversal (Decal, Volume, PointCloud).
     pub effect_commands: crate::render_passes::pass_effects::EffectCommands,
+    /// Last LightProbe wins (v1: infinite / no falloff). Zero intensity disables SH IBL.
+    pub light_probe_sh: [[f32; 4]; 9],
+    pub light_probe_intensity: f32,
 }
 
 impl RenderCollector {
@@ -326,6 +455,8 @@ impl RenderCollector {
             inside_annotation: false,
             pending_instance_transforms: None,
             effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
+            light_probe_sh: [[0.0; 4]; 9],
+            light_probe_intensity: 0.0,
         }
     }
 
@@ -348,6 +479,7 @@ impl RenderCollector {
     }
 
     pub fn traverse(&mut self, graph: &SceneGraph, root: NodeId) {
+        self.state.set_display_mode(self.global_display_mode);
         scene_traverse(self, graph, root);
     }
 
@@ -370,10 +502,14 @@ impl RenderCollector {
         cache.metadata.push(meta);
 
         // Track node-to-draw mapping (caller updates after traversal)
-        cache.total_triangles += dc.indices.as_ref().map_or(
-            (dc.vertices.len() / 3) as u64,
-            |idx| (idx.len() / 3) as u64,
-        );
+        cache.total_triangles += if dc.index_draw_count > 0 {
+            (dc.index_draw_count / 3) as u64
+        } else {
+            dc.indices.as_ref().map_or(
+                (dc.vertices.len() / 3) as u64,
+                |idx| (idx.len() / 3) as u64,
+            )
+        };
         cache.groups_dirty = true;
     }
 
@@ -411,6 +547,14 @@ impl SceneVisitor for RenderCollector {
         self.state.pop_all();
     }
 
+    fn appearance(&self) -> Appearance {
+        self.state.appearance()
+    }
+
+    fn set_appearance(&mut self, app: Appearance) {
+        self.state.set_appearance(app);
+    }
+
     fn separator_policy(&self) -> SeparatorPolicy {
         SeparatorPolicy::FlattenDirectTransforms
     }
@@ -433,8 +577,7 @@ impl SceneVisitor for RenderCollector {
         node: NodeId,
         entry: &NodeEntry,
     ) -> ChildPolicy {
-        let is_selected = graph.is_selected(node);
-        let node_display_mode = entry.display_mode;
+        let is_selected = graph.is_in_selection(node);
         let node_type_label = entry.data.type_name();
 
         match &entry.data {
@@ -484,8 +627,10 @@ NodeData::Decal(decal) => {
                 self.state.set_view_matrix(saved);
                 ChildPolicy::Skip
             }
-// TODO: Stereo dual-viewport — needs second render pass with offset eye matrices
-            NodeData::StereoCamera(_) => { for &child in &entry.children { scene_traverse(self, graph, child); }
+            NodeData::StereoCamera(_) => {
+                for &child in &entry.children {
+                    scene_traverse(self, graph, child);
+                }
                 ChildPolicy::Skip
             }
 // TODO: wgpu lacks native DXR/VKRT — deferred until wgpu adds ray tracing support
@@ -507,6 +652,11 @@ NodeData::Volume(volume) => {
                 ChildPolicy::Skip
             }
 NodeData::PointCloud(point_cloud) => {
+                let gpu_emitter = point_cloud
+                    .emitter
+                    .as_ref()
+                    .filter(|e| !e.simulate_on_cpu)
+                    .map(crate::render_passes::pass_effects::GpuEmitterParams::from_emitter);
                 self.effect_commands.point_clouds.push(crate::render_passes::pass_effects::PointCloudDrawCommand {
                     model_matrix: self.state.model_matrix(),
                     file_path: point_cloud.file_path.clone(),
@@ -514,6 +664,13 @@ NodeData::PointCloud(point_cloud) => {
                     point_size: point_cloud.point_size,
                     color: point_cloud.color,
                     is_overlay: self.inside_annotation,
+                    points: if gpu_emitter.is_some() {
+                        Arc::new(Vec::new())
+                    } else {
+                        crate::render_passes::pass_effects::pack_point_cloud_gpu(point_cloud)
+                    },
+                    sim_key: node.data().as_ffi(),
+                    emitter: gpu_emitter,
                 });
                 for &child in &entry.children {
                     scene_traverse(self, graph, child);
@@ -551,11 +708,19 @@ NodeData::AnnotationSet(ann) => {
                 }
                 ChildPolicy::Skip
             }
-NodeData::Environment(_) => {
+            NodeData::Environment(_) => {
                 for &child in &entry.children { scene_traverse(self, graph, child); }
                 ChildPolicy::Skip
             }
-NodeData::IndexedLineSet(ils) => {
+            NodeData::CubeCamera(_) => {
+                for &child in &entry.children { scene_traverse(self, graph, child); }
+                ChildPolicy::Skip
+            }
+            NodeData::BatchedMesh(batch) => {
+                self.emit_batched_mesh(node, batch, is_selected, node_type_label);
+                ChildPolicy::Skip
+            }
+            NodeData::IndexedLineSet(ils) => {
                 let coord = self.state.coordinate();
                 let mvp = self.state.projection_matrix() * self.state.view_matrix() * self.state.model_matrix();
                 let mut edge_positions: Vec<[f32; 3]> = Vec::new();
@@ -685,6 +850,7 @@ NodeData::DirectionalLight(light) => {
                     intensity: light.intensity,
                     cut_off_angle: 0.0,
                     drop_off_rate: 0.0,
+                    ground_color: Vec3::ZERO,
                 });
                 ChildPolicy::Skip
             }
@@ -697,10 +863,11 @@ NodeData::PointLight(light) => {
                     intensity: light.intensity,
                     cut_off_angle: 0.0,
                     drop_off_rate: 0.0,
+                    ground_color: Vec3::ZERO,
                 });
                 ChildPolicy::Skip
             }
-NodeData::SpotLight(light) => {
+            NodeData::SpotLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Spot,
                     direction: light.direction,
@@ -709,20 +876,84 @@ NodeData::SpotLight(light) => {
                     intensity: light.intensity,
                     cut_off_angle: light.cut_off_angle,
                     drop_off_rate: light.drop_off_rate,
+                    ground_color: Vec3::ZERO,
                 });
                 ChildPolicy::Skip
             }
-NodeData::AreaLight(light) => {
+            NodeData::HemisphereLight(light) => {
+                self.state.add_light(LightData {
+                    light_type: LightType::Hemisphere,
+                    direction: light.direction,
+                    location: Vec3::ZERO,
+                    color: light.sky_color,
+                    intensity: light.intensity,
+                    cut_off_angle: 0.0,
+                    drop_off_rate: 0.0,
+                    ground_color: light.ground_color,
+                });
+                ChildPolicy::Skip
+            }
+            NodeData::LightProbe(probe) => {
+                self.light_probe_sh = probe.packed_sh_l2();
+                self.light_probe_intensity = probe.intensity.max(0.0);
+                ChildPolicy::Skip
+            }
+            NodeData::AreaLight(light) => {
                 self.state.add_light(LightData {
                     light_type: LightType::Point,
                     direction: light.direction, location: light.position,
                     color: light.color, intensity: light.intensity,
                     cut_off_angle: 0.0, drop_off_rate: 0.0,
+                    ground_color: Vec3::ZERO,
                 });
                 for &child in &entry.children { scene_traverse(self, graph, child); }
                 ChildPolicy::Skip
             }
-NodeData::Triangle(_) => {
+            NodeData::Sprite(sprite) => {
+                let saved_model = self.state.model_matrix();
+                let facing = billboard_facing(
+                    &rc3d_scene::BillboardNode { axis_aligned: false },
+                    self.state.view_matrix(),
+                );
+                let mut scale = sprite.size.max(0.001);
+                if !sprite.size_attenuation {
+                    let world = saved_model.transform_point3(Vec3::ZERO);
+                    let dist = (world - self.camera_pos).length().max(0.01);
+                    scale *= dist * 0.25;
+                }
+                let cx = (0.5 - sprite.center[0]) * scale;
+                let cy = (0.5 - sprite.center[1]) * scale;
+                let local = Mat4::from_translation(Vec3::new(cx, cy, 0.0))
+                    * Mat4::from_scale(Vec3::splat(scale));
+                self.state.set_model_matrix(saved_model * facing * local);
+                let saved_mat = self.state.material().clone();
+                let mut mat = saved_mat.clone();
+                mat.base_color = Vec3::new(sprite.color[0], sprite.color[1], sprite.color[2]);
+                mat.diffuse = mat.base_color;
+                mat.emissive_color = mat.base_color;
+                mat.opacity = sprite.opacity * sprite.color[3];
+                mat.alpha_mode = rc3d_scene::AlphaMode::Blend;
+                mat.double_sided = true;
+                mat.metallic = 0.0;
+                mat.roughness = 1.0;
+                if !sprite.texture_path.is_empty() {
+                    mat.albedo_texture = Some(sprite.texture_path.clone());
+                }
+                self.state.set_material(mat);
+                self.emit_cached_shape(
+                    ShapeKey::Quad {
+                        w: 1.0f32.to_bits(),
+                        h: 1.0f32.to_bits(),
+                    },
+                    || rc3d_mesh::tessellate_quad_xy(1.0, 1.0),
+                    is_selected,
+                    node_type_label,
+                );
+                self.state.set_material(saved_mat);
+                self.state.set_model_matrix(saved_model);
+                ChildPolicy::Skip
+            }
+            NodeData::Triangle(_) => {
                 let coord = self.state.coordinate();
                 if coord.points.len() < 3 {
                     return ChildPolicy::Skip;
@@ -759,7 +990,6 @@ NodeData::Triangle(_) => {
                     edge_feature,
                     edge_full,
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
                 ChildPolicy::Skip
@@ -773,9 +1003,9 @@ NodeData::Triangle(_) => {
                     },
                     || rc3d_mesh::tessellate_cube(cube.width, cube.height, cube.depth),
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
+                self.apply_node_sub_entity(graph, node, |tri| tri / 2);
                 ChildPolicy::Skip
             }
 NodeData::Sphere(sphere) => {
@@ -789,7 +1019,6 @@ NodeData::Sphere(sphere) => {
                     },
                     || rc3d_mesh::tessellate_sphere(sphere.radius, SLICES, STACKS),
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
                 ChildPolicy::Skip
@@ -804,7 +1033,6 @@ NodeData::Cone(cone) => {
                     },
                     || rc3d_mesh::tessellate_cone(cone.bottom_radius, cone.height, SEGMENTS),
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
                 ChildPolicy::Skip
@@ -819,7 +1047,6 @@ NodeData::Cylinder(cyl) => {
                     },
                     || rc3d_mesh::tessellate_cylinder(cyl.radius, cyl.height, SEGMENTS),
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
                 ChildPolicy::Skip
@@ -836,7 +1063,6 @@ NodeData::Torus(torus) => {
                     },
                     || rc3d_mesh::tessellate_torus(torus.major_radius, torus.minor_radius, MAJOR_SEGMENTS, MINOR_SEGMENTS),
                     is_selected,
-                    node_display_mode,
                     node_type_label,
                 );
                 ChildPolicy::Skip
@@ -980,17 +1206,21 @@ NodeData::IndexedFaceSet(ifs) => {
                 {
                     let edge_feature = clamp_edge_positions(edge_feature.clone());
                     let edge_full = clamp_edge_positions(edge_full.clone());
-                    self.emit_draw_call_with_cached_aabb(
-                        vertices.clone(),
-                        Some(indices.clone()),
+                    self.emit_indexed_face_set_draws(
+                        vertices,
+                        indices,
                         edge_feature,
                         edge_full,
-                        local_aabb.clone(),
-                        meshlet_data.clone(),
+                        local_aabb,
+                        meshlet_data,
+                        &ifs.material_groups,
+                        &ifs.materials,
                         is_selected,
-                        node_display_mode,
                         node_type_label,
                     );
+                    if ifs.material_groups.is_empty() {
+                        self.apply_node_sub_entity(graph, node, |tri| ifs.face_id(tri));
+                    }
                 }
                 ChildPolicy::Skip
             }
@@ -1004,24 +1234,101 @@ NodeData::IndexedFaceSet(ifs) => {
             NodeData::Separator(_)
             | NodeData::Billboard(_)
             | NodeData::InstancedMesh(_)
+            | NodeData::TransformManip(_)
+            | NodeData::Dragger(_)
             | NodeData::ResetTransform(_)
             | NodeData::ExplodedView(_)
             | NodeData::Switch(_)
             | NodeData::MultipleCopy(_)
             | NodeData::Lod(_)
             | NodeData::HandlerNode(_)
-            | NodeData::Transform(_) => ChildPolicy::Recurse,
+            | NodeData::Transform(_)
+            | NodeData::Rotation(_)
+            | NodeData::RotationXYZ(_)
+            | NodeData::Font(_) => ChildPolicy::Recurse,
         }
     }
 }
 
 impl RenderCollector {
+    fn emit_indexed_face_set_draws(
+        &mut self,
+        vertices: Arc<Vec<Vertex>>,
+        indices: Arc<Vec<u32>>,
+        edge_feature: Arc<Vec<[f32; 3]>>,
+        edge_full: Arc<Vec<[f32; 3]>>,
+        local_aabb: rc3d_core::Aabb,
+        meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
+        groups: &[rc3d_scene::FaceMaterialGroup],
+        palette: &[rc3d_scene::MaterialNode],
+        selected: bool,
+        node_type_label: &str,
+    ) {
+        if groups.is_empty() {
+            self.emit_draw_call_with_cached_aabb(
+                vertices,
+                Some(indices),
+                edge_feature,
+                edge_full,
+                local_aabb,
+                meshlet_data,
+                selected,
+                node_type_label,
+            );
+            return;
+        }
+
+        let saved = self.state.material().clone();
+        let empty_edges: Arc<Vec<[f32; 3]>> = Arc::new(Vec::new());
+        // Share the full index Arc (same GPU mesh) and slice with index_first/count,
+        // matching three.js BufferGeometry.groups. Slicing into new Vecs uploaded as
+        // separate meshes and caused coplanar z-fighting / shadow acne flicker.
+        let index_len = indices.len() as u32;
+        for (i, group) in groups.iter().enumerate() {
+            if group.count == 0 {
+                continue;
+            }
+            if group.start >= index_len {
+                continue;
+            }
+            let count = group.count.min(index_len - group.start);
+            if count == 0 {
+                continue;
+            }
+            if let Some(mat) = palette.get(group.material_index as usize) {
+                self.state
+                    .set_material(material_element_for_node(mat, None, self.material_library.as_ref()));
+            } else {
+                self.state.set_material(saved.clone());
+            }
+            let (feat, full, meshlets) = if i == 0 {
+                (edge_feature.clone(), edge_full.clone(), None)
+            } else {
+                (empty_edges.clone(), empty_edges.clone(), None)
+            };
+            self.emit_draw_call_with_cached_aabb(
+                vertices.clone(),
+                Some(indices.clone()),
+                feat,
+                full,
+                local_aabb.clone(),
+                meshlets,
+                selected,
+                node_type_label,
+            );
+            if let Some(dc) = self.draw_calls.last_mut() {
+                dc.index_first = group.start;
+                dc.index_draw_count = count;
+            }
+        }
+        self.state.set_material(saved);
+    }
+
     fn emit_cached_shape<F>(
         &mut self,
         key: ShapeKey,
         build_mesh: F,
         selected: bool,
-        node_display_mode: Option<DisplayMode>,
         node_type_label: &str,
     ) where
         F: FnOnce() -> rc3d_mesh::TriangleMesh,
@@ -1079,10 +1386,54 @@ impl RenderCollector {
                 local_aabb.clone(),
                 meshlet_data.clone(),
                 selected,
-                node_display_mode,
                 node_type_label,
             );
         }
+    }
+
+    fn local_view_dir(&self) -> Vec3 {
+        let inv = self.state.model_matrix().inverse();
+        let cam_local = inv.transform_point3(self.camera_pos);
+        rc3d_core::utils::math::safe_normalize(cam_local, Vec3::Z)
+    }
+
+    fn overlay_edge_positions(
+        &self,
+        feature: &Arc<Vec<[f32; 3]>>,
+        vertices: &Arc<Vec<Vertex>>,
+        indices: Option<&Arc<Vec<u32>>>,
+    ) -> Arc<Vec<[f32; 3]>> {
+        let style = self.state.appearance().edges;
+        if !matches!(
+            style,
+            EdgeStyle::Silhouette | EdgeStyle::Perimeter | EdgeStyle::Hard | EdgeStyle::Adjacent
+        ) {
+            return Arc::clone(feature);
+        }
+        let positions: Vec<Vec3> = vertices.iter().map(|v| Vec3::from_array(v.position)).collect();
+        // Phong buffers split corners; weld by position so shared edges are visible.
+        let soup = match indices {
+            Some(idx) if idx.len() >= 3 => {
+                let mut tris = Vec::with_capacity(idx.len());
+                for tri in idx.chunks_exact(3) {
+                    tris.push(positions[tri[0] as usize]);
+                    tris.push(positions[tri[1] as usize]);
+                    tris.push(positions[tri[2] as usize]);
+                }
+                tris
+            }
+            _ => positions,
+        };
+        let mesh = rc3d_mesh::TriangleMesh::from_tris(&soup);
+        let crease = feature_crease_angle();
+        let lines = match style {
+            EdgeStyle::Silhouette => mesh.edge_line_positions_silhouette(self.local_view_dir()),
+            EdgeStyle::Perimeter => mesh.edge_line_positions_perimeter(),
+            EdgeStyle::Hard => mesh.edge_line_positions_hard(crease),
+            EdgeStyle::Adjacent => mesh.edge_line_positions_adjacent(crease),
+            _ => return Arc::clone(feature),
+        };
+        Arc::new(lines)
     }
 
     fn emit_draw_call_with_cached_aabb(
@@ -1094,9 +1445,10 @@ impl RenderCollector {
         local_aabb: rc3d_core::Aabb,
         meshlet_data: Option<Arc<rc3d_mesh::MeshletData>>,
         selected: bool,
-        node_display_mode: Option<DisplayMode>,
         node_type_label: &str,
     ) {
+        let edge_positions =
+            self.overlay_edge_positions(&edge_positions, &vertices, indices.as_ref());
         let model = self.state.model_matrix();
         let mvp = self.state.projection_matrix() * self.state.view_matrix() * model;
         let mat = self.state.material();
@@ -1161,8 +1513,21 @@ impl RenderCollector {
             specular_color_factor: mat.specular_color_factor,
             transmission_factor: mat.transmission_factor,
             ior: mat.ior,
+            sheen_color: mat.sheen_color,
+            sheen_roughness: mat.sheen_roughness,
+            iridescence_factor: mat.iridescence_factor,
+            iridescence_ior: mat.iridescence_ior,
+            iridescence_thickness_min: mat.iridescence_thickness_min,
+            iridescence_thickness_max: mat.iridescence_thickness_max,
+            toon_steps: mat.toon_steps,
+            visualize_normals: mat.visualize_normals,
+            visualize_depth: mat.visualize_depth,
+            custom_wgsl: mat.custom_wgsl.as_ref().map(|s| Arc::from(s.as_str())),
+            custom_uniforms: mat.custom_uniforms,
             aabb,
-            display_mode: node_display_mode.unwrap_or(DisplayMode::ShadedWithEdges),
+            display_mode: self.state.appearance().to_display_mode(),
+            fill_style: self.state.appearance().fill,
+            edge_style: self.state.appearance().edges,
             selected,
             overlay_color: None,
             mesh_hash: None,
@@ -1176,9 +1541,189 @@ impl RenderCollector {
             morph_weights: self.state.morph_targets().map(|mt| mt.weights.clone()).unwrap_or_default(),
             morph_target_deltas: self.state.morph_targets().map(|mt| Arc::new(mt.clone())),
             skinning: self.skinning_payload_for_draw(),
+            index_first: 0,
+            index_draw_count: 0,
         });
         if !self.cache_ptr.is_null() {
             self.emit_to_cache(self.draw_calls.last().unwrap());
+        }
+    }
+
+    fn emit_batched_mesh(
+        &mut self,
+        node: NodeId,
+        batch: &rc3d_scene::node_data::BatchedMeshNode,
+        selected: bool,
+        node_type_label: &str,
+    ) {
+        if batch.positions.is_empty() || batch.indices.is_empty() || batch.instances.is_empty() {
+            return;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        batch.positions.len().hash(&mut hasher);
+        batch.indices.len().hash(&mut hasher);
+        for p in &batch.positions {
+            p[0].to_bits().hash(&mut hasher);
+            p[1].to_bits().hash(&mut hasher);
+            p[2].to_bits().hash(&mut hasher);
+        }
+        for &i in &batch.indices {
+            i.hash(&mut hasher);
+        }
+        let key = ShapeKey::BatchedMesh {
+            node: node.data().as_ffi(),
+            vert_len: batch.positions.len() as u32,
+            index_len: batch.indices.len() as u32,
+            content_hash: hasher.finish(),
+        };
+        match self.mesh_cache.entry(key) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(vacant) => {
+                let n = batch.positions.len();
+                let mut vertices = Vec::with_capacity(n);
+                let mut local_aabb = rc3d_core::Aabb::empty();
+                for i in 0..n {
+                    let p = batch.positions[i];
+                    local_aabb = local_aabb.union(&rc3d_core::Aabb::from_point(Vec3::from_array(p)));
+                    let nrm = batch.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+                    let uv = batch.texcoords.get(i).copied().unwrap_or([0.0, 0.0]);
+                    let tan = batch.tangents.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 1.0]);
+                    vertices.push(Vertex {
+                        position: p,
+                        normal: nrm,
+                        texcoord: uv,
+                        tangent: tan,
+                    });
+                }
+                vacant.insert((
+                    Arc::new(vertices),
+                    Arc::new(batch.indices.clone()),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    local_aabb,
+                    None,
+                ));
+            }
+        }
+        let Some((vertices, indices, edge_feature, edge_full, _mesh_aabb, _)) =
+            self.mesh_cache.get(&key).cloned()
+        else {
+            return;
+        };
+        let parent = self.state.model_matrix();
+        let view = self.state.view_matrix();
+        let proj = self.state.projection_matrix();
+        let mat = self.state.material();
+        let packed = collect_lights(self.state.lights());
+        let light_key = {
+            let (ref light_dirs, ref light_colors, ref light_types, ref light_positions, ref spot_params, light_count) = packed;
+            hash_light_params(light_dirs, light_colors, light_types, light_positions, spot_params, light_count)
+        };
+        let light_set_id = self.light_sets.intern(light_key, packed);
+        let empty_edges = Arc::clone(&edge_feature);
+        let empty_wire = Arc::clone(&edge_full);
+        let depth_rev = rc3d_core::depth_reversed_z_from_projection(proj);
+        let appearance = self.state.appearance();
+
+        for inst in &batch.instances {
+            if !inst.visible {
+                continue;
+            }
+            let Some(geo) = batch.geometries.get(inst.geometry as usize) else {
+                continue;
+            };
+            if geo.index_count < 3 {
+                continue;
+            }
+            let local = Mat4::from_cols_array_2d(&inst.transform);
+            let model = parent * local;
+            let mvp = proj * view * model;
+            let mut inst_aabb = rc3d_core::Aabb::empty();
+            let start = geo.index_first as usize;
+            let end = (start + geo.index_count as usize).min(batch.indices.len());
+            for &idx in &batch.indices[start..end] {
+                if let Some(p) = batch.positions.get(idx as usize) {
+                    inst_aabb = inst_aabb.union(&rc3d_core::Aabb::from_point(Vec3::from_array(*p)));
+                }
+            }
+            let aabb = if inst_aabb.min.x <= inst_aabb.max.x {
+                Some(inst_aabb.transform(model))
+            } else {
+                None
+            };
+            let tint = Vec3::new(inst.color[0], inst.color[1], inst.color[2]);
+            let opacity = mat.opacity * inst.color[3];
+            self.draw_calls.push(DrawCall {
+                vertices: Arc::clone(&vertices),
+                indices: Some(Arc::clone(&indices)),
+                edge_positions: Arc::clone(&empty_edges),
+                wireframe_edge_positions: Arc::clone(&empty_wire),
+                mvp,
+                model_matrix: model,
+                camera_pos: self.camera_pos,
+                light_set_id,
+                light_key,
+                diffuse_color: mat.diffuse * tint,
+                ambient_color: mat.ambient,
+                specular_color: mat.specular,
+                shininess: mat.shininess,
+                base_color: mat.base_color * tint,
+                metallic: mat.metallic,
+                roughness: mat.roughness,
+                anisotropic: mat.anisotropic,
+                opacity,
+                albedo_path: mat.albedo_texture.as_ref().map(|s| Arc::from(s.as_str())),
+                normal_path: mat.normal_texture.as_ref().map(|s| Arc::from(s.as_str())),
+                emissive_color: mat.emissive_color,
+                emissive_path: mat.emissive_texture.as_ref().map(|s| Arc::from(s.as_str())),
+                metallic_roughness_path: mat
+                    .metallic_roughness_texture
+                    .as_ref()
+                    .map(|s| Arc::from(s.as_str())),
+                occlusion_path: mat.occlusion_texture.as_ref().map(|s| Arc::from(s.as_str())),
+                alpha_mode: mat.alpha_mode,
+                alpha_cutoff: mat.alpha_cutoff,
+                double_sided: mat.double_sided,
+                clearcoat_factor: mat.clearcoat_factor,
+                clearcoat_roughness: mat.clearcoat_roughness,
+                specular_factor: mat.specular_factor,
+                specular_color_factor: mat.specular_color_factor,
+                transmission_factor: mat.transmission_factor,
+                ior: mat.ior,
+                sheen_color: mat.sheen_color,
+                sheen_roughness: mat.sheen_roughness,
+                iridescence_factor: mat.iridescence_factor,
+                iridescence_ior: mat.iridescence_ior,
+                iridescence_thickness_min: mat.iridescence_thickness_min,
+                iridescence_thickness_max: mat.iridescence_thickness_max,
+                toon_steps: mat.toon_steps,
+                visualize_normals: mat.visualize_normals,
+                visualize_depth: mat.visualize_depth,
+                custom_wgsl: mat.custom_wgsl.as_ref().map(|s| Arc::from(s.as_str())),
+                custom_uniforms: mat.custom_uniforms,
+                aabb,
+                display_mode: appearance.to_display_mode(),
+                fill_style: appearance.fill,
+                edge_style: appearance.edges,
+                selected,
+                overlay_color: None,
+                mesh_hash: None,
+                meshlet_data: None,
+                projection_orthographic: self.projection_orthographic,
+                depth_reversed_z: depth_rev,
+                is_overlay: self.inside_annotation,
+                node_type_label: Arc::from(node_type_label),
+                instance_transforms: None,
+                morph_weights: Vec::new(),
+                morph_target_deltas: None,
+                skinning: None,
+                index_first: geo.index_first,
+                index_draw_count: geo.index_count,
+            });
+            if !self.cache_ptr.is_null() {
+                self.emit_to_cache(self.draw_calls.last().unwrap());
+            }
         }
     }
 
@@ -1189,7 +1734,6 @@ impl RenderCollector {
         edge_feature: Vec<[f32; 3]>,
         edge_wireframe: Vec<[f32; 3]>,
         selected: bool,
-        node_display_mode: Option<DisplayMode>,
         node_type_label: &str,
     ) {
         let local_aabb = if vertices.is_empty() {
@@ -1211,7 +1755,6 @@ impl RenderCollector {
             local_aabb,
             None,
             selected,
-            node_display_mode,
             node_type_label,
         );
     }
@@ -1337,6 +1880,7 @@ mod tests {
             max_visible_points: 1000,
             point_size: 2.0,
             color: [0.0, 1.0, 0.0, 1.0],
+            ..Default::default()
         }));
 
         let mut collector = RenderCollector::new();

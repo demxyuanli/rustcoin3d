@@ -616,7 +616,7 @@ pub(crate) fn encode_selection_outline_pass(
             };
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);
             if let Some(mid) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mid, &mut last_mesh);
+                renderer.draw_mesh_batched(&mut pass, mid, dc.index_draw_range(), &mut last_mesh);
             }
         }
     }
@@ -640,7 +640,7 @@ pub(crate) fn encode_selection_outline_pass(
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[off]);
             pass.set_bind_group(1, &tg.mask_aux_bg, &[]);
             if let Some(mid) = ctx.mesh_handles[i] {
-                renderer.draw_mesh_batched(&mut pass, mid, &mut last_mesh);
+                renderer.draw_mesh_batched(&mut pass, mid, dc.index_draw_range(), &mut last_mesh);
             }
         }
     }
@@ -705,6 +705,7 @@ fn dummy_flat(dc: &crate::render_action::DrawCall) -> FlatUniforms {
         model: dc.model_matrix.to_cols_array_2d(),
         clip_planes: [[0.0; 4]; 6],
         clip_count: [0.0, 0.0, 0.0, 0.0],
+        ..Default::default()
     }
 }
 

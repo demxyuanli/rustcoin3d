@@ -35,9 +35,9 @@ Industrial 3D visualization engine in Rust + wgpu, aligned with Coin3D/HOOPS par
 | `rc3d-core` | — | `NodeId`, math (`glam`), AABB, BVH, errors, utils |
 | `rc3d-mesh` | core | Mesh data, meshlets, LOD, tessellation |
 | `rc3d-fields` | core | Dynamic field/value map (`FieldMap`) |
-| `rc3d-scene` | core, fields | Scene graph (SlotMap DAG), `NodeData` (47 variants) |
+| `rc3d-scene` | core, fields | Scene graph (SlotMap DAG), `NodeData` (62 variants) |
 | `rc3d-nurbs` | core, mesh | NURBS curves/surfaces for GPU tessellation |
-| `rc3d-engine` | core, fields, scene | Simulation engines (12 types), `EngineRegistry` |
+| `rc3d-engine` | core, fields, scene | Simulation engines (28 types), `EngineRegistry` + field graph |
 | `rc3d-shape` | core, mesh, nurbs | B-Rep kernel: topology, geometry, bool, heal, mesh |
 | `rc3d-actions` | core, fields, scene, mesh | Visitor/action pattern (render, pick, LOD, measurement) |
 | `rc3d-nodes` | core, fields, scene | Re-export shim for node types |
@@ -77,7 +77,7 @@ Every crate transitively depends on `rc3d-core`. It has zero internal dependenci
 | `aabb` | `Aabb` | Axis-aligned bounding box with union/intersect/ray |
 | `bvh` | `Bvh<T>` | Bounding volume hierarchy for spatial queries |
 | `color` | `Color4f` | Linear/sRGB color |
-| `display` | `DisplayMode`, `ClipPlane`, `ClipCapsStyle` | Rendering display modes (6 variants) |
+| `display` | `DisplayMode`, `FillStyle`, `EdgeStyle`, `Appearance`, `VisualStyle` / `VisualStyleLibrary`, `ClipPlane`, `ClipCapsStyle` | Presets, orthogonal fill x edges, named style catalog |
 | `projection` | perspective/orthographic builders | Depth-reversed Z projection matrices |
 | `error` | `EngineError`, `EngineResult<T>` | Unified error type (Io, Parse, Scene, Render, etc.) |
 | `utils` | graph (toposort, BFS), hash, math, ring, sort | Shared algorithmic utilities |
@@ -100,6 +100,7 @@ FieldEntry {
 ```
 
 Key operations: `insert`, `get`, `set` (propagates dirty via BFS along connections), `connect(from, to)`.
+Cross-node typed fields use `SceneGraph::connect_fields` / `propagate_fields` (`FieldRef` + reverse lookup).
 
 ### 2.3 `rc3d-mesh` — Mesh Data Structures
 
@@ -122,6 +123,7 @@ pub struct SceneGraph {
     roots: Vec<NodeId>,                  // Top-level nodes (no parent)
     selected: HashSet<NodeId>,           // Current selection
     selection_sets: HashMap<String, HashSet<NodeId>>,
+    face_tints / edge_tints,             // Sub-entity colors (runtime)
 }
 
 pub struct NodeEntry {
@@ -131,25 +133,27 @@ pub struct NodeEntry {
     pub dirty_flags: u8,                 // TRANSFORM|MATERIAL|GEOMETRY|CHILDREN|REMOVED
     pub name: Option<String>,
     pub display_mode: Option<DisplayMode>,
+    pub fill_style: Option<FillStyle>,
+    pub edge_style: Option<EdgeStyle>,
     pub fields: FieldMap,                // Dynamic fields
     pub attributes: HashMap<String, String>,
 }
 ```
 
-### 3.2 `NodeData` Enum — 47 Variants
+### 3.2 `NodeData` Enum — 56 Variants
 
 | Category | Variants |
 |----------|----------|
-| **Grouping** | `Separator`, `Group`, `Billboard`, `Annotation`, `Switch`, `Lod`, `MultipleCopy` |
-| **Transform** | `Transform`, `ResetTransform` |
-| **Geometry** | `Coordinate3`, `Normal`, `TextureCoordinate2`, `IndexedFaceSet`, `IndexedLineSet` |
+| **Grouping** | `Separator`, `Group`, `Billboard`, `Sprite`, `Annotation`, `Switch`, `Lod`, `MultipleCopy` |
+| **Transform** | `Transform`, `ResetTransform`, `TransformManip`, `Dragger` |
+| **Geometry** | `Coordinate3`, `Normal`, `TextureCoordinate2`, `IndexedFaceSet`, `IndexedLineSet`, `InstancedMesh`, `BatchedMesh` |
 | **Primitives** | `Triangle`, `Cube`, `Sphere`, `Cone`, `Cylinder`, `Torus` |
 | **Material** | `Material`, `MaterialBinding`, `Texture2Transform`, `ShapeHints` |
-| **Camera** | `PerspectiveCamera`, `OrthographicCamera`, `StereoCamera` |
-| **Light** | `DirectionalLight`, `PointLight`, `SpotLight`, `AreaLight` |
+| **Camera** | `PerspectiveCamera`, `OrthographicCamera`, `StereoCamera` (dual-eye SBS/TB/anaglyph), `CubeCamera` |
+| **Light** | `DirectionalLight`, `PointLight`, `SpotLight`, `AreaLight`, `HemisphereLight`, `LightProbe` |
 | **Environment** | `Environment` (ambient + fog) |
 | **Effects** | `Decal`, `ExplodedView`, `ReflectionPlane`, `RayTracing`, `Volume`, `PointCloud` |
-| **Annotation** | `Measurement`, `Markup`, `AnnotationSet` |
+| **Annotation** | `Measurement`, `Markup`, `AnnotationSet` (`elements` visual + `pmi` semantic records) |
 | **Event/Pick** | `EventCallback`, `PickStyle` |
 | **Animation** | `SkinnedMesh`, `MorphTarget` |
 | **Extension** | `HandlerNode(Arc<dyn NodeHandler>)`, `Custom(u16, Box<dyn CustomNodeData>)` |
@@ -194,30 +198,50 @@ pub trait Engine: Any + Debug {
 
 Engines receive `&mut SceneGraph` — they locate nodes by `NodeId` and mutate them directly. They must set `dirty_flags` to trigger render cache invalidation.
 
-### 4.2 Engine Implementations (12 types)
+### 4.2 Engine Implementations (28 types)
 
 | Engine | Coin3D Analog | Behavior |
 |--------|---------------|----------|
 | `ElapsedTimeEngine` | `SoElapsedTime` | Continuous rotation around axis at `speed` rad/s |
 | `SineOscillatorEngine` | — | Sine wave on transform translation/scale |
-| `CalculatorEngine` | `SoCalculator` | Expression evaluation with `sin()`, `cos()` |
+| `CalculatorEngine` | `SoCalculator` | Expression evaluation with `sin()`, `cos()`, `iA` ports |
 | `ComposeMatrixEngine` | `SoComposeMatrix` | TRS components → Mat4 |
+| `DecomposeMatrixEngine` | `SoDecomposeMatrix` | Mat4 → translation / rotation / scale |
 | `OneShotEngine` | `SoOneShot` | Trigger once for specified duration |
 | `CounterEngine` | `SoCounter` | Integer counter cycling in [min, max] |
+| `TimeCounterEngine` | `SoTimeCounter` | Frequency-driven integer cycle |
 | `InterpolateVec3Engine` | `SoInterpolateVec3f` | Linear translation interpolation |
 | `InterpolateFloatEngine` | `SoInterpolateFloat` | Scalar field interpolation |
 | `InterpolateRotationEngine` | `SoInterpolateRotation` | Quaternion SLERP |
-| `ComposeVec3fEngine` | — | Three floats → Vec3 |
+| `ComposeVec2fEngine` | `SoComposeVec2f` | Two floats → Vec2 |
+| `ComposeVec3fEngine` | `SoComposeVec3f` | Three floats → Vec3 |
+| `ComposeVec4fEngine` | `SoComposeVec4f` | Four floats → Vec4 |
+| `DecomposeVec2fEngine` | `SoDecomposeVec2f` | Vec2 → x/y |
+| `DecomposeVec3fEngine` | `SoDecomposeVec3f` | Vec3 → x/y/z |
+| `DecomposeVec4fEngine` | `SoDecomposeVec4f` | Vec4 → x/y/z/w |
+| `ComposeRotationEngine` | `SoComposeRotation` | Axis-angle → Mat4 |
+| `DecomposeRotationEngine` | `SoDecomposeRotation` | Mat4 → axis-angle |
+| `GateEngine` | `SoGate` | Enable/trigger pass-through |
+| `ConcatenateEngine` | `SoConcatenate` | Up to 8 inputs → array |
+| `SelectOneEngine` | `SoSelectOne` | Index into array |
+| `BoolOperationEngine` | `SoBoolOperation` | AND/OR/XOR/NOT/NAND/NOR |
+| `TransformVec3fEngine` | `SoTransformVec3f` | Matrix × vector |
 | `OnOffEngine` | `SoOnOff` | Boolean toggle |
 | `TriggerAnyEngine` | `SoTriggerAny` | Edge-trigger on any input change |
+| `AnimationMixerEngine` | — | Object/joint clip mixer |
+| `ParticleEngine` | — | PointCloud emitter tick |
 
 ### 4.3 `EngineRegistry`
 
 ```rust
 pub struct EngineRegistry {
     pub engines: Vec<Box<dyn Engine>>,
+    pub connections: Vec<EngineConnection>,
 }
-// evaluate_all(graph, time) — evaluates all engines in insertion order
+// evaluate_all(graph, time)
+//   empty connections → insertion order
+//   else → toposort engine→engine edges, set_input / evaluate / write node fields
+// SceneGraph.field_graph: cross-node FieldRef edges, propagate_fields after engines
 ```
 
 ### 4.4 Supporting Types
@@ -264,8 +288,8 @@ During traversal, `State` maintains 8 typed element stacks. `Separator` nodes pu
 | `RayPickAction` | Ray-scene intersection test |
 | `SearchAction` | Find nodes by name |
 | `GetMatrixAction` | Sample transform matrix at node |
-| `SectionPlaneAction` | Collect active clip planes |
-| `HandleEventAction` | Route events to `EventCallback` nodes |
+| `SectionPlaneAction` | Collect active clip planes + cap/hatch style |
+| `HandleEventAction` | Route events to `EventCallback` nodes; `Engine::handle_window_event` is the shared winit entry |
 | `update_all_lod_nodes` | LOD selection by camera distance |
 | `MeasurementAction` | Compute distance/angle/radius measurements |
 | `MarkupAction` / `AnnotationTool` | 2D/3D annotation processing |
@@ -553,12 +577,12 @@ execute_passes() — single command encoder
     ├── Background (gradient/image/solid)
     ├── GPU Cull Dispatch (compute shader, if enabled)
     ├── CSM Shadow Depth (render to depth array texture)
-    ├── Omni Shadow (render 6 faces to cubemap)
+    ├── Omni Shadow (cube-array, up to 4 point lights x 6 faces; transparent casters)
     ├── Meshlet HZB Prepass (optional: cull → depth → HZB build → fine cull)
     ├── Cluster Light Cull (compute shader)
     ├── Solid + Outline (PBR deferred, Cook-Torrance + Lambertian)
     ├── Section Caps (back-face render with clip planes)
-    ├── Transparent (WBOIT with MRT accumulation, or painter's algorithm)
+    ├── Transparent (WBOIT MRT on LDR/HDR shade, or painter fallback)
     ├── Effects (Decal, Volume, PointCloud)
     ├── Wireframe Overlay
     ├── Selection Fill + Edge + BBox
@@ -568,6 +592,7 @@ execute_passes() — single command encoder
     │   Volumetric Fog → DoF → TAA → Motion Blur →
     │   ACES Tonemap+FXAA → Color Grading → Blit to Swapchain
     ├── Ground Grid
+    ├── Gizmo Overlay (Engine.gizmo generate_lines)
     ├── Viewport Borders
     ├── Markup Lines (annotation overlay with occlusion downsampling)
     └── HUD Overlay (FPS, mode name, markup text)
@@ -579,7 +604,7 @@ execute_passes() — single command encoder
 |------------|---------|
 | Group 0 | Per-draw uniforms (`SceneUniforms`/`FlatUniforms`) via `GpuUniformPool` with dynamic offset |
 | Group 1 | PBR material textures (albedo, sampler, normal, metallic-roughness, emissive, occlusion) |
-| Group 2 | Shadow + Global Frame (CSM depth array, omni cubemap, comparison samplers, global uniform buffer) |
+| Group 2 | Shadow + Global Frame (CSM depth array, omni cube-array, comparison samplers, global uniform buffer) |
 | Group 3 | IBL + Instance SSBO (environment map, BRDF LUT, env sampler, instance data SSBO, morph target buffer) |
 
 ### 8.4 Shader Permutation System
@@ -605,10 +630,12 @@ execute_passes() — single command encoder
 |------|---------------|-------|---------|---------|
 | `Shaded` | PBR + IBL | None | Yes | Full |
 | `ShadedWithEdges` | PBR + IBL | Feature edges | Yes | Full |
-| `HiddenLine` | Solid dark gray | Feature edges | Yes | Full |
+| `HiddenLine` | Solid dark gray | Visible crease + dashed occluded (Fast HLR) | Yes | Full |
 | `Flat` | Solid color | None | No | Reduced |
 | `FlatWithEdge` | Solid color | Feature edges | No | Reduced |
 | `Wireframe` | Wireframe only | Full topology | No | Reduced |
+
+Presets above still seed both axes. Per-node `fill_style` / `edge_style` compose independently. `EdgeStyle` classification: `Crease` = hard+perimeter (preset default), `Hard` / `Perimeter` / `Adjacent` / `Silhouette` use a per-draw line list (not the shared GPU crease buffer); `Full` is all unique mesh edges. Named catalog: `VisualStyleLibrary::builtin()` (`Shaded`, `Wireframe`, `HardEdges`, `Silhouette`, `HiddenLine`, …) applied via `SceneGraph::apply_visual_style` / `Engine::apply_visual_style`. HiddenLine uses GPU Fast HLR (`edge_overlay_hidden`: inverted depth + screen-space dash). Vector hardcopy: `Engine::export_hidden_line_svg` (`vector_hlr.rs`) classifies the same crease/wire edges against filled triangles. Not HOOPS HIO analytic HLR. PMI: `AnnotationSetNode.pmi` (`PmiRecord` / `PmiBinding`) resolved by `SceneGraph::bind_pmi` / `Engine::bind_scene_pmi`; JSON sidecar via `PmiDocument` (not a STEP AP242 parser).
 
 ### 8.7 Quality Tiers (`CadDisplayTier`)
 
@@ -644,10 +671,12 @@ pub struct Engine {
     pub world: World,                          // SceneGraph + engines + collector
     pub renderer: Option<Renderer>,            // wgpu GPU renderer
     pub controller: CameraController,          // Orbit/pan/zoom controller
-    pub viewport_cameras: ViewportCameraSet,   // Multi-viewport camera bindings
+    pub viewport_cameras: ViewportCameraSet,   // Quad pack: vp.Top/Front/Right/Persp
     pub fps: FpsTracker,
     pub adaptive_control: AdaptiveControl,
     pub hidden_nodes: HashSet<NodeId>,
+    pub visual_styles: VisualStyleLibrary,     // Named HOOPS-style catalog
+    pub gizmo: Gizmo,                          // Transform manipulator overlay
     pub hud_text_hook: Option<Box<dyn Fn() -> String>>,
     pub pre_render_hook: Option<Box<dyn FnMut(&mut Renderer)>>,
     pub on_pick: Option<Box<dyn FnMut(&mut SceneGraph, NodeId, Vec3)>>,
@@ -659,6 +688,9 @@ pub struct Engine {
 - `new(window)` — async wgpu init via pollster
 - `render()` — single-frame main loop (see flow below)
 - `load_scene(graph)` — replace scene, invalidate caches
+- `bind_scene_pmi()` — resolve `AnnotationSet.pmi` names and stamp unbound annotation points
+- `export_hidden_line_svg(path)` — Fast HLR edges as SVG (visible solid, hidden dashed)
+- `set_gizmo_mode` / `set_lod_range_scale` — manipulator mode and per-separator LOD scale
 - `import(path)` — import file into scene graph (delegates to `rc3d-io`)
 - `camera_mut()` — access orbit/pan/zoom controller
 
@@ -671,17 +703,18 @@ render()
   ├── 3. renderer.set_materials()            Sync material library
   ├── 4. world.reset_collector(dm)           Clear draw calls, reset state stacks
   ├── 5. Apply hidden_nodes set
-  ├── 6. Update camera nodes                 CameraController → scene graph camera nodes
+  ├── 6. Update camera nodes                 Single: main controller; Quad pack: per-viewport controllers
   ├── 7. world.traverse_all_roots()          RenderCollector → Vec<DrawCall>
   ├── 8. renderer.collect_markup_vertices()  Annotation overlay extraction
   ├── 9. Transfer light sets + clip planes   From collector to renderer
   ├──10. Fallback camera                     Default perspective if none found
   ├──11. apply_world_camera()                View/projection → all draw calls
+  ├──11b.apply_ghost_unselected()            HOOPS Ghost: unselected fill → Blend
   ├──12. Cache draw calls                    For static-frame fast path
   ├──13. clear_all_dirty_flags()             Reset after render
   ├──14. Transfer effect commands            Decals, volumes, point clouds
   ├──15. Call pre_render_hook
-  ├──16. renderer.render_draw_calls()        wgpu command encode + submit
+  ├──16. render_draw_calls / render_standard_quad_views  Single pass or 4-tile blit
   ├──17. Update HUD overlay                  FPS, mode, markup text
   ├──18. Report frame time                   For adaptive quality control
   └──19. fps.push()                          Track metrics
@@ -845,7 +878,8 @@ None. All interfaces are Rust-native via crate public APIs.
 | `Custom(u16, Box<dyn CustomNodeData>)` | `rc3d-scene` + `NodeTypeRegistry` | User-registered custom node variants |
 | `pre_render_hook` | `rc3d-engine-api::Engine` | Pre-render callback |
 | `hud_text_hook` | `rc3d-engine-api::Engine` | Custom HUD overlay text |
-| `on_pick` | `rc3d-engine-api::Engine` | Pick result callback |
+| `on_pick` / `on_pick_hit` | `rc3d-engine-api::Engine` | Node pick + face/edge `PickHit` |
+| `set_face_tint` / `set_edge_tint` | `SceneGraph` | HOOPS sub-entity color (cube `tri/2`, IFS `face_ids`) |
 | `Action` trait | `rc3d-actions` | Custom scene graph traversals |
 | `FieldMap::connect()` | `rc3d-fields` | Field propagation graphs for engines |
 
@@ -871,6 +905,7 @@ None. All interfaces are Rust-native via crate public APIs.
 |-----------|------|
 | `RC3D_STEP_DIR` | Environment variable for STEP test data path |
 | `DisplayMode` | Per-node or global rendering mode |
+| `ghost_unselected` | HOOPS Isolate/Ghost: unselected filled draws become translucent |
 | `CadDisplayTier` | Quality tier (DesignCreation → ProductRendering) |
 | `AdaptiveQuality` | Auto-downgrade based on frame time EMA |
 | `HealLevel` | Healing aggressiveness (Basic/Standard/Advanced) |

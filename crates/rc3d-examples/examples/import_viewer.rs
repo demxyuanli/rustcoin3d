@@ -1,6 +1,6 @@
 //! Import viewer — loads and displays 3D models with an embedded control panel.
 //!
-//! Usage: cargo run -p rc3d-examples --example import_viewer -- <file.stl|file.obj|file.iv> [--high-contrast=on|off] [--no-panel] [--adaptive-quality=off|on|auto-idle-lock]
+//! Usage: cargo run -p rc3d-examples --example import_viewer -- <file.stl|file.obj|file.gltf|file.glb|file.fbx> [--high-contrast=on|off] [--no-panel] [--adaptive-quality=off|on|auto-idle-lock]
 
 use std::env;
 use std::path::Path;
@@ -131,7 +131,7 @@ fn main() {
     let adaptive_control = parse_adaptive_quality_mode(&args);
     let Some(path_arg) = args.iter().skip(1).find(|arg| !arg.starts_with("--")) else {
         eprintln!(
-            "Usage: import_viewer <file.stl|file.obj|file.iv> [--high-contrast=on|off]"
+            "Usage: import_viewer <file.stl|file.obj|file.gltf|file.glb|file.fbx> [--high-contrast=on|off]"
         );
         return;
     };
@@ -578,7 +578,7 @@ fn find_brep_edges_transform(graph: &SceneGraph) -> Option<NodeId> {
 
 fn print_import_viewer_help() {
     println!("Import viewer example");
-    println!("Usage: cargo run -p rc3d-examples --example import_viewer -- <file.stl|file.obj|file.iv> [--high-contrast=on|off] [--no-panel] [--adaptive-quality=off|on|auto-idle-lock]");
+    println!("Usage: cargo run -p rc3d-examples --example import_viewer -- <file.stl|file.obj|file.gltf|file.glb|file.fbx> [--high-contrast=on|off] [--no-panel] [--adaptive-quality=off|on|auto-idle-lock]");
     println!("Controls:");
     println!("  Mouse drag: orbit camera");
     println!("  Embedded panel HUD: clickable checkbox/slider + F5-F10 and [ / ]");

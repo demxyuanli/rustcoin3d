@@ -100,7 +100,7 @@ pub struct Renderer {
     pub hdr_post_processing: bool,
     /// Enable WBOIT (Weighted Blended Order-Independent Transparency) for
     /// transparent objects instead of traditional back-to-front alpha blend.
-    /// Requires `hdr_post_processing` to be true (WBOIT uses Rgba16Float accum buffer).
+    /// Works on both LDR (CAD) and HDR shade targets.
     pub enable_wboit: bool,
     pub global_display_mode: DisplayMode,
     /// Display mode explicitly chosen by the user (may differ from global_display_mode
@@ -122,6 +122,10 @@ pub struct Renderer {
     pub feature_edge_color: [f32; 4],
     /// Full wireframe overlay edge color. Default: dark blue.
     pub wireframe_edge_color: [f32; 4],
+    /// Occluded HiddenLine dashes (Fast HLR). Default: mid gray.
+    pub hidden_edge_color: [f32; 4],
+    /// Unlit HiddenLine face fill (paper). Default: dark gray.
+    pub hidden_line_fill_color: [f32; 4],
     /// Face fill color for flat-shading mode. When `Some`, overrides material color.
     pub flat_face_color: Option<[f32; 4]>,
     /// Resolution scale factor during interaction (0.25..1.0). Default 0.5 = 50% per axis.
@@ -133,12 +137,18 @@ pub struct Renderer {
     /// Sobel gradient threshold for screen-space edge detection (depth units). Default 0.015.
     pub ss_edge_threshold: f32,
     pub xray_mode: bool,
+    /// HOOPS Isolate/Ghost: unselected filled geometry is drawn translucent.
+    pub ghost_unselected: bool,
+    pub ghost_opacity: f32,
+    /// World-space gizmo line batches (Engine / editor overlay).
+    pub gizmo_line_batches: Vec<(Vec<crate::vertex::LineVertex>, [f32; 4])>,
     /// Depth of field: world-space focus distance (default 5.0).
     pub dof_focus_distance: f32,
     /// Depth of field: lens aperture size (default 2.0).
     pub dof_aperture: f32,
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
+    pub post_fx_params: crate::post_processor::PostEffectParams,
 
     /// When true, the renderer skips expensive passes (shadows, edges, SSAO)
     /// even below the triangle threshold. Set by the app during camera orbit/pan/zoom.
@@ -218,6 +228,14 @@ impl Renderer {
     pub fn ensure_point_cloud_pass(&mut self) {
         if self.gpu.point_cloud_pass.is_none() {
             self.gpu.point_cloud_pass = Some(crate::render_passes::pass_effects::PointCloudPass::new(
+                &self.device, self.config.format,
+            ));
+        }
+    }
+
+    pub fn ensure_custom_shader_pass(&mut self) {
+        if self.gpu.custom_shader_pass.is_none() {
+            self.gpu.custom_shader_pass = Some(crate::custom_shader::CustomShaderPass::new(
                 &self.device, self.config.format,
             ));
         }
@@ -415,6 +433,59 @@ impl Renderer {
     /// Whether CAD tier was explicitly chosen via [`Self::set_display_tier`].
     pub fn cad_tier_authoritative(&self) -> bool {
         self.cad_tier_authoritative
+    }
+
+    pub fn set_wboit(&mut self, enabled: bool) {
+        self.enable_wboit = enabled;
+        if !enabled {
+            self.gpu.wboit_targets = None;
+        }
+    }
+
+    pub(crate) fn ensure_wboit_targets(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        if let Some(t) = &self.gpu.wboit_targets {
+            if t.width == w && t.height == h {
+                return;
+            }
+        }
+        let accum_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("WBOIT Accum"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let revealage_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("WBOIT Revealage"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.gpu.wboit_targets = Some(crate::renderer::internals::WboitTargets {
+            width: w,
+            height: h,
+            accum_view: accum_tex.create_view(&wgpu::TextureViewDescriptor::default()),
+            revealage_view: revealage_tex.create_view(&wgpu::TextureViewDescriptor::default()),
+            accum_tex,
+            revealage_tex,
+        });
     }
 
     pub fn set_hdr_post_processing(&mut self, enabled: bool) {
@@ -879,7 +950,7 @@ impl Renderer {
             enable_ldr_fxaa: true,
             enable_ldr_smaa: false,
             hdr_post_processing: false,
-            enable_wboit: false,
+            enable_wboit: true,
             global_display_mode: DisplayMode::Shaded,
             user_display_mode: DisplayMode::Shaded,
             tier_wants_shadow: true,
@@ -891,16 +962,22 @@ impl Renderer {
             outline_color: [1.0, 0.5, 0.0, 1.0], // orange
             feature_edge_color: [0.9, 0.15, 0.1, 1.0], // red
             wireframe_edge_color: [0.15, 0.25, 0.7, 1.0], // dark blue
+            hidden_edge_color: [0.62, 0.64, 0.68, 1.0],
+            hidden_line_fill_color: [0.14, 0.14, 0.15, 1.0],
             flat_face_color: Some([0.68, 0.72, 0.78, 1.0]), // light blue-gray, CAD default
             interaction_render_scale: 1.0, // default off — explicit opt-in via set_interaction_render_scale
             screen_space_edges: true,
             skip_prepass_interaction: true,
             ss_edge_threshold: 0.015,
             xray_mode: false,
+            ghost_unselected: false,
+            ghost_opacity: crate::render_action::GHOST_UNSELECTED_OPACITY,
+            gizmo_line_batches: Vec::new(),
             dof_focus_distance: 5.0,
             dof_aperture: 2.0,
             screen_space_selection_outline: true,
             ibl_preset,
+            post_fx_params: crate::post_processor::PostEffectParams::default(),
             interaction_active: false,
             cad_tier_authoritative: false,
             // Profiler
@@ -987,6 +1064,13 @@ impl Renderer {
                 texture_cache,
                 ibl_diffuse,
                 ibl_specular,
+                sh_l2: [[0.0; 4]; 9],
+                sh_intensity: [0.0; 4],
+                ibl: Some(ibl_res),
+                ibl_sampler,
+                morph_dummy,
+                morph_params_dummy,
+                cube_camera: None,
                 shadow_compare_sampler,
                 csm_shadow,
                 post_fx_pipelines,
@@ -1016,6 +1100,7 @@ impl Renderer {
                 decal_pass: None,
                 volume_pass: None,
                 point_cloud_pass: None,
+                custom_shader_pass: None,
                 selection_outline_pipelines: Some(selection_outline_pipelines),
                 selection_outline_targets: None,
                 ldr_shade_tex: None,
@@ -1031,6 +1116,8 @@ impl Renderer {
                 upscale_pipeline: Some(upscale_pipeline),
                 upscale_bgl: Some(upscale_bgl),
                 upscale_sampler: Some(upscale_sampler),
+                anaglyph_pipeline: None,
+                anaglyph_bgl: None,
                 ss_edge_pipeline: Some(ss_edge_pipeline),
                 ss_edge_bgl: Some(ss_edge_bgl),
                 ss_edge_uniform: Some(ss_edge_uniform),
@@ -1052,6 +1139,8 @@ impl Renderer {
                 tier_cooldown_frames: 0,
                 global_frame_buffer: Some(global_frame_buffer),
                 velocity_buffer: Some(velocity_buffer),
+                quad_tiles: Vec::new(),
+                wboit_targets: None,
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),
                     meshlet_draws: Vec::with_capacity(4096),
@@ -1223,6 +1312,7 @@ impl Renderer {
             self.gpu.selection_outline_targets = None;
             self.gpu.ldr_shade_tex = None;
             self.gpu.ldr_shade_view = None;
+            self.gpu.wboit_targets = None;
             self.gpu.hzb_baker = Some(HzbBaker::new(&self.device));
             let ds_bgl = &self.gpu.hzb_baker.as_ref().unwrap().downsample_bgl;
             self.gpu.hzb = Some(HzbPyramids::new(&self.device, ds_bgl, width, height));
@@ -1238,6 +1328,12 @@ impl Renderer {
     /// Replace the light-set table (populated during scene traversal).
     pub fn set_light_sets(&mut self, table: crate::light_set::LightSetTable) {
         self.light_sets = table;
+    }
+
+    /// Upload L2 SH irradiance probe (last probe wins; intensity 0 disables).
+    pub fn set_light_probe(&mut self, sh_l2: [[f32; 4]; 9], intensity: f32) {
+        self.gpu.sh_l2 = sh_l2;
+        self.gpu.sh_intensity = [intensity.max(0.0), 0.0, 0.0, 0.0];
     }
 
     /// Call after LOD scan to update auto-detection state.
@@ -1343,6 +1439,8 @@ impl Renderer {
         self.outline_width = settings.display.outline_width;
         self.outline_color = settings.display.outline_color;
         self.xray_mode = settings.display.xray_mode;
+        self.ghost_unselected = settings.display.ghost_unselected;
+        self.ghost_opacity = settings.display.ghost_opacity;
         self.screen_space_selection_outline = settings.display.screen_space_selection_outline;
         if settings.display.vsync_enabled != self.is_vsync_enabled() {
             self.set_vsync(settings.display.vsync_enabled);
@@ -1404,6 +1502,11 @@ impl Renderer {
     /// RGBA for full wireframe overlay edges (F5). Default: dark blue.
     pub fn set_wireframe_edge_color(&mut self, rgba: [f32; 4]) {
         self.wireframe_edge_color = rgba;
+    }
+
+    /// RGBA for Fast Hidden Line dashed occluded edges. Default: mid gray.
+    pub fn set_hidden_edge_color(&mut self, rgba: [f32; 4]) {
+        self.hidden_edge_color = rgba;
     }
 
     /// Override face fill color in flat-shading mode. `None` uses material color. Default: `None`.
@@ -1483,6 +1586,14 @@ impl Renderer {
         self.xray_mode = enabled;
     }
 
+    pub fn set_ghost_unselected(&mut self, enabled: bool) {
+        self.ghost_unselected = enabled;
+    }
+
+    pub fn set_ghost_opacity(&mut self, opacity: f32) {
+        self.ghost_opacity = opacity.clamp(0.02, 0.95);
+    }
+
     pub fn set_outline_width(&mut self, width: f32) {
         self.outline_width = width;
     }
@@ -1498,8 +1609,25 @@ impl Renderer {
     /// Update post-processing effect parameters at runtime.
     /// Exposure is managed separately by auto_exposure and written per-frame.
     pub fn set_post_effect_params(&mut self, vignette: f32, chromatic: f32, bloom_str: f32, grain: f32) {
-        let params = crate::post_processor::PostEffectParams { vignette, chromatic, bloom_str, grain, exposure: 1.0, _pad: [0.0; 3] };
-        self.queue.write_buffer(&self.gpu.post_fx_pipelines.post_params_buf, 0, bytemuck::bytes_of(&params));
+        self.post_fx_params.vignette = vignette;
+        self.post_fx_params.chromatic = chromatic;
+        self.post_fx_params.bloom_str = bloom_str;
+        self.post_fx_params.grain = grain;
+        self.upload_post_fx_params();
+    }
+
+    pub fn set_post_stylize(&mut self, halftone: f32, glitch: f32) {
+        self.post_fx_params.halftone = halftone;
+        self.post_fx_params.glitch = glitch;
+        self.upload_post_fx_params();
+    }
+
+    fn upload_post_fx_params(&self) {
+        self.queue.write_buffer(
+            &self.gpu.post_fx_pipelines.post_params_buf,
+            0,
+            bytemuck::bytes_of(&self.post_fx_params),
+        );
     }
 
     pub fn ibl_preset_name(&self) -> &'static str {
@@ -1533,19 +1661,6 @@ impl Renderer {
         );
         self.gpu.ibl_diffuse = ibl_res.ibl_diffuse;
         self.gpu.ibl_specular = ibl_res.ibl_specular;
-        let morph_dummy = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morph dummy buffer"),
-            size: 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let morph_params_dummy = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morph params dummy"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&morph_params_dummy, 0, &[0u8; 16]);
         self.gpu.ibl_instance_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("IBL + Instance BG"),
             layout: &self.gpu.pipelines.ibl_instance_bgl,
@@ -1554,11 +1669,16 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&ibl_res.brdf_lut_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&ibl_sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: self.gpu.instance_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: morph_dummy.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: morph_dummy.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: morph_params_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.gpu.morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.gpu.morph_dummy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: self.gpu.morph_params_dummy.as_entire_binding() },
             ],
         });
+        self.gpu.ibl_sampler = ibl_sampler;
+        self.gpu.ibl = Some(ibl_res);
+        if let Some(cc) = self.gpu.cube_camera.as_mut() {
+            cc.mark_dirty();
+        }
         log::info!("IBL preset switched to {}", preset.name());
     }
 
@@ -1632,7 +1752,11 @@ impl Renderer {
         }
     }
 
-    pub fn set_clip_planes(&mut self, planes: Vec<[f32; 4]>, mut cap_tints: Vec<Option<[f32; 4]>>) {
+    pub fn set_clip_planes(
+        &mut self,
+        planes: Vec<[f32; 4]>,
+        mut cap_tints: Vec<Option<rc3d_scene::SectionCapStyle>>,
+    ) {
         if cap_tints.len() < planes.len() {
             cap_tints.resize(planes.len(), None);
         } else if cap_tints.len() > planes.len() {

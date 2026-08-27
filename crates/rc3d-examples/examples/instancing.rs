@@ -1,4 +1,4 @@
-//! MultipleCopy + Switch + Lod demo — scene graph traversal variants.
+//! MultipleCopy + InstancedMesh patterns, plus BatchedMesh (mixed cube/sphere).
 //!
 //! Usage: cargo run -p rc3d-examples --example instancing
 
@@ -58,6 +58,27 @@ fn main() {
         graph.add_child(root, NodeData::Lod(LodNode {
             levels: vec![LodLevel { children: vec![sw], max_distance: 10.0 }],
             current_level: 0,
+            ..Default::default()
         }));
+
+        // Mixed cube/sphere instances share one vertex buffer (three.js BatchedMesh).
+        let mut batch = rc3d_scene_api::BatchedMesh::new();
+        let cube_g = batch.add_cube(0.55, 0.55, 0.55);
+        let sphere_g = batch.add_sphere(0.32);
+        for i in 0..8 {
+            let x = (i % 4) as f32 * 1.2;
+            let z = -2.4 - (i / 4) as f32 * 1.2;
+            let geo = if i % 2 == 0 { cube_g } else { sphere_g };
+            let id = batch.add_instance(
+                geo,
+                Mat4::from_translation(Vec3::new(x, 0.0, z)),
+            );
+            if i % 2 == 0 {
+                batch.set_instance_color(id, [0.9, 0.45, 0.2, 1.0]);
+            } else {
+                batch.set_instance_color(id, [0.35, 0.8, 0.5, 1.0]);
+            }
+        }
+        graph.add_child(root, batch.into_node());
     });
 }

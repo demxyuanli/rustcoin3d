@@ -301,6 +301,7 @@ pub fn pass_markup(
             model: identity,
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if !projected.is_empty() {
             if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
@@ -365,6 +366,7 @@ pub fn pass_markup(
             model: identity,
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             let vb = renderer.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

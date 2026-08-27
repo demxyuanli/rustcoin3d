@@ -1,6 +1,7 @@
 //! Central `NodeData` enum and serialization.
 use std::sync::Arc;
 
+use rc3d_core::math::Mat4;
 use serde::{Deserialize, Serialize};
 
 use crate::custom_node::CustomNodeData;
@@ -12,6 +13,7 @@ use super::control::*;
 use super::effects::*;
 use super::grouping::*;
 use super::lights::*;
+use super::manip::*;
 use super::properties::*;
 use super::shapes::*;
 
@@ -22,8 +24,14 @@ pub enum NodeData {
     Separator(SeparatorNode),
     Group(GroupNode),
             Billboard(BillboardNode),
+    /// Camera-facing textured quad (three.js Sprite).
+    Sprite(SpriteNode),
     // Properties
     Transform(TransformNode),
+    /// Axis-angle rotation (Coin3D SoRotation).
+    Rotation(RotationNode),
+    /// Cardinal-axis rotation (Coin3D SoRotationXYZ).
+    RotationXYZ(RotationXYZNode),
     Coordinate3(Coordinate3Node),
     TextureCoordinate2(TextureCoordinate2Node),
     Normal(NormalNode),
@@ -44,12 +52,17 @@ pub enum NodeData {
     StereoCamera(StereoCameraNode),
     PerspectiveCamera(PerspectiveCameraNode),
     OrthographicCamera(OrthographicCameraNode),
+    CubeCamera(CubeCameraNode),
     // Lights
     DirectionalLight(DirectionalLightNode),
     PointLight(PointLightNode),
     SpotLight(SpotLightNode),
     /// Area light: rectangle or disc emitter with realistic soft shadows.
     AreaLight(AreaLightNode),
+    /// Sky/ground hemisphere ambient (three.js HemisphereLight).
+    HemisphereLight(HemisphereLightNode),
+    /// L2 SH irradiance probe (three.js LightProbe).
+    LightProbe(LightProbeNode),
     /// User-defined behavior via [`NodeHandler`] (traversal / future collect hooks).
     HandlerNode(Arc<dyn NodeHandler>),
     /// Event routing callback (Coin3D SoEventCallback pattern).
@@ -66,6 +79,8 @@ pub enum NodeData {
     Text2(Text2Node),
     /// World-space 3D text label (Coin3D SoText3 pattern).
     Text3(Text3Node),
+    /// Font property (Coin3D SoFont) for subsequent Text2 / Text3.
+    Font(FontNode),
     Measurement(MeasurementNode),
     Markup(MarkupNode),
     AnnotationSet(AnnotationSetNode),
@@ -86,6 +101,12 @@ pub enum NodeData {
     Decal(DecalNode),
     /// GPU-instanced mesh (like Three.js InstancedMesh).
     InstancedMesh(InstancedMeshNode),
+    /// Multi-geometry GPU batch (three.js BatchedMesh).
+    BatchedMesh(BatchedMeshNode),
+    /// Scene-graph transform manipulator (three.js TransformControls / Coin3D SoTransformManip).
+    TransformManip(TransformManipNode),
+    /// Composable dragger part under a TransformManip.
+    Dragger(DraggerNode),
     /// User-defined node type registered via `NodeTypeRegistry`.
     Custom(u16, Box<dyn CustomNodeData>),
 }
@@ -96,7 +117,10 @@ impl Clone for NodeData {
             NodeData::Separator(v) => NodeData::Separator(v.clone()),
             NodeData::Group(v) => NodeData::Group(v.clone()),
             NodeData::Billboard(v) => NodeData::Billboard(v.clone()),
+            NodeData::Sprite(v) => NodeData::Sprite(v.clone()),
             NodeData::Transform(v) => NodeData::Transform(v.clone()),
+            NodeData::Rotation(v) => NodeData::Rotation(v.clone()),
+            NodeData::RotationXYZ(v) => NodeData::RotationXYZ(v.clone()),
             NodeData::Coordinate3(v) => NodeData::Coordinate3(v.clone()),
             NodeData::TextureCoordinate2(v) => NodeData::TextureCoordinate2(v.clone()),
             NodeData::Normal(v) => NodeData::Normal(v.clone()),
@@ -114,10 +138,13 @@ impl Clone for NodeData {
             NodeData::StereoCamera(v) => NodeData::StereoCamera(v.clone()),
             NodeData::PerspectiveCamera(v) => NodeData::PerspectiveCamera(v.clone()),
             NodeData::OrthographicCamera(v) => NodeData::OrthographicCamera(v.clone()),
+            NodeData::CubeCamera(v) => NodeData::CubeCamera(v.clone()),
             NodeData::DirectionalLight(v) => NodeData::DirectionalLight(v.clone()),
             NodeData::PointLight(v) => NodeData::PointLight(v.clone()),
             NodeData::SpotLight(v) => NodeData::SpotLight(v.clone()),
             NodeData::AreaLight(v) => NodeData::AreaLight(v.clone()),
+            NodeData::HemisphereLight(v) => NodeData::HemisphereLight(v.clone()),
+            NodeData::LightProbe(v) => NodeData::LightProbe(v.clone()),
             NodeData::HandlerNode(h) => NodeData::HandlerNode(Arc::clone(h)),
             NodeData::EventCallback(v) => NodeData::EventCallback(v.clone()),
             NodeData::PickStyle(v) => NodeData::PickStyle(v.clone()),
@@ -127,6 +154,7 @@ impl Clone for NodeData {
             NodeData::SectionPlane(v) => NodeData::SectionPlane(v.clone()),
             NodeData::Text2(v) => NodeData::Text2(v.clone()),
             NodeData::Text3(v) => NodeData::Text3(v.clone()),
+            NodeData::Font(v) => NodeData::Font(v.clone()),
             NodeData::Measurement(v) => NodeData::Measurement(v.clone()),
             NodeData::Markup(v) => NodeData::Markup(v.clone()),
             NodeData::AnnotationSet(v) => NodeData::AnnotationSet(v.clone()),
@@ -144,6 +172,9 @@ impl Clone for NodeData {
             NodeData::ReflectionPlane(v) => NodeData::ReflectionPlane(v.clone()),
             NodeData::Decal(v) => NodeData::Decal(v.clone()),
             NodeData::InstancedMesh(v) => NodeData::InstancedMesh(v.clone()),
+            NodeData::BatchedMesh(v) => NodeData::BatchedMesh(v.clone()),
+            NodeData::TransformManip(v) => NodeData::TransformManip(v.clone()),
+            NodeData::Dragger(v) => NodeData::Dragger(v.clone()),
             NodeData::File(v) => NodeData::File(v.clone()),
         }
     }
@@ -165,6 +196,14 @@ impl NodeData {
                 FieldDescriptor { name: "rotation", field_index: 1 },
                 FieldDescriptor { name: "scale", field_index: 2 },
                 FieldDescriptor { name: "center", field_index: 3 },
+            ],
+            NodeData::Rotation(_) => vec![
+                FieldDescriptor { name: "axis", field_index: 0 },
+                FieldDescriptor { name: "angle", field_index: 1 },
+            ],
+            NodeData::RotationXYZ(_) => vec![
+                FieldDescriptor { name: "axis", field_index: 0 },
+                FieldDescriptor { name: "angle", field_index: 1 },
             ],
             NodeData::Material(_) => vec![
                 FieldDescriptor { name: "diffuseColor", field_index: 0 },
@@ -197,6 +236,20 @@ impl NodeData {
                 FieldDescriptor { name: "width", field_index: 2 },
                 FieldDescriptor { name: "height", field_index: 3 },
             ],
+            NodeData::HemisphereLight(_) => vec![
+                FieldDescriptor { name: "skyColor", field_index: 0 },
+                FieldDescriptor { name: "groundColor", field_index: 1 },
+                FieldDescriptor { name: "intensity", field_index: 2 },
+                FieldDescriptor { name: "direction", field_index: 3 },
+            ],
+            NodeData::LightProbe(_) => vec![
+                FieldDescriptor { name: "intensity", field_index: 0 },
+            ],
+            NodeData::Sprite(_) => vec![
+                FieldDescriptor { name: "size", field_index: 0 },
+                FieldDescriptor { name: "opacity", field_index: 1 },
+                FieldDescriptor { name: "texture", field_index: 2 },
+            ],
             NodeData::PerspectiveCamera(_) => vec![
                 FieldDescriptor { name: "fov", field_index: 0 },
                 FieldDescriptor { name: "near", field_index: 1 },
@@ -206,6 +259,7 @@ impl NodeData {
             NodeData::StereoCamera(_) => vec![
                 FieldDescriptor { name: "interocular", field_index: 0 },
                 FieldDescriptor { name: "convergence", field_index: 1 },
+                FieldDescriptor { name: "mode", field_index: 2 },
             ],
             NodeData::OrthographicCamera(_) => vec![
                 FieldDescriptor { name: "height", field_index: 0 },
@@ -213,14 +267,24 @@ impl NodeData {
                 FieldDescriptor { name: "far", field_index: 2 },
                 FieldDescriptor { name: "reverse_depth", field_index: 3 },
             ],
+            NodeData::CubeCamera(_) => vec![
+                FieldDescriptor { name: "position", field_index: 0 },
+                FieldDescriptor { name: "near", field_index: 1 },
+                FieldDescriptor { name: "far", field_index: 2 },
+                FieldDescriptor { name: "resolution", field_index: 3 },
+            ],
             NodeData::SectionPlane(_) => vec![
                 FieldDescriptor { name: "plane", field_index: 0 },
                 FieldDescriptor { name: "enabled", field_index: 1 },
                 FieldDescriptor { name: "cap_color", field_index: 2 },
                 FieldDescriptor { name: "cap_enabled", field_index: 3 },
+                FieldDescriptor { name: "hatch_enabled", field_index: 4 },
+                FieldDescriptor { name: "hatch_spacing", field_index: 5 },
+                FieldDescriptor { name: "hatch_angle_deg", field_index: 6 },
             ],
             NodeData::Lod(_) => vec![
                 FieldDescriptor { name: "current_level", field_index: 0 },
+                FieldDescriptor { name: "range_scale", field_index: 1 },
             ],
             NodeData::Switch(_) => vec![
                 FieldDescriptor { name: "which_child", field_index: 0 },
@@ -236,6 +300,11 @@ impl NodeData {
                 FieldDescriptor { name: "position", field_index: 1 },
                 FieldDescriptor { name: "size", field_index: 2 },
                 FieldDescriptor { name: "color", field_index: 3 },
+            ],
+            NodeData::Font(_) => vec![
+                FieldDescriptor { name: "name", field_index: 0 },
+                FieldDescriptor { name: "size", field_index: 1 },
+                FieldDescriptor { name: "style", field_index: 2 },
             ],
             NodeData::EventCallback(_) => vec![
                 FieldDescriptor { name: "enabled", field_index: 0 },
@@ -289,6 +358,20 @@ impl NodeData {
             NodeData::InstancedMesh(_) => vec![
                 FieldDescriptor { name: "transforms", field_index: 0 },
             ],
+            NodeData::BatchedMesh(_) => vec![
+                FieldDescriptor { name: "geometries", field_index: 0 },
+                FieldDescriptor { name: "instances", field_index: 1 },
+            ],
+            NodeData::TransformManip(_) => vec![
+                FieldDescriptor { name: "mode", field_index: 0 },
+                FieldDescriptor { name: "space", field_index: 1 },
+                FieldDescriptor { name: "enabled", field_index: 2 },
+                FieldDescriptor { name: "size", field_index: 3 },
+            ],
+            NodeData::Dragger(_) => vec![
+                FieldDescriptor { name: "kind", field_index: 0 },
+                FieldDescriptor { name: "enabled", field_index: 1 },
+            ],
         }
     }
 
@@ -297,7 +380,10 @@ impl NodeData {
             NodeData::Separator(_) => "Separator",
             NodeData::Group(_) => "Group",
             NodeData::Billboard(_) => "Billboard",
+            NodeData::Sprite(_) => "Sprite",
             NodeData::Transform(_) => "Transform",
+            NodeData::Rotation(_) => "Rotation",
+            NodeData::RotationXYZ(_) => "RotationXYZ",
             NodeData::Coordinate3(_) => "Coordinate3",
             NodeData::TextureCoordinate2(_) => "TextureCoordinate2",
             NodeData::Normal(_) => "Normal",
@@ -315,10 +401,13 @@ impl NodeData {
             NodeData::StereoCamera(_) => "StereoCamera",
             NodeData::PerspectiveCamera(_) => "PerspectiveCamera",
             NodeData::OrthographicCamera(_) => "OrthographicCamera",
+            NodeData::CubeCamera(_) => "CubeCamera",
             NodeData::DirectionalLight(_) => "DirectionalLight",
             NodeData::PointLight(_) => "PointLight",
             NodeData::SpotLight(_) => "SpotLight",
             NodeData::AreaLight(_) => "AreaLight",
+            NodeData::HemisphereLight(_) => "HemisphereLight",
+            NodeData::LightProbe(_) => "LightProbe",
             NodeData::HandlerNode(h) => h.handler_name(),
             NodeData::EventCallback(_) => "EventCallback",
             NodeData::PickStyle(_) => "PickStyle",
@@ -328,6 +417,7 @@ impl NodeData {
             NodeData::SectionPlane(_) => "SectionPlane",
             NodeData::Text2(_) => "Text2",
             NodeData::Text3(_) => "Text3",
+            NodeData::Font(_) => "Font",
             NodeData::Measurement(_) => "Measurement",
             NodeData::Markup(_) => "Markup",
             NodeData::Custom(_, d) => d.type_name(),
@@ -345,7 +435,20 @@ impl NodeData {
             NodeData::ReflectionPlane(_) => "ReflectionPlane",
             NodeData::Decal(_) => "Decal",
             NodeData::InstancedMesh(_) => "InstancedMesh",
+            NodeData::BatchedMesh(_) => "BatchedMesh",
+            NodeData::TransformManip(_) => "TransformManip",
+            NodeData::Dragger(_) => "Dragger",
             NodeData::File(_) => "File",
+        }
+    }
+
+    /// Local model-matrix contribution (Transform / Rotation / RotationXYZ).
+    pub fn local_matrix(&self) -> Option<Mat4> {
+        match self {
+            NodeData::Transform(t) => Some(t.to_matrix()),
+            NodeData::Rotation(r) => Some(r.to_matrix()),
+            NodeData::RotationXYZ(r) => Some(r.to_matrix()),
+            _ => None,
         }
     }
 }
@@ -357,7 +460,10 @@ impl Serialize for NodeData {
             NodeData::Separator(v) => s.serialize_newtype_variant("NodeData", 0, "Separator", v),
             NodeData::Group(v) => s.serialize_newtype_variant("NodeData", 1, "Group", v),
             NodeData::Billboard(v) => s.serialize_newtype_variant("NodeData", 48, "Billboard", v),
+            NodeData::Sprite(v) => s.serialize_newtype_variant("NodeData", 57, "Sprite", v),
             NodeData::Transform(v) => s.serialize_newtype_variant("NodeData", 2, "Transform", v),
+            NodeData::Rotation(v) => s.serialize_newtype_variant("NodeData", 59, "Rotation", v),
+            NodeData::RotationXYZ(v) => s.serialize_newtype_variant("NodeData", 60, "RotationXYZ", v),
             NodeData::Coordinate3(v) => s.serialize_newtype_variant("NodeData", 3, "Coordinate3", v),
             NodeData::TextureCoordinate2(v) => s.serialize_newtype_variant("NodeData", 4, "TextureCoordinate2", v),
             NodeData::Normal(v) => s.serialize_newtype_variant("NodeData", 5, "Normal", v),
@@ -378,10 +484,13 @@ impl Serialize for NodeData {
             NodeData::PointCloud(v) => s.serialize_newtype_variant("NodeData", 47, "PointCloud", v),
             NodeData::PerspectiveCamera(v) => s.serialize_newtype_variant("NodeData", 15, "PerspectiveCamera", v),
             NodeData::OrthographicCamera(v) => s.serialize_newtype_variant("NodeData", 16, "OrthographicCamera", v),
+            NodeData::CubeCamera(v) => s.serialize_newtype_variant("NodeData", 52, "CubeCamera", v),
             NodeData::DirectionalLight(v) => s.serialize_newtype_variant("NodeData", 17, "DirectionalLight", v),
             NodeData::PointLight(v) => s.serialize_newtype_variant("NodeData", 18, "PointLight", v),
             NodeData::SpotLight(v) => s.serialize_newtype_variant("NodeData", 19, "SpotLight", v),
             NodeData::AreaLight(v) => s.serialize_newtype_variant("NodeData", 32, "AreaLight", v),
+            NodeData::HemisphereLight(v) => s.serialize_newtype_variant("NodeData", 56, "HemisphereLight", v),
+            NodeData::LightProbe(v) => s.serialize_newtype_variant("NodeData", 58, "LightProbe", v),
             NodeData::EventCallback(v) => s.serialize_newtype_variant("NodeData", 20, "EventCallback", v),
             NodeData::PickStyle(v) => s.serialize_newtype_variant("NodeData", 21, "PickStyle", v),
             NodeData::Lod(v) => s.serialize_newtype_variant("NodeData", 22, "Lod", v),
@@ -390,6 +499,7 @@ impl Serialize for NodeData {
             NodeData::SectionPlane(v) => s.serialize_newtype_variant("NodeData", 25, "SectionPlane", v),
             NodeData::Text2(v) => s.serialize_newtype_variant("NodeData", 26, "Text2", v),
             NodeData::Text3(v) => s.serialize_newtype_variant("NodeData", 27, "Text3", v),
+            NodeData::Font(v) => s.serialize_newtype_variant("NodeData", 61, "Font", v),
             NodeData::Measurement(v) => s.serialize_newtype_variant("NodeData", 28, "Measurement", v),
             NodeData::Markup(v) => s.serialize_newtype_variant("NodeData", 29, "Markup", v),
             NodeData::AnnotationSet(v) => s.serialize_newtype_variant("NodeData", 49, "AnnotationSet", v),
@@ -404,6 +514,9 @@ impl Serialize for NodeData {
             NodeData::ReflectionPlane(v) => s.serialize_newtype_variant("NodeData", 43, "ReflectionPlane", v),
             NodeData::Decal(v) => s.serialize_newtype_variant("NodeData", 33, "Decal", v),
             NodeData::InstancedMesh(v) => s.serialize_newtype_variant("NodeData", 51, "InstancedMesh", v),
+            NodeData::BatchedMesh(v) => s.serialize_newtype_variant("NodeData", 55, "BatchedMesh", v),
+            NodeData::TransformManip(v) => s.serialize_newtype_variant("NodeData", 53, "TransformManip", v),
+            NodeData::Dragger(v) => s.serialize_newtype_variant("NodeData", 54, "Dragger", v),
             NodeData::File(v) => s.serialize_newtype_variant("NodeData", 35, "File", v),
             NodeData::Custom(type_id, d) => {
                 let payload = (type_id, d.serialize_custom());
@@ -421,7 +534,10 @@ impl<'de> Deserialize<'de> for NodeData {
             Separator(SeparatorNode),
             Group(GroupNode),
             Billboard(BillboardNode),
+            Sprite(SpriteNode),
             Transform(TransformNode),
+            Rotation(RotationNode),
+            RotationXYZ(RotationXYZNode),
             Coordinate3(Coordinate3Node),
             TextureCoordinate2(TextureCoordinate2Node),
             Normal(NormalNode),
@@ -439,10 +555,13 @@ impl<'de> Deserialize<'de> for NodeData {
             StereoCamera(StereoCameraNode),
             PerspectiveCamera(PerspectiveCameraNode),
             OrthographicCamera(OrthographicCameraNode),
+            CubeCamera(CubeCameraNode),
             DirectionalLight(DirectionalLightNode),
             PointLight(PointLightNode),
             SpotLight(SpotLightNode),
             AreaLight(AreaLightNode),
+            HemisphereLight(HemisphereLightNode),
+            LightProbe(LightProbeNode),
             #[serde(rename = "HandlerNode")]
             Handler(String),
             Custom((u16, String)),
@@ -459,6 +578,9 @@ impl<'de> Deserialize<'de> for NodeData {
             ReflectionPlane(ReflectionPlaneNode),
             Decal(DecalNode),
             InstancedMesh(InstancedMeshNode),
+            BatchedMesh(BatchedMeshNode),
+            TransformManip(TransformManipNode),
+            Dragger(DraggerNode),
             File(FileNode),
             EventCallback(EventCallbackNode),
             PickStyle(PickStyleNode),
@@ -468,6 +590,7 @@ impl<'de> Deserialize<'de> for NodeData {
             SectionPlane(SectionPlaneNode),
             Text2(Text2Node),
             Text3(Text3Node),
+            Font(FontNode),
             Measurement(MeasurementNode),
             Markup(MarkupNode),
             AnnotationSet(AnnotationSetNode),
@@ -476,7 +599,10 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::Separator(v) => Ok(NodeData::Separator(v)),
             NodeDataHelper::Group(v) => Ok(NodeData::Group(v)),
             NodeDataHelper::Billboard(v) => Ok(NodeData::Billboard(v)),
+            NodeDataHelper::Sprite(v) => Ok(NodeData::Sprite(v)),
             NodeDataHelper::Transform(v) => Ok(NodeData::Transform(v)),
+            NodeDataHelper::Rotation(v) => Ok(NodeData::Rotation(v)),
+            NodeDataHelper::RotationXYZ(v) => Ok(NodeData::RotationXYZ(v)),
             NodeDataHelper::Coordinate3(v) => Ok(NodeData::Coordinate3(v)),
             NodeDataHelper::TextureCoordinate2(v) => Ok(NodeData::TextureCoordinate2(v)),
             NodeDataHelper::Normal(v) => Ok(NodeData::Normal(v)),
@@ -494,10 +620,13 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::StereoCamera(v) => Ok(NodeData::StereoCamera(v)),
             NodeDataHelper::PerspectiveCamera(v) => Ok(NodeData::PerspectiveCamera(v)),
             NodeDataHelper::OrthographicCamera(v) => Ok(NodeData::OrthographicCamera(v)),
+            NodeDataHelper::CubeCamera(v) => Ok(NodeData::CubeCamera(v)),
             NodeDataHelper::DirectionalLight(v) => Ok(NodeData::DirectionalLight(v)),
             NodeDataHelper::PointLight(v) => Ok(NodeData::PointLight(v)),
             NodeDataHelper::SpotLight(v) => Ok(NodeData::SpotLight(v)),
             NodeDataHelper::AreaLight(v) => Ok(NodeData::AreaLight(v)),
+            NodeDataHelper::HemisphereLight(v) => Ok(NodeData::HemisphereLight(v)),
+            NodeDataHelper::LightProbe(v) => Ok(NodeData::LightProbe(v)),
             NodeDataHelper::Handler(_name) => Ok(NodeData::HandlerNode(Arc::new(
                 crate::node_handler::DummyHandler,
             ))),
@@ -514,6 +643,9 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::ReflectionPlane(v) => Ok(NodeData::ReflectionPlane(v)),
             NodeDataHelper::Decal(v) => Ok(NodeData::Decal(v)),
             NodeDataHelper::InstancedMesh(v) => Ok(NodeData::InstancedMesh(v)),
+            NodeDataHelper::BatchedMesh(v) => Ok(NodeData::BatchedMesh(v)),
+            NodeDataHelper::TransformManip(v) => Ok(NodeData::TransformManip(v)),
+            NodeDataHelper::Dragger(v) => Ok(NodeData::Dragger(v)),
             NodeDataHelper::File(v) => Ok(NodeData::File(v)),
             NodeDataHelper::Custom((_type_id, ref _data)) => {
                 // Defer to registry for deserialization; fallback to DummyHandler
@@ -529,6 +661,7 @@ impl<'de> Deserialize<'de> for NodeData {
             NodeDataHelper::SectionPlane(v) => Ok(NodeData::SectionPlane(v)),
             NodeDataHelper::Text2(v) => Ok(NodeData::Text2(v)),
             NodeDataHelper::Text3(v) => Ok(NodeData::Text3(v)),
+            NodeDataHelper::Font(v) => Ok(NodeData::Font(v)),
             NodeDataHelper::Measurement(v) => Ok(NodeData::Measurement(v)),
             NodeDataHelper::Markup(v) => Ok(NodeData::Markup(v)),
             NodeDataHelper::AnnotationSet(v) => Ok(NodeData::AnnotationSet(v)),
@@ -586,6 +719,7 @@ mod tests {
         assert!(names.contains(&"enabled"));
         assert!(names.contains(&"cap_color"));
         assert!(names.contains(&"cap_enabled"));
+        assert!(names.contains(&"hatch_enabled"));
     }
 
     #[test]

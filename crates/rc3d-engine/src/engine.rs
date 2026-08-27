@@ -2,14 +2,24 @@ use std::any::Any;
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::FieldId;
+use rc3d_fields::FieldValue;
+use rc3d_scene::animation_mixer::AnimationMixer;
 use rc3d_scene::node_data::NodeData;
-use rc3d_scene::SceneGraph;
+use rc3d_scene::{AnimationClip, SceneGraph};
+
+use crate::connection::{self, EngineId};
 
 /// An engine computes output values from input values (lazy evaluation).
 pub trait Engine: Any + std::fmt::Debug {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64);
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Named input port (Coin3D `SoEngine` input). Default is a no-op.
+    fn set_input(&mut self, _port: &str, _value: FieldValue) {}
+    /// Named output port (Coin3D `SoEngineOutput`). Default is disconnected.
+    fn output(&self, _port: &str) -> Option<FieldValue> {
+        None
+    }
 }
 
 /// Rotates a Transform node continuously using the elapsed time.
@@ -19,6 +29,7 @@ pub struct ElapsedTimeEngine {
     pub speed: f32,
     pub axis: Vec3,
     last_time: Option<f64>,
+    last_time_out: f32,
 }
 
 impl ElapsedTimeEngine {
@@ -34,12 +45,14 @@ impl ElapsedTimeEngine {
             speed,
             axis,
             last_time: None,
+            last_time_out: 0.0,
         }
     }
 }
 
 impl Engine for ElapsedTimeEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        self.last_time_out = time as f32;
         let dt = match self.last_time {
             Some(prev) => ((time - prev) as f32).min(0.1), // cap at 100ms to avoid jump
             None => 0.0,
@@ -58,6 +71,13 @@ impl Engine for ElapsedTimeEngine {
         }
     }
 
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "timeOut" => Some(FieldValue::Float(self.last_time_out)),
+            _ => None,
+        }
+    }
+
     fn as_any(&self) -> &dyn Any { self }
     fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
@@ -69,6 +89,7 @@ pub struct SineOscillatorEngine {
     pub frequency: f32,
     pub amplitude: f32,
     pub field: SineField,
+    last_value: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,7 +109,18 @@ impl SineOscillatorEngine {
             frequency,
             amplitude,
             field,
+            last_value: 0.0,
         }
+    }
+
+    /// Sine source with no direct Transform write (connection-graph output only).
+    pub fn unbound(frequency: f32, amplitude: f32) -> Self {
+        Self::new(
+            rc3d_core::NodeId::default(),
+            frequency,
+            amplitude,
+            SineField::TranslationY,
+        )
     }
 }
 
@@ -96,6 +128,7 @@ impl Engine for SineOscillatorEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
         let elapsed = time as f32;
         let value = (elapsed * self.frequency * std::f32::consts::TAU).sin() * self.amplitude;
+        self.last_value = value;
         if let Some(entry) = graph.get_mut(self.transform_node) {
             if let rc3d_scene::node_data::NodeData::Transform(t) = &mut entry.data {
                 match self.field {
@@ -111,6 +144,13 @@ impl Engine for SineOscillatorEngine {
         }
     }
 
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "value" => Some(FieldValue::Float(self.last_value)),
+            _ => None,
+        }
+    }
+
     fn as_any(&self) -> &dyn Any { self }
     fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
@@ -121,47 +161,64 @@ pub struct CalculatorEngine {
     pub expressions: Vec<String>,
     pub output_field_ids: Vec<FieldId>,
     pub node_id: rc3d_core::NodeId,
+    inputs: [f32; 8],
+    outputs: [f32; 8],
 }
 
 impl CalculatorEngine {
     pub fn new(expressions: Vec<String>, outputs: Vec<FieldId>, node: rc3d_core::NodeId) -> Self {
-        Self { expressions, output_field_ids: outputs, node_id: node }
+        Self {
+            expressions,
+            output_field_ids: outputs,
+            node_id: node,
+            inputs: [0.0; 8],
+            outputs: [0.0; 8],
+        }
+    }
+
+    /// Connection-graph calculator with no FieldMap target.
+    pub fn from_expr(expr: &str) -> Self {
+        Self::new(vec![expr.to_string()], Vec::new(), rc3d_core::NodeId::default())
     }
 }
 
 impl Engine for CalculatorEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        use rc3d_fields::FieldValue;
-        let Some(entry) = graph.get_mut(self.node_id) else { return };
         for (i, expr) in self.expressions.iter().enumerate() {
-            if i < self.output_field_ids.len() {
-                let value = Self::eval_simple(expr);
-                if let Some(val) = value {
-                    entry.fields.set(self.output_field_ids[i], FieldValue::Float(val));
+            if i < 8 {
+                if let Some(val) = connection::eval_calculator_expr(expr, &self.inputs) {
+                    self.outputs[i] = val;
+                }
+            }
+        }
+        if let Some(entry) = graph.get_mut(self.node_id) {
+            for (i, fid) in self.output_field_ids.iter().enumerate() {
+                if i < 8 {
+                    entry.fields.set(*fid, FieldValue::Float(self.outputs[i]));
                 }
             }
         }
     }
+
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if let Some(i) = connection::calc_port_index(port) {
+            if port.starts_with('i') {
+                if let Some(f) = connection::field_as_f32(&value) {
+                    self.inputs[i] = f;
+                }
+            }
+        }
+    }
+
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        if !port.starts_with('o') {
+            return None;
+        }
+        connection::calc_port_index(port).map(|i| FieldValue::Float(self.outputs[i]))
+    }
+
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-}
-
-impl CalculatorEngine {
-    fn eval_simple(expr: &str) -> Option<f32> {
-        let parts: Vec<&str> = expr.split('=').collect();
-        if parts.len() < 2 { return None; }
-        let rhs = parts[1].trim();
-        if let Ok(v) = rhs.parse::<f32>() { return Some(v); }
-        if rhs.starts_with("sin(") {
-            let inner = rhs.trim_start_matches("sin(").trim_end_matches(')');
-            if let Ok(x) = inner.parse::<f32>() { return Some(x.sin()); }
-        }
-        if rhs.starts_with("cos(") {
-            let inner = rhs.trim_start_matches("cos(").trim_end_matches(')');
-            if let Ok(x) = inner.parse::<f32>() { return Some(x.cos()); }
-        }
-        None
-    }
 }
 
 impl std::fmt::Debug for CalculatorEngine {
@@ -246,6 +303,17 @@ impl Engine for OneShotEngine {
         self.elapsed += dt;
         if self.elapsed >= self.duration { self.active = false; }
     }
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if port == "trigger" && connection::is_trigger(&value) {
+            self.trigger();
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "isActive" => Some(FieldValue::Bool(self.active)),
+            _ => None,
+        }
+    }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -276,6 +344,17 @@ impl Engine for CounterEngine {
         self.value += self.step;
         if self.value > self.max { self.value = self.min; }
     }
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if port == "trigger" && connection::is_trigger(&value) {
+            self.trigger();
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "output" => Some(FieldValue::Int32(self.value)),
+            _ => None,
+        }
+    }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -287,6 +366,7 @@ pub struct InterpolateVec3Engine {
     pub from: Vec3,
     pub to: Vec3,
     pub period_secs: f64,
+    pub last_position: Vec3,
 }
 
 impl Engine for InterpolateVec3Engine {
@@ -296,11 +376,19 @@ impl Engine for InterpolateVec3Engine {
         }
         let u = (time % self.period_secs) / self.period_secs;
         let p = self.from.lerp(self.to, u as f32);
+        self.last_position = p;
         if let Some(e) = graph.get_mut(self.transform_node) {
             if let NodeData::Transform(t) = &mut e.data {
                 t.translation = p;
             }
             e.dirty_flags |= rc3d_scene::node_entry::dirty_flags::TRANSFORM;
+        }
+    }
+
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "output" => Some(FieldValue::Vec3f(self.last_position)),
+            _ => None,
         }
     }
 
@@ -315,23 +403,25 @@ impl Engine for InterpolateVec3Engine {
 /// Registry of all active engines, evaluated each frame.
 pub struct EngineRegistry {
     pub engines: Vec<Box<dyn Engine>>,
+    pub connections: Vec<connection::EngineConnection>,
 }
 
 impl EngineRegistry {
     pub fn new() -> Self {
         Self {
             engines: Vec::new(),
+            connections: Vec::new(),
         }
     }
 
-    pub fn add(&mut self, engine: impl Engine + 'static) {
+    pub fn add(&mut self, engine: impl Engine + 'static) -> EngineId {
+        let id = EngineId(self.engines.len());
         self.engines.push(Box::new(engine));
+        id
     }
 
     pub fn evaluate_all(&mut self, graph: &mut SceneGraph, time: f64) {
-        for engine in &mut self.engines {
-            engine.evaluate(graph, time);
-        }
+        connection::evaluate_registry(self, graph, time);
     }
 }
 
@@ -349,10 +439,11 @@ pub struct InterpolateFloatEngine {
     pub from: f32, pub to: f32,
     pub duration: f64, pub elapsed: f64,
     last_time: f64,
+    output_value: f32,
 }
 impl InterpolateFloatEngine {
     pub fn new(node: rc3d_core::NodeId, field: rc3d_core::FieldId, from: f32, to: f32, duration: f64) -> Self {
-        Self { node_id: node, field_id: field, from, to, duration: duration.max(0.001), elapsed: 0.0, last_time: 0.0 }
+        Self { node_id: node, field_id: field, from, to, duration: duration.max(0.001), elapsed: 0.0, last_time: 0.0, output_value: from }
     }
 }
 impl Engine for InterpolateFloatEngine {
@@ -363,8 +454,15 @@ impl Engine for InterpolateFloatEngine {
         self.elapsed += dt;
         let t = (self.elapsed / self.duration).clamp(0.0, 1.0);
         let v = self.from + (self.to - self.from) * t as f32;
+        self.output_value = v;
         if let Some(entry) = graph.get_mut(self.node_id) {
             entry.fields.set(self.field_id, rc3d_fields::FieldValue::Float(v));
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "output" => Some(FieldValue::Float(self.output_value)),
+            _ => None,
         }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -409,19 +507,109 @@ pub struct ComposeVec3fEngine {
     pub node_id: rc3d_core::NodeId,
     pub x_field: rc3d_core::FieldId, pub y_field: rc3d_core::FieldId, pub z_field: rc3d_core::FieldId,
     pub output_field: rc3d_core::FieldId,
+    x: f32,
+    y: f32,
+    z: f32,
+    vector: Vec3,
+    port_x: bool,
+    port_y: bool,
+    port_z: bool,
 }
 impl ComposeVec3fEngine {
     pub fn new(node: rc3d_core::NodeId, x: rc3d_core::FieldId, y: rc3d_core::FieldId, z: rc3d_core::FieldId, out: rc3d_core::FieldId) -> Self {
-        Self { node_id: node, x_field: x, y_field: y, z_field: z, output_field: out }
+        Self {
+            node_id: node,
+            x_field: x,
+            y_field: y,
+            z_field: z,
+            output_field: out,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            vector: Vec3::ZERO,
+            port_x: false,
+            port_y: false,
+            port_z: false,
+        }
+    }
+
+    /// Ports-only compose (no live FieldMap). Optional seed translation.
+    pub fn unbound() -> Self {
+        Self::unbound_xyz(0.0, 0.0, 0.0)
+    }
+
+    pub fn unbound_xyz(x: f32, y: f32, z: f32) -> Self {
+        let mut e = Self::new(
+            rc3d_core::NodeId::default(),
+            FieldId::default(),
+            FieldId::default(),
+            FieldId::default(),
+            FieldId::default(),
+        );
+        e.x = x;
+        e.y = y;
+        e.z = z;
+        e.vector = Vec3::new(x, y, z);
+        e
     }
 }
 impl Engine for ComposeVec3fEngine {
     fn evaluate(&mut self, graph: &mut SceneGraph, _time: f64) {
-        let Some(entry) = graph.get_mut(self.node_id) else { return };
-        let x = entry.fields.get(self.x_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
-        let y = entry.fields.get(self.y_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
-        let z = entry.fields.get(self.z_field).and_then(|v| match v { rc3d_fields::FieldValue::Float(v) => Some(*v), _ => None }).unwrap_or(0.0);
-        entry.fields.set(self.output_field, rc3d_fields::FieldValue::Vec3f(rc3d_core::math::Vec3::new(x, y, z)));
+        if let Some(entry) = graph.get_mut(self.node_id) {
+            if !self.port_x {
+                self.x = entry
+                    .fields
+                    .get(self.x_field)
+                    .and_then(connection::field_as_f32)
+                    .unwrap_or(self.x);
+            }
+            if !self.port_y {
+                self.y = entry
+                    .fields
+                    .get(self.y_field)
+                    .and_then(connection::field_as_f32)
+                    .unwrap_or(self.y);
+            }
+            if !self.port_z {
+                self.z = entry
+                    .fields
+                    .get(self.z_field)
+                    .and_then(connection::field_as_f32)
+                    .unwrap_or(self.z);
+            }
+            self.vector = Vec3::new(self.x, self.y, self.z);
+            entry.fields.set(self.output_field, FieldValue::Vec3f(self.vector));
+        } else {
+            self.vector = Vec3::new(self.x, self.y, self.z);
+        }
+    }
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if let Some(f) = connection::field_as_f32(&value) {
+            match port {
+                "x" => {
+                    self.x = f;
+                    self.port_x = true;
+                }
+                "y" => {
+                    self.y = f;
+                    self.port_y = true;
+                }
+                "z" => {
+                    self.z = f;
+                    self.port_z = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "vector" => Some(FieldValue::Vec3f(self.vector)),
+            "x" => Some(FieldValue::Float(self.x)),
+            "y" => Some(FieldValue::Float(self.y)),
+            "z" => Some(FieldValue::Float(self.z)),
+            _ => None,
+        }
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
@@ -444,6 +632,17 @@ impl Engine for OnOffEngine {
     fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
         if self.triggered { self.state = !self.state; self.triggered = false; }
     }
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if port == "trigger" && connection::is_trigger(&value) {
+            self.trigger();
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "on" => Some(FieldValue::Bool(self.state)),
+            _ => None,
+        }
+    }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -465,6 +664,70 @@ impl TriggerAnyEngine {
 impl Engine for TriggerAnyEngine {
     fn evaluate(&mut self, _graph: &mut SceneGraph, _time: f64) {
         if self.triggered { self.fired = true; self.triggered = false; }
+    }
+    fn set_input(&mut self, port: &str, value: FieldValue) {
+        if (port == "trigger" || port == "input") && connection::is_trigger(&value) {
+            self.trigger();
+        }
+    }
+    fn output(&self, port: &str) -> Option<FieldValue> {
+        match port {
+            "trigger" => Some(FieldValue::Bool(self.fired)),
+            _ => None,
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+}
+
+/// three.js AnimationMixer analog: ticks a clip and writes object tracks
+/// (Transform TRS / morph weights) into the scene graph each frame.
+#[derive(Debug)]
+pub struct AnimationMixerEngine {
+    pub mixer: AnimationMixer,
+    last_time: Option<f64>,
+}
+
+impl AnimationMixerEngine {
+    pub fn new(mixer: AnimationMixer) -> Self {
+        Self {
+            mixer,
+            last_time: None,
+        }
+    }
+
+    pub fn from_clip(clip: AnimationClip) -> Self {
+        Self::new(AnimationMixer::from_clip(clip))
+    }
+}
+
+impl Engine for AnimationMixerEngine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        let dt = match self.last_time {
+            Some(prev) => ((time - prev) as f32).min(0.1),
+            None => 0.0,
+        };
+        self.last_time = Some(time);
+        if dt > 0.0 {
+            self.mixer.tick(dt);
+        }
+        self.mixer.apply(graph);
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Advances [`rc3d_scene::ParticleEmitter`] instances on `PointCloud` nodes.
+#[derive(Debug, Default)]
+pub struct ParticleEngine;
+
+impl Engine for ParticleEngine {
+    fn evaluate(&mut self, graph: &mut SceneGraph, time: f64) {
+        rc3d_scene::tick_particle_emitters(graph, time);
     }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }

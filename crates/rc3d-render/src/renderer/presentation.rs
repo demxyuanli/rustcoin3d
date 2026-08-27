@@ -1,8 +1,10 @@
 use glam::Mat4;
 use rc3d_scene::SceneGraph;
 use crate::adaptive_quality::AdaptiveQuality;
-use crate::render_action::DrawCall;
+use crate::render_action::{apply_world_camera_ex, DrawCall};
 use crate::render_passes;
+use crate::viewport::{QuadViewEye, ViewportRect};
+use super::internals::QuadViewTile;
 use super::types::FrameStats;
 
 impl super::Renderer {
@@ -233,7 +235,7 @@ impl super::Renderer {
         mesh_handles: &[Option<crate::gpu_resource::MeshId>],
         scene_pl: &crate::pipelines::DepthModePipelines,
     ) {
-        let cap_specs: Vec<([f32; 4], [f32; 4])> = self
+        let cap_specs: Vec<([f32; 4], rc3d_scene::SectionCapStyle)> = self
             .frame
             .section_cap_tints
             .iter()
@@ -243,8 +245,15 @@ impl super::Renderer {
         if cap_specs.is_empty() {
             return;
         }
-        let entries: Vec<(usize, crate::gpu_resource::MeshId)> =
-            solid_order.iter().filter_map(|&i| mesh_handles[i].map(|m| (i, m))).collect();
+        let entries: Vec<(usize, crate::gpu_resource::MeshId)> = solid_order
+            .iter()
+            .filter_map(|&i| {
+                if !draw_calls[i].appearance().wants_filled() {
+                    return None;
+                }
+                mesh_handles[i].map(|m| (i, m))
+            })
+            .collect();
         if entries.is_empty() {
             return;
         }
@@ -268,7 +277,7 @@ impl super::Renderer {
         shade_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
         scene_pl: &crate::pipelines::DepthModePipelines,
-        cap_specs: &[([f32; 4], [f32; 4])],
+        cap_specs: &[([f32; 4], rc3d_scene::SectionCapStyle)],
         entries: &[(usize, crate::gpu_resource::MeshId)],
         draw_calls: &[&crate::render_action::DrawCall],
     ) {
@@ -301,21 +310,31 @@ impl super::Renderer {
         });
         pass.set_pipeline(&scene_pl.section_cap_fill);
         let mut last_bound_mesh = None;
-        for &(plane, cap_color) in cap_specs {
+        for &(plane, style) in cap_specs {
             for &(i, mesh_id) in entries {
                 let dc = draw_calls[i];
                 let mut clip_planes = [[0.0f32; 4]; 6];
                 clip_planes[0] = plane;
                 let uniforms = crate::vertex::FlatUniforms {
                     mvp: dc.mvp.to_cols_array_2d(),
-                    color: cap_color,
+                    color: style.color,
                     model: dc.model_matrix.to_cols_array_2d(),
                     clip_planes,
                     clip_count: [1.0, 0.0, 0.0, 0.0],
+                    hatch_color: style.hatch_color,
+                    hatch_params: style.hatch_params_gpu(),
+                    hatch_extra: style.hatch_extra_gpu(),
                 };
                 if let Some(offset) = self.gpu.flat_pool.push_flat(&uniforms) {
                     pass.set_bind_group(0, self.gpu.flat_pool.bind_group(), &[offset]);
-                    self.draw_mesh_instanced(&mut pass, mesh_id, 0, 1, &mut last_bound_mesh);
+                    self.draw_mesh_instanced(
+                        &mut pass,
+                        mesh_id,
+                        0,
+                        1,
+                        dc.index_draw_range(),
+                        &mut last_bound_mesh,
+                    );
                 }
             }
         }
@@ -331,15 +350,17 @@ impl super::Renderer {
         height: u32,
     ) -> (u32, u32, Vec<u8>) {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        // Match swapchain / post-process pipeline color format (typically Bgra8UnormSrgb).
+        let format = self.config.format;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Offscreen target"),
             size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+            view_formats: &[format],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let pres = render_passes::FramePresentation::OffscreenSurface {
@@ -378,6 +399,305 @@ impl super::Renderer {
         }
         drop(data);
         buffer.unmap();
+        if matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
         (width, height, pixels)
+    }
+
+    pub(crate) fn ensure_quad_tiles(&mut self, rects: &[ViewportRect]) {
+        let reuse = self.gpu.quad_tiles.len() == rects.len()
+            && self
+                .gpu
+                .quad_tiles
+                .iter()
+                .zip(rects)
+                .all(|(t, r)| t.width == r.width.max(1) && t.height == r.height.max(1));
+        if reuse {
+            return;
+        }
+        self.gpu.quad_tiles.clear();
+        for rect in rects {
+            let w = rect.width.max(1);
+            let h = rect.height.max(1);
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Quad view tile"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.gpu.quad_tiles.push(QuadViewTile {
+                width: w,
+                height: h,
+                texture,
+                view,
+            });
+        }
+    }
+
+    pub(crate) fn render_quad_tiles(
+        &mut self,
+        draw_calls: &mut [DrawCall],
+        scene: &SceneGraph,
+        eyes: &[QuadViewEye],
+        rects: &[ViewportRect],
+    ) -> FrameStats {
+        self.ensure_quad_tiles(rects);
+        let tiles = std::mem::take(&mut self.gpu.quad_tiles);
+        let n = tiles.len().min(eyes.len());
+        let mut stats = FrameStats::default();
+        for i in 0..n {
+            apply_world_camera_ex(
+                draw_calls,
+                eyes[i].view,
+                eyes[i].projection,
+                eyes[i].camera_pos,
+                eyes[i].orthographic,
+            );
+            let tile = &tiles[i];
+            let inv = eyes[i].projection.inverse();
+            let tile_stats = self.render_draw_calls_to_viewport_texture(
+                draw_calls,
+                scene,
+                &tile.texture,
+                &tile.view,
+                tile.width,
+                tile.height,
+                eyes[i].projection,
+                inv,
+            );
+            stats.visible_triangles += tile_stats.visible_triangles;
+            stats.visible_draw_calls += tile_stats.visible_draw_calls;
+            stats.culled_draw_calls += tile_stats.culled_draw_calls;
+            stats.frame_time_ms += tile_stats.frame_time_ms;
+        }
+        self.gpu.quad_tiles = tiles;
+        stats
+    }
+
+    pub(crate) fn blit_quad_tiles_to_view(&self, target: &wgpu::TextureView, rects: &[ViewportRect]) {
+        let Some(pipeline) = self.gpu.upscale_pipeline.as_ref() else {
+            return;
+        };
+        let Some(bgl) = self.gpu.upscale_bgl.as_ref() else {
+            return;
+        };
+        let Some(sampler) = self.gpu.upscale_sampler.as_ref() else {
+            return;
+        };
+        let mut bind_groups = Vec::with_capacity(self.gpu.quad_tiles.len());
+        for tile in &self.gpu.quad_tiles {
+            bind_groups.push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Quad tile blit"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&tile.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Quad view composite"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blit quad tiles"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.06,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(pipeline);
+            for (i, bg) in bind_groups.iter().enumerate() {
+                let Some(rect) = rects.get(i) else {
+                    break;
+                };
+                pass.set_viewport(
+                    rect.x as f32,
+                    rect.y as f32,
+                    rect.width.max(1) as f32,
+                    rect.height.max(1) as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.set_scissor_rect(rect.x, rect.y, rect.width.max(1), rect.height.max(1));
+                pass.set_bind_group(0, bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Render the standard four-view pack to the swapchain (tiles + blit + borders).
+    pub fn render_standard_quad_views(
+        &mut self,
+        draw_calls: &mut [DrawCall],
+        scene: &SceneGraph,
+        eyes: &[QuadViewEye],
+    ) -> FrameStats {
+        if eyes.len() < 2 || self.gpu.upscale_pipeline.is_none() {
+            apply_world_camera_ex(
+                draw_calls,
+                eyes.first().map(|e| e.view).unwrap_or(Mat4::IDENTITY),
+                eyes.first().map(|e| e.projection).unwrap_or(Mat4::IDENTITY),
+                eyes.first().map(|e| e.camera_pos).unwrap_or(glam::Vec3::ZERO),
+                eyes.first().map(|e| e.orthographic).unwrap_or(false),
+            );
+            return self.render_draw_calls(draw_calls, scene);
+        }
+        let rects: Vec<ViewportRect> = self
+            .frame
+            .viewport_layout
+            .viewports
+            .iter()
+            .map(|v| v.rect)
+            .collect();
+        let stats = self.render_quad_tiles(draw_calls, scene, eyes, &rects);
+        let Ok(frame) = self.surface.get_current_texture() else {
+            return stats;
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let (sw, sh) = (self.config.width, self.config.height);
+        self.blit_quad_tiles_to_view(&view, &rects);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Quad view borders"),
+            });
+        crate::render_passes::pass_viewport::encode_viewport_borders(
+            self, &mut encoder, &view, sw, sh,
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        frame.present();
+        stats
+    }
+
+    /// Offscreen composite of the four-view pack (for screenshots).
+    pub fn render_standard_quad_to_image(
+        &mut self,
+        draw_calls: &mut [DrawCall],
+        scene: &SceneGraph,
+        eyes: &[QuadViewEye],
+        width: u32,
+        height: u32,
+    ) -> (u32, u32, Vec<u8>) {
+        let w = width.max(1);
+        let h = height.max(1);
+        let rects: Vec<ViewportRect> = self
+            .frame
+            .viewport_layout
+            .viewports
+            .iter()
+            .map(|v| v.rect)
+            .collect();
+        let _ = self.render_quad_tiles(draw_calls, scene, eyes, &rects);
+        let format = self.config.format;
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Quad composite"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.blit_quad_tiles_to_view(&view, &rects);
+        let bytes_per_row = w * 4;
+        let padded_bytes_per_row = bytes_per_row.div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Quad readback"),
+            size: padded_bytes_per_row as u64 * h as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for row in 0..h as usize {
+            let src = row * padded_bytes_per_row as usize;
+            let dst = row * bytes_per_row as usize;
+            pixels[dst..dst + bytes_per_row as usize]
+                .copy_from_slice(&data[src..src + bytes_per_row as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        if matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+        (w, h, pixels)
     }
 }

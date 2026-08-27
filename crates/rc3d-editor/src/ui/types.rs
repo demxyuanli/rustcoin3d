@@ -86,6 +86,8 @@ pub struct EditorUiContext {
     pub outline_width: f32,
     pub outline_color: [f32; 4],
     pub xray_mode: bool,
+    pub ghost_unselected: bool,
+    pub wboit_enabled: bool,
     pub adaptive_quality_mode: AdaptiveQualityMode,
     pub adaptive_quality_name: String,
     pub cad_display_tier: CadDisplayTier,

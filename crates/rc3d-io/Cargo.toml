@@ -9,8 +9,11 @@ rc3d-core = { workspace = true }
 rc3d-scene = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
-gltf = { version = "1", default-features = false, features = ["import", "KHR_lights_punctual", "names", "utils"] }
+gltf = { version = "1", default-features = false, features = ["import", "KHR_lights_punctual", "KHR_materials_transmission", "KHR_materials_ior", "extensions", "names", "utils"] }
 base64 = "0.22"
 image = { workspace = true }
 fbxcel = { version = "0.9", features = ["writer"] }
+serde_json = { workspace = true }
+draco-core = { workspace = true }
+basisu = { workspace = true }
 

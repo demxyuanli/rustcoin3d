@@ -293,13 +293,27 @@ impl SceneVisitor for RayPickAction {
                     specular_color_factor: mat.specular_color_factor,
                     transmission_factor: mat.transmission_factor,
                     ior: mat.ior,
+                    sheen_color: mat.sheen_color,
+                    sheen_roughness: mat.sheen_roughness,
+                    iridescence_factor: mat.iridescence_factor,
+                    iridescence_ior: mat.iridescence_ior,
+                    iridescence_thickness_min: mat.iridescence_thickness_min,
+                    iridescence_thickness_max: mat.iridescence_thickness_max,
+                    toon_steps: mat.toon_steps,
+                    visualize_normals: mat.visualize_normals,
+                    visualize_depth: mat.visualize_depth,
+                    custom_wgsl: mat.custom_wgsl.clone(),
+                    custom_uniforms: mat.custom_uniforms,
                 });
                 ChildPolicy::Recurse
             }
             NodeData::DirectionalLight(_)
             | NodeData::PointLight(_)
             | NodeData::SpotLight(_)
-            | NodeData::AreaLight(_) => ChildPolicy::Skip,
+            | NodeData::AreaLight(_)
+            | NodeData::HemisphereLight(_)
+            | NodeData::LightProbe(_)
+            | NodeData::Sprite(_) => ChildPolicy::Skip,
             NodeData::Triangle(_) => {
                 if self.is_pickable() {
                     let coord = self.state.coordinate();
@@ -354,6 +368,10 @@ impl SceneVisitor for RayPickAction {
             }
             NodeData::IndexedFaceSet(ifs) => {
                 self.pick_indexed_face_set(node, &ifs.coord_index);
+                ChildPolicy::Skip
+            }
+            NodeData::BatchedMesh(batch) => {
+                self.pick_batched_mesh(node, batch);
                 ChildPolicy::Skip
             }
             _ => ChildPolicy::Recurse,
@@ -516,6 +534,58 @@ impl RayPickAction {
                 if (idx as usize) < coord.points.len() {
                     face_points.push(idx as usize);
                 }
+            }
+        }
+        if let Some((point, normal, tri_idx, bary)) = best_hit {
+            self.push_hit(node, point, normal, best_t, tri_idx, &bary);
+        }
+    }
+
+    fn pick_batched_mesh(&mut self, node: NodeId, batch: &rc3d_scene::node_data::BatchedMeshNode) {
+        if !self.is_pickable() {
+            return;
+        }
+        let parent = self.state.model_matrix();
+        let mut best_t = f32::MAX;
+        let mut best_hit: Option<(Vec3, Vec3, u32, Vec3)> = None;
+        let mut tri_idx = 0u32;
+        for inst in &batch.instances {
+            if !inst.visible {
+                continue;
+            }
+            let Some(geo) = batch.geometries.get(inst.geometry as usize) else {
+                continue;
+            };
+            let model = parent * Mat4::from_cols_array_2d(&inst.transform);
+            let start = geo.index_first as usize;
+            let end = (start + geo.index_count as usize).min(batch.indices.len());
+            let slice = &batch.indices[start..end];
+            for tri in slice.chunks_exact(3) {
+                let Some(p0) = batch.positions.get(tri[0] as usize) else {
+                    tri_idx += 1;
+                    continue;
+                };
+                let Some(p1) = batch.positions.get(tri[1] as usize) else {
+                    tri_idx += 1;
+                    continue;
+                };
+                let Some(p2) = batch.positions.get(tri[2] as usize) else {
+                    tri_idx += 1;
+                    continue;
+                };
+                let v0 = model.transform_point3(Vec3::from_array(*p0));
+                let v1 = model.transform_point3(Vec3::from_array(*p1));
+                let v2 = model.transform_point3(Vec3::from_array(*p2));
+                if let Some((t, bary)) = self.ray.intersect_triangle(v0, v1, v2) {
+                    if t > 0.001 && t < best_t {
+                        best_t = t;
+                        let point = self.ray.origin + self.ray.direction * t;
+                        let c = (v1 - v0).cross(v2 - v0);
+                        let normal = rc3d_core::utils::math::safe_normalize(c, Vec3::Y);
+                        best_hit = Some((point, normal, tri_idx, bary));
+                    }
+                }
+                tri_idx += 1;
             }
         }
         if let Some((point, normal, tri_idx, bary)) = best_hit {

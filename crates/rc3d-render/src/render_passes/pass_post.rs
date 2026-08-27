@@ -418,6 +418,8 @@ pub(super) fn pass_fxaa_ldr_to_swapchain(
             view: swap_view,
             resolve_target: None,
             ops: wgpu::Operations {
+                // Fullscreen blit destination. Line overlays (wireframe / edges)
+                // run after this pass and Load when any draw is filled.
                 load: wgpu::LoadOp::Clear(bg_color),
                 store: wgpu::StoreOp::Store,
             },

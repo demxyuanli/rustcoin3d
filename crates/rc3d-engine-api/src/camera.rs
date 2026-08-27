@@ -67,6 +67,14 @@ impl ViewPreset {
             Self::Iso => (std::f32::consts::FRAC_PI_4, 0.615),
         }
     }
+
+    /// World up for `look_at` (Top/Bottom cannot use +Y — eye is on the Y axis).
+    pub fn up_vector(&self) -> Vec3 {
+        match self {
+            Self::Top | Self::Bottom => -Vec3::Z,
+            _ => Vec3::Y,
+        }
+    }
 }
 
 /// Orbit camera controller decoupled from windowing events.
@@ -79,7 +87,7 @@ pub struct CameraController {
     pub up: Vec3,
     /// Middle mouse held: apply orbit deltas on drag.
     pub middle_orbit_held: bool,
-    /// Left mouse held: orbit when enabled (viewer mode without pick callback).
+    /// Left mouse held: orbit (click-without-drag can still pick in the viewer).
     pub left_orbit_held: bool,
     /// Whether the controller is currently panning (for drag state tracking).
     pub panning: bool,
@@ -186,6 +194,7 @@ impl CameraController {
         let (yaw, pitch) = preset.yaw_pitch();
         self.yaw = yaw;
         self.pitch = pitch;
+        self.up = preset.up_vector();
         self.position_changed.set(true);
     }
 
@@ -206,9 +215,12 @@ impl CameraController {
                 NodeData::OrthographicCamera(cam) => {
                     changed = cam.aspect != aspect;
                     cam.position = eye;
+                    cam.orientation = Mat4::look_at_rh(eye, self.target, self.up);
                     let height = self.distance * 1.2;
                     cam.height = height;
                     cam.aspect = aspect;
+                    cam.near = (self.distance * 0.001).max(0.01);
+                    cam.far = (self.distance * 20.0).max(100.0);
                 }
                 _ => {}
             }
@@ -252,8 +264,8 @@ impl CameraController {
     ///
     /// `cursor_pos` should be the cursor position BEFORE this event
     /// (used to compute deltas for `CursorMoved`).
-    /// `left_orbit_enabled` enables left-button orbit (typically when editor
-    /// UI is disabled and no pick callback is set).
+    /// `left_orbit_enabled` enables left-button orbit on press. Left release
+    /// always clears orbit so a later HUD click cannot leave the button stuck.
     pub fn dispatch_window_event(
         &mut self,
         event: &WindowEvent,
@@ -272,7 +284,7 @@ impl CameraController {
                     (MouseButton::Left, ElementState::Pressed) if left_orbit_enabled => {
                         self.left_orbit_held = true;
                     }
-                    (MouseButton::Left, ElementState::Released) if left_orbit_enabled => {
+                    (MouseButton::Left, ElementState::Released) => {
                         self.left_orbit_held = false;
                     }
                     (MouseButton::Right, ElementState::Pressed) => {

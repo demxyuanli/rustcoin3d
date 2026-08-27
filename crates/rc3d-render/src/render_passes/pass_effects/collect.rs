@@ -2,7 +2,8 @@ use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::annotation::prepare_annotation_for_render;
 use rc3d_scene::node_data::{AnnotationElement, AnnotationStyle};
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::{NodeData, PointCloudNode, SceneGraph};
+use slotmap::Key;
 
 #[derive(Clone, Debug, Default)]
 pub struct EffectCommands {
@@ -59,6 +60,54 @@ pub struct VolumeDrawCommand {
     pub is_overlay: bool,
 }
 
+/// GPU point sprite (64-byte aligned: xyz size + rgba + velocity/age + extra).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuPoint {
+    pub position: [f32; 4],
+    pub color: [f32; 4],
+    pub velocity: [f32; 4],
+    pub extra: [f32; 4],
+}
+
+/// CPU snapshot of a particle emitter for the GPU compute path.
+#[derive(Clone, Copy, Debug)]
+pub struct GpuEmitterParams {
+    pub origin: [f32; 3],
+    pub origin_jitter: [f32; 3],
+    pub velocity: [f32; 3],
+    pub velocity_jitter: [f32; 3],
+    pub acceleration: [f32; 3],
+    pub spawn_rate: f32,
+    pub max_particles: u32,
+    pub lifetime: f32,
+    pub lifetime_jitter: f32,
+    pub start_color: [f32; 4],
+    pub end_color: [f32; 4],
+    pub start_size: f32,
+    pub end_size: f32,
+}
+
+impl GpuEmitterParams {
+    pub fn from_emitter(e: &rc3d_scene::ParticleEmitter) -> Self {
+        Self {
+            origin: [e.origin.x, e.origin.y, e.origin.z],
+            origin_jitter: [e.origin_jitter.x, e.origin_jitter.y, e.origin_jitter.z],
+            velocity: [e.velocity.x, e.velocity.y, e.velocity.z],
+            velocity_jitter: [e.velocity_jitter.x, e.velocity_jitter.y, e.velocity_jitter.z],
+            acceleration: [e.acceleration.x, e.acceleration.y, e.acceleration.z],
+            spawn_rate: e.spawn_rate,
+            max_particles: e.max_particles,
+            lifetime: e.lifetime,
+            lifetime_jitter: e.lifetime_jitter,
+            start_color: e.start_color,
+            end_color: e.end_color,
+            start_size: e.start_size,
+            end_size: e.end_size,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PointCloudDrawCommand {
     pub model_matrix: Mat4,
@@ -67,6 +116,27 @@ pub struct PointCloudDrawCommand {
     pub point_size: f32,
     pub color: [f32; 4],
     pub is_overlay: bool,
+    /// In-memory particles / uploaded points. Empty = file-backed or GPU-sim.
+    pub points: std::sync::Arc<Vec<GpuPoint>>,
+    pub sim_key: u64,
+    pub emitter: Option<GpuEmitterParams>,
+}
+
+pub fn pack_point_cloud_gpu(pc: &PointCloudNode) -> std::sync::Arc<Vec<GpuPoint>> {
+    if pc.particles.is_empty() {
+        return std::sync::Arc::new(Vec::new());
+    }
+    let n = pc.particles.len().min(pc.max_visible_points as usize);
+    let mut out = Vec::with_capacity(n);
+    for p in pc.particles.iter().take(n) {
+        out.push(GpuPoint {
+            position: [p.position.x, p.position.y, p.position.z, p.size.max(0.1)],
+            color: p.color,
+            velocity: [p.velocity.x, p.velocity.y, p.velocity.z, p.age],
+            extra: [p.lifetime, 0.0, 0.0, 0.0],
+        });
+    }
+    std::sync::Arc::new(out)
 }
 
 pub fn collect_effect_nodes(graph: &SceneGraph) -> EffectCommands {
@@ -115,6 +185,11 @@ fn collect_effect_recursive(
             }
         }
         NodeData::PointCloud(point_cloud) => {
+            let gpu_emitter = point_cloud
+                .emitter
+                .as_ref()
+                .filter(|e| !e.simulate_on_cpu)
+                .map(GpuEmitterParams::from_emitter);
             commands.point_clouds.push(PointCloudDrawCommand {
                 model_matrix,
                 file_path: point_cloud.file_path.clone(),
@@ -122,13 +197,23 @@ fn collect_effect_recursive(
                 point_size: point_cloud.point_size,
                 color: point_cloud.color,
                 is_overlay: inside_annotation,
+                points: if gpu_emitter.is_some() {
+                    std::sync::Arc::new(Vec::new())
+                } else {
+                    pack_point_cloud_gpu(point_cloud)
+                },
+                sim_key: node.data().as_ffi(),
+                emitter: gpu_emitter,
             });
             for &child in &entry.children {
                 collect_effect_recursive(graph, child, model_matrix, inside_annotation, commands);
             }
         }
-        NodeData::Transform(transform) => {
-            let next_model = model_matrix * transform.to_matrix();
+        NodeData::Transform(_) | NodeData::Rotation(_) | NodeData::RotationXYZ(_) => {
+            let next_model = match entry.data.local_matrix() {
+                Some(lm) => model_matrix * lm,
+                None => model_matrix,
+            };
             for &child in &entry.children {
                 collect_effect_recursive(graph, child, next_model, inside_annotation, commands);
             }
@@ -142,8 +227,8 @@ fn collect_effect_recursive(
             let mut accum = model_matrix;
             for &child in &entry.children {
                 let Some(ce) = graph.get(child) else { continue };
-                if let NodeData::Transform(t) = &ce.data {
-                    accum *= t.to_matrix();
+                if let Some(lm) = ce.data.local_matrix() {
+                    accum *= lm;
                     for &gc in &ce.children {
                         collect_effect_recursive(graph, gc, accum, inside_annotation, commands);
                     }

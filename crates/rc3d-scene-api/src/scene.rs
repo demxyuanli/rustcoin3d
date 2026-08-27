@@ -1,11 +1,14 @@
 //! Scene container and NodeHandle.
 
-use rc3d_core::NodeId;
-use rc3d_scene::node_data::{NodeData, SeparatorNode, TransformNode};
+use rc3d_core::{DisplayMode, EdgeStyle, FillStyle, NodeId, VisualStyle};
+use rc3d_scene::node_data::{
+    FontNode, FontStyle, NodeData, RotationAxis, RotationNode, RotationXYZNode, SeparatorNode,
+    SpriteNode, TransformNode,
+};
 use rc3d_scene::SceneGraph;
 
-use crate::camera::{OrthographicCamera, PerspectiveCamera};
-use crate::light::{DirectionalLight, PointLight};
+use crate::camera::{CubeCamera, OrthographicCamera, PerspectiveCamera};
+use crate::light::{DirectionalLight, HemisphereLight, LightProbe, PointLight};
 use crate::shape::Shape;
 
 /// Opaque handle to a node in the scene graph.
@@ -88,6 +91,22 @@ impl Scene {
         NodeHandle(node)
     }
 
+    /// Add a local cubemap reflection probe (three.js CubeCamera analog).
+    pub fn add_cube_camera(&mut self, camera: CubeCamera) -> NodeHandle {
+        NodeHandle(self.graph.add_child(self.root, camera.to_node()))
+    }
+
+    /// Enable stereo presentation (three.js StereoEffect analog). Uses `camera()` as the base eye.
+    pub fn add_stereo_camera(&mut self, stereo: crate::StereoCamera) -> NodeHandle {
+        let base = self.camera_handle.map(|h| h.0).unwrap_or_default();
+        NodeHandle(self.graph.add_child(self.root, stereo.to_node(base)))
+    }
+
+    /// Add a camera-facing textured quad (three.js Sprite analog).
+    pub fn add_sprite(&mut self, sprite: SpriteNode) -> NodeHandle {
+        NodeHandle(self.graph.add_child(self.root, NodeData::Sprite(sprite)))
+    }
+
     /// Add a directional light to the scene.
     pub fn add_light(&mut self, light: DirectionalLight) -> NodeHandle {
         NodeHandle(self.graph.add_child(self.root, light.to_node()))
@@ -96,6 +115,44 @@ impl Scene {
     /// Add a point light to the scene.
     pub fn add_point_light(&mut self, light: PointLight) -> NodeHandle {
         NodeHandle(self.graph.add_child(self.root, light.to_node()))
+    }
+
+    /// Add a hemisphere (sky/ground) ambient light.
+    pub fn add_hemisphere_light(&mut self, light: HemisphereLight) -> NodeHandle {
+        NodeHandle(self.graph.add_child(self.root, light.to_node()))
+    }
+
+    /// Add an L2 spherical-harmonic irradiance probe (three.js LightProbe analog).
+    pub fn add_light_probe(&mut self, probe: LightProbe) -> NodeHandle {
+        NodeHandle(self.graph.add_child(self.root, probe.to_node()))
+    }
+
+    /// Add an axis-angle rotation property node (Coin3D SoRotation analog).
+    pub fn add_rotation(&mut self, axis: rc3d_core::math::Vec3, angle: f32) -> NodeHandle {
+        NodeHandle(
+            self.graph
+                .add_child(self.root, NodeData::Rotation(RotationNode::from_axis_angle(axis, angle))),
+        )
+    }
+
+    /// Add a cardinal-axis rotation property node (Coin3D SoRotationXYZ analog).
+    pub fn add_rotation_xyz(&mut self, axis: RotationAxis, angle: f32) -> NodeHandle {
+        NodeHandle(
+            self.graph
+                .add_child(self.root, NodeData::RotationXYZ(RotationXYZNode { axis, angle })),
+        )
+    }
+
+    /// Add a font property node (Coin3D SoFont analog) for subsequent Text2 / Text3.
+    pub fn add_font(&mut self, name: impl Into<String>, size: f32, style: FontStyle) -> NodeHandle {
+        NodeHandle(self.graph.add_child(
+            self.root,
+            NodeData::Font(FontNode {
+                name: name.into(),
+                size,
+                style,
+            }),
+        ))
     }
 
     /// Add a group of shapes (explicit Separator boundary).
@@ -130,6 +187,36 @@ impl Scene {
         self.graph
     }
 
+    /// Coin3D subtree `SoDrawStyle`: set `mode` on this handle (typically a Separator).
+    pub fn set_subtree_display_mode(&mut self, handle: NodeHandle, mode: DisplayMode) {
+        self.graph.set_display_mode(handle.0, mode);
+    }
+
+    pub fn set_subtree_fill_style(&mut self, handle: NodeHandle, fill: FillStyle) {
+        self.graph.set_fill_style(handle.0, fill);
+    }
+
+    pub fn set_subtree_edge_style(&mut self, handle: NodeHandle, edges: EdgeStyle) {
+        self.graph.set_edge_style(handle.0, edges);
+    }
+
+    pub fn set_subtree_visual_style(&mut self, handle: NodeHandle, style: &VisualStyle) {
+        self.graph.apply_visual_style(handle.0, style);
+    }
+
+    /// Resolve PMI names on every `AnnotationSet` and stamp unbound points.
+    pub fn bind_pmi(&mut self) -> usize {
+        self.graph.bind_pmi()
+    }
+
+    pub fn set_face_tint(&mut self, handle: NodeHandle, face: u32, color: [f32; 4]) {
+        self.graph.set_face_tint(handle.0, face, color);
+    }
+
+    pub fn set_edge_tint(&mut self, handle: NodeHandle, triangle: u32, edge: u8, color: [f32; 4]) {
+        self.graph.set_edge_tint(handle.0, triangle, edge, color);
+    }
+
     /// Borrow the internal graph (for read-only queries).
     pub fn graph(&self) -> &SceneGraph {
         &self.graph
@@ -150,6 +237,12 @@ fn copy_subtree(
 ) -> NodeId {
     let entry = src.get(src_id).expect("node exists");
     let new_id = dst.add_child(dst_parent, entry.data.clone());
+    if let Some(dst_entry) = dst.get_mut(new_id) {
+        dst_entry.display_mode = entry.display_mode;
+        dst_entry.fill_style = entry.fill_style;
+        dst_entry.edge_style = entry.edge_style;
+        dst_entry.name = entry.name.clone();
+    }
     if let Some(children) = src.children(src_id) {
         for &child in children {
             copy_subtree(src, dst, child, new_id);

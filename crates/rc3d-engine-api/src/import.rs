@@ -13,7 +13,7 @@ use rc3d_scene::SceneGraph;
 
 /// Import a 3D file into the scene graph.
 ///
-/// The file format is auto-detected from the extension (stl, obj, gltf, glb).
+/// The file format is auto-detected from the extension (stl, obj, gltf, glb, fbx).
 /// All imported geometry is wrapped in a root-level `Separator`
 /// node whose [`NodeId`] is returned.
 ///
@@ -33,7 +33,7 @@ pub fn import_file(graph: &mut SceneGraph, path: impl AsRef<Path>) -> EngineResu
 }
 
 /// Resolve all `FileNode` references in the scene graph by loading the
-/// referenced files (glTF, OBJ, STL) and merging their content in-place.
+/// referenced files (glTF, OBJ, STL, FBX) and merging their content in-place.
 ///
 /// Walks the graph recursively; loaded files may contain further `FileNode`
 /// references which are resolved in turn.
@@ -134,6 +134,12 @@ pub(crate) fn copy_subtree(
 ) -> NodeId {
     let entry = src.get(src_id).expect("copy_subtree: source node exists");
     let new_id = dst.add_child(dst_parent, entry.data.clone());
+    if let Some(dst_entry) = dst.get_mut(new_id) {
+        dst_entry.display_mode = entry.display_mode;
+        dst_entry.fill_style = entry.fill_style;
+        dst_entry.edge_style = entry.edge_style;
+        dst_entry.name = entry.name.clone();
+    }
     if let Some(children) = src.children(src_id) {
         for &child in children {
             copy_subtree(src, dst, child, new_id);

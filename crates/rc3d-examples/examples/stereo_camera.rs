@@ -1,49 +1,56 @@
-//! StereoCamera demo — side-by-side stereo rendering with interocular distance.
+//! StereoCamera demo — dual-eye render with interocular distance.
+//!
+//! Side-by-side by default (left | right). Objects at different depths show parallax.
 //!
 //! Usage: cargo run -p rc3d-examples --example stereo_camera
 
 use rc3d_core::math::Vec3;
 use rc3d_examples::common::run_example;
-use rc3d_scene::node_data::*;
+use rc3d_scene_api::{
+    Cube, DirectionalLight, Material, PerspectiveCamera, Scene, Sphere, StereoCamera, StereoMode,
+};
 
 fn main() {
     run_example("Stereo Camera", |engine| {
-        let graph = engine.scene_mut();
-        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        let mut scene = Scene::new();
 
-        let cam_id = graph.add_child(
-            root,
-            NodeData::PerspectiveCamera(PerspectiveCameraNode::look_at(
-                Vec3::new(3.0, 2.0, 5.0),
-                Vec3::ZERO,
-                Vec3::Y,
-                std::f32::consts::FRAC_PI_4,
-                800.0 / 600.0,
-            )),
+        scene.set_camera(PerspectiveCamera::look_at(
+            Vec3::new(3.0, 2.0, 6.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            std::f32::consts::FRAC_PI_4,
+            16.0 / 9.0,
+        ));
+        scene.add_stereo_camera(
+            StereoCamera::side_by_side()
+                .interocular(0.12)
+                .convergence(4.0)
+                .mode(StereoMode::SideBySide),
+        );
+        scene.add_light(DirectionalLight::sun(Vec3::new(-1.0, -1.0, -1.0), 1.0));
+
+        scene.add(
+            Sphere::default()
+                .radius(0.85)
+                .material(Material::pbr().base_color(0.5, 0.3, 0.8).roughness(0.25)),
+        );
+        scene.add(
+            Cube::default()
+                .width(0.7)
+                .height(0.7)
+                .depth(0.7)
+                .at(-1.6, 0.0, -1.2)
+                .material(Material::pbr().base_color(0.9, 0.35, 0.2).roughness(0.35)),
+        );
+        scene.add(
+            Cube::default()
+                .width(0.55)
+                .height(0.55)
+                .depth(0.55)
+                .at(1.7, 0.0, 1.4)
+                .material(Material::pbr().base_color(0.25, 0.7, 0.45).roughness(0.4)),
         );
 
-        graph.add_child(
-            root,
-            NodeData::DirectionalLight(DirectionalLightNode {
-                direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
-                color: Vec3::ONE,
-                intensity: 1.0,
-                light_group: None,
-            }),
-        );
-
-        graph.add_child(root, NodeData::Material(MaterialNode {
-            base_color: Vec3::new(0.5, 0.3, 0.8),
-            roughness: 0.2,
-            ..Default::default()
-        }));
-        graph.add_child(root, NodeData::Sphere(SphereNode { radius: 1.0 }));
-
-        graph.add_child(root, NodeData::StereoCamera(StereoCameraNode {
-            base_camera: cam_id,
-            interocular_distance: 0.065,
-            convergence_distance: 2.0,
-            mode: StereoMode::SideBySide,
-        }));
+        engine.load_scene(scene.build());
     });
 }

@@ -1,9 +1,10 @@
 use crate::element::{
-    CoordinateElement, Element, ElementId, LightData, LightElement, MaterialElement,
-    ModelMatrixElement, NormalElement, ProjectionMatrixElement, TextureCoordinate2Element,
-    ViewMatrixElement, NUM_ELEMENT_TYPES,
+    CoordinateElement, DisplayModeElement, Element, ElementId, LightData, LightElement,
+    MaterialElement, ModelMatrixElement, NormalElement, ProjectionMatrixElement,
+    TextureCoordinate2Element, ViewMatrixElement, NUM_ELEMENT_TYPES,
 };
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::{Appearance, DisplayMode};
 use crate::{MorphTargetNode, SkinnedMeshNode};
 
 pub struct State {
@@ -25,6 +26,7 @@ impl State {
             vec![Box::new(MaterialElement::default()) as Box<dyn Element>],
             vec![Box::new(LightElement::default()) as Box<dyn Element>],
             vec![Box::new(TextureCoordinate2Element::default()) as Box<dyn Element>],
+            vec![Box::new(DisplayModeElement::default()) as Box<dyn Element>],
         ];
         Self {
             stacks,
@@ -125,6 +127,24 @@ impl State {
 
     pub fn set_texture_coordinate2(&mut self, coords: Vec<[f32; 2]>) {
         self.get_el_mut::<TextureCoordinate2Element>(ElementId(7)).coords = coords;
+    }
+
+    pub fn display_mode(&self) -> DisplayMode {
+        self.get_el_ref::<DisplayModeElement>(ElementId(8)).mode
+    }
+
+    pub fn set_display_mode(&mut self, mode: DisplayMode) {
+        self.get_el_mut::<DisplayModeElement>(ElementId(8))
+            .set_display_mode(mode);
+    }
+
+    pub fn appearance(&self) -> Appearance {
+        self.get_el_ref::<DisplayModeElement>(ElementId(8)).appearance()
+    }
+
+    pub fn set_appearance(&mut self, app: Appearance) {
+        self.get_el_mut::<DisplayModeElement>(ElementId(8))
+            .set_appearance(app);
     }
 
     pub fn morph_targets(&self) -> Option<&MorphTargetNode> {

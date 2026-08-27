@@ -30,7 +30,18 @@ pub struct Material {
     pub specular_color_factor: Vec3,
     pub transmission_factor: f32,
     pub ior: f32,
+    pub sheen_color: Vec3,
+    pub sheen_roughness: f32,
+    pub iridescence_factor: f32,
+    pub iridescence_ior: f32,
+    pub iridescence_thickness_min: f32,
+    pub iridescence_thickness_max: f32,
+    pub toon_steps: f32,
+    pub visualize_normals: bool,
+    pub visualize_depth: bool,
     pub light_group: Option<String>,
+    pub custom_wgsl: Option<String>,
+    pub custom_uniforms: [f32; 4],
 }
 
 impl Default for Material {
@@ -60,7 +71,18 @@ impl Default for Material {
             specular_color_factor: Vec3::ONE,
             transmission_factor: 0.0,
             ior: 1.5,
+            sheen_color: Vec3::ZERO,
+            sheen_roughness: 0.0,
+            iridescence_factor: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            toon_steps: 0.0,
+            visualize_normals: false,
+            visualize_depth: false,
             light_group: None,
+            custom_wgsl: None,
+            custom_uniforms: [0.0; 4],
         }
     }
 }
@@ -149,7 +171,69 @@ impl Material {
             specular_color_factor: self.specular_color_factor,
             transmission_factor: self.transmission_factor,
             ior: self.ior,
+            sheen_color: self.sheen_color,
+            sheen_roughness: self.sheen_roughness,
+            iridescence_factor: self.iridescence_factor,
+            iridescence_ior: self.iridescence_ior,
+            iridescence_thickness_min: self.iridescence_thickness_min,
+            iridescence_thickness_max: self.iridescence_thickness_max,
+            toon_steps: self.toon_steps,
+            visualize_normals: self.visualize_normals,
+            visualize_depth: self.visualize_depth,
             light_group: self.light_group.clone(),
+            custom_wgsl: self.custom_wgsl.clone(),
+            custom_uniforms: self.custom_uniforms,
         }
+    }
+
+    pub fn custom_shader(mut self, wgsl: impl Into<String>) -> Self {
+        self.custom_wgsl = Some(wgsl.into());
+        self
+    }
+
+    pub fn custom_uniforms(mut self, v: [f32; 4]) -> Self {
+        self.custom_uniforms = v;
+        self
+    }
+
+    pub fn transmission(mut self, factor: f32, ior: f32) -> Self {
+        self.transmission_factor = factor;
+        self.ior = ior;
+        self
+    }
+
+    pub fn sheen(mut self, color: Vec3, roughness: f32) -> Self {
+        self.sheen_color = color;
+        self.sheen_roughness = roughness;
+        self
+    }
+
+    pub fn anisotropic(mut self, strength: f32) -> Self {
+        self.anisotropic = strength;
+        self
+    }
+
+    /// Thin-film iridescence (KHR_materials_iridescence). `thickness_max_nm` is the upper film thickness.
+    pub fn iridescence(mut self, factor: f32, ior: f32, thickness_max_nm: f32) -> Self {
+        self.iridescence_factor = factor;
+        self.iridescence_ior = ior;
+        self.iridescence_thickness_max = thickness_max_nm;
+        self
+    }
+
+    pub fn toon(mut self, steps: f32) -> Self {
+        self.toon_steps = steps;
+        self
+    }
+
+    pub fn visualize_normals(mut self, on: bool) -> Self {
+        self.visualize_normals = on;
+        self
+    }
+
+    /// Camera-distance grayscale (three.js MeshDepthMaterial analog).
+    pub fn visualize_depth(mut self, on: bool) -> Self {
+        self.visualize_depth = on;
+        self
     }
 }

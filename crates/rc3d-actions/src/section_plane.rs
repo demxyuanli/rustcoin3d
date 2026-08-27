@@ -1,12 +1,12 @@
 use rc3d_core::NodeId;
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::{NodeData, SceneGraph, SectionCapStyle};
 use crate::action::{Action, ActionKind};
 
 /// Collects all enabled section planes from the scene graph.
 pub struct SectionPlaneAction {
     pub planes: Vec<[f32; 4]>,
-    /// Per plane (same order as `planes`): cap tint when `cap_enabled` on the node.
-    pub cap_tints: Vec<Option<[f32; 4]>>,
+    /// Per plane (same order as `planes`): cap style when `cap_enabled` on the node.
+    pub cap_tints: Vec<Option<SectionCapStyle>>,
     pub has_caps: bool,
 }
 
@@ -38,15 +38,15 @@ impl SectionPlaneAction {
         graph: &SceneGraph,
         node: NodeId,
         planes: &mut Vec<[f32; 4]>,
-        cap_tints: &mut Vec<Option<[f32; 4]>>,
+        cap_tints: &mut Vec<Option<SectionCapStyle>>,
         has_caps: &mut bool,
     ) {
         let Some(entry) = graph.get(node) else { return };
         if let NodeData::SectionPlane(sp) = &entry.data {
             if sp.enabled {
                 planes.push(sp.plane);
-                if sp.cap_enabled {
-                    cap_tints.push(Some(sp.cap_color));
+                if let Some(style) = SectionCapStyle::from_plane(sp) {
+                    cap_tints.push(Some(style));
                     *has_caps = true;
                 } else {
                     cap_tints.push(None);

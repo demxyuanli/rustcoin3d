@@ -1,7 +1,6 @@
 use rc3d_core::math::Mat4;
 use rc3d_core::NodeId;
 use rc3d_engine_api::Engine;
-use rc3d_gizmo::Gizmo;
 use rc3d_render::viewport::ViewportSplitAxis;
 use rc3d_scene::node_data::MeasurementType;
 use std::collections::{HashSet, VecDeque};
@@ -12,7 +11,6 @@ use crate::ui::types::{EditorDisplayMode, NodeDataType, RenderFeatureFlags};
 
 /// Editor-local interaction state (mirrors rc3d-app's EditorSession fields).
 pub struct EditorInteractionState {
-    pub gizmo: Gizmo,
     pub gizmo_dragging: bool,
     pub gizmo_pending_transform: Option<(NodeId, Mat4)>,
     pub measurement_mode: bool,
@@ -28,7 +26,6 @@ pub struct EditorInteractionState {
 impl Default for EditorInteractionState {
     fn default() -> Self {
         Self {
-            gizmo: Gizmo::default(),
             gizmo_dragging: false,
             gizmo_pending_transform: None,
             measurement_mode: false,
@@ -59,6 +56,13 @@ pub struct EditorContext<'a> {
 
 impl<'a> EditorContext<'a> {
     pub fn new(engine: &'a mut Engine) -> Self {
+        Self::with_interaction(engine, EditorInteractionState::default())
+    }
+
+    pub fn with_interaction(
+        engine: &'a mut Engine,
+        interaction: EditorInteractionState,
+    ) -> Self {
         Self {
             engine,
             commands: VecDeque::new(),
@@ -68,7 +72,7 @@ impl<'a> EditorContext<'a> {
             gizmo_mode: rc3d_gizmo::GizmoMode::Translate,
             render_features: RenderFeatureFlags::default(),
             node_data_type: NodeDataType::All,
-            interaction: EditorInteractionState::default(),
+            interaction,
             selection: Selection::new(),
         }
     }

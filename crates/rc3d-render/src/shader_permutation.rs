@@ -27,6 +27,8 @@ impl ShaderFeatures {
     pub const HAS_EMISSIVE_TEX: Self = Self { bits: 1 << 5 };
     pub const HAS_OCCLUSION_TEX: Self = Self { bits: 1 << 6 };
     pub const HAS_CLEARCOAT: Self = Self { bits: 1 << 7 };
+    pub const HAS_SHEEN: Self = Self { bits: 1 << 8 };
+    pub const HAS_TRANSMISSION: Self = Self { bits: 1 << 9 };
 
     pub fn contains(&self, other: ShaderFeatures) -> bool {
         self.bits & other.bits == other.bits
@@ -46,6 +48,8 @@ impl ShaderFeatures {
         ("HAS_EMISSIVE_TEX", ShaderFeatures::HAS_EMISSIVE_TEX),
         ("HAS_OCCLUSION_TEX", ShaderFeatures::HAS_OCCLUSION_TEX),
         ("HAS_CLEARCOAT", ShaderFeatures::HAS_CLEARCOAT),
+        ("HAS_SHEEN", ShaderFeatures::HAS_SHEEN),
+        ("HAS_TRANSMISSION", ShaderFeatures::HAS_TRANSMISSION),
     ];
 }
 
@@ -56,7 +60,7 @@ pub type PermutationKey = u32;
 /// Lines in excluded blocks are dropped. Emitted lines preserve their original
 /// content (minus the directive line itself, which becomes a `//` comment).
 pub fn preprocess_wgsl(source: &str, features: ShaderFeatures) -> String {
-    let active: [bool; 7] = [
+    let active: [bool; 10] = [
         features.contains(ShaderFeatures::HAS_NORMAL_MAP),
         features.contains(ShaderFeatures::HAS_SHADOW),
         features.contains(ShaderFeatures::HAS_ALBEDO_TEX),
@@ -64,10 +68,14 @@ pub fn preprocess_wgsl(source: &str, features: ShaderFeatures) -> String {
         features.contains(ShaderFeatures::HAS_MR_TEX),
         features.contains(ShaderFeatures::HAS_EMISSIVE_TEX),
         features.contains(ShaderFeatures::HAS_OCCLUSION_TEX),
+        features.contains(ShaderFeatures::HAS_CLEARCOAT),
+        features.contains(ShaderFeatures::HAS_SHEEN),
+        features.contains(ShaderFeatures::HAS_TRANSMISSION),
     ];
-    let names: [&str; 7] = [
+    let names: [&str; 10] = [
         "HAS_NORMAL_MAP", "HAS_SHADOW", "HAS_ALBEDO_TEX", "HAS_IBL",
         "HAS_MR_TEX", "HAS_EMISSIVE_TEX", "HAS_OCCLUSION_TEX",
+        "HAS_CLEARCOAT", "HAS_SHEEN", "HAS_TRANSMISSION",
     ];
 
     let mut result = String::with_capacity(source.len());

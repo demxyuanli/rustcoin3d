@@ -4,7 +4,10 @@
 //! without requiring direct `Engine` implementation.
 
 use rc3d_core::math::Vec3;
-use rc3d_engine::{Engine, EngineRegistry, ElapsedTimeEngine, SineField, SineOscillatorEngine};
+use rc3d_engine::{
+    AnimationMixerEngine, Engine, EngineRegistry, ElapsedTimeEngine, SineField, SineOscillatorEngine,
+};
+use rc3d_scene::AnimationClip;
 
 use crate::scene::NodeHandle;
 
@@ -113,6 +116,13 @@ impl Animator {
         self
     }
 
+    /// Play an [`AnimationClip`] with object (and/or joint) tracks.
+    pub fn mix_clip(&mut self, clip: AnimationClip) -> &mut Self {
+        self.engines
+            .push(Box::new(AnimationMixerEngine::from_clip(clip)));
+        self
+    }
+
     /// Add any custom Engine.
     pub fn add_engine(&mut self, engine: Box<dyn Engine>) -> &mut Self {
         self.engines.push(engine);
@@ -126,6 +136,6 @@ impl Animator {
 
     /// Build into an `EngineRegistry` for use with `App::with_engines()`.
     pub fn build(self) -> EngineRegistry {
-        EngineRegistry { engines: self.engines }
+        EngineRegistry::from_engines(self.engines)
     }
 }

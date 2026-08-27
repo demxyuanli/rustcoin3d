@@ -18,3 +18,28 @@ pub struct BillboardNode {
     /// If false, full camera orientation is cancelled (spherical billboard).
     pub axis_aligned: bool,
 }
+
+/// Camera-facing textured quad (three.js Sprite).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SpriteNode {
+    pub texture_path: String,
+    pub color: [f32; 4],
+    pub size: f32,
+    /// When false, world size grows with camera distance (constant screen size).
+    pub size_attenuation: bool,
+    pub center: [f32; 2],
+    pub opacity: f32,
+}
+
+impl Default for SpriteNode {
+    fn default() -> Self {
+        Self {
+            texture_path: String::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            size: 1.0,
+            size_attenuation: true,
+            center: [0.5, 0.5],
+            opacity: 1.0,
+        }
+    }
+}

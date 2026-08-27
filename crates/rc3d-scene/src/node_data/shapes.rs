@@ -2,6 +2,7 @@
 use rc3d_core::math::Vec3;
 use serde::{Deserialize, Serialize};
 use crate::animation::{AnimationClip, Skeleton, VertexSkinData};
+use super::properties::MaterialNode;
 
 /// Shape: renders the first 3 coordinates as a triangle.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -91,6 +92,73 @@ impl Default for TorusNode {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct IndexedFaceSetNode {
     pub coord_index: Vec<i32>,
+    /// three.js BufferGeometry.groups: ranges of tessellated indices with a material slot.
+    /// Empty = single draw using the traversal material.
+    #[serde(default)]
+    pub material_groups: Vec<FaceMaterialGroup>,
+    /// Palette indexed by [`FaceMaterialGroup::material_index`]. Empty = traversal material.
+    #[serde(default)]
+    pub materials: Vec<MaterialNode>,
+    /// Per-tessellated-triangle CAD face id. Empty = triangle index is the face id.
+    #[serde(default)]
+    pub face_ids: Vec<u32>,
+}
+
+impl IndexedFaceSetNode {
+    pub fn from_coord_index(coord_index: Vec<i32>) -> Self {
+        Self {
+            coord_index,
+            ..Default::default()
+        }
+    }
+
+    /// CAD face id for tessellated triangle `tri`.
+    pub fn face_id(&self, tri: u32) -> u32 {
+        self.face_ids
+            .get(tri as usize)
+            .copied()
+            .unwrap_or(tri)
+    }
+}
+
+/// One material range on an [`IndexedFaceSetNode`] (index-buffer `start`/`count`, like three.js).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FaceMaterialGroup {
+    /// First element in the tessellated triangle index buffer.
+    pub start: u32,
+    /// Number of indices in this group (multiple of 3).
+    pub count: u32,
+    /// Index into [`IndexedFaceSetNode::materials`].
+    pub material_index: u32,
+}
+
+impl FaceMaterialGroup {
+    /// Compact consecutive per-triangle material slots into index-buffer groups.
+    pub fn compact_from_triangle_slots(slots: &[u32]) -> Vec<Self> {
+        if slots.is_empty() {
+            return Vec::new();
+        }
+        let mut groups = Vec::new();
+        let mut start_tri = 0u32;
+        let mut current = slots[0];
+        for (i, &slot) in slots.iter().enumerate().skip(1) {
+            if slot != current {
+                groups.push(Self {
+                    start: start_tri * 3,
+                    count: (i as u32 - start_tri) * 3,
+                    material_index: current,
+                });
+                start_tri = i as u32;
+                current = slot;
+            }
+        }
+        groups.push(Self {
+            start: start_tri * 3,
+            count: (slots.len() as u32 - start_tri) * 3,
+            material_index: current,
+        });
+        groups
+    }
 }
 
 /// Shape: line segments from vertex/index arrays (Coin3D SoIndexedLineSet).
@@ -155,5 +223,110 @@ pub struct MorphTargetNode {
 pub struct InstancedMeshNode {
     /// Instance model matrices (column-major 4×4).
     pub transforms: Vec<[[f32; 4]; 4]>,
+}
+
+/// One packed geometry range inside a [`BatchedMeshNode`] (three.js `BatchedMesh` geometry id).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
+pub struct BatchedGeometry {
+    /// First index in [`BatchedMeshNode::indices`].
+    pub index_first: u32,
+    /// Index count (multiple of 3).
+    pub index_count: u32,
+}
+
+/// One drawable instance of a packed geometry.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BatchedInstance {
+    pub geometry: u32,
+    /// Local model matrix, column-major 4×4.
+    pub transform: [[f32; 4]; 4],
+    pub visible: bool,
+    /// Multiplies the traversal material (`[1,1,1,1]` = unchanged).
+    pub color: [f32; 4],
+}
+
+impl Default for BatchedInstance {
+    fn default() -> Self {
+        Self {
+            geometry: 0,
+            transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            visible: true,
+            color: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
+/// Multi-geometry GPU batch (three.js `BatchedMesh`).
+///
+/// Distinct meshes share one vertex/index buffer; each instance draws a geometry
+/// range with its own transform. Same-range instances batch through the existing
+/// opaque instancing / multi-draw path.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BatchedMeshNode {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub texcoords: Vec<[f32; 2]>,
+    pub tangents: Vec<[f32; 4]>,
+    pub indices: Vec<u32>,
+    pub geometries: Vec<BatchedGeometry>,
+    pub instances: Vec<BatchedInstance>,
+}
+
+impl BatchedMeshNode {
+    /// Append a geometry and return its id.
+    pub fn add_geometry(
+        &mut self,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        texcoords: &[[f32; 2]],
+        tangents: &[[f32; 4]],
+        indices: &[u32],
+    ) -> u32 {
+        let v_off = self.positions.len() as u32;
+        self.positions.extend_from_slice(positions);
+        if normals.len() == positions.len() {
+            self.normals.extend_from_slice(normals);
+        } else {
+            self.normals
+                .extend(std::iter::repeat([0.0, 1.0, 0.0]).take(positions.len()));
+        }
+        if texcoords.len() == positions.len() {
+            self.texcoords.extend_from_slice(texcoords);
+        } else {
+            self.texcoords
+                .extend(std::iter::repeat([0.0, 0.0]).take(positions.len()));
+        }
+        if tangents.len() == positions.len() {
+            self.tangents.extend_from_slice(tangents);
+        } else {
+            self.tangents
+                .extend(std::iter::repeat([1.0, 0.0, 0.0, 1.0]).take(positions.len()));
+        }
+        let i_off = self.indices.len() as u32;
+        self.indices.extend(indices.iter().map(|i| i + v_off));
+        let id = self.geometries.len() as u32;
+        self.geometries.push(BatchedGeometry {
+            index_first: i_off,
+            index_count: indices.len() as u32,
+        });
+        id
+    }
+
+    /// Append an instance of `geometry` and return its id.
+    pub fn add_instance(&mut self, geometry: u32, transform: [[f32; 4]; 4]) -> u32 {
+        let id = self.instances.len() as u32;
+        self.instances.push(BatchedInstance {
+            geometry,
+            transform,
+            visible: true,
+            color: [1.0, 1.0, 1.0, 1.0],
+        });
+        id
+    }
 }
 

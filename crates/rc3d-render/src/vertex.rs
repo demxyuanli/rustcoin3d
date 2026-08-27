@@ -142,6 +142,8 @@ pub struct SceneUniforms {
     pub pbr_sheen: [f32; 4],
     /// KHR_materials_specular: xyz=specular_color_factor, w=specular_factor
     pub pbr_specular: [f32; 4],
+    /// x=transmission_factor, y=ior, zw=pad
+    pub pbr_transmission: [f32; 4],
     pub light_set_index: [f32; 4],
 }
 
@@ -156,6 +158,10 @@ pub struct GlobalFrameUniforms {
     pub light_count: [f32; 4],
     pub ibl_diffuse: [f32; 4],
     pub ibl_specular: [f32; 4],
+    /// L2 SH RGB (xyz) + pad. Zero coefficients disable the probe.
+    pub sh_l2: [[f32; 4]; 9],
+    /// x = LightProbe intensity (0 = off).
+    pub sh_intensity: [f32; 4],
     pub csm_view_proj: [[f32; 4]; 16],
     pub csm_split_depths: [f32; 4],
     pub shadow_params: [f32; 4],
@@ -178,6 +184,17 @@ pub struct FlatUniforms {
     pub clip_planes: [[f32; 4]; 6],
     /// x = clip plane count, yzw unused.
     pub clip_count: [f32; 4],
+    pub hatch_color: [f32; 4],
+    /// x = spacing, y = angle (rad), z = width fraction, w = enabled.
+    pub hatch_params: [f32; 4],
+    /// x = cross hatch, yzw unused.
+    pub hatch_extra: [f32; 4],
+}
+
+impl Default for FlatUniforms {
+    fn default() -> Self {
+        Self::zeroed()
+    }
 }
 
 /// Per-vertex data for expanded (AA-capable) line segments.
@@ -224,13 +241,4 @@ pub struct SectionCapUniforms {
     pub plane: [f32; 4],
     /// x = minimum world-space half-thickness; yzw unused.
     pub params: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct OutlineUniforms {
-    pub mvp: [[f32; 4]; 4],
-    pub outline_width: f32,
-    pub _pad: [f32; 3],
-    pub color: [f32; 4],
 }

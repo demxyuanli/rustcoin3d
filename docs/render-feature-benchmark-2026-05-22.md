@@ -12,8 +12,8 @@
 | 功能 | 初版评估 | 修正后 |
 |------|----------|--------|
 | 3D 文本渲染 | ❌ 缺失 | ✅ **已完整实现** — Text2Node/Text3Node + glyphon + world labels + annotation |
-| 点光阴影 | ❌ 缺失 | ✅ **已实现** — shadow_omni.rs（限1个点光源，512分辨率） |
-| Transform Gizmo | ⚠️ 未集成 | ✅ **已完整集成** — rc3d-editor gizmo.rs + interaction.rs + Undo |
+| 点光阴影 | ❌ 缺失 | ✅ **已实现** — shadow_omni.rs（cube-array，最多 4 盏，512 分辨率） |
+| Transform Gizmo | ⚠️ 未集成 | ✅ **已完整集成** — Engine.gizmo 绘制 + rc3d-editor 拖拽 / Undo |
 | 测量工具 | ❌ 缺失 | ✅ **已完整实现** — Distance/Angle/Radius + AnnotationSet 渲染 |
 | 剖面帽面 | ❌ 缺失 | ✅ **已完整实现** — cap_enabled/cap_color + SectionCapUniforms + section_cap.wgsl |
 | 标注/引线 | ❌ 缺失 | ✅ **已实现** — Dimension/AngleDimension/Radial/Diameter/Leader/Callout/Datum |
@@ -66,7 +66,7 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 | Phong | ✅ | ✅ | ✅ MeshPhongMaterial | ✅ | 无 |
 | PBR (metallic-roughness) | ❌ | ✅ 2022+ | ✅ MeshStandardMaterial | ✅ | 无 |
 | 透明排序 | ✅ depth-sort | ✅ depth-sort | ✅ depth-sort | ✅ **alpha blend pass**（本次接线） | 无 |
-| OIT (WBOIT/per-pixel) | ❌ | ✅ | ✅ 有限 | ❌ | **缺失** |
+| OIT (WBOIT/per-pixel) | ❌ | ✅ | ✅ 有限 | ✅ WBOIT LDR/HDR | 无 |
 | 材质覆盖 (override) | ✅ SoMaterialBinding | ✅ | ✅ material.wireframe | ⚠️ 仅 Flat 模式 | **Partial** |
 | 双面渲染 | ✅ | ✅ | ✅ side: DoubleSide | ✅ | 无 |
 | 线框覆盖材质 | ✅ | ✅ | ✅ wireframe: true | ✅ Wireframe 模式 | 无 |
@@ -75,8 +75,7 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 **已修复**：透明 Pass 已接线（solid_alpha pipeline + back-to-front 排序）
 
 **仍缺失**：
-1. **OIT (Order-Independent Transparency)** — 多层透明重叠时画家算法可能失败
-2. **材质覆盖系统** — 全局覆盖材质（如全部设为线框、全部变灰），当前仅有 Flat 模式
+1. **材质覆盖系统** — 全局覆盖材质（如全部设为线框、全部变灰），当前仅有 Flat 模式 / VisualStyle 子树套用
 
 ---
 
@@ -89,15 +88,13 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 | IBL (环境贴图) | ❌ | ✅ | ✅ | ✅ | 无 |
 | Light linking (逐对象) | ❌ | ✅ | ❌ | ✅ | **领先** |
 | CSM 级联阴影 | ❌ | ✅ | ✅ | ✅ (4 cascade) | 无 |
-| Omni 点光阴影 | ❌ | ✅ | ✅ PointLight.shadow | ✅ shadow_omni.rs | 无（限1个点光源） |
-| 透明投影阴影 | ✅ | ✅ | ✅ | ❌ | **缺失** |
+| Omni 点光阴影 | ❌ | ✅ | ✅ PointLight.shadow | ✅ shadow_omni cube-array（最多 4） | 无 |
+| 透明投影阴影 | ✅ | ✅ | ✅ | ✅ CSM + Omni casters（opacity>=0.08） | 无 |
 | 阴影接触硬化 (PCSS) | ❌ | ❌ | ❌ | ❌ | 均缺 |
 
 **修正**：Area Light 和 Omni 阴影均已实现（初版误判为缺失）
 
-**仍缺失**：
-1. **多光源 Omni 阴影** — 当前仅支持 1 个点光源阴影
-2. **透明物体投影阴影** — 透过玻璃/半透明件的阴影
+**已补齐**：多 Omni cube-array（最多 4）+ 透明物体写入 CSM/Omni 深度。
 
 ---
 
@@ -109,7 +106,7 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 | 框选 (marquee) | ✅ | ✅ | ❌ 需手动 | ⚠️ SelectionBox 存在 | **Partial** |
 | 高亮 (highlight) | ✅ SoHighlight | ✅ | ✅ OutlinePass | ✅ | 无 |
 | X-Ray 选择高亮 | ❌ | ✅ | ❌ | ✅ | **领先** |
-| Transform Gizmo | ✅ SoTransformManip | ✅ | ✅ TransformControls | ✅ rc3d-gizmo + editor 集成 | 无 |
+| Transform Gizmo | ✅ SoTransformManip | ✅ | ✅ TransformControls | ✅ TransformManip + Dragger nodes + Engine.gizmo overlay | 无 |
 | 测量工具 | ❌ | ✅ | ❌ | ✅ Distance/Angle/Radius + Annotation | 无 |
 | 爆炸视图 | ❌ | ✅ | ❌ 需手动 | ✅ ExplodedViewNode | 无 |
 | 撤销/重做 | ✅ SoUndoManager | ✅ | ❌ | ✅ editor undo stack | 无 |
@@ -148,16 +145,16 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 |------|--------|-------|----------|------------|------|
 | 透视相机 | ✅ | ✅ | ✅ | ✅ | 无 |
 | 正交相机 | ✅ | ✅ | ✅ | ✅ | 无 |
-| 立体渲染 (Stereo) | ✅ SoStereoViewer | ✅ | ✅ StereoEffect | ⚠️ StereoCameraNode 存在 | **Partial** |
+| 立体渲染 (Stereo) | ✅ SoStereoViewer | ✅ | ✅ StereoEffect | ✅ StereoCameraNode 双目 tile | **Done** |
 | 多视口 | ✅ SoAnnotation | ✅ | ✅ Scissor | ❌ | **缺失** |
 | Fit All / Fit Selection | ✅ viewAll() | ✅ | ✅ fitToBox | ✅ | 无 |
 | 截图输出 | ✅ | ✅ | ✅ toDataURL | ⚠️ 有 offscreen 但未暴露 API | **Partial** |
-| 动画/关键帧 | ✅ SoElapsedTime | ✅ | ✅ AnimationMixer | ⚠️ 有 skeleton 但缺关键帧系统 | **Partial** |
+| 动画/关键帧 | ✅ SoElapsedTime | ✅ | ✅ AnimationMixer | ✅ ObjectTrack + JointTrack | **Done** |
 
 **仍缺失**：
 1. **多视口** — 前/侧/顶/等轴四视图是 CAD 标配
-2. **立体渲染** — StereoCameraNode 存在但渲染路径未完整
-3. **关键帧动画系统** — 当前只有骨骼动画，缺关键帧插值
+
+物体轨道关键帧已由 `AnimationClip.object_tracks` + `AnimationMixer` 覆盖（CAD 装配）；骨骼 FBX 蒙皮仍见 industrial-viz §九。
 
 ---
 
@@ -167,14 +164,14 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 |--------|------|------|------|
 | ~~P0~~ | ~~剖面帽面填充~~ | ~~工业场景看内部结构~~ | ✅ 已实现 |
 | ~~P0~~ | ~~3D 文本渲染~~ | ~~标注/PMI 基础~~ | ✅ 已实现 |
-| **P1** | OIT (WBOIT) | 多层半透明装配体画家算法可能失败 | 待实现 |
+| **P1** | OIT (WBOIT) | 多层半透明装配体画家算法可能失败 | LDR/HDR 默认 WBOIT |
 | **P1** | 多光源 Omni 阴影 | 多点光源室内场景 | 待实现 |
-| **P2** | 多视口 | CAD 四视图 | 待实现 |
+| **P2** | 多视口 | CAD 四视图 | `apply_standard_quad_views` |
 | **P2** | 材质覆盖系统 | 批量检查用 | 待实现 |
 | **P2** | NURBS 渲染集成 | 数学库已有，接入即可 | 待实现 |
 | **P2** | 关键帧动画 | 非核心但有价值 | 待实现 |
 | **P3** | 剖面线 (Hatching) | 工程制图传统 | 待实现 |
-| **P3** | 立体渲染 | VR/AR 工程展示 | 待实现 |
+| **P3** | 立体渲染 | VR/AR 工程展示 | ✅ SBS / TB / anaglyph |
 | **P3** | PMI | 高级工业需求 | 待实现 |
 
 ---
@@ -200,6 +197,6 @@ rustcoin3d 的 **GPU 渲染管线**和**工业可视化功能层**均已达到�
 
 经深入代码验证，rustcoin3d 的工业可视化功能覆盖度远超初版评估。**剖面帽面、3D 文本、标注系统、Gizmo、测量工具、点光阴影、爆炸视图、Undo/Redo** 均已完整实现。
 
-真正剩余的 P1 缺口仅为 **WBOIT**（多层半透明排序）和**多光源 Omni 阴影**。P0 功能全部就绪。
+P1 的 WBOIT、多 Omni 阴影、透明投影已落地。平台受阻项仍是 wgpu 线宽。
 
 本次实施新增了 **TorusNode 基元体**和**透明 Pass 接线**，进一步补齐了功能缺口。

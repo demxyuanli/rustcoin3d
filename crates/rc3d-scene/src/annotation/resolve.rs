@@ -2,12 +2,12 @@
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
-use crate::node_data::{AnnotationElement, NodeData};
+use crate::node_data::AnnotationElement;
 use crate::SceneGraph;
 
 use super::point::AnnotationPoint;
 
-/// Direct child `Transform` matrices multiplied (Coin3D group + child `Transform` pattern).
+/// Direct child `Transform` / `Rotation` matrices multiplied (Coin3D group + child property pattern).
 fn direct_child_transforms(graph: &SceneGraph, node: NodeId) -> Mat4 {
     let mut m = Mat4::IDENTITY;
     let Some(entry) = graph.get(node) else {
@@ -15,15 +15,15 @@ fn direct_child_transforms(graph: &SceneGraph, node: NodeId) -> Mat4 {
     };
     for &child in &entry.children {
         if let Some(ce) = graph.get(child) {
-            if let NodeData::Transform(t) = &ce.data {
-                m *= t.to_matrix();
+            if let Some(lm) = ce.data.local_matrix() {
+                m *= lm;
             }
         }
     }
     m
 }
 
-/// World transform of `node` (ancestor `Transform` chain, plus direct child transforms for groups).
+/// World transform of `node` (ancestor transform chain, plus direct child transforms for groups).
 pub fn node_world_matrix(graph: &SceneGraph, target: NodeId) -> Option<Mat4> {
     fn dfs(
         graph: &SceneGraph,
@@ -33,11 +33,11 @@ pub fn node_world_matrix(graph: &SceneGraph, target: NodeId) -> Option<Mat4> {
     ) -> Option<Option<Mat4>> {
         let entry = graph.get(node)?;
         let mut m = cur;
-        if let NodeData::Transform(t) = &entry.data {
-            m *= t.to_matrix();
+        if let Some(lm) = entry.data.local_matrix() {
+            m *= lm;
         }
         if node == target {
-            let frame = if matches!(entry.data, NodeData::Transform(_)) {
+            let frame = if entry.data.local_matrix().is_some() {
                 m
             } else {
                 m * direct_child_transforms(graph, node)
@@ -519,7 +519,7 @@ pub fn resolve_element(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_data::{AnnotationLabelMode, SeparatorNode, TransformNode};
+    use crate::node_data::{AnnotationLabelMode, NodeData, SeparatorNode, TransformNode};
 
     #[test]
     fn effective_model_includes_transform_translation() {

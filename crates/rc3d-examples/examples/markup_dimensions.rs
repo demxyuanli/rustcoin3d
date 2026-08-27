@@ -71,6 +71,7 @@ fn main() {
                     },
                 ],
                 visible: true,
+                pmi: Vec::new(),
             }),
         );
 
@@ -93,6 +94,7 @@ fn main() {
                     color: [1.0, 0.8, 0.0, 1.0],
                 }],
                 visible: true,
+                pmi: Vec::new(),
             }),
         );
 
@@ -148,6 +150,7 @@ fn main() {
                     AnnotationElement::leader([0.0, 0.0, 1.0], [-40.0, -20.0], "球体", [0.0, 0.7, 0.3, 1.0]),
                 ],
                 visible: true,
+                pmi: Vec::new(),
             }),
         );
 
@@ -192,6 +195,7 @@ fn main() {
                     },
                 ],
                 visible: true,
+                pmi: Vec::new(),
             }),
         );
 
@@ -201,6 +205,7 @@ fn main() {
             from: Vec3::new(cube_x, -0.35, 0.0),
             to: Vec3::new(cube_x, 0.35, 0.0),
             period_secs: 2.5,
+            last_position: Vec3::new(cube_x, -0.35, 0.0),
         });
         engine.world_mut().engines = Some(engines);
 

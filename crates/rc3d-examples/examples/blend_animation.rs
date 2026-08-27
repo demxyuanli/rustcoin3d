@@ -57,8 +57,8 @@ fn main() {
             bind_transform: Mat4::IDENTITY,
             inverse_bind_matrix: Mat4::IDENTITY,
         }]);
-        let idle = AnimationClip { name: "idle".into(), duration: 1.0, tracks: vec![] };
-        let walk = AnimationClip { name: "walk".into(), duration: 0.5, tracks: vec![] };
+        let idle = AnimationClip { name: "idle".into(), duration: 1.0, ..Default::default() };
+        let walk = AnimationClip { name: "walk".into(), duration: 0.5, ..Default::default() };
         let blend = BlendNode::Blend {
             left: Box::new(BlendNode::Clip { clip: idle, speed: 1.0, start_time: 0.0 }),
             right: Box::new(BlendNode::Clip { clip: walk, speed: 1.0, start_time: 0.0 }),

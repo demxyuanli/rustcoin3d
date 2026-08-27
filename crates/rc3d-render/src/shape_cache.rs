@@ -48,6 +48,16 @@ pub enum ShapeKey {
         tex_len: u32,
         normal_len: u32,
     },
+    BatchedMesh {
+        node: u64,
+        vert_len: u32,
+        index_len: u32,
+        content_hash: u64,
+    },
+    Quad {
+        w: u32,
+        h: u32,
+    },
 }
 
 /// Cached shape data tuple:

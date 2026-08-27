@@ -1,7 +1,10 @@
 //! Camera types.
 
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_scene::node_data::{NodeData, OrthographicCameraNode, PerspectiveCameraNode};
+use rc3d_scene::node_data::{
+    CubeCameraNode, NodeData, OrthographicCameraNode, PerspectiveCameraNode, StereoCameraNode,
+};
+pub use rc3d_scene::node_data::StereoMode;
 
 /// Perspective camera with position, orientation, and projection parameters.
 #[derive(Clone, Debug)]
@@ -102,6 +105,102 @@ impl OrthographicCamera {
             far: self.far,
             aspect: self.aspect,
             reverse_depth: self.reverse_depth,
+        })
+    }
+}
+
+/// Local reflection probe: captures six 90-degree faces from `position` into a cubemap
+/// that replaces the global IBL environment (three.js CubeCamera analog).
+#[derive(Clone, Debug)]
+pub struct CubeCamera {
+    pub position: Vec3,
+    pub near: f32,
+    pub far: f32,
+    pub resolution: u32,
+    pub update_period: u32,
+    pub enabled: bool,
+}
+
+impl Default for CubeCamera {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            near: 0.1,
+            far: 100.0,
+            resolution: 128,
+            update_period: 0,
+            enabled: true,
+        }
+    }
+}
+
+impl CubeCamera {
+    pub fn at(position: Vec3) -> Self {
+        Self { position, ..Default::default() }
+    }
+
+    pub fn near(mut self, v: f32) -> Self { self.near = v; self }
+    pub fn far(mut self, v: f32) -> Self { self.far = v; self }
+    pub fn resolution(mut self, v: u32) -> Self { self.resolution = v; self }
+    pub fn update_period(mut self, v: u32) -> Self { self.update_period = v; self }
+
+    pub(crate) fn to_node(&self) -> NodeData {
+        NodeData::CubeCamera(CubeCameraNode {
+            position: self.position,
+            near: self.near,
+            far: self.far,
+            resolution: self.resolution,
+            update_period: self.update_period,
+            enabled: self.enabled,
+        })
+    }
+}
+
+/// Stereo helper (three.js StereoCamera / StereoEffect analog).
+/// Renders left/right eyes from the scene's perspective camera.
+#[derive(Clone, Debug)]
+pub struct StereoCamera {
+    pub interocular_distance: f32,
+    pub convergence_distance: f32,
+    pub mode: StereoMode,
+}
+
+impl Default for StereoCamera {
+    fn default() -> Self {
+        Self {
+            interocular_distance: 0.065,
+            convergence_distance: 2.0,
+            mode: StereoMode::SideBySide,
+        }
+    }
+}
+
+impl StereoCamera {
+    pub fn side_by_side() -> Self {
+        Self::default()
+    }
+
+    pub fn interocular(mut self, meters: f32) -> Self {
+        self.interocular_distance = meters;
+        self
+    }
+
+    pub fn convergence(mut self, meters: f32) -> Self {
+        self.convergence_distance = meters;
+        self
+    }
+
+    pub fn mode(mut self, mode: StereoMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub(crate) fn to_node(&self, base_camera: rc3d_core::NodeId) -> NodeData {
+        NodeData::StereoCamera(StereoCameraNode {
+            base_camera,
+            interocular_distance: self.interocular_distance,
+            convergence_distance: self.convergence_distance,
+            mode: self.mode,
         })
     }
 }

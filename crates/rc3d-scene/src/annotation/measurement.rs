@@ -42,6 +42,7 @@ pub fn world_distance_annotation(
             color,
         }],
         visible: true,
+        pmi: Vec::new(),
     }
 }
 
@@ -66,6 +67,7 @@ pub fn world_angle_annotation(
             color,
         }],
         visible: true,
+        pmi: Vec::new(),
     }
 }
 
@@ -87,6 +89,7 @@ pub fn world_radius_annotation(
             color,
         }],
         visible: true,
+        pmi: Vec::new(),
     }
 }
 
@@ -110,5 +113,6 @@ pub fn world_diameter_annotation(
             color,
         }],
         visible: true,
+        pmi: Vec::new(),
     }
 }

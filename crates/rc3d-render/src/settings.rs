@@ -63,6 +63,9 @@ pub struct DisplaySettings {
     pub outline_width: f32,
     pub outline_color: [f32; 4],
     pub xray_mode: bool,
+    /// HOOPS Isolate/Ghost: unselected filled geometry becomes translucent.
+    pub ghost_unselected: bool,
+    pub ghost_opacity: f32,
     pub vsync_enabled: bool,
     pub screen_space_selection_outline: bool,
 }
@@ -102,6 +105,8 @@ impl Default for DisplaySettings {
             outline_width: 1.0,
             outline_color: [1.0, 0.5, 0.0, 1.0],
             xray_mode: false,
+            ghost_unselected: false,
+            ghost_opacity: crate::render_action::GHOST_UNSELECTED_OPACITY,
             vsync_enabled: true,
             screen_space_selection_outline: true,
         }

@@ -104,3 +104,76 @@ impl Default for AreaLightNode {
         }
     }
 }
+
+/// Hemisphere (sky/ground) ambient light. Indirect diffuse only; no shadows.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HemisphereLightNode {
+    pub sky_color: Vec3,
+    pub ground_color: Vec3,
+    pub intensity: f32,
+    /// Sky / up direction (world space).
+    pub direction: Vec3,
+}
+
+    impl Default for HemisphereLightNode {
+    fn default() -> Self {
+        Self {
+            sky_color: Vec3::new(0.4, 0.6, 1.0),
+            ground_color: Vec3::new(0.4, 0.25, 0.1),
+            intensity: 1.0,
+            direction: Vec3::Y,
+        }
+    }
+}
+
+/// L2 spherical-harmonic irradiance probe (three.js `LightProbe`).
+///
+/// Band order matches three.js `SphericalHarmonics3` / `shGetIrradianceAt`:
+/// `[L00, L1-1 (y), L10 (z), L11 (x), L2-2 (xy), L2-1 (yz), L20, L21 (xz), L22]`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LightProbeNode {
+    pub sh: [[f32; 3]; 9],
+    pub intensity: f32,
+}
+
+impl Default for LightProbeNode {
+    fn default() -> Self {
+        Self {
+            sh: [[0.0; 3]; 9],
+            intensity: 1.0,
+        }
+    }
+}
+
+impl LightProbeNode {
+    pub fn from_sh(sh: [[f32; 3]; 9], intensity: f32) -> Self {
+        Self { sh, intensity }
+    }
+
+    /// Constant ambient: L0 = `color * 2 * sqrt(PI)` so irradiance recovers `PI * color`.
+    pub fn from_ambient(color: Vec3, intensity: f32) -> Self {
+        let s = 2.0 * std::f32::consts::PI.sqrt();
+        let mut sh = [[0.0f32; 3]; 9];
+        sh[0] = (color * s).to_array();
+        Self { sh, intensity }
+    }
+
+    /// Y-up sky/ground projected onto L0 + L1 (three.js band order).
+    pub fn from_hemisphere(sky: Vec3, ground: Vec3, intensity: f32) -> Self {
+        let pi = std::f32::consts::PI;
+        let l0 = (sky + ground) * pi.sqrt();
+        let l1y = (sky - ground) * (0.488603 * pi);
+        let mut sh = [[0.0f32; 3]; 9];
+        sh[0] = l0.to_array();
+        sh[1] = l1y.to_array();
+        Self { sh, intensity }
+    }
+
+    pub fn packed_sh_l2(&self) -> [[f32; 4]; 9] {
+        let mut out = [[0.0f32; 4]; 9];
+        for i in 0..9 {
+            out[i] = [self.sh[i][0], self.sh[i][1], self.sh[i][2], 0.0];
+        }
+        out
+    }
+}

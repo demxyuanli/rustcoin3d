@@ -1,8 +1,6 @@
 //! Gizmo: resolve transform targets, pick rays, and apply translate deltas from `rc3d_gizmo`.
 
 use rc3d_core::math::Mat4;
-use rc3d_core::NodeId;
-use rc3d_gizmo::Gizmo;
 #[cfg(test)]
 use rc3d_gizmo::GizmoMode;
 use rc3d_render::viewport::{ProjectionType, Viewport};
@@ -11,34 +9,7 @@ use rc3d_scene::SceneGraph;
 
 use rc3d_engine_api::ViewportCamera;
 
-/// Pick the transform node to drive the gizmo: prefer a selected `Transform`, else a transform ancestor.
-pub fn find_transform_for_selection(graph: &SceneGraph) -> Option<NodeId> {
-    for &id in graph.selected_nodes() {
-        if let Some(e) = graph.get(id) {
-            if matches!(e.data, NodeData::Transform(_)) {
-                return Some(id);
-            }
-        }
-    }
-    for &id in graph.selected_nodes() {
-        let mut cur = id;
-        while let Some(p) = graph.get(cur).and_then(|e| e.parent) {
-            if let Some(e) = graph.get(p) {
-                if matches!(e.data, NodeData::Transform(_)) {
-                    return Some(p);
-                }
-            }
-            cur = p;
-        }
-    }
-    None
-}
-
-/// Syncs [`Gizmo::target_node`] and [`Gizmo::update_target`].
-pub fn sync_gizmo_from_selection(gizmo: &mut Gizmo, graph: &SceneGraph) {
-    gizmo.target_node = find_transform_for_selection(graph);
-    gizmo.update_target(graph);
-}
+pub use rc3d_engine_api::{find_transform_for_selection, sync_gizmo_from_selection};
 
 /// World view + projection for picking in the active viewport, preferring scene graph camera node data.
 pub fn pick_view_proj(graph: &SceneGraph, vc: &ViewportCamera, vport: &Viewport) -> (Mat4, Mat4) {

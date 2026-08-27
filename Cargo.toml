@@ -47,6 +47,8 @@ rayon = "1.10"
 tracy-client = { version = "0.18", default-features = false }
 glyphon = "0.8"
 meshopt = "0.6"
+draco-core = "1.2"
+basisu = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "exr"] }
 rhai = { version = "1", features = ["f32_float"] }
 

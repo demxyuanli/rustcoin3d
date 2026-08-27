@@ -1,6 +1,7 @@
 use wgpu::util::DeviceExt;
 
 use super::collect::{DecalDrawCommand, PointCloudDrawCommand, VolumeDrawCommand};
+use crate::gpu_particles::GpuParticleSim;
 
 /// Decal projection pipeline resources.
 pub struct DecalPass {
@@ -305,6 +306,7 @@ impl VolumePass {
 pub struct PointCloudPass {
     pub bgl: wgpu::BindGroupLayout,
     pub pipeline: wgpu::RenderPipeline,
+    pub sim: GpuParticleSim,
 }
 
 impl PointCloudPass {
@@ -327,30 +329,38 @@ impl PointCloudPass {
             label: Some("PointCloud"), layout: Some(&layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::PointList, ..Default::default() },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::LessEqual, stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
             multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
             multiview: None, cache: None,
         });
-        Self { bgl, pipeline }
+        Self { bgl, pipeline, sim: GpuParticleSim::new(device) }
     }
 
     pub fn encode(
-        &self,
+        &mut self,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         shade_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
         commands: &[PointCloudDrawCommand],
-        projection: glam::Mat4,
+        view_proj: glam::Mat4,
         _inv_projection: glam::Mat4,
-        _viewport_w: u32,
-        _viewport_h: u32,
+        viewport_w: u32,
+        viewport_h: u32,
     ) {
         if commands.is_empty() {
             return;
         }
+
+        let (dt, time) = self.sim.tick_dt();
+        for cmd in commands {
+            if let Some(ref emitter) = cmd.emitter {
+                self.sim.update(device, queue, encoder, cmd.sim_key, emitter, dt, time);
+            }
+        }
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("PointCloud Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -369,42 +379,78 @@ impl PointCloudPass {
         pass.set_pipeline(&self.pipeline);
 
         for cmd in commands {
-            if cmd.file_path.is_empty() || cmd.max_visible_points == 0 {
+            let gpu_sim = cmd.emitter.is_some();
+            if !gpu_sim && cmd.points.is_empty() {
                 continue;
             }
-            let mvp = projection * cmd.model_matrix;
-            let mut uniform_data = Vec::<f32>::with_capacity(40);
-            let m = mvp.to_cols_array_2d();
-            for row in &m { uniform_data.extend_from_slice(row); }
-            let model_m = cmd.model_matrix.to_cols_array_2d();
-            for row in &model_m { uniform_data.extend_from_slice(row); }
-            uniform_data.extend_from_slice(&[cmd.point_size, 0.0, 0.0, 0.0]);
-            uniform_data.extend_from_slice(&[cmd.color[0], cmd.color[1], cmd.color[2], cmd.color[3]]);
+            let mvp = view_proj * cmd.model_matrix;
+            let uniforms = PointCloudUniforms {
+                mvp: mvp.to_cols_array_2d(),
+                view: view_proj.to_cols_array_2d(),
+                point_size: cmd.point_size.max(1.0),
+                viewport_x: viewport_w.max(1) as f32,
+                viewport_y: viewport_h.max(1) as f32,
+                _pad: 0.0,
+            };
             let ub = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("PC uniforms"),
-                contents: bytemuck::cast_slice(&uniform_data),
+                contents: bytemuck::bytes_of(&uniforms),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-            // Placeholder point buffer: fill with zero (real impl loads from cmd.file_path)
-            let point_buf_size = (cmd.max_visible_points as u64).min(16384) * 16; // Point: xyz rgba (16B)
-            let point_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("PC points"),
-                size: point_buf_size.max(64),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("PointCloud BG"),
-                layout: &self.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: point_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(
-                        wgpu::BufferBinding { buffer: &ub, offset: 0, size: None }
-                    ) },
-                ],
-            });
-            pass.set_bind_group(0, &bg, &[]);
-            pass.draw(0..(cmd.max_visible_points.min(16384)), 0..1);
+
+            if gpu_sim {
+                let Some((particle_buf, count)) = self.sim.buffer(cmd.sim_key) else {
+                    continue;
+                };
+                if count == 0 {
+                    continue;
+                }
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("PointCloud BG"),
+                    layout: &self.bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: particle_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(
+                            wgpu::BufferBinding { buffer: &ub, offset: 0, size: None }
+                        ) },
+                    ],
+                });
+                pass.set_bind_group(0, &bg, &[]);
+                pass.draw(0..(count * 6), 0..1);
+            } else {
+                let count = cmd.points.len().min(cmd.max_visible_points as usize) as u32;
+                if count == 0 {
+                    continue;
+                }
+                let point_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("PC points"),
+                    contents: bytemuck::cast_slice(&cmd.points[..count as usize]),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                });
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("PointCloud BG"),
+                    layout: &self.bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: point_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(
+                            wgpu::BufferBinding { buffer: &ub, offset: 0, size: None }
+                        ) },
+                    ],
+                });
+                pass.set_bind_group(0, &bg, &[]);
+                pass.draw(0..(count * 6), 0..1);
+            }
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PointCloudUniforms {
+    mvp: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
+    point_size: f32,
+    viewport_x: f32,
+    viewport_y: f32,
+    _pad: f32,
 }

@@ -73,7 +73,7 @@ impl ViewportBorderGeometry {
 }
 
 /// Encode viewport split borders and active-viewport highlight.
-pub(super) fn encode_viewport_borders(
+pub(crate) fn encode_viewport_borders(
     renderer: &mut crate::renderer::Renderer,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
@@ -116,6 +116,7 @@ pub(super) fn encode_viewport_borders(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             for chunk in geom.split_lines.chunks(2) {
@@ -140,6 +141,7 @@ pub(super) fn encode_viewport_borders(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             for chunk in geom.active_lines.chunks(2) {

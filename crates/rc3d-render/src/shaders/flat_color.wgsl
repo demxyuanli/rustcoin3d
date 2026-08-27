@@ -76,6 +76,28 @@ fn fs_line_main() -> @location(0) vec4<f32> {
     return u.color;
 }
 
+struct LineHiddenOut {
+    @builtin(position) pos: vec4<f32>,
+}
+
+@vertex
+fn vs_line_hidden(in: LineVertexInput) -> LineHiddenOut {
+    var out: LineHiddenOut;
+    out.pos = u.mvp * vec4<f32>(in.position, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_line_hidden(in: LineHiddenOut) -> @location(0) vec4<f32> {
+    let period = 10.0;
+    let duty = 0.55;
+    let t = fract((in.pos.x + in.pos.y) / period);
+    if t > duty {
+        discard;
+    }
+    return u.color;
+}
+
 // ── Colored markup lines: vertex color → fragment ──
 
 @vertex

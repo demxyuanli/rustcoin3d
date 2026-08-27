@@ -1,6 +1,6 @@
 //! PBR Shader Variant Viewer — demonstrates per-material shader specialization.
 //!
-//! Displays 8 material configurations side by side, exercising different
+//! Displays 10 material configurations side by side, exercising different
 //! PbrFeatures combinations. The PbrVariantCache compiles and caches up to
 //! 16 specialized shader variants at runtime.
 //!
@@ -13,6 +13,8 @@
 //!   6. Transparent (alpha blend)      — IS_TRANSPARENT
 //!   7. Emissive-only                  — HAS_EMISSIVE_TEX
 //!   8. Metallic-only (no albedo tex)  — HAS_MR_TEX only
+//!   9. Sheen velvet                   — HAS_SHEEN
+//!  10. Anisotropic metal              — GGX anisotropy
 //!
 //! Keys:
 //!   V: Print shader variant stats
@@ -41,10 +43,10 @@ fn main() {
     println!("PBR Shader Variant Viewer");
     println!("Usage: cargo run -p rc3d-examples --example pbr_variant_viewer");
     println!("Keys: V print variants | Esc clears selection");
-    println!("Demonstrates 8 material types exercising different PbrFeatures combinations.");
+    println!("Demonstrates 10 material types exercising different PbrFeatures combinations.");
 
     let state = Arc::new(Mutex::new(VariantState {
-        active_variants: 8,
+        active_variants: 10,
         frame_time_ms: 16.6,
     }));
 
@@ -75,6 +77,9 @@ fn main() {
                 "  6. Transparent       — IS_TRANSPARENT".to_string(),
                 "  7. Emissive-only     — HAS_EMISSIVE_TEX".to_string(),
                 "  8. Metallic-only     — HAS_MR_TEX (no albedo)".to_string(),
+                "  9. Sheen velvet      — HAS_SHEEN".to_string(),
+                " 10. Aniso metal       — GGX anisotropy".to_string(),
+                "  Chrome sphere (front) uses CubeCamera local IBL probe".to_string(),
                 "".to_string(),
                 "[V] Print variant info  [Esc] Clear selection".to_string(),
             ];
@@ -127,7 +132,7 @@ fn build_variant_scene() -> SceneGraph {
     );
 
     // 8 spheres in a row, each with a different material configuration
-    let configs: [(&str, fn(&mut MaterialNode)); 8] = [
+    let configs: [(&str, fn(&mut MaterialNode)); 10] = [
         ("Pure color", |m| {
             m.base_color = Vec3::new(0.8, 0.2, 0.2);
             m.metallic = 0.2;
@@ -167,8 +172,10 @@ fn build_variant_scene() -> SceneGraph {
             m.base_color = Vec3::new(0.3, 0.8, 0.8);
             m.opacity = 0.5;
             m.alpha_mode = rc3d_scene::AlphaMode::Blend;
-            m.metallic = 0.3;
-            m.roughness = 0.2;
+            m.metallic = 0.0;
+            m.roughness = 0.08;
+            m.transmission_factor = 0.9;
+            m.ior = 1.5;
         }),
         ("Emissive-only", |m| {
             m.base_color = Vec3::new(0.1, 0.1, 0.1);
@@ -183,10 +190,23 @@ fn build_variant_scene() -> SceneGraph {
             m.metallic = 0.95;
             m.roughness = 0.15;
         }),
+        ("Sheen velvet", |m| {
+            m.base_color = Vec3::new(0.15, 0.08, 0.22);
+            m.metallic = 0.0;
+            m.roughness = 0.85;
+            m.sheen_color = Vec3::new(0.9, 0.75, 0.95);
+            m.sheen_roughness = 0.35;
+        }),
+        ("Aniso metal", |m| {
+            m.base_color = Vec3::new(0.82, 0.78, 0.72);
+            m.metallic = 1.0;
+            m.roughness = 0.22;
+            m.anisotropic = 0.85;
+        }),
     ];
 
     for (i, (label, configure)) in configs.iter().enumerate() {
-        let x = (i as f32 - 3.5) * 2.0;
+        let x = (i as f32 - 4.5) * 1.7;
         let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
         graph.add_child(
             sep,
@@ -266,11 +286,103 @@ fn build_variant_scene() -> SceneGraph {
     graph.add_child(
         floor,
         NodeData::Cube(CubeNode {
-            width: 20.0,
+            width: 24.0,
             height: 0.1,
-            depth: 3.0,
+            depth: 10.0,
+        }),
+    );
+
+    add_colored_box(
+        &mut graph,
+        root,
+        Vec3::new(0.0, 2.0, -4.5),
+        (24.0, 8.0, 0.12),
+        Vec3::new(0.85, 0.22, 0.18),
+    );
+    add_colored_box(
+        &mut graph,
+        root,
+        Vec3::new(-11.5, 2.0, 0.0),
+        (0.12, 8.0, 10.0),
+        Vec3::new(0.18, 0.72, 0.32),
+    );
+    add_colored_box(
+        &mut graph,
+        root,
+        Vec3::new(11.5, 2.0, 0.0),
+        (0.12, 8.0, 10.0),
+        Vec3::new(0.18, 0.35, 0.85),
+    );
+    add_colored_box(
+        &mut graph,
+        root,
+        Vec3::new(0.0, 5.9, 0.0),
+        (24.0, 0.12, 10.0),
+        Vec3::new(0.92, 0.82, 0.28),
+    );
+
+    let probe_pos = Vec3::new(0.0, 0.15, 2.6);
+    let chrome = graph.add_child(root, NodeData::Separator(SeparatorNode));
+    graph.add_child(
+        chrome,
+        NodeData::Transform(TransformNode::from_translation(probe_pos)),
+    );
+    graph.add_child(
+        chrome,
+        NodeData::Material(MaterialNode {
+            base_color: Vec3::new(0.96, 0.96, 0.98),
+            diffuse_color: Vec3::new(0.96, 0.96, 0.98),
+            metallic: 1.0,
+            roughness: 0.06,
+            opacity: 1.0,
+            ..Default::default()
+        }),
+    );
+    graph.add_child(chrome, NodeData::Sphere(SphereNode { radius: 0.55 }));
+    graph.add_child(
+        root,
+        NodeData::CubeCamera(CubeCameraNode {
+            position: probe_pos,
+            near: 0.35,
+            far: 40.0,
+            resolution: 128,
+            update_period: 0,
+            enabled: true,
         }),
     );
 
     graph
+}
+
+fn add_colored_box(
+    graph: &mut SceneGraph,
+    parent: rc3d_core::NodeId,
+    translation: Vec3,
+    size: (f32, f32, f32),
+    color: Vec3,
+) {
+    let sep = graph.add_child(parent, NodeData::Separator(SeparatorNode));
+    graph.add_child(
+        sep,
+        NodeData::Transform(TransformNode::from_translation(translation)),
+    );
+    graph.add_child(
+        sep,
+        NodeData::Material(MaterialNode {
+            base_color: color,
+            diffuse_color: color,
+            metallic: 0.0,
+            roughness: 0.85,
+            opacity: 1.0,
+            ..Default::default()
+        }),
+    );
+    graph.add_child(
+        sep,
+        NodeData::Cube(CubeNode {
+            width: size.0,
+            height: size.1,
+            depth: size.2,
+        }),
+    );
 }

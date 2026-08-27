@@ -75,6 +75,13 @@ pub(super) fn build_ui(
                     push(EditorCommand::SetDisplayMode(EditorDisplayMode::FlatWithEdge));
                 }
                 ui.separator();
+                ui.label("Visual style");
+                for name in rc3d_core::VisualStyleLibrary::builtin().names() {
+                    if ui.button(name).clicked() {
+                        push(EditorCommand::ApplyVisualStyle(name.to_string()));
+                    }
+                }
+                ui.separator();
                 ui.label("Display toggles");
                 let mut grid = ui_ctx.grid_enabled;
                 if ui.checkbox(&mut grid, "Grid  (N)").changed() {
@@ -87,6 +94,14 @@ pub(super) fn build_ui(
                 let mut xray = ui_ctx.xray_mode;
                 if ui.checkbox(&mut xray, "X-ray").changed() {
                     push(EditorCommand::SetXrayMode(xray));
+                }
+                let mut ghost = ui_ctx.ghost_unselected;
+                if ui.checkbox(&mut ghost, "Ghost unselected").changed() {
+                    push(EditorCommand::SetGhostUnselected(ghost));
+                }
+                let mut wboit = ui_ctx.wboit_enabled;
+                if ui.checkbox(&mut wboit, "WBOIT (OIT)").changed() {
+                    push(EditorCommand::SetWboit(wboit));
                 }
                 ui.separator();
                 ui.label("Render features");
@@ -432,8 +447,12 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         | NodeData::Decal(_)
         | NodeData::ExplodedView(_)
         | NodeData::ReflectionPlane(_) => "Group",
+        NodeData::CubeCamera(_) => "CubeCamera",
         NodeData::Billboard(_) => "Billboard",
+        NodeData::Sprite(_) => "Sprite",
         NodeData::Transform(_) => "Transform",
+        NodeData::Rotation(_) => "Rotation",
+        NodeData::RotationXYZ(_) => "RotXYZ",
         NodeData::Material(_) => "Material",
         NodeData::Triangle(_) => "Triangle",
         NodeData::Cube(_) => "Cube",
@@ -453,6 +472,8 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::DirectionalLight(_) => "DirLight",
         NodeData::PointLight(_) => "PointLight",
         NodeData::SpotLight(_) | NodeData::AreaLight(_) => "SpotLight",
+        NodeData::HemisphereLight(_) => "HemiLight",
+        NodeData::LightProbe(_) => "LightProbe",
         NodeData::HandlerNode(_) => "Handler",
         NodeData::EventCallback(_) => "EventCb",
         NodeData::PickStyle(_) => "PickStyle",
@@ -462,12 +483,16 @@ fn node_type_tag(data: &NodeData) -> &'static str {
         NodeData::SectionPlane(_) => "Section",
         NodeData::Text2(_) => "Text2",
         NodeData::Text3(_) => "Text3",
+        NodeData::Font(_) => "Font",
         NodeData::Measurement(_) => "Measure",
         NodeData::Markup(_) => "Markup",
         NodeData::Coordinate3(_) => "Coord3",
         NodeData::TextureCoordinate2(_) => "TexCoord2",
         NodeData::Normal(_) => "Normal",
         NodeData::InstancedMesh(_) => "InstancedMesh",
+        NodeData::BatchedMesh(_) => "BatchedMesh",
+        NodeData::TransformManip(_) => "TransformManip",
+        NodeData::Dragger(_) => "Dragger",
         NodeData::Custom(_, d) => d.type_name(),
     }
 }
@@ -485,6 +510,19 @@ fn inspector(
             ui.label(format!("scale {:?}", tf.scale));
             let q = Quat::from_mat4(&tf.rotation);
             ui.label(format!("rotation quat {:?}", (q.x, q.y, q.z, q.w)));
+        }
+        NodeData::Rotation(r) => {
+            ui.label(format!("axis {:?}", r.axis));
+            ui.label(format!("angle {}", r.angle));
+        }
+        NodeData::RotationXYZ(r) => {
+            ui.label(format!("axis {:?}", r.axis));
+            ui.label(format!("angle {}", r.angle));
+        }
+        NodeData::Font(f) => {
+            ui.label(format!("name {}", f.name));
+            ui.label(format!("size {}", f.size));
+            ui.label(format!("style {:?}", f.style));
         }
         NodeData::Material(m) => {
             let mut c = m.base_color.to_array();
@@ -691,6 +729,9 @@ fn inspector(
 
     let mut vis = match data {
         NodeData::Transform(_)
+        | NodeData::Rotation(_)
+        | NodeData::RotationXYZ(_)
+        | NodeData::Font(_)
         | NodeData::Group(_)
         | NodeData::Environment(_)
         | NodeData::ShapeHints(_)
@@ -762,6 +803,14 @@ fn render_panel(ui: &mut egui::Ui, ui_ctx: &EditorUiContext, push: &mut impl FnM
     let mut xray = ui_ctx.xray_mode;
     if ui.checkbox(&mut xray, "X-ray").changed() {
         push(EditorCommand::SetXrayMode(xray));
+    }
+    let mut ghost = ui_ctx.ghost_unselected;
+    if ui.checkbox(&mut ghost, "Ghost unselected").changed() {
+        push(EditorCommand::SetGhostUnselected(ghost));
+    }
+    let mut wboit = ui_ctx.wboit_enabled;
+    if ui.checkbox(&mut wboit, "WBOIT (OIT)").changed() {
+        push(EditorCommand::SetWboit(wboit));
     }
 
     ui.label("IBL preset");

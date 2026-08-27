@@ -154,9 +154,15 @@ impl HudRenderer {
     pub fn prepare_positioned_texts(&mut self) {
         self.positioned_buffers.clear();
         for cmd in &self.positioned_texts {
+            crate::font_loader::ensure_named_font(&mut self.font_system, &cmd.font_name);
             let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
             buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
-            buf.set_text(&mut self.font_system, &cmd.string, self.label_attrs, Shaping::Advanced);
+            buf.set_text(
+                &mut self.font_system,
+                &cmd.string,
+                crate::font_loader::attrs_from_font(&cmd.font_name, cmd.font_style),
+                Shaping::Advanced,
+            );
             buf.shape_until_scroll(&mut self.font_system, false);
             self.positioned_buffers.push(buf);
         }

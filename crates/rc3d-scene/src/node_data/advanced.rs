@@ -42,15 +42,41 @@ impl Default for VolumeNode {
 }
 
 /// Out-of-core point cloud reference (HOOPS OOC PointCloud equivalent).
+///
+/// Also hosts an optional CPU particle emitter (Three.js Points analogue):
+/// when `emitter` is set, `particles` is simulated each frame.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PointCloudNode {
     pub file_path: String,
     pub max_visible_points: u32,
     pub point_size: f32,
     pub color: [f32; 4],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub particles: Vec<crate::particle::Particle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emitter: Option<crate::particle::ParticleEmitter>,
 }
 impl Default for PointCloudNode {
     fn default() -> Self {
-        Self { file_path: String::new(), max_visible_points: 100000, point_size: 1.0, color: [1.0; 4] }
+        Self {
+            file_path: String::new(),
+            max_visible_points: 100000,
+            point_size: 1.0,
+            color: [1.0; 4],
+            particles: Vec::new(),
+            emitter: None,
+        }
+    }
+}
+
+impl PointCloudNode {
+    /// Point cloud driven by a particle emitter (Three.js Points + emitter).
+    pub fn with_emitter(emitter: crate::particle::ParticleEmitter) -> Self {
+        let max_visible_points = emitter.max_particles;
+        Self {
+            max_visible_points,
+            emitter: Some(emitter),
+            ..Default::default()
+        }
     }
 }

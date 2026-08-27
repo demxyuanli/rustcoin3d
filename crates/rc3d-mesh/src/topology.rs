@@ -308,19 +308,33 @@ impl TriangleMesh {
             .collect()
     }
 
-    /// Silhouette edges: where adjacent face normals have opposite facing relative to view direction.
-    pub fn silhouette_edges(&self, view_dir: Vec3) -> Vec<EdgeId> {
-        let mut result = Vec::new();
-        for (i, edge) in self.edges.iter().enumerate() {
-            if let (Some(f0), Some(f1)) = (edge.faces[0], edge.faces[1]) {
-                let n0 = self.faces[f0.0 as usize].normal;
-                let n1 = self.faces[f1.0 as usize].normal;
-                if n0.dot(view_dir) * n1.dot(view_dir) < 0.0 {
-                    result.push(EdgeId(i as u32));
+    /// View-dependent silhouette + boundary edges as a line-list of positions.
+    ///
+    /// `view_dir` is in mesh-local space (toward the camera). Adjacent faces that
+    /// disagree on front/back facing contribute the shared edge; open boundaries
+    /// are always included.
+    pub fn edge_line_positions_silhouette(&self, view_dir: Vec3) -> Vec<[f32; 3]> {
+        let mut positions = Vec::new();
+        for edge in &self.edges {
+            let p0 = self.positions[edge.vertices[0] as usize].to_array();
+            let p1 = self.positions[edge.vertices[1] as usize].to_array();
+            match (edge.faces[0], edge.faces[1]) {
+                (None, None) => {}
+                (Some(_), None) | (None, Some(_)) => {
+                    positions.push(p0);
+                    positions.push(p1);
+                }
+                (Some(a), Some(b)) => {
+                    let n0 = self.faces[a.0 as usize].normal;
+                    let n1 = self.faces[b.0 as usize].normal;
+                    if n0.dot(view_dir) * n1.dot(view_dir) < 0.0 {
+                        positions.push(p0);
+                        positions.push(p1);
+                    }
                 }
             }
         }
-        result
+        positions
     }
 
     /// Generate line-list indices from a set of edge IDs.
@@ -348,10 +362,66 @@ impl TriangleMesh {
     pub fn edge_line_positions(&self) -> Vec<[f32; 3]> {
         let mut positions = Vec::with_capacity(self.edges.len() * 2);
         for edge in &self.edges {
-            let p0 = self.positions[edge.vertices[0] as usize].to_array();
-            let p1 = self.positions[edge.vertices[1] as usize].to_array();
-            positions.push(p0);
-            positions.push(p1);
+            self.push_edge_line(edge, &mut positions);
+        }
+        positions
+    }
+
+    fn push_edge_line(&self, edge: &Edge, positions: &mut Vec<[f32; 3]>) {
+        let p0 = self.positions[edge.vertices[0] as usize].to_array();
+        let p1 = self.positions[edge.vertices[1] as usize].to_array();
+        positions.push(p0);
+        positions.push(p1);
+    }
+
+    fn interior_dihedral_cos(&self, edge: &Edge) -> Option<f32> {
+        match (edge.faces[0], edge.faces[1]) {
+            (Some(a), Some(b)) => {
+                let n0 = self.faces[a.0 as usize].normal;
+                let n1 = self.faces[b.0 as usize].normal;
+                Some(n0.dot(n1).clamp(-1.0, 1.0))
+            }
+            _ => None,
+        }
+    }
+
+    /// Boundary edges only (HOOPS perimeter).
+    pub fn edge_line_positions_perimeter(&self) -> Vec<[f32; 3]> {
+        let mut positions = Vec::new();
+        for edge in &self.edges {
+            if edge.faces[0].is_some() && edge.faces[1].is_none()
+                || edge.faces[0].is_none() && edge.faces[1].is_some()
+            {
+                self.push_edge_line(edge, &mut positions);
+            }
+        }
+        positions
+    }
+
+    /// Interior dihedral crease only (HOOPS hard). Open boundaries are omitted.
+    pub fn edge_line_positions_hard(&self, crease_angle_deg: f32) -> Vec<[f32; 3]> {
+        let cos_thresh = crease_angle_deg.to_radians().cos();
+        let mut positions = Vec::new();
+        for edge in &self.edges {
+            if let Some(d) = self.interior_dihedral_cos(edge) {
+                if d < cos_thresh {
+                    self.push_edge_line(edge, &mut positions);
+                }
+            }
+        }
+        positions
+    }
+
+    /// Interior non-crease edges (HOOPS adjacent / smooth).
+    pub fn edge_line_positions_adjacent(&self, crease_angle_deg: f32) -> Vec<[f32; 3]> {
+        let cos_thresh = crease_angle_deg.to_radians().cos();
+        let mut positions = Vec::new();
+        for edge in &self.edges {
+            if let Some(d) = self.interior_dihedral_cos(edge) {
+                if d >= cos_thresh {
+                    self.push_edge_line(edge, &mut positions);
+                }
+            }
         }
         positions
     }
@@ -362,26 +432,21 @@ impl TriangleMesh {
     /// Boundary + crease edges for static visualization (`ShadedWithEdges`), not full triangulation.
     ///
     /// Includes every **boundary** edge (one adjacent face) and **crease** edges where the dihedral
-    /// angle between face normals exceeds `crease_angle_deg`.
+    /// angle between face normals exceeds `crease_angle_deg` (HOOPS hard + perimeter).
     pub fn edge_line_positions_feature(&self, crease_angle_deg: f32) -> Vec<[f32; 3]> {
         let cos_thresh = crease_angle_deg.to_radians().cos();
         let mut positions = Vec::new();
         for edge in &self.edges {
-            let p0 = self.positions[edge.vertices[0] as usize].to_array();
-            let p1 = self.positions[edge.vertices[1] as usize].to_array();
             match (edge.faces[0], edge.faces[1]) {
                 (None, None) => {}
                 (Some(_), None) | (None, Some(_)) => {
-                    positions.push(p0);
-                    positions.push(p1);
+                    self.push_edge_line(edge, &mut positions);
                 }
-                (Some(a), Some(b)) => {
-                    let n0 = self.faces[a.0 as usize].normal;
-                    let n1 = self.faces[b.0 as usize].normal;
-                    let d = n0.dot(n1).clamp(-1.0, 1.0);
-                    if d < cos_thresh {
-                        positions.push(p0);
-                        positions.push(p1);
+                (Some(_), Some(_)) => {
+                    if let Some(d) = self.interior_dihedral_cos(edge) {
+                        if d < cos_thresh {
+                            self.push_edge_line(edge, &mut positions);
+                        }
                     }
                 }
             }

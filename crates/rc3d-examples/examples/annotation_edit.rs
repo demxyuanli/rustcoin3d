@@ -9,7 +9,7 @@
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
-use rc3d_engine_api::{CameraController, Engine};
+use rc3d_engine_api::{CameraController, Engine, EventRouteOpts};
 use rc3d_examples::common::run_app;
 use rc3d_scene::annotation::{AnnotationLabelMode, AnnotationPoint, AnnotationStyle};
 use rc3d_scene::node_data::*;
@@ -116,6 +116,7 @@ fn build_scene(graph: &mut SceneGraph) {
                 },
             ],
             visible: true,
+            pmi: Vec::new(),
         }),
     );
 }
@@ -124,7 +125,6 @@ struct AnnotationEditApp {
     engine: Option<Engine>,
     window: Option<winit::window::Window>,
     drag: Rc<RefCell<DragState>>,
-    cursor_prev: (f64, f64),
 }
 
 impl ApplicationHandler for AnnotationEditApp {
@@ -169,22 +169,29 @@ impl ApplicationHandler for AnnotationEditApp {
                 self.drag.borrow_mut().win_w = size.width;
                 self.drag.borrow_mut().win_h = size.height;
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                let cursor = (position.x, position.y);
-                let mut ds = self.drag.borrow_mut();
-                ds.cursor = cursor;
-
-                if ds.active.is_some() {
-                    update_drag_position(engine.scene_mut(), &mut ds);
-                    window.request_redraw();
-                } else {
-                    engine.controller.dispatch_window_event(
+            WindowEvent::CursorMoved { .. } => {
+                engine.feed_input(&event);
+                let cursor = engine.input.cursor_pos;
+                let dragging = {
+                    let mut ds = self.drag.borrow_mut();
+                    ds.cursor = cursor;
+                    let dragging = ds.active.is_some();
+                    if dragging {
+                        update_drag_position(engine.scene_mut(), &mut ds);
+                    }
+                    dragging
+                };
+                if !dragging {
+                    engine.dispatch_routed_event(
                         &event,
-                        self.cursor_prev,
-                        engine.on_pick.is_none(),
+                        EventRouteOpts {
+                            left_orbit: engine.on_pick.is_none(),
+                            pick_on_click: false,
+                            camera: true,
+                        },
                     );
                 }
-                self.cursor_prev = cursor;
+                window.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if *button == MouseButton::Left && *state == ElementState::Pressed {
@@ -212,22 +219,36 @@ impl ApplicationHandler for AnnotationEditApp {
                     self.drag.borrow_mut().active = None;
                 }
                 if self.drag.borrow().active.is_none() {
-                    engine.controller.dispatch_window_event(
+                    engine.handle_window_event(
                         &event,
-                        self.cursor_prev,
-                        engine.on_pick.is_none(),
+                        EventRouteOpts {
+                            left_orbit: engine.on_pick.is_none(),
+                            pick_on_click: false,
+                            camera: true,
+                        },
                     );
                 }
             }
             WindowEvent::MouseWheel { .. } => {
-                engine.controller.dispatch_window_event(
+                engine.handle_window_event(
                     &event,
-                    self.cursor_prev,
-                    true,
+                    EventRouteOpts {
+                        left_orbit: true,
+                        pick_on_click: false,
+                        camera: true,
+                    },
                 );
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event: key_event, .. } => {
+                engine.handle_window_event(
+                    &event,
+                    EventRouteOpts {
+                        left_orbit: true,
+                        pick_on_click: false,
+                        camera: false,
+                    },
+                );
                 use winit::keyboard::PhysicalKey;
                 match &key_event.physical_key {
                     PhysicalKey::Code(winit::keyboard::KeyCode::ShiftLeft)
@@ -267,7 +288,16 @@ impl ApplicationHandler for AnnotationEditApp {
                     _ => {}
                 }
             }
-            _ => {}
+            _ => {
+                engine.handle_window_event(
+                    &event,
+                    EventRouteOpts {
+                        left_orbit: engine.on_pick.is_none(),
+                        pick_on_click: false,
+                        camera: true,
+                    },
+                );
+            }
         }
     }
 
@@ -297,7 +327,6 @@ fn main() {
         engine: None,
         window: None,
         drag,
-        cursor_prev: (0.0, 0.0),
     });
 }
 

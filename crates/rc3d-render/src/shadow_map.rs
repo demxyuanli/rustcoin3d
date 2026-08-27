@@ -26,7 +26,12 @@ pub fn directional_light_view_proj(light_dir_world: Vec3, world_aabb: &Aabb, z_m
     let center = world_aabb.center();
     let extent = world_aabb.size().length();
     let eye = center - dir * (extent * 0.5 + 5.0);
-    let view = Mat4::look_at_rh(eye, center, Vec3::Y);
+    let up = if dir.cross(Vec3::Y).length_squared() < 1e-4 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
+    let view = Mat4::look_at_rh(eye, center, up);
     let corners = [
         Vec3::new(world_aabb.min.x, world_aabb.min.y, world_aabb.min.z),
         Vec3::new(world_aabb.max.x, world_aabb.min.y, world_aabb.min.z),
@@ -44,14 +49,18 @@ pub fn directional_light_view_proj(light_dir_world: Vec3, world_aabb: &Aabb, z_m
         min_v = min_v.min(v);
         max_v = max_v.max(v);
     }
-    let proj = orthographic_wgpu_rh(
-        min_v.x,
-        max_v.x,
-        min_v.y,
-        max_v.y,
-        min_v.z - z_margin,
-        max_v.z + z_margin,
-    );
+    let proj = {
+        // RH look-at: points in front have negative view Z. glam/wgpu ortho
+        // `near`/`far` are positive distances along the view axis.
+        let mut near_dist = -max_v.z;
+        let mut far_dist = -min_v.z;
+        if far_dist < near_dist {
+            core::mem::swap(&mut near_dist, &mut far_dist);
+        }
+        let near_dist = (near_dist - z_margin).max(0.01);
+        let far_dist = (far_dist + z_margin).max(near_dist + 0.01);
+        Mat4::orthographic_rh(min_v.x, max_v.x, min_v.y, max_v.y, near_dist, far_dist)
+    };
     proj * view
 }
 
@@ -72,32 +81,49 @@ pub fn compute_csm_splits(near: f32, far: f32, cascade_count: u32, lambda: f32) 
     splits
 }
 
+fn unproject_ndc(inv_view_proj: Mat4, x: f32, y: f32, z: f32) -> Vec3 {
+    let world = inv_view_proj * Vec4::new(x, y, z, 1.0);
+    world.truncate() / world.w.max(1e-8)
+}
+
+/// Camera-space distances to the projection near/far plane centers.
+/// Used as the NDC 0..1 interpolant span so cascade slices match PBR sampling.
+pub fn projection_near_far(
+    inv_view_proj: Mat4,
+    camera_pos: Vec3,
+    reversed_z: bool,
+) -> (f32, f32) {
+    let (ndc_z_near, ndc_z_far) = if reversed_z { (1.0, 0.0) } else { (0.0, 1.0) };
+    let near_c = unproject_ndc(inv_view_proj, 0.0, 0.0, ndc_z_near);
+    let far_c = unproject_ndc(inv_view_proj, 0.0, 0.0, ndc_z_far);
+    let proj_near = (near_c - camera_pos).length().max(1e-3);
+    let proj_far = (far_c - camera_pos).length().max(proj_near + 1e-3);
+    (proj_near, proj_far)
+}
+
+/// Practical CSM split far: follow the camera projection so slices stay inside
+/// the view frustum, but never exceed the scene extent. CAD/import cameras set
+/// `far = max(distance * 20, 100)` which is often 100..4000 and would stretch
+/// cascades across empty space if used as the split far.
+pub fn practical_csm_far(scene_far: f32, proj_far: f32) -> f32 {
+    scene_far.min(proj_far).clamp(24.0, 1000.0)
+}
+
 /// Extract the 8 corners of a camera frustum sub-volume defined by near/far planes.
+/// `near` / `far` are 0..1 along camera near-to-far frustum edges.
+/// `ndc_z_near` / `ndc_z_far` are the clip-space Z of those planes (0/1 forward-Z, 1/0 reverse-Z).
 pub fn frustum_slice_corners(
     inv_view_proj: Mat4,
     near: f32,
     far: f32,
+    ndc_z_near: f32,
+    ndc_z_far: f32,
 ) -> [Vec3; 8] {
-    let ndc_corners = [
-        Vec4::new(-1.0, -1.0, 0.0, 1.0),
-        Vec4::new(1.0, -1.0, 0.0, 1.0),
-        Vec4::new(-1.0, 1.0, 0.0, 1.0),
-        Vec4::new(1.0, 1.0, 0.0, 1.0),
-        Vec4::new(-1.0, -1.0, 1.0, 1.0),
-        Vec4::new(1.0, -1.0, 1.0, 1.0),
-        Vec4::new(-1.0, 1.0, 1.0, 1.0),
-        Vec4::new(1.0, 1.0, 1.0, 1.0),
-    ];
-    let mut world_corners = [Vec3::ZERO; 8];
-    for (i, ndc) in ndc_corners.iter().enumerate() {
-        let world = inv_view_proj * *ndc;
-        world_corners[i] = (world / world.w).truncate();
-    }
-    // Interpolate between near and far planes
+    let xy = [[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]];
     let mut result = [Vec3::ZERO; 8];
     for i in 0..4 {
-        let near_pt = world_corners[i];
-        let far_pt = world_corners[i + 4];
+        let near_pt = unproject_ndc(inv_view_proj, xy[i][0], xy[i][1], ndc_z_near);
+        let far_pt = unproject_ndc(inv_view_proj, xy[i][0], xy[i][1], ndc_z_far);
         result[i] = near_pt + (far_pt - near_pt) * near;
         result[i + 4] = near_pt + (far_pt - near_pt) * far;
     }
@@ -105,51 +131,51 @@ pub fn frustum_slice_corners(
 }
 
 /// Compute the world-space AABB of a frustum slice.
-fn frustum_slice_aabb(inv_view_proj: Mat4, near: f32, far: f32) -> Aabb {
-    let ndc_corners = [
-        Vec4::new(-1.0, -1.0, 0.0, 1.0),
-        Vec4::new(1.0, -1.0, 0.0, 1.0),
-        Vec4::new(-1.0, 1.0, 0.0, 1.0),
-        Vec4::new(1.0, 1.0, 0.0, 1.0),
-        Vec4::new(-1.0, -1.0, 1.0, 1.0),
-        Vec4::new(1.0, -1.0, 1.0, 1.0),
-        Vec4::new(-1.0, 1.0, 1.0, 1.0),
-        Vec4::new(1.0, 1.0, 1.0, 1.0),
-    ];
-    let mut min_v = Vec3::splat(f32::MAX);
-    let mut max_v = Vec3::splat(f32::MIN);
-    for ndc in &ndc_corners {
-        let world = inv_view_proj * *ndc;
-        let p = (world / world.w).truncate();
-        min_v = min_v.min(p);
-        max_v = max_v.max(p);
+/// `near_t` / `far_t` are 0..1 along camera near-to-far frustum edges.
+fn frustum_slice_aabb(
+    inv_view_proj: Mat4,
+    near_t: f32,
+    far_t: f32,
+    ndc_z_near: f32,
+    ndc_z_far: f32,
+) -> Aabb {
+    let corners = frustum_slice_corners(
+        inv_view_proj,
+        near_t.clamp(0.0, 1.0),
+        far_t.clamp(0.0, 1.0),
+        ndc_z_near,
+        ndc_z_far,
+    );
+    let mut aabb = Aabb::empty();
+    for c in &corners {
+        aabb = aabb.union(&Aabb::from_point(*c));
     }
-    // Lerp near/far
-    let near_lerp = near;  // simplified: NDC z=0 maps to near, z=1 maps to far
-    let far_lerp = far;
-    let rng = max_v - min_v;
-    let zn = min_v.z + rng.z * near_lerp;
-    let zf = min_v.z + rng.z * far_lerp;
-    Aabb {
-        min: Vec3::new(min_v.x, min_v.y, zn),
-        max: Vec3::new(max_v.x, max_v.y, zf),
-    }
+    aabb
 }
 
 /// Compute light view-proj for each CSM cascade.
+/// `splits` are view-space distances from [`compute_csm_splits`] (not 0..1).
+///
+/// Slice interpolation must use the **projection** near/far (NDC 0..1 span), not the
+/// tightened split far. Using the split far as the interpolant denominator places
+/// cascades far behind the casters, so PBR sampling misses the shadow map.
 pub fn csm_light_view_projs(
     light_dir: Vec3,
     inv_view_proj: Mat4,
     splits: &[f32],
     z_margin: f32,
+    camera_pos: Vec3,
+    reversed_z: bool,
 ) -> Vec<Mat4> {
-    let mut vps = Vec::with_capacity(splits.len() - 1);
-    for i in 0..(splits.len() - 1) {
-        let near = splits[i];
-        let far = splits[i + 1];
-        let slice_aabb = frustum_slice_aabb(inv_view_proj, near, far);
-        let vp = directional_light_view_proj(light_dir, &slice_aabb, z_margin);
-        vps.push(vp);
+    let (ndc_z_near, ndc_z_far) = if reversed_z { (1.0, 0.0) } else { (0.0, 1.0) };
+    let (proj_near, proj_far) = projection_near_far(inv_view_proj, camera_pos, reversed_z);
+    let denom = proj_far - proj_near;
+    let mut vps = Vec::with_capacity(splits.len().saturating_sub(1));
+    for i in 0..splits.len().saturating_sub(1) {
+        let t_n = ((splits[i] - proj_near) / denom).clamp(0.0, 1.0);
+        let t_f = ((splits[i + 1] - proj_near) / denom).clamp(0.0, 1.0);
+        let slice_aabb = frustum_slice_aabb(inv_view_proj, t_n, t_f, ndc_z_near, ndc_z_far);
+        vps.push(directional_light_view_proj(light_dir, &slice_aabb, z_margin));
     }
     vps
 }

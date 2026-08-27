@@ -4,7 +4,11 @@
 mod collect;
 mod render;
 
-pub use collect::{AnnotationVisibility, DecalDrawCommand, EffectCommands, PointCloudDrawCommand, ProjectedAnnotation, VolumeDrawCommand, collect_effect_nodes};
+pub use collect::{
+    AnnotationVisibility, DecalDrawCommand, EffectCommands, GpuEmitterParams,
+    PointCloudDrawCommand, ProjectedAnnotation, VolumeDrawCommand, collect_effect_nodes,
+    pack_point_cloud_gpu,
+};
 pub use render::{DecalPass, PointCloudPass, VolumePass};
 
 #[cfg(test)]
@@ -46,6 +50,7 @@ mod tests {
                 max_visible_points: 1234,
                 point_size: 3.0,
                 color: [0.2, 0.4, 0.6, 1.0],
+                ..Default::default()
             }),
         );
 
@@ -137,6 +142,7 @@ mod tests {
                     color: [1.0, 0.4, 0.0, 1.0],
                 }],
                 visible: true,
+                pmi: Vec::new(),
             }),
         );
 
@@ -208,6 +214,7 @@ mod tests {
                         color: [1.0, 0.4, 0.0, 1.0],
                     }],
                     visible: true,
+                    pmi: Vec::new(),
                 }),
             );
             tf
@@ -236,6 +243,7 @@ mod tests {
                         color: [0.1, 0.5, 1.0, 1.0],
                     }],
                     visible: true,
+                    pmi: Vec::new(),
                 }),
             );
             tf

@@ -3,6 +3,7 @@
 //! Supports Single, Quad, LeftRight, and TopBottom layouts.
 //! Each viewport binds a camera node and a screen-space rectangle.
 
+use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 
 /// Unique identifier for a viewport within a layout.
@@ -38,6 +39,15 @@ impl ViewportRect {
 pub enum ProjectionType {
     Perspective,
     Orthographic,
+}
+
+/// Per-tile camera matrices for the standard four-view pack (aligned with `ViewportLayout` order).
+#[derive(Clone, Copy, Debug)]
+pub struct QuadViewEye {
+    pub view: Mat4,
+    pub projection: Mat4,
+    pub camera_pos: Vec3,
+    pub orthographic: bool,
 }
 
 /// A single viewport: screen rect + camera binding.

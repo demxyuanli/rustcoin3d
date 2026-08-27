@@ -49,6 +49,20 @@ fn main() {
             intensity: 20.0,
             light_group: None,
         }));
+        graph.add_child(root, NodeData::HemisphereLight(HemisphereLightNode {
+            sky_color: Vec3::new(0.45, 0.65, 1.0),
+            ground_color: Vec3::new(0.35, 0.22, 0.12),
+            intensity: 0.45,
+            direction: Vec3::Y,
+        }));
+        graph.add_child(
+            root,
+            NodeData::LightProbe(LightProbeNode::from_hemisphere(
+                Vec3::new(0.35, 0.5, 0.85),
+                Vec3::new(0.2, 0.12, 0.06),
+                0.25,
+            )),
+        );
 
         // Floor
         let floor_sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
@@ -89,6 +103,92 @@ fn main() {
                 graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 1.0 }));
             }
         }
+
+        let iri_x = GRID_SIZE as f32 * SPACING + 3.0;
+        let iridescent: [(Vec3, f32, f32, f32, f32, f32); 3] = [
+            (Vec3::new(0.06, 0.06, 0.08), 0.15, 1.0, 1.3, 100.0, 400.0),
+            (Vec3::new(0.92, 0.92, 0.94), 0.06, 0.0, 1.33, 200.0, 400.0),
+            (Vec3::new(0.72, 0.45, 0.2), 0.22, 1.0, 1.5, 100.0, 300.0),
+        ];
+        for (i, (base, roughness, metallic, ior, tmin, tmax)) in iridescent.iter().copied().enumerate() {
+            let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+            graph.add_child(
+                sep,
+                NodeData::Transform(TransformNode::from_translation(Vec3::new(
+                    iri_x,
+                    1.2,
+                    i as f32 * SPACING,
+                ))),
+            );
+            graph.add_child(sep, NodeData::Material(MaterialNode {
+                base_color: base,
+                metallic,
+                roughness,
+                iridescence_factor: 1.0,
+                iridescence_ior: ior,
+                iridescence_thickness_min: tmin,
+                iridescence_thickness_max: tmax,
+                ..Default::default()
+            }));
+            graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 1.0 }));
+        }
+
+        let extra_x = GRID_SIZE as f32 * SPACING + 6.0;
+        let extras = [
+            (Vec3::new(0.85, 0.35, 0.15), 3.0, false, false),
+            (Vec3::new(0.6, 0.6, 0.65), 0.0, true, false),
+            (Vec3::new(0.5, 0.5, 0.5), 0.0, false, true),
+        ];
+        for (i, (base, toon, normals, depth)) in extras.iter().copied().enumerate() {
+            let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+            graph.add_child(
+                sep,
+                NodeData::Transform(TransformNode::from_translation(Vec3::new(
+                    extra_x,
+                    1.2,
+                    i as f32 * SPACING,
+                ))),
+            );
+            graph.add_child(sep, NodeData::Material(MaterialNode {
+                base_color: base,
+                roughness: 0.4,
+                toon_steps: toon,
+                visualize_normals: normals,
+                visualize_depth: depth,
+                ..Default::default()
+            }));
+            graph.add_child(sep, NodeData::Sphere(SphereNode { radius: 1.0 }));
+        }
+
+        let rot_x = extra_x + 3.0;
+        let rot_sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+        graph.add_child(
+            rot_sep,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(rot_x, 1.2, 0.0))),
+        );
+        graph.add_child(
+            rot_sep,
+            NodeData::RotationXYZ(RotationXYZNode {
+                axis: RotationAxis::Z,
+                angle: 0.5,
+            }),
+        );
+        graph.add_child(
+            rot_sep,
+            NodeData::Material(MaterialNode {
+                base_color: Vec3::new(0.2, 0.55, 0.85),
+                roughness: 0.35,
+                ..Default::default()
+            }),
+        );
+        graph.add_child(
+            rot_sep,
+            NodeData::Cube(CubeNode {
+                width: 1.2,
+                height: 1.2,
+                depth: 1.2,
+            }),
+        );
     });
 }
 

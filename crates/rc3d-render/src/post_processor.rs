@@ -22,12 +22,14 @@ pub struct PostEffectParams {
     pub bloom_str: f32,
     pub grain: f32,
     pub exposure: f32,
-    pub _pad: [f32; 3],
+    pub halftone: f32,
+    pub glitch: f32,
+    pub _pad: f32,
 }
 
 impl Default for PostEffectParams {
     fn default() -> Self {
-        Self { vignette: 0.3, chromatic: 0.0, bloom_str: 0.8, grain: 0.0, exposure: 1.0, _pad: [0.0; 3] }
+        Self { vignette: 0.3, chromatic: 0.0, bloom_str: 0.8, grain: 0.0, exposure: 1.0, halftone: 0.0, glitch: 0.0, _pad: 0.0 }
     }
 }
 
@@ -58,6 +60,8 @@ pub struct PostFxPipelines {
     /// WBOIT composite: accum/revealage bind group layout (group 1).
     pub wboit_accum_bgl: wgpu::BindGroupLayout,
     pub wboit_composite_pipeline: wgpu::RenderPipeline,
+    /// Same composite onto the swapchain / LDR shade format.
+    pub wboit_composite_pipeline_ldr: wgpu::RenderPipeline,
 }
 
 pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::TextureFormat, hdr_format: wgpu::TextureFormat) -> PostFxPipelines {
@@ -635,6 +639,43 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         cache: None,
     });
 
+    let wboit_composite_pipeline_ldr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("WBOIT Composite LDR"),
+        layout: Some(&wboit_composite_pll),
+        vertex: wgpu::VertexState {
+            module: &wboit_composite_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &wboit_composite_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
     PostFxPipelines {
         tonemap_bgl,
         tonemap_sampler,
@@ -660,6 +701,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ssao_blur_pipeline,
         wboit_accum_bgl,
         wboit_composite_pipeline,
+        wboit_composite_pipeline_ldr,
     }
 }
 

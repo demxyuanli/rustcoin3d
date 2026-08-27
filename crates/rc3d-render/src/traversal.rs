@@ -141,8 +141,12 @@ pub(crate) fn draw_call_to_cache_entries(
         light_set_id: dc.light_set_id,
         vertex_offset: 0,
         vertex_count: dc.vertices.len() as u32,
-        index_offset: 0,
-        index_count: dc.indices.as_ref().map_or(0, |i| i.len() as u32),
+        index_offset: dc.index_first,
+        index_count: if dc.index_draw_count > 0 {
+            dc.index_draw_count
+        } else {
+            dc.indices.as_ref().map_or(0, |i| i.len() as u32)
+        },
         draw_flags: flags.bits(),
         instance_count: 1,
         _pad: 0,

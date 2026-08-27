@@ -345,7 +345,7 @@ impl Shape for Mesh {
             coord_index.push(tri[2] as i32);
             coord_index.push(-1);
         }
-        NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index })
+        NodeData::IndexedFaceSet(IndexedFaceSetNode::from_coord_index(coord_index))
     }
 
     fn add_geometry_nodes(&self, graph: &mut SceneGraph, parent: rc3d_core::NodeId) {

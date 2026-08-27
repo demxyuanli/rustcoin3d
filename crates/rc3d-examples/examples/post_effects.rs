@@ -9,6 +9,7 @@ use rc3d_scene::node_data::*;
 fn main() {
     run_example("Post Effects", |engine| {
         engine.set_post_effects(0.4, 0.01, 1.0, 0.02);
+        engine.set_post_stylize(0.0, 0.0);
 
         let graph = engine.scene_mut();
         let root = graph.add_root(NodeData::Separator(SeparatorNode));

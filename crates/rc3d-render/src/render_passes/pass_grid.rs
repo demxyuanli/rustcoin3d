@@ -148,6 +148,7 @@ pub fn pass_grid(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -163,6 +164,7 @@ pub fn pass_grid(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -178,6 +180,7 @@ pub fn pass_grid(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
@@ -193,10 +196,74 @@ pub fn pass_grid(
             model: glam::Mat4::IDENTITY.to_cols_array_2d(),
             clip_planes: [[0.0; 4]; 6],
             clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
         };
         if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
             pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
             draw_lines(&renderer.device, &mut pass, &geom.axis_z);
+        }
+    }
+}
+
+/// World-space transform gizmo overlay (always on top of the shade target).
+pub fn pass_gizmo_lines(
+    renderer: &mut crate::renderer::Renderer,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    depth_view: &wgpu::TextureView,
+    vp: Mat4,
+    depth_reversed_z: bool,
+) {
+    if renderer.gizmo_line_batches.is_empty() {
+        return;
+    }
+    let batches = renderer.gizmo_line_batches.clone();
+    let mvp = vp.to_cols_array_2d();
+
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Gizmo Overlay"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth_view,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    let grid_pl = if depth_reversed_z {
+        &renderer.gpu.pipelines.grid_lines_reverse
+    } else {
+        &renderer.gpu.pipelines.grid_lines_forward
+    };
+    pass.set_pipeline(grid_pl);
+
+    for (lines, color) in batches {
+        if lines.len() < 2 {
+            continue;
+        }
+        let uniforms = FlatUniforms {
+            mvp,
+            color,
+            model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            clip_planes: [[0.0; 4]; 6],
+            clip_count: [0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        if let Some(offset) = renderer.gpu.flat_pool.push_flat(&uniforms) {
+            pass.set_bind_group(0, renderer.gpu.flat_pool.bind_group(), &[offset]);
+            draw_lines(&renderer.device, &mut pass, &lines);
         }
     }
 }

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use rc3d_core::NodeId;
+use rc3d_core::{DisplayMode, EdgeStyle, FillStyle, NodeId, VisualStyle};
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 
-use crate::node_data::NodeData;
+use crate::node_data::{EdgeTint, FaceTint, NodeData};
 use crate::node_entry::NodeEntry;
 
 /// Core scene container: a hierarchical directed graph of typed nodes.
@@ -21,6 +21,15 @@ pub struct SceneGraph {
     selected: HashSet<NodeId>,
     #[serde(default, skip_serializing)]
     selection_sets: HashMap<String, HashSet<NodeId>>,
+    /// HOOPS-style sub-entity face colors (runtime; not serialized).
+    #[serde(default, skip_serializing)]
+    face_tints: HashMap<NodeId, Vec<FaceTint>>,
+    /// HOOPS-style sub-entity edge colors (runtime; not serialized).
+    #[serde(default, skip_serializing)]
+    edge_tints: HashMap<NodeId, Vec<EdgeTint>>,
+    /// Cross-node field connections (`SoField::connectFrom`).
+    #[serde(default)]
+    pub(crate) field_graph: crate::field_graph::FieldGraph,
 }
 
 impl SceneGraph {
@@ -30,6 +39,9 @@ impl SceneGraph {
             roots: Vec::new(),
             selected: HashSet::new(),
             selection_sets: HashMap::new(),
+            face_tints: HashMap::new(),
+            edge_tints: HashMap::new(),
+            field_graph: crate::field_graph::FieldGraph::default(),
         }
     }
 
@@ -40,6 +52,8 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fill_style: None,
+            edge_style: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
             dirty_flags: 0,
@@ -58,6 +72,8 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fill_style: None,
+            edge_style: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
             dirty_flags: 0,
@@ -78,6 +94,8 @@ impl SceneGraph {
             children: Vec::new(),
             name: None,
             display_mode: None,
+            fill_style: None,
+            edge_style: None,
             fields: rc3d_fields::FieldMap::new(),
             attributes: std::collections::HashMap::new(),
             dirty_flags: 0,
@@ -128,8 +146,112 @@ impl SceneGraph {
         self.nodes.get_mut(id)
     }
 
+    /// Coin3D `SoDrawStyle` on this node: Separator isolates the style to its subtree.
+    /// Clears independent fill/edge overrides so the preset is the full appearance.
+    pub fn set_display_mode(&mut self, id: NodeId, mode: DisplayMode) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.display_mode = Some(mode);
+            entry.fill_style = None;
+            entry.edge_style = None;
+        }
+    }
+
+    /// Clear a per-node display-mode override (inherit parent / global again).
+    pub fn clear_display_mode(&mut self, id: NodeId) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.display_mode = None;
+            entry.fill_style = None;
+            entry.edge_style = None;
+        }
+    }
+
+    pub fn set_fill_style(&mut self, id: NodeId, fill: FillStyle) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.fill_style = Some(fill);
+        }
+    }
+
+    pub fn set_edge_style(&mut self, id: NodeId, edges: EdgeStyle) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.edge_style = Some(edges);
+        }
+    }
+
+    pub fn clear_fill_style(&mut self, id: NodeId) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.fill_style = None;
+        }
+    }
+
+    pub fn clear_edge_style(&mut self, id: NodeId) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.edge_style = None;
+        }
+    }
+
+    pub fn set_name(&mut self, id: NodeId, name: impl Into<String>) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.name = Some(name.into());
+        }
+    }
+
+    pub fn find_named(&self, name: &str) -> Option<NodeId> {
+        self.nodes.iter().find_map(|(id, e)| {
+            e.name.as_deref().filter(|n| *n == name).map(|_| id)
+        })
+    }
+
+    pub fn all_node_ids(&self) -> Vec<NodeId> {
+        self.nodes.keys().collect()
+    }
+
+    /// Resolve PMI names on every `AnnotationSet` and stamp unbound points.
+    pub fn bind_pmi(&mut self) -> usize {
+        crate::annotation::bind_scene_pmi(self)
+    }
+
+    /// Apply a named HOOPS-style visual style to this node (typically a Separator).
+    pub fn apply_visual_style(&mut self, id: NodeId, style: &VisualStyle) {
+        if let Some(entry) = self.nodes.get_mut(id) {
+            entry.display_mode = Some(style.appearance.to_display_mode());
+            entry.fill_style = Some(style.appearance.fill);
+            entry.edge_style = Some(style.appearance.edges);
+        }
+    }
+
     pub fn children(&self, id: NodeId) -> Option<&[NodeId]> {
         self.nodes.get(id).map(|e| e.children.as_slice())
+    }
+
+    /// Set `LodNode.range_scale` on `id`, or the first Lod descendant.
+    pub fn set_lod_range_scale(&mut self, id: NodeId, scale: f32) -> bool {
+        let scale = scale.max(1e-4);
+        if self.apply_lod_range_scale(id, scale) {
+            return true;
+        }
+        let mut stack = match self.children(id) {
+            Some(c) => c.to_vec(),
+            None => return false,
+        };
+        while let Some(n) = stack.pop() {
+            if self.apply_lod_range_scale(n, scale) {
+                return true;
+            }
+            if let Some(c) = self.children(n) {
+                stack.extend(c.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn apply_lod_range_scale(&mut self, id: NodeId, scale: f32) -> bool {
+        if let Some(entry) = self.get_mut(id) {
+            if let NodeData::Lod(lod) = &mut entry.data {
+                lod.range_scale = scale;
+                return true;
+            }
+        }
+        false
     }
 
     pub fn roots(&self) -> &[NodeId] {
@@ -158,6 +280,72 @@ impl SceneGraph {
         self.selected.clear();
     }
 
+    /// Map a picked triangle index to a CAD face id (cube: `tri / 2`; IFS: `face_ids`).
+    pub fn face_id_from_triangle(&self, node: NodeId, triangle: u32) -> u32 {
+        let Some(entry) = self.get(node) else {
+            return triangle;
+        };
+        match &entry.data {
+            NodeData::IndexedFaceSet(ifs) => ifs.face_id(triangle),
+            NodeData::Cube(_) => triangle / 2,
+            _ => triangle,
+        }
+    }
+
+    pub fn set_face_tint(&mut self, node: NodeId, id: u32, color: [f32; 4]) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        let tints = self.face_tints.entry(node).or_default();
+        if let Some(existing) = tints.iter_mut().find(|t| t.id == id) {
+            existing.color = color;
+        } else {
+            tints.push(FaceTint { id, color });
+        }
+    }
+
+    pub fn clear_face_tints(&mut self, node: NodeId) {
+        self.face_tints.remove(&node);
+    }
+
+    pub fn face_tints(&self, node: NodeId) -> &[FaceTint] {
+        self.face_tints
+            .get(&node)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn set_edge_tint(&mut self, node: NodeId, triangle: u32, edge: u8, color: [f32; 4]) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        let edge = edge.min(2);
+        let tints = self.edge_tints.entry(node).or_default();
+        if let Some(existing) = tints
+            .iter_mut()
+            .find(|t| t.triangle == triangle && t.edge == edge)
+        {
+            existing.color = color;
+        } else {
+            tints.push(EdgeTint {
+                triangle,
+                edge,
+                color,
+            });
+        }
+    }
+
+    pub fn clear_edge_tints(&mut self, node: NodeId) {
+        self.edge_tints.remove(&node);
+    }
+
+    pub fn edge_tints(&self, node: NodeId) -> &[EdgeTint] {
+        self.edge_tints
+            .get(&node)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Add all existing nodes from `ids` to the selection.
     pub fn select_many(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         for id in ids {
@@ -169,6 +357,22 @@ impl SceneGraph {
 
     pub fn is_selected(&self, id: NodeId) -> bool {
         self.selected.contains(&id)
+    }
+
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.nodes.get(id).and_then(|e| e.parent)
+    }
+
+    /// True if this node or any ancestor is selected (HOOPS isolate covers a subtree).
+    pub fn is_in_selection(&self, id: NodeId) -> bool {
+        let mut cur = Some(id);
+        while let Some(nid) = cur {
+            if self.selected.contains(&nid) {
+                return true;
+            }
+            cur = self.parent(nid);
+        }
+        false
     }
 
     pub fn selected_nodes(&self) -> &HashSet<NodeId> {
@@ -281,14 +485,17 @@ impl SceneGraph {
                 Some(e) => e,
                 None => return model,
             };
-            let local_model = if let NodeData::Transform(t) = &entry.data {
-                let xform = rc3d_core::math::Mat4::from_translation(-t.center)
-                    * rc3d_core::math::Mat4::from_scale(t.scale)
-                    * t.rotation
-                    * rc3d_core::math::Mat4::from_translation(t.center + t.translation);
-                model * xform
-            } else {
-                model
+            let local_model = match &entry.data {
+                NodeData::Transform(t) => {
+                    let xform = rc3d_core::math::Mat4::from_translation(-t.center)
+                        * rc3d_core::math::Mat4::from_scale(t.scale)
+                        * t.rotation
+                        * rc3d_core::math::Mat4::from_translation(t.center + t.translation);
+                    model * xform
+                }
+                NodeData::Rotation(r) => model * r.to_matrix(),
+                NodeData::RotationXYZ(r) => model * r.to_matrix(),
+                _ => model,
             };
             let is_lod = matches!(&entry.data, NodeData::Lod(_));
             let children = entry.children.to_vec();
@@ -300,7 +507,8 @@ impl SceneGraph {
                 if let NodeData::Lod(lod) = &mut entry.data {
                     let (_, _, trans) = local_model.to_scale_rotation_translation();
                     let distance = (trans - camera_pos).length();
-                    lod.select_level(distance);
+                    let scaled = distance / lod.range_scale.max(1e-4);
+                    lod.select_level(scaled);
                 }
             }
         }

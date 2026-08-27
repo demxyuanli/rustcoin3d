@@ -8,7 +8,7 @@
 //! - `aabb` — Axis-aligned bounding box with union/intersection/ray queries
 //! - `bvh` — Bounding volume hierarchy for spatial acceleration
 //! - `color` — Linear/sRGB color types (`Color4f`, conversions)
-//! - `display` — `DisplayMode` (Shaded/Wireframe/Points/Flat), `ClipPlane`
+//! - `display` — `DisplayMode` presets, `FillStyle` / `EdgeStyle`, named `VisualStyle` catalog, `ClipPlane`
 //! - `id` — `NodeId`, `GeometryId`, `MeshId` slot-map keys
 //! - `projection` — Camera projection matrix builders (`depth_reversed_z_from_projection`)
 //! - `error` — `EngineError` / `EngineResult` shared error types

@@ -27,6 +27,8 @@ fn vs_world_label(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_world_label(in: VertexOutput) -> @location(0) vec4<f32> {
-    let a = textureSample(label_tex, label_samp, in.uv).r;
+    let d = textureSample(label_tex, label_samp, in.uv).r;
+    let w = max(fwidth(d), 1.0e-4);
+    let a = smoothstep(0.5 - w, 0.5 + w, d);
     return vec4<f32>(u.color.rgb, u.color.a * a);
 }

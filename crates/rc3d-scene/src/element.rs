@@ -1,4 +1,5 @@
 use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::{Appearance, DisplayMode, EdgeStyle, FillStyle};
 use std::any::Any;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +151,17 @@ pub struct MaterialElement {
     pub specular_color_factor: Vec3,
     pub transmission_factor: f32,
     pub ior: f32,
+    pub sheen_color: Vec3,
+    pub sheen_roughness: f32,
+    pub iridescence_factor: f32,
+    pub iridescence_ior: f32,
+    pub iridescence_thickness_min: f32,
+    pub iridescence_thickness_max: f32,
+    pub toon_steps: f32,
+    pub visualize_normals: bool,
+    pub visualize_depth: bool,
+    pub custom_wgsl: Option<String>,
+    pub custom_uniforms: [f32; 4],
 }
 
 impl Default for MaterialElement {
@@ -179,6 +191,17 @@ impl Default for MaterialElement {
             specular_color_factor: Vec3::ONE,
             transmission_factor: 0.0,
             ior: 1.5,
+            sheen_color: Vec3::ZERO,
+            sheen_roughness: 0.0,
+            iridescence_factor: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            toon_steps: 0.0,
+            visualize_normals: false,
+            visualize_depth: false,
+            custom_wgsl: None,
+            custom_uniforms: [0.0; 4],
         }
     }
 }
@@ -204,6 +227,8 @@ pub struct LightData {
     pub intensity: f32,
     pub cut_off_angle: f32,
     pub drop_off_rate: f32,
+    /// Packed as `light_positions.xyz` for [`LightType::Hemisphere`] (ground irradiance).
+    pub ground_color: Vec3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,6 +236,7 @@ pub enum LightType {
     Directional,
     Point,
     Spot,
+    Hemisphere,
 }
 
 impl Element for LightElement {
@@ -220,4 +246,60 @@ impl Element for LightElement {
     fn clone_box(&self) -> Box<dyn Element> { Box::new(self.clone()) }
 }
 
-pub const NUM_ELEMENT_TYPES: usize = 8;
+/// Coin3D `SoDrawStyle` analogue: inherited until a Separator pops the stack.
+/// `mode` stays the last explicit preset; `fill` / `edges` are the resolved axes.
+#[derive(Clone, Copy, Debug)]
+pub struct DisplayModeElement {
+    pub mode: DisplayMode,
+    pub fill: FillStyle,
+    pub edges: EdgeStyle,
+}
+
+impl Default for DisplayModeElement {
+    fn default() -> Self {
+        let mode = DisplayMode::default();
+        Self {
+            mode,
+            fill: mode.fill(),
+            edges: mode.edges(),
+        }
+    }
+}
+
+impl DisplayModeElement {
+    pub fn appearance(self) -> Appearance {
+        Appearance {
+            fill: self.fill,
+            edges: self.edges,
+        }
+    }
+
+    pub fn set_appearance(&mut self, app: Appearance) {
+        self.fill = app.fill;
+        self.edges = app.edges;
+        self.mode = app.to_display_mode();
+    }
+
+    pub fn set_display_mode(&mut self, mode: DisplayMode) {
+        self.mode = mode;
+        self.fill = mode.fill();
+        self.edges = mode.edges();
+    }
+}
+
+impl Element for DisplayModeElement {
+    fn element_id(&self) -> ElementId {
+        ElementId(8)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn Element> {
+        Box::new(*self)
+    }
+}
+
+pub const NUM_ELEMENT_TYPES: usize = 9;

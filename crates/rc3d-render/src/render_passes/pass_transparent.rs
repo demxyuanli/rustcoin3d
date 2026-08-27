@@ -1,5 +1,5 @@
 use super::PassContext;
-use crate::vertex::SceneUniforms;
+use crate::vertex::{SceneUniforms, MAX_INSTANCES};
 use rc3d_scene::AlphaMode;
 
 fn alpha_mode_to_f32(mode: AlphaMode) -> f32 {
@@ -17,11 +17,38 @@ fn camera_depth(dc: &crate::render_action::DrawCall) -> f32 {
 
 /// Emits draw calls for transparent objects into the given render pass.
 /// Shared between basic alpha-blend and WBOIT modes.
+fn upload_transparent_instances(
+    renderer: &mut crate::renderer::Renderer,
+    ctx: &PassContext<'_>,
+    order: &[usize],
+) -> u32 {
+    let base = renderer.gpu.draw_bufs.instances.len();
+    for &i in order {
+        if renderer.gpu.draw_bufs.instances.len() >= MAX_INSTANCES {
+            break;
+        }
+        renderer
+            .gpu
+            .draw_bufs
+            .instances
+            .push(super::draw_opaque::instance_data_from_draw(ctx.visible[i]));
+    }
+    if renderer.gpu.draw_bufs.instances.len() > base {
+        renderer.queue.write_buffer(
+            &renderer.gpu.instance_buffer,
+            0,
+            bytemuck::cast_slice(&renderer.gpu.draw_bufs.instances),
+        );
+    }
+    base as u32
+}
+
 fn emit_transparent_draws(
     renderer: &mut crate::renderer::Renderer,
     pass: &mut wgpu::RenderPass<'_>,
     ctx: &PassContext<'_>,
     sorted: &[usize],
+    instance_base: u32,
 ) {
     let mut clip_arr = [[0.0f32; 4]; 6];
     for (i, cp) in renderer.frame.clip_planes.iter().enumerate() {
@@ -38,7 +65,8 @@ fn emit_transparent_draws(
 
     let mut last_bound_mesh = None;
 
-    for &i in sorted {
+    for (slot, &i) in sorted.iter().enumerate() {
+        let slot = slot as u32;
         let dc = ctx.visible[i];
 
         let uniforms = SceneUniforms {
@@ -83,11 +111,12 @@ fn emit_transparent_draws(
                 alpha_mode_to_f32(dc.alpha_mode),
                 dc.opacity,
                 if dc.double_sided { 1.0 } else { 0.0 },
-                0.0,
+                dc.shade_mode_w(),
             ],
-            pbr_clearcoat: [dc.clearcoat_factor, dc.clearcoat_roughness, 0.0, 0.0],
-            pbr_sheen: [0.0, 0.0, 0.0, 0.0],
+            pbr_clearcoat: [dc.clearcoat_factor, dc.clearcoat_roughness, dc.iridescence_factor, dc.iridescence_ior],
+            pbr_sheen: [dc.sheen_color.x, dc.sheen_color.y, dc.sheen_color.z, dc.sheen_roughness],
             pbr_specular: [dc.specular_color_factor.x, dc.specular_color_factor.y, dc.specular_color_factor.z, dc.specular_factor],
+            pbr_transmission: [dc.transmission_factor, dc.ior, dc.iridescence_thickness_min, dc.iridescence_thickness_max],
             light_set_index: [dc.light_set_id as f32, 0.0, 0.0, 0.0],
         };
 
@@ -134,11 +163,14 @@ fn emit_transparent_draws(
             }
 
             if let Some(mesh_id) = ctx.mesh_handles[i] {
-                let inst_count = match &dc.instance_transforms {
-                    Some(t) if !t.is_empty() => t.len() as u32,
-                    _ => 1,
-                };
-                renderer.draw_mesh_instanced(pass, mesh_id, 0, inst_count, &mut last_bound_mesh);
+                renderer.draw_mesh_instanced(
+                    pass,
+                    mesh_id,
+                    instance_base + slot,
+                    1,
+                    dc.index_draw_range(),
+                    &mut last_bound_mesh,
+                );
             }
         }
     }
@@ -167,6 +199,8 @@ pub(super) fn pass_transparent(
         let db = camera_depth(ctx.visible[b]);
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    let instance_base = upload_transparent_instances(renderer, ctx, &sorted);
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Transparent Pass"),
@@ -198,7 +232,7 @@ pub(super) fn pass_transparent(
     }
     pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
 
-    emit_transparent_draws(renderer, &mut pass, ctx, &sorted);
+    emit_transparent_draws(renderer, &mut pass, ctx, &sorted, instance_base);
 }
 
 /// Renders transparent draw calls using WBOIT (Weighted Blended OIT).
@@ -220,6 +254,9 @@ pub(super) fn pass_transparent_wboit(
     if ctx.transparent_order.is_empty() {
         return;
     }
+
+    let order: Vec<usize> = ctx.transparent_order.to_vec();
+    let instance_base = upload_transparent_instances(renderer, ctx, &order);
 
     // Clear accum to black (0,0,0,0) and revealage to white (1,1,1,1)
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -272,9 +309,7 @@ pub(super) fn pass_transparent_wboit(
     }
     pass.set_bind_group(3, &renderer.gpu.ibl_instance_bind_group, &[]);
 
-    // WBOIT is order-independent, so no sorting needed
-    let order: Vec<usize> = ctx.transparent_order.to_vec();
-    emit_transparent_draws(renderer, &mut pass, ctx, &order);
+    emit_transparent_draws(renderer, &mut pass, ctx, &order, instance_base);
 }
 
 /// Composites WBOIT accum/revealage buffers onto the scene using
@@ -287,11 +322,8 @@ pub(super) fn pass_wboit_composite(
     accum_view: &wgpu::TextureView,
     revealage_view: &wgpu::TextureView,
 ) {
-    let _fx = match &renderer.gpu.post_fx {
-        Some(fx) => fx,
-        None => return,
-    };
     let post_pl = &renderer.gpu.post_fx_pipelines;
+    let composite_hdr = renderer.hdr_post_processing && renderer.gpu.post_fx.is_some();
 
     // Bind group: accum + revealage textures + sampler (shader group 1)
     let accum_bg = renderer
@@ -330,7 +362,11 @@ pub(super) fn pass_wboit_composite(
         occlusion_query_set: None,
     });
 
-    pass.set_pipeline(&post_pl.wboit_composite_pipeline);
+    pass.set_pipeline(if composite_hdr {
+        &post_pl.wboit_composite_pipeline
+    } else {
+        &post_pl.wboit_composite_pipeline_ldr
+    });
     pass.set_bind_group(0, &accum_bg, &[]);
     pass.draw(0..3, 0..1);
 }

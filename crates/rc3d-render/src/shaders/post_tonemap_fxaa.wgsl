@@ -11,9 +11,9 @@ struct PostParams {
     bloom_str: f32,
     grain: f32,
     exposure: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    halftone: f32,
+    glitch: f32,
+    _pad: f32,
 }
 @group(0) @binding(4) var<uniform> params: PostParams;
 
@@ -110,5 +110,21 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let dither = (grain_noise - 0.5) / 255.0;
     let dithered = grain_ldr + dither;
 
-    return vec4<f32>(dithered, 1.0);
+    var out_c = dithered;
+    if (params.halftone > 0.001) {
+        let cell = mix(16.0, 4.0, clamp(params.halftone, 0.0, 1.0));
+        let g = fract(i.clip_pos.xy / cell);
+        let d = length(g - 0.5);
+        let lum = luma(out_c);
+        let dots = vec3<f32>(step(d, lum * 0.72));
+        out_c = mix(out_c, dots, clamp(params.halftone, 0.0, 1.0));
+    }
+    if (params.glitch > 0.001) {
+        let slice = floor(i.uv.y * 48.0);
+        let off = (fract(sin(slice * 91.13) * 43758.5) - 0.5) * params.glitch * 0.08;
+        let gcol = textureSampleLevel(t_hdr, s_point, i.uv + vec2<f32>(off, 0.0), 0.0).rgb;
+        out_c = mix(out_c, tonemap_aces(gcol), clamp(params.glitch, 0.0, 1.0));
+    }
+
+    return vec4<f32>(out_c, 1.0);
 }

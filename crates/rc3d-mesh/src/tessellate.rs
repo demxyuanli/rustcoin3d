@@ -315,6 +315,21 @@ pub fn tessellate_plane(w: f32, d: f32, w_segments: u32, d_segments: u32) -> Tri
     TriangleMesh::from_indexed(&positions, &indices)
 }
 
+/// Camera-facing sprite quad in the XY plane (facing +Z).
+pub fn tessellate_quad_xy(width: f32, height: f32) -> TriangleMesh {
+    let hw = width * 0.5;
+    let hh = height * 0.5;
+    let positions = [
+        Vec3::new(-hw, -hh, 0.0),
+        Vec3::new(hw, -hh, 0.0),
+        Vec3::new(hw, hh, 0.0),
+        Vec3::new(-hw, hh, 0.0),
+    ];
+    let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let indices = [0u32, 1, 2, 0, 2, 3];
+    TriangleMesh::from_indexed_with_texcoords(&positions, &indices, &uvs)
+}
+
 /// Tessellated disc/circle in the XZ plane (facing +Y).
 pub fn tessellate_circle(radius: f32, segments: u32) -> TriangleMesh {
     let n = segments.max(3);

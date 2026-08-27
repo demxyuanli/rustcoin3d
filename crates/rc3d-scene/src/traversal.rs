@@ -6,7 +6,7 @@
 //! visitors only supply matrix state and per-node visit hooks.
 
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::NodeId;
+use rc3d_core::{Appearance, DisplayMode, NodeId};
 
 use crate::node_data::{BillboardNode, NodeData};
 use crate::node_entry::NodeEntry;
@@ -128,6 +128,23 @@ pub trait SceneVisitor: TraversalMatrices {
     /// the transforms so they can be applied to the next emitted draw call.
     fn set_instance_transforms(&mut self, _transforms: &[rc3d_core::math::Mat4]) {}
 
+    /// Orthogonal fill + edges (HOOPS-style). Separator push/pop isolates this.
+    fn appearance(&self) -> Appearance {
+        Appearance::from_display_mode(DisplayMode::default())
+    }
+
+    fn set_appearance(&mut self, _app: Appearance) {}
+
+    /// Coin3D `SoDrawStyle` preset (nearest enum for HUD / legacy).
+    fn display_mode(&self) -> DisplayMode {
+        self.appearance().to_display_mode()
+    }
+
+    /// Override both axes from a preset.
+    fn set_display_mode(&mut self, mode: DisplayMode) {
+        self.set_appearance(Appearance::from_display_mode(mode));
+    }
+
     /// Handle a node that is not driven by the structural kernel.
     ///
     /// Return [`ChildPolicy::Recurse`] to walk `entry.children`, or [`ChildPolicy::Skip`]
@@ -155,6 +172,23 @@ pub fn billboard_facing(billboard: &BillboardNode, view: Mat4) -> Mat4 {
     }
 }
 
+/// Apply `NodeEntry` fill/edge overrides for a nested scope, then restore.
+fn with_node_appearance<V: SceneVisitor>(
+    visitor: &mut V,
+    entry: &NodeEntry,
+    f: impl FnOnce(&mut V),
+) {
+    let inherited = visitor.appearance();
+    let next = entry.appearance(inherited);
+    if next != inherited {
+        visitor.set_appearance(next);
+        f(visitor);
+        visitor.set_appearance(inherited);
+    } else {
+        f(visitor);
+    }
+}
+
 /// Action-style scene traversal with unified Separator / Switch / LOD / Billboard semantics.
 pub fn scene_traverse<V: SceneVisitor>(visitor: &mut V, graph: &SceneGraph, node: NodeId) {
     if !visitor.should_visit(node) {
@@ -167,6 +201,7 @@ pub fn scene_traverse<V: SceneVisitor>(visitor: &mut V, graph: &SceneGraph, node
     match &entry.data {
         NodeData::Separator(_) => {
             visitor.enter_separator();
+            visitor.set_appearance(entry.appearance(visitor.appearance()));
             match visitor.separator_policy() {
                 SeparatorPolicy::ScopedPush => {
                     for &child in &entry.children {
@@ -174,20 +209,22 @@ pub fn scene_traverse<V: SceneVisitor>(visitor: &mut V, graph: &SceneGraph, node
                     }
                 }
                 SeparatorPolicy::FlattenDirectTransforms => {
-                    // Preserve RenderCollector semantics: accumulate Transform matrices along
-                    // Separator siblings; only walk Transform grandchildren for Transform kids.
+                    // Preserve RenderCollector semantics: accumulate Transform / Rotation
+                    // matrices along Separator siblings; only walk grandchildren for those kids.
                     let base = visitor.model_matrix();
                     let mut accum = base;
                     for &child in &entry.children {
                         let Some(ce) = graph.get(child) else {
                             continue;
                         };
-                        if let NodeData::Transform(t) = &ce.data {
-                            accum *= t.to_matrix();
+                        if let Some(lm) = ce.data.local_matrix() {
+                            accum *= lm;
                             visitor.set_model_matrix(accum);
-                            for &gc in &ce.children {
-                                scene_traverse(visitor, graph, gc);
-                            }
+                            with_node_appearance(visitor, ce, |visitor| {
+                                for &gc in &ce.children {
+                                    scene_traverse(visitor, graph, gc);
+                                }
+                            });
                         } else {
                             visitor.set_model_matrix(accum);
                             scene_traverse(visitor, graph, child);
@@ -198,96 +235,116 @@ pub fn scene_traverse<V: SceneVisitor>(visitor: &mut V, graph: &SceneGraph, node
             visitor.leave_separator();
         }
         NodeData::Billboard(b) => {
-            let current = visitor.model_matrix();
-            let facing = billboard_facing(b, visitor.view_matrix());
-            visitor.set_model_matrix(current * facing);
-            for &child in &entry.children {
-                scene_traverse(visitor, graph, child);
-            }
-            visitor.set_model_matrix(current);
-        }
-        NodeData::ResetTransform(_) => {
-            let saved = visitor.model_matrix();
-            visitor.set_model_matrix(Mat4::IDENTITY);
-            for &child in &entry.children {
-                scene_traverse(visitor, graph, child);
-            }
-            visitor.set_model_matrix(saved);
-        }
-        NodeData::ExplodedView(ev) => {
-            let base = visitor.model_matrix();
-            for &child in &entry.children {
-                visitor.set_model_matrix(base * Mat4::from_translation(ev.direction * ev.factor));
-                scene_traverse(visitor, graph, child);
-            }
-            visitor.set_model_matrix(base);
-        }
-        NodeData::Switch(sw) => match sw.which_child {
-            -2 => {}
-            -1 => {
-                for &child in &sw.children {
-                    scene_traverse(visitor, graph, child);
-                }
-            }
-            idx if idx >= 0 => {
-                let i = idx as usize;
-                if i < sw.children.len() {
-                    scene_traverse(visitor, graph, sw.children[i]);
-                }
-            }
-            _ => {}
-        },
-        NodeData::MultipleCopy(mc) => {
-            let base = visitor.model_matrix();
-            for &copy_mat in &mc.copies {
-                visitor.set_model_matrix(base * copy_mat);
-                for &child in &mc.children {
-                    scene_traverse(visitor, graph, child);
-                }
-            }
-            visitor.set_model_matrix(base);
-        }
-        NodeData::Lod(lod) => {
-            let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
-            if let Some(level_data) = lod.levels.get(level) {
-                for &child in &level_data.children {
-                    scene_traverse(visitor, graph, child);
-                }
-            }
-        }
-        NodeData::HandlerNode(h) => {
-            h.traverse(graph, node, &entry.children, &mut |id| {
-                scene_traverse(visitor, graph, id);
-            });
-        }
-        NodeData::Transform(t) => {
-            // Coin3D SoTransform: update model matrix for children and subsequent siblings
-            // within the current Separator scope (no restore here).
-            // Under FlattenDirectTransforms, direct Separator→Transform kids are handled above
-            // and never reach this arm.
-            let current = visitor.model_matrix();
-            visitor.set_model_matrix(current * t.to_matrix());
-            for &child in &entry.children {
-                scene_traverse(visitor, graph, child);
-            }
-        }
-        NodeData::InstancedMesh(im) => {
-            let transforms: Vec<rc3d_core::math::Mat4> = im.transforms.iter()
-                .map(rc3d_core::math::Mat4::from_cols_array_2d)
-                .collect();
-            visitor.set_instance_transforms(&transforms);
-            for &child in &entry.children {
-                scene_traverse(visitor, graph, child);
-            }
-            visitor.set_instance_transforms(&[]);
-        }
-        _ => {
-            let policy = visitor.visit_node(graph, node, entry);
-            if policy == ChildPolicy::Recurse {
+            with_node_appearance(visitor, entry, |visitor| {
+                let current = visitor.model_matrix();
+                let facing = billboard_facing(b, visitor.view_matrix());
+                visitor.set_model_matrix(current * facing);
                 for &child in &entry.children {
                     scene_traverse(visitor, graph, child);
                 }
-            }
+                visitor.set_model_matrix(current);
+            });
+        }
+        NodeData::ResetTransform(_) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let saved = visitor.model_matrix();
+                visitor.set_model_matrix(Mat4::IDENTITY);
+                for &child in &entry.children {
+                    scene_traverse(visitor, graph, child);
+                }
+                visitor.set_model_matrix(saved);
+            });
+        }
+        NodeData::ExplodedView(ev) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let base = visitor.model_matrix();
+                for &child in &entry.children {
+                    visitor.set_model_matrix(base * Mat4::from_translation(ev.direction * ev.factor));
+                    scene_traverse(visitor, graph, child);
+                }
+                visitor.set_model_matrix(base);
+            });
+        }
+        NodeData::Switch(sw) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                match sw.which_child {
+                    -2 => {}
+                    -1 => {
+                        for &child in &sw.children {
+                            scene_traverse(visitor, graph, child);
+                        }
+                    }
+                    idx if idx >= 0 => {
+                        let i = idx as usize;
+                        if i < sw.children.len() {
+                            scene_traverse(visitor, graph, sw.children[i]);
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        }
+        NodeData::MultipleCopy(mc) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let base = visitor.model_matrix();
+                for &copy_mat in &mc.copies {
+                    visitor.set_model_matrix(base * copy_mat);
+                    for &child in &mc.children {
+                        scene_traverse(visitor, graph, child);
+                    }
+                }
+                visitor.set_model_matrix(base);
+            });
+        }
+        NodeData::Lod(lod) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let level = lod.current_level.min(lod.levels.len().saturating_sub(1));
+                if let Some(level_data) = lod.levels.get(level) {
+                    for &child in &level_data.children {
+                        scene_traverse(visitor, graph, child);
+                    }
+                }
+            });
+        }
+        NodeData::HandlerNode(h) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                h.traverse(graph, node, &entry.children, &mut |id| {
+                    scene_traverse(visitor, graph, id);
+                });
+            });
+        }
+        NodeData::Transform(_) | NodeData::Rotation(_) | NodeData::RotationXYZ(_) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let current = visitor.model_matrix();
+                if let Some(lm) = entry.data.local_matrix() {
+                    visitor.set_model_matrix(current * lm);
+                }
+                for &child in &entry.children {
+                    scene_traverse(visitor, graph, child);
+                }
+            });
+        }
+        NodeData::InstancedMesh(im) => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let transforms: Vec<rc3d_core::math::Mat4> = im.transforms.iter()
+                    .map(rc3d_core::math::Mat4::from_cols_array_2d)
+                    .collect();
+                visitor.set_instance_transforms(&transforms);
+                for &child in &entry.children {
+                    scene_traverse(visitor, graph, child);
+                }
+                visitor.set_instance_transforms(&[]);
+            });
+        }
+        _ => {
+            with_node_appearance(visitor, entry, |visitor| {
+                let policy = visitor.visit_node(graph, node, entry);
+                if policy == ChildPolicy::Recurse {
+                    for &child in &entry.children {
+                        scene_traverse(visitor, graph, child);
+                    }
+                }
+            });
         }
     }
 }

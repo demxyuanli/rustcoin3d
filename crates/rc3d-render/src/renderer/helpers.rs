@@ -6,6 +6,17 @@ use crate::vertex::LineVertex;
 use super::types::{BatchAnalysis, FrameDiagnostics, MemoryBudget, NodeTypeDrawStat};
 use super::Renderer;
 
+fn indexed_draw_range(mesh: &GpuMesh, index_range: Option<(u32, u32)>) -> std::ops::Range<u32> {
+    match index_range {
+        Some((first, count)) => {
+            let first = first.min(mesh.index_count);
+            let end = first.saturating_add(count).min(mesh.index_count);
+            first..end
+        }
+        None => 0..mesh.index_count,
+    }
+}
+
 impl Renderer {
     pub(crate) fn get_mesh(&self, mesh_id: crate::gpu_resource::MeshId) -> Option<&GpuMesh> {
         self.gpu.gpu_meshes.get(mesh_id)
@@ -15,6 +26,7 @@ impl Renderer {
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         mesh_id: crate::gpu_resource::MeshId,
+        index_range: Option<(u32, u32)>,
         last_bound: &mut Option<crate::gpu_resource::MeshId>,
     ) {
         let Some(mesh) = self.get_mesh(mesh_id) else { return };
@@ -26,7 +38,7 @@ impl Renderer {
             *last_bound = Some(mesh_id);
         }
         if mesh.index_buffer.is_some() {
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            pass.draw_indexed(indexed_draw_range(mesh, index_range), 0, 0..1);
         } else {
             pass.draw(0..mesh.vertex_count, 0..1);
         }
@@ -42,6 +54,7 @@ impl Renderer {
         mesh_id: crate::gpu_resource::MeshId,
         first_instance: u32,
         instance_count: u32,
+        index_range: Option<(u32, u32)>,
         last_bound: &mut Option<crate::gpu_resource::MeshId>,
     ) {
         let Some(mesh) = self.get_mesh(mesh_id) else { return };
@@ -53,7 +66,11 @@ impl Renderer {
             *last_bound = Some(mesh_id);
         }
         if mesh.index_buffer.is_some() {
-            pass.draw_indexed(0..mesh.index_count, 0, first_instance..first_instance + instance_count);
+            pass.draw_indexed(
+                indexed_draw_range(mesh, index_range),
+                0,
+                first_instance..first_instance + instance_count,
+            );
         } else {
             pass.draw(0..mesh.vertex_count, first_instance..first_instance + instance_count);
         }
@@ -199,6 +216,8 @@ impl Renderer {
         for dc in visible {
             let tris = if let Some(md) = dc.meshlet_data.as_ref() {
                 md.total_triangles as u64
+            } else if dc.index_draw_count > 0 {
+                (dc.index_draw_count / 3) as u64
             } else if let Some(indices) = dc.indices.as_ref() {
                 (indices.len() / 3) as u64
             } else {

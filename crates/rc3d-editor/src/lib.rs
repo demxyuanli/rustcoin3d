@@ -12,6 +12,7 @@ pub use box_select::{
     select_nodes_in_screen_box, select_nodes_in_viewport_box,
 };
 pub use commands::EditorCommand;
+pub use context::{EditorContext, EditorInteractionState};
 pub use editor::Editor;
 pub use ui::types::{EditorDisplayMode, EditorUiContext, NodeDataType, RenderFeatureFlags};
 pub use ui::panel::{

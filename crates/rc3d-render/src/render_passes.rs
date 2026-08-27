@@ -6,6 +6,7 @@ use glam::Mat4;
 use rc3d_core::DisplayMode;
 
 mod pass_edge;
+mod pass_hidden;
 pub(crate) mod pass_effects;
 mod pass_grid;
 pub(crate) mod pass_markup;
@@ -15,7 +16,7 @@ mod pass_shadow;
 mod pass_solid;
 mod pass_transparent;
 pub(crate) mod pass_text;
-mod pass_viewport;
+pub(crate) mod pass_viewport;
 mod ss_edge;
 pub(crate) mod pass_wireframe;
 mod pass_hud;
@@ -35,6 +36,8 @@ pub(crate) struct PassContext<'a> {
     pub selected_order: &'a [usize],
     pub transparent_order: &'a [usize],
     pub mesh_handles: &'a [Option<crate::gpu_resource::MeshId>],
+    /// Global display mode after perf/adaptive remap. Per-draw style uses `DrawCall.display_mode`.
+    #[allow(dead_code)]
     pub mode: DisplayMode,
     pub bg_color: wgpu::Color,
     pub performance_mode_active: bool,
@@ -200,12 +203,12 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_omni);
 
-    let mode = ctx.mode;
-
-    let solid_mode = matches!(
-        mode,
-        DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine | DisplayMode::Flat | DisplayMode::FlatWithEdge
-    );
+    let any_filled = ctx.visible.iter().any(|dc| dc.appearance().wants_filled());
+    let any_lit = ctx.visible.iter().any(|dc| dc.appearance().wants_lit_solid());
+    let any_wireframe = ctx.visible.iter().any(|dc| dc.appearance().wants_full_edges());
+    let any_feature_edges = ctx.visible.iter().any(|dc| dc.appearance().wants_edge_overlay());
+    let solid_mode = any_filled;
+    let defer_line_overlays = use_ldr_fxaa;
 
     let hzb_need_max = !ctx.meshlet_indices.is_empty()
         && ctx
@@ -219,8 +222,7 @@ pub(super) fn execute_passes(
             .any(|&i| !ctx.visible[i].depth_reversed_z);
 
     let requested_meshlet_hzb_prepass = solid_mode
-        && mode != DisplayMode::Flat
-        && mode != DisplayMode::FlatWithEdge
+        && any_lit
         && !ctx.meshlet_indices.is_empty()
         && renderer.gpu.cluster_renderer.is_some()
         && renderer.gpu.hzb.is_some()
@@ -285,7 +287,7 @@ pub(super) fn execute_passes(
         }
     }
 
-    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && mode != DisplayMode::Flat && mode != DisplayMode::FlatWithEdge && renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled {
+    if !meshlet_hzb_prepass_done && !ctx.meshlet_indices.is_empty() && any_lit && renderer.gpu.gpu_capability.meshlet_gpu_cull_enabled {
         let (fallback_dims, fallback_mip) = if let Some(hzb) = renderer.gpu.hzb.as_ref() {
             ((hzb.max_pyramid.width, hzb.max_pyramid.height), hzb.max_pyramid.mip_count.saturating_sub(1))
         } else {
@@ -335,14 +337,26 @@ pub(super) fn execute_passes(
     }
     renderer.gpu_timer.end(&mut encoder, ti_solid);
 
-    // ── Transparent pass: alpha-blended draw calls ──
+    if ctx.visible.iter().any(|dc| crate::custom_shader::is_custom_shader_draw(dc)) {
+        renderer.ensure_custom_shader_pass();
+        if let Some(ref mut pass) = renderer.gpu.custom_shader_pass {
+            pass.encode(
+                &renderer.device,
+                &mut encoder,
+                shade_view,
+                &depth_view,
+                ctx.visible,
+                0.0,
+            );
+        }
+    }
+
+    // ── Transparent pass: WBOIT (LDR or HDR) or painter's algorithm ──
     if !ctx.transparent_order.is_empty() {
-        if renderer.enable_wboit && renderer.hdr_post_processing {
-            // WBOIT path: accumulate into MRT buffers, then composite onto scene.
-            // Clone views upfront to avoid borrowing renderer.gpu.post_fx while
-            // passing renderer mutably to the pass functions.
-            let wboit_views = renderer.gpu.post_fx.as_ref().map(|fx| {
-                (fx.wboit_accum_view.clone(), fx.wboit_revealage_view.clone())
+        if renderer.enable_wboit {
+            renderer.ensure_wboit_targets(ew, eh);
+            let wboit_views = renderer.gpu.wboit_targets.as_ref().map(|t| {
+                (t.accum_view.clone(), t.revealage_view.clone())
             });
             if let Some((accum_view, revealage_view)) = wboit_views {
                 let ti_transparent = renderer.gpu_timer.begin(&mut encoder, "WBOIT Accumulate");
@@ -405,18 +419,33 @@ pub(super) fn execute_passes(
         }
         if !ctx.effect_commands.point_clouds.is_empty() {
             renderer.ensure_point_cloud_pass();
-            if let Some(ref pass) = renderer.gpu.point_cloud_pass {
+            if let Some(ref mut pass) = renderer.gpu.point_cloud_pass {
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
                     shade_view, &depth_view, &ctx.effect_commands.point_clouds,
-                    ctx.camera_proj, ctx.camera_inv_proj, ew, eh,
+                    ctx.scene_vp, ctx.camera_inv_proj, ew, eh,
                 );
             }
         }
     }
     renderer.gpu_timer.end(&mut encoder, ti_effects);
 
-    if !ctx.performance_mode_active && ctx.wireframe_supported && mode == DisplayMode::Wireframe && mode != DisplayMode::Flat {
+    let run_hidden = !ctx.performance_mode_active
+        && ctx.visible.iter().any(|dc| dc.appearance().wants_hidden_dashes());
+    let run_wireframe = !ctx.performance_mode_active && ctx.wireframe_supported && any_wireframe;
+    // FXAA blits shade -> swapchain with a whole-target Clear. Draw lines after that
+    // blit so mixed filled+line frames keep the solid pass (pass_wireframe Loads).
+    if run_hidden && !defer_line_overlays {
+        pass_hidden::pass_hidden_edges(
+            renderer,
+            &mut encoder,
+            shade_view,
+            &depth_view,
+            ctx,
+            &scene_pl,
+        );
+    }
+    if run_wireframe && !defer_line_overlays {
         #[cfg(feature = "profiler")]
         let _span_wireframe = tracy_client::span!("wireframe");
         pass_wireframe::pass_wireframe(renderer, &mut encoder, shade_view, &depth_view, ctx, &scene_pl);
@@ -427,11 +456,8 @@ pub(super) fn execute_passes(
         && renderer.screen_space_selection_outline
         && ctx.adaptive_quality != AdaptiveQuality::Low;
 
-    let edge_worthy = !ctx.performance_mode_active
-        && (mode == DisplayMode::ShadedWithEdges || mode == DisplayMode::HiddenLine || mode == DisplayMode::FlatWithEdge)
-        && mode != DisplayMode::Flat;
+    let edge_worthy = !ctx.performance_mode_active && any_feature_edges;
     let has_overlay = ctx.visible.iter().any(|dc| dc.overlay_color.is_some());
-    let defer_line_overlays = use_ldr_fxaa;
     if (edge_worthy || has_overlay) && !defer_line_overlays {
         #[cfg(feature = "profiler")]
         let _span_edge = tracy_client::span!("edge");
@@ -502,6 +528,21 @@ pub(super) fn execute_passes(
     }
 
     if defer_line_overlays {
+        if run_hidden {
+            pass_hidden::pass_hidden_edges(
+                renderer,
+                &mut encoder,
+                view,
+                &depth_view,
+                ctx,
+                &scene_pl,
+            );
+        }
+        if run_wireframe {
+            #[cfg(feature = "profiler")]
+            let _span_wireframe = tracy_client::span!("wireframe");
+            pass_wireframe::pass_wireframe(renderer, &mut encoder, view, &depth_view, ctx, &scene_pl);
+        }
         if edge_worthy || has_overlay {
             pass_edge::pass_edge_overlay(renderer, &mut encoder, view, &depth_view, ctx, edge_worthy, &scene_pl);
         }
@@ -541,6 +582,15 @@ pub(super) fn execute_passes(
             ctx.depth_reversed_z,
         );
     }
+
+    pass_grid::pass_gizmo_lines(
+        renderer,
+        &mut encoder,
+        view,
+        &depth_view,
+        renderer.frame.scene_vp,
+        ctx.depth_reversed_z,
+    );
 
     // Viewport border overlay
     pass_viewport::encode_viewport_borders(

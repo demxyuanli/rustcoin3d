@@ -3,8 +3,8 @@
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_core::NodeId;
 use rc3d_scene::node_data::{
-    Coordinate3Node, IndexedFaceSetNode, MaterialNode, NodeData, NormalNode, SeparatorNode,
-    TextureCoordinate2Node,
+    Coordinate3Node, DraggerKind, DraggerNode, IndexedFaceSetNode, MaterialNode, NodeData,
+    NormalNode, SeparatorNode, TextureCoordinate2Node, TransformManipNode,
 };
 use rc3d_scene::SceneGraph;
 use rc3d_mesh::TriangleMesh;
@@ -20,7 +20,7 @@ pub fn shape_kit(graph: &mut SceneGraph, parent: NodeId, mesh: &TriangleMesh, ma
         graph.add_child(sep, NodeData::TextureCoordinate2(TextureCoordinate2Node { point: mesh.texcoords.clone() }));
     }
     let coord_index: Vec<i32> = mesh.tri_indices.iter().map(|&i| i as i32).collect();
-    graph.add_child(sep, NodeData::IndexedFaceSet(IndexedFaceSetNode { coord_index }));
+    graph.add_child(sep, NodeData::IndexedFaceSet(IndexedFaceSetNode::from_coord_index(coord_index)));
     sep
 }
 
@@ -74,4 +74,28 @@ pub fn switch_kit(graph: &mut SceneGraph, parent: NodeId, child_count: usize) ->
         }
     }
     (sep, sw, children)
+}
+
+/// Attach a `TransformManip` under `parent` with optional child draggers.
+/// Returns the manipulator node id.
+///
+/// Typical kit: Separator { Transform, geometry, TransformManip { Dragger... } }.
+/// `node.target = None` binds the preceding sibling Transform (Coin3D).
+pub fn transform_manip_kit(
+    graph: &mut SceneGraph,
+    parent: NodeId,
+    node: TransformManipNode,
+    parts: &[DraggerKind],
+) -> NodeId {
+    let manip = graph.add_child(parent, NodeData::TransformManip(node));
+    for &kind in parts {
+        graph.add_child(
+            manip,
+            NodeData::Dragger(DraggerNode {
+                kind,
+                enabled: true,
+            }),
+        );
+    }
+    manip
 }

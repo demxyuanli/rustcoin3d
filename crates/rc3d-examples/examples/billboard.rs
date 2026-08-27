@@ -46,5 +46,52 @@ fn main() {
         graph.add_child(root, NodeData::Cube(CubeNode {
             width: 0.5, height: 0.5, depth: 0.5,
         }));
+
+        graph.add_child(
+            root,
+            NodeData::Sprite(SpriteNode {
+                color: [0.2, 0.85, 1.0, 1.0],
+                size: 0.8,
+                size_attenuation: true,
+                ..Default::default()
+            }),
+        );
+        let offset = graph.add_child(root, NodeData::Separator(SeparatorNode));
+        graph.add_child(
+            offset,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(1.5, 0.5, 0.0))),
+        );
+        graph.add_child(
+            offset,
+            NodeData::Sprite(SpriteNode {
+                color: [1.0, 0.4, 0.15, 0.9],
+                size: 0.6,
+                size_attenuation: false,
+                ..Default::default()
+            }),
+        );
+
+        let font_sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+        graph.add_child(
+            font_sep,
+            NodeData::Transform(TransformNode::from_translation(Vec3::new(0.0, 1.4, 0.0))),
+        );
+        graph.add_child(
+            font_sep,
+            NodeData::Font(FontNode {
+                name: String::new(),
+                size: 32.0,
+                style: FontStyle::Serif,
+            }),
+        );
+        graph.add_child(
+            font_sep,
+            NodeData::Text3(Text3Node {
+                string: "SoFont SDF".into(),
+                position: Vec3::ZERO,
+                size: 24.0,
+                color: [0.95, 0.92, 0.75, 1.0],
+            }),
+        );
     });
 }

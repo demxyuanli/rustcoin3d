@@ -13,7 +13,10 @@ use crate::render_action::DrawCall;
 use crate::render_passes;
 use crate::render_passes::PassContext;
 use crate::render_passes::pass_effects::EffectCommands;
-use crate::shadow_map::{aabb_from_scene, csm_light_view_projs, compute_csm_splits, primary_directional_light_dir, union_draw_call_aabbs};
+use crate::shadow_map::{
+    aabb_from_scene, csm_light_view_projs, compute_csm_splits, practical_csm_far,
+    primary_directional_light_dir, projection_near_far, union_draw_call_aabbs,
+};
 use crate::sort_keys;
 use crate::vertex::CSM_CASCADE_COUNT;
 use super::internals::CadDisplayTier;
@@ -82,11 +85,22 @@ impl super::Renderer {
         };
         let mut transparent_order: Vec<usize> = Vec::new();
         transparent_order.extend((0..visible.len())
-            .filter(|&i| visible[i].alpha_mode != AlphaMode::Opaque
-                && (!visible[i].vertices.is_empty() || visible[i].meshlet_data.is_some())));
-        // Remove transparent objects from solid order (avoids double-draw)
-        solid_order.retain(|&i| visible[i].alpha_mode == AlphaMode::Opaque
-            || visible[i].vertices.is_empty() && visible[i].meshlet_data.is_none());
+            .filter(|&i| {
+                let dc = visible[i];
+                let geom = !dc.vertices.is_empty() || dc.meshlet_data.is_some();
+                geom
+                    && !crate::custom_shader::is_custom_shader_draw(dc)
+                    && (dc.alpha_mode != AlphaMode::Opaque || dc.transmission_factor > 0.01)
+            }));
+        // Remove transparent / custom-shader objects from solid order (avoids double-draw)
+        solid_order.retain(|&i| {
+            let dc = visible[i];
+            let geom = !dc.vertices.is_empty() || dc.meshlet_data.is_some();
+            geom
+                && !crate::custom_shader::is_custom_shader_draw(dc)
+                && dc.alpha_mode == AlphaMode::Opaque
+                && dc.transmission_factor <= 0.01
+        });
 
         let mut meshlet_indices = std::mem::take(&mut self.frame.meshlet_indices_buf);
         meshlet_indices.clear();
@@ -145,14 +159,13 @@ impl super::Renderer {
         } else {
             base_mode
         };
+        // Per-draw DisplayMode (Coin3D SoDrawStyle): mixed subtrees must still
+        // get CSM when any visible draw wants lit solid. Uniform frames
+        // match the previous global-mode gates via the same helpers.
+        let any_lit = visible.iter().any(|dc| dc.appearance().wants_lit_solid());
 
         let solid_wants_shadow = !self.frame.performance_mode_active
-            && matches!(
-                mode,
-                DisplayMode::Shaded | DisplayMode::ShadedWithEdges | DisplayMode::HiddenLine
-            )
-            && mode != DisplayMode::Flat
-            && mode != DisplayMode::FlatWithEdge
+            && any_lit
             && self.tier_wants_shadow;
 
         let (camera_proj, camera_inv_proj) = if let Some((p, ip)) = ssao_projection {
@@ -183,7 +196,7 @@ impl super::Renderer {
             let _span_csm = tracy_client::span!("csm_setup");
             if let Some(dir) = primary_directional_light_dir(scene) {
                 let aabb = aabb_from_scene(scene).or_else(|| union_draw_call_aabbs(visible.iter().copied()));
-                if let Some(_aabb) = aabb {
+                if let Some(scene_aabb) = aabb {
                     let sm_size = match self.gpu.adaptive_quality {
                         AdaptiveQuality::High => 2048,
                         AdaptiveQuality::Medium => 1024,
@@ -197,11 +210,32 @@ impl super::Renderer {
                     self.set_csm_shadow(sm_size, cascade_count);
 
                     let vp = first.mvp * first.model_matrix.inverse();
-                    let camera_near = 0.1f32;
-                    let camera_far = 1000.0f32;
-                    let splits = compute_csm_splits(camera_near, camera_far, cascade_count, 0.5);
                     let inv_vp = vp.inverse();
-                    let light_vps = csm_light_view_projs(dir, inv_vp, &splits, 8.0);
+                    let (proj_near, proj_far) = projection_near_far(
+                        inv_vp,
+                        first.camera_pos,
+                        first.depth_reversed_z,
+                    );
+                    let scene_far = {
+                        let extent = scene_aabb.size().length();
+                        let dist = (scene_aabb.center() - first.camera_pos).length();
+                        dist + extent
+                    };
+                    // Splits follow the projection near/far so PBR sampling hits the
+                    // map, then clamp to the scene extent so CAD `far = distance*20`
+                    // does not stretch cascades. Interpolation in `csm_light_view_projs`
+                    // still uses the full projection span (not this tightened far).
+                    let camera_near = proj_near;
+                    let camera_far = practical_csm_far(scene_far, proj_far);
+                    let splits = compute_csm_splits(camera_near, camera_far, cascade_count, 0.5);
+                    let light_vps = csm_light_view_projs(
+                        dir,
+                        inv_vp,
+                        &splits,
+                        8.0,
+                        first.camera_pos,
+                        first.depth_reversed_z,
+                    );
 
                     for (i, lvp) in light_vps.iter().enumerate() {
                         if i < CSM_CASCADE_COUNT {
@@ -239,15 +273,25 @@ impl super::Renderer {
         // Upload global frame uniforms (lights, CSM, IBL) once per frame.
         if let Some(ref buf) = self.gpu.global_frame_buffer {
             let primary = *self.light_sets.get(0);
+            let mut light_types = primary.2;
+            let mut light_positions = primary.3;
+            crate::shadow_omni::assign_omni_shadow_slots(&mut light_types, primary.5);
+            for i in 0..primary.5.min(crate::vertex::MAX_LIGHTS as u32) as usize {
+                if light_types[i][0] as i32 == 1 && light_positions[i][3] <= 0.0 {
+                    light_positions[i][3] = 100.0;
+                }
+            }
             let global = crate::vertex::GlobalFrameUniforms {
                 light_dirs: primary.0,
                 light_colors: primary.1,
-                light_types: primary.2,
-                light_positions: primary.3,
+                light_types,
+                light_positions,
                 spot_params: primary.4,
                 light_count: [primary.5 as f32, 0.0, 0.0, 0.0],
                 ibl_diffuse: self.gpu.ibl_diffuse,
                 ibl_specular: self.gpu.ibl_specular,
+                sh_l2: self.gpu.sh_l2,
+                sh_intensity: self.gpu.sh_intensity,
                 csm_view_proj: crate::render_passes::draw_opaque::csm_to_uniform(&csm_view_proj),
                 csm_split_depths,
                 shadow_params,

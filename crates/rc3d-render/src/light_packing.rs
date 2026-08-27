@@ -58,13 +58,19 @@ pub fn collect_lights(lights: &[LightData]) -> PackedLights {
             dirs[idx] = [light.direction.x, light.direction.y, light.direction.z, 0.0];
             let c = light.color * light.intensity;
             colors[idx] = [c.x, c.y, c.z, 1.0];
-            positions[idx] = [light.location.x, light.location.y, light.location.z, 1.0];
             types[idx][0] = match light.light_type {
                 LightType::Directional => 0.0,
                 LightType::Point => 1.0,
                 LightType::Spot => 2.0,
+                LightType::Hemisphere => 4.0,
             };
-            spot_params[idx] = [light.cut_off_angle.cos(), light.drop_off_rate, 0.0, 0.0];
+            if light.light_type == LightType::Hemisphere {
+                let ground = light.ground_color * light.intensity;
+                positions[idx] = [ground.x, ground.y, ground.z, 0.0];
+            } else {
+                positions[idx] = [light.location.x, light.location.y, light.location.z, 1.0];
+                spot_params[idx] = [light.cut_off_angle.cos(), light.drop_off_rate, 0.0, 0.0];
+            }
             count += 1;
         } else {
             warned = true;

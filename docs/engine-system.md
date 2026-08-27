@@ -8,20 +8,31 @@ The engine system provides per-frame simulation capabilities analogous to Coin3D
 
 ```
 EngineRegistry ─── Vec<Box<dyn Engine>>
+    │              Vec<EngineConnection>   (engine ports + node fields)
     │
-    ├── ElapsedTimeEngine   (time-driven rotation)
-    ├── SineOscillatorEngine (waveform animation)
-    ├── CalculatorEngine    (expression evaluation)
+    ├── ElapsedTimeEngine   (time-driven rotation; timeOut)
+    ├── SineOscillatorEngine (waveform animation; value)
+    ├── CalculatorEngine    (expression evaluation; iA..iH / oA..oH)
     ├── ComposeMatrixEngine (TRS matrix composition)
     ├── InterpolateVec3Engine
     ├── InterpolateFloatEngine
     ├── InterpolateRotationEngine
-    ├── ComposeVec3fEngine
+    ├── ComposeVec3fEngine  (x/y/z -> vector)
+    ├── DecomposeVec3fEngine
+    ├── GateEngine          (enable / trigger pass-through)
+    ├── ConcatenateEngine
+    ├── SelectOneEngine
+    ├── BoolOperationEngine
     ├── OnOffEngine         (toggle state machine)
     ├── OneShotEngine       (single-trigger timer)
     ├── CounterEngine       (integer counter)
+    ├── TimeCounterEngine
     └── TriggerAnyEngine    (fire-once trigger)
 ```
+
+Empty `connections` keeps insertion-order `evaluate`. Non-empty graphs pull `set_input`, evaluate in Kahn topological order (`toposort_linear`; cycle → insertion order), then write engine outputs onto node fields (`Transform.translation` = field 0, etc.).
+
+`SceneGraph` also holds a **cross-node field graph** (`FieldRef` edges, `field_sources` / `field_targets`). `World::evaluate_engines` runs engines then `propagate_fields`.
 
 ## 3. Core Trait
 
@@ -32,8 +43,23 @@ pub trait Engine: Any + Debug {
 
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn set_input(&mut self, port: &str, value: FieldValue) {}
+    fn output(&self, port: &str) -> Option<FieldValue> { None }
 }
 ```
+
+### 3.1 Connection graph
+
+```rust
+let sine = registry.add(SineOscillatorEngine::unbound(1.2, 1.0));
+let calc = registry.add(CalculatorEngine::from_expr("oA = iA * 0.5"));
+let compose = registry.add(ComposeVec3fEngine::unbound_xyz(2.0, 0.0, 0.0));
+registry.connect_engines(sine, "value", calc, "iA");
+registry.connect_engines(calc, "oA", compose, "y");
+registry.connect_to_node(compose, "vector", bounce_tf, 0); // Transform.translation
+```
+
+Demo: `rotating_cube` (ElapsedTime + Gate/Decompose/Concatenate chain + `connect_fields` rotation copy).
 
 ## 4. Engine Reference
 

@@ -77,9 +77,7 @@ impl DynamicSurface {
         let coord_index = triangle_indices_to_coord_index(&ts.indices);
         let ifs = graph.add_child(
             sep,
-            NodeData::IndexedFaceSet(IndexedFaceSetNode {
-                coord_index,
-            }),
+            NodeData::IndexedFaceSet(IndexedFaceSetNode::from_coord_index(coord_index)),
         );
 
         Self {
@@ -264,7 +262,11 @@ fn check_camera_light_recursive(
         rc3d_scene::node_data::NodeData::PerspectiveCamera(_)
         | rc3d_scene::node_data::NodeData::OrthographicCamera(_) => *has_camera = true,
         rc3d_scene::node_data::NodeData::DirectionalLight(_)
-        | rc3d_scene::node_data::NodeData::PointLight(_) => *has_light = true,
+        | rc3d_scene::node_data::NodeData::PointLight(_)
+        | rc3d_scene::node_data::NodeData::SpotLight(_)
+        | rc3d_scene::node_data::NodeData::AreaLight(_)
+        | rc3d_scene::node_data::NodeData::HemisphereLight(_)
+        | rc3d_scene::node_data::NodeData::LightProbe(_) => *has_light = true,
         _ => {}
     }
     if *has_camera && *has_light {

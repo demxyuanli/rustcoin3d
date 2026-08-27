@@ -132,6 +132,8 @@ fn push_world_label(
         height_world,
         screen_height_px: style.font_size,
         color,
+        font_name: String::new(),
+        font_style: rc3d_scene::node_data::FontStyle::Sans,
     });
 }
 

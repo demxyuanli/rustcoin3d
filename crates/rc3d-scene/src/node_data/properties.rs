@@ -1,5 +1,5 @@
 //! Property nodes: coordinates, material, transform, hints, bindings.
-use rc3d_core::math::{Mat4, Vec3};
+use rc3d_core::math::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 /// Stores vertex positions.
@@ -38,6 +38,16 @@ impl NormalNode {
     }
 }
 
+fn default_iridescence_ior() -> f32 {
+    1.3
+}
+fn default_iridescence_thickness_min() -> f32 {
+    100.0
+}
+fn default_iridescence_thickness_max() -> f32 {
+    400.0
+}
+
 /// Stores material properties with full PBR support.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MaterialNode {
@@ -73,7 +83,40 @@ pub struct MaterialNode {
     pub transmission_factor: f32,
     /// Index of refraction for transmission (default 1.5 for glass).
     pub ior: f32,
+    /// Sheen color (KHR_materials_sheen). Zero disables the layer.
+    #[serde(default)]
+    pub sheen_color: Vec3,
+    /// Sheen roughness (KHR_materials_sheen).
+    #[serde(default)]
+    pub sheen_roughness: f32,
+    /// Thin-film iridescence factor (KHR_materials_iridescence). Zero disables.
+    #[serde(default)]
+    pub iridescence_factor: f32,
+    /// Thin-film IOR (KHR_materials_iridescence). Default 1.3.
+    #[serde(default = "default_iridescence_ior")]
+    pub iridescence_ior: f32,
+    /// Thin-film thickness minimum in nm.
+    #[serde(default = "default_iridescence_thickness_min")]
+    pub iridescence_thickness_min: f32,
+    /// Thin-film thickness maximum in nm.
+    #[serde(default = "default_iridescence_thickness_max")]
+    pub iridescence_thickness_max: f32,
+    /// Cel-shading bands (three.js MeshToonMaterial). 0 = off.
+    #[serde(default)]
+    pub toon_steps: f32,
+    /// Output world normals as color (three.js MeshNormalMaterial).
+    #[serde(default)]
+    pub visualize_normals: bool,
+    /// Output camera-distance grayscale (three.js MeshDepthMaterial).
+    #[serde(default)]
+    pub visualize_depth: bool,
     pub light_group: Option<String>,
+    /// Optional custom WGSL (Three.js ShaderMaterial). Snippet or full shader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_wgsl: Option<String>,
+    /// User vec4 forwarded to custom shaders as `u.custom`.
+    #[serde(default)]
+    pub custom_uniforms: [f32; 4],
 }
 
 /// Alpha rendering mode following glTF conventions.
@@ -114,7 +157,18 @@ impl MaterialNode {
             specular_color_factor: Vec3::ONE,
             transmission_factor: 0.0,
             ior: 1.5,
+            sheen_color: Vec3::ZERO,
+            sheen_roughness: 0.0,
+            iridescence_factor: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            toon_steps: 0.0,
+            visualize_normals: false,
+            visualize_depth: false,
             light_group: None,
+            custom_wgsl: None,
+            custom_uniforms: [0.0; 4],
         }
     }
 }
@@ -146,7 +200,18 @@ impl Default for MaterialNode {
             specular_color_factor: Vec3::ONE,
             transmission_factor: 0.0,
             ior: 1.5,
+            sheen_color: Vec3::ZERO,
+            sheen_roughness: 0.0,
+            iridescence_factor: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            toon_steps: 0.0,
+            visualize_normals: false,
+            visualize_depth: false,
             light_group: None,
+            custom_wgsl: None,
+            custom_uniforms: [0.0; 4],
         }
     }
 }
@@ -191,6 +256,87 @@ impl TransformNode {
         let t = Mat4::from_translation(self.translation);
         let s = Mat4::from_scale(self.scale);
         t * c * self.rotation * s * ci
+    }
+}
+
+/// Axis-angle rotation (Coin3D `SoRotation`). Multiplies the current model matrix.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RotationNode {
+    pub axis: Vec3,
+    pub angle: f32,
+}
+
+impl Default for RotationNode {
+    fn default() -> Self {
+        Self {
+            axis: Vec3::Z,
+            angle: 0.0,
+        }
+    }
+}
+
+impl RotationNode {
+    pub fn from_axis_angle(axis: Vec3, angle: f32) -> Self {
+        let len = axis.length();
+        if len < 1e-8 {
+            Self {
+                axis: Vec3::Z,
+                angle: 0.0,
+            }
+        } else {
+            Self {
+                axis: axis / len,
+                angle,
+            }
+        }
+    }
+
+    pub fn from_quat(q: Quat) -> Self {
+        let (axis, angle) = q.to_axis_angle();
+        Self { axis, angle }
+    }
+
+    pub fn to_matrix(&self) -> Mat4 {
+        if self.axis.length_squared() < 1e-12 {
+            Mat4::IDENTITY
+        } else {
+            Mat4::from_axis_angle(self.axis.normalize(), self.angle)
+        }
+    }
+}
+
+/// Cardinal-axis rotation (Coin3D `SoRotationXYZ`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RotationAxis {
+    #[default]
+    X,
+    Y,
+    Z,
+}
+
+/// Rotation about X, Y, or Z (Coin3D `SoRotationXYZ`).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RotationXYZNode {
+    pub axis: RotationAxis,
+    pub angle: f32,
+}
+
+impl Default for RotationXYZNode {
+    fn default() -> Self {
+        Self {
+            axis: RotationAxis::X,
+            angle: 0.0,
+        }
+    }
+}
+
+impl RotationXYZNode {
+    pub fn to_matrix(&self) -> Mat4 {
+        match self.axis {
+            RotationAxis::X => Mat4::from_rotation_x(self.angle),
+            RotationAxis::Y => Mat4::from_rotation_y(self.angle),
+            RotationAxis::Z => Mat4::from_rotation_z(self.angle),
+        }
     }
 }
 

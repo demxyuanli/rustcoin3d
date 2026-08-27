@@ -3,12 +3,15 @@
 //! Joint hierarchy is stored as a flat array where each joint references its
 //! parent by index. The root joint has parent == joint_count (sentinel).
 //!
-//! Animation clips store per-joint keyframe tracks with linear interpolation.
+//! Animation clips store per-joint keyframe tracks with linear interpolation
+//! plus optional [`ObjectTrack`] curves for non-joint TRS / morph weights.
 //! Skinning data attaches vertex bone indices + weights for GPU skinning.
 
 use serde::{Deserialize, Serialize};
 
 use rc3d_core::math::{Mat4, Quat, Vec3, Vec4};
+
+use crate::object_track::ObjectTrack;
 
 /// One joint (bone) in a skeleton.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -153,15 +156,72 @@ impl JointTrack {
     }
 }
 
-/// Animation clip: named sequence of joint tracks.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+/// Playback wrap for [`AnimationPlayer`] and object-track sampling.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LoopMode {
+    #[default]
+    Repeat,
+    Once,
+    PingPong,
+}
+
+/// Map a raw player clock onto `[0, duration]` according to [`LoopMode`].
+pub fn wrap_animation_time(time: f32, duration: f32, mode: LoopMode) -> f32 {
+    if duration <= 1e-8 {
+        return 0.0;
+    }
+    match mode {
+        LoopMode::Repeat => time.rem_euclid(duration),
+        LoopMode::Once => time.clamp(0.0, duration),
+        LoopMode::PingPong => {
+            let cycle = duration * 2.0;
+            let t = time.rem_euclid(cycle);
+            if t <= duration {
+                t
+            } else {
+                cycle - t
+            }
+        }
+    }
+}
+
+/// Animation clip: joint tracks plus optional object (node) tracks.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AnimationClip {
     pub name: String,
     pub duration: f32,
     pub tracks: Vec<JointTrack>,
+    /// Non-joint TRS / morph-weight curves (three.js object tracks).
+    #[serde(default)]
+    pub object_tracks: Vec<ObjectTrack>,
 }
 
 impl AnimationClip {
+    pub fn new(name: impl Into<String>, duration: f32) -> Self {
+        Self {
+            name: name.into(),
+            duration,
+            tracks: Vec::new(),
+            object_tracks: Vec::new(),
+        }
+    }
+
+    /// Set `duration` to the last keyframe time across joint and object tracks.
+    pub fn recompute_duration(&mut self) {
+        let mut d = 0.0f32;
+        for track in &self.tracks {
+            if let Some(kf) = track.keyframes.last() {
+                d = d.max(kf.time);
+            }
+        }
+        for track in &self.object_tracks {
+            if let Some(kf) = track.keyframes.last() {
+                d = d.max(kf.time);
+            }
+        }
+        self.duration = d;
+    }
+
     /// Sample all joint tracks at the given time.
     /// Untracked joints use [`Joint::bind_transform`] from `skeleton` (rest/bind local pose).
     pub fn sample_all(&self, time: f32, skeleton: &Skeleton) -> Vec<Mat4> {
@@ -207,6 +267,8 @@ pub struct AnimationPlayer {
     /// Blending: optional next clip + blend factor [0,1].
     pub next_clip: Option<AnimationClip>,
     pub blend_factor: f32,
+    #[serde(default)]
+    pub loop_mode: LoopMode,
 }
 
 impl AnimationPlayer {
@@ -218,6 +280,7 @@ impl AnimationPlayer {
             playing: true,
             next_clip: None,
             blend_factor: 0.0,
+            loop_mode: LoopMode::Repeat,
         }
     }
 
@@ -227,6 +290,28 @@ impl AnimationPlayer {
             return;
         }
         self.current_time += dt * self.speed;
+
+        if let Some(clip) = &self.clip {
+            match self.loop_mode {
+                LoopMode::Repeat => {
+                    if clip.duration > 1e-8 {
+                        self.current_time = self.current_time.rem_euclid(clip.duration);
+                    }
+                }
+                LoopMode::Once => {
+                    if self.current_time >= clip.duration {
+                        self.current_time = clip.duration;
+                        self.playing = false;
+                    }
+                }
+                LoopMode::PingPong => {
+                    let cycle = clip.duration * 2.0;
+                    if cycle > 1e-8 {
+                        self.current_time = self.current_time.rem_euclid(cycle);
+                    }
+                }
+            }
+        }
 
         // Update blend factor
         if self.next_clip.is_some() {

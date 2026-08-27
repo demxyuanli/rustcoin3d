@@ -3,7 +3,7 @@
 
 use rc3d_core::math::Mat4;
 use rc3d_core::NodeId;
-use rc3d_scene::{NodeData, SceneGraph};
+use rc3d_scene::SceneGraph;
 
 /// A path through the scene graph: chain of (node_id, child_index).
 #[derive(Clone, Debug)]
@@ -38,8 +38,8 @@ impl ScenePath {
         let mut m = Mat4::IDENTITY;
         for &node_id in &self.nodes {
             if let Some(entry) = graph.get(node_id) {
-                if let NodeData::Transform(t) = &entry.data {
-                    m *= t.to_matrix();
+                if let Some(lm) = entry.data.local_matrix() {
+                    m *= lm;
                 }
             }
         }

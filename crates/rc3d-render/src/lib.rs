@@ -8,14 +8,19 @@ pub mod background;
 pub mod cluster;
 pub mod cluster_lighting;
 pub mod cluster_tree;
+mod cube_camera;
+mod sdf;
+mod stereo;
 pub mod color_grading;
 pub mod dof_pass;
 pub mod flat_draw_cache;
 pub mod frustum;
 pub mod global_tables;
 pub mod gpu_culling;
+pub mod gpu_particles;
 pub mod gpu_resource;
 pub mod gpu_skinning;
+pub mod custom_shader;
 pub mod hud;
 mod plane_text;
 mod font_loader;
@@ -36,6 +41,7 @@ pub mod pipeline_cache;
 pub mod pipelines;
 pub mod post_processor;
 pub mod render_action;
+mod sub_entity_draw;
 pub mod shape_cache;
 pub mod light_packing;
 pub mod traversal;
@@ -56,6 +62,7 @@ pub mod taa;
 pub mod texture_cache;
 pub mod texture_format;
 pub mod texture_streaming;
+pub mod vector_hlr;
 pub mod vertex;
 pub mod viewport;
 pub mod volumetric_fog;
@@ -81,8 +88,11 @@ pub use hud::HudRenderer;
 pub use render_passes::pass_effects::EffectCommands;
 pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
+pub use vector_hlr::hidden_line_svg;
 pub use render_action::{
-    apply_world_camera, DrawCall, RenderCollector, SkinnedMeshDrawPayload,
+    apply_ghost_unselected, apply_world_camera, apply_world_camera_ex, DrawCall,
+    GHOST_UNSELECTED_OPACITY,
+    RenderCollector, SkinnedMeshDrawPayload,
 };
 pub use shape_cache::{
     set_feature_crease_angle, ShapeKey, CachedShapeData, clamp_edge_positions,
@@ -101,6 +111,6 @@ pub use vertex::{
 pub use font_loader::{configure_font_system, new_label_font_system, LabelFont, ENV_FONT_DIR, ENV_FONT_PATH};
 pub use world_label::WorldLabelCommand;
 pub use viewport::{
-    LayoutMode, ProjectionType, Viewport, ViewportId, ViewportLayout, ViewportRect, ViewportSplitAxis,
-    VIEWPORT_SPLITTER_HIT_PX,
+    LayoutMode, ProjectionType, QuadViewEye, Viewport, ViewportId, ViewportLayout, ViewportRect,
+    ViewportSplitAxis, VIEWPORT_SPLITTER_HIT_PX,
 };

@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use rc3d_core::math::{Mat4, Vec3};
-use rc3d_core::{DisplayMode, EngineResult, NodeId};
+use rc3d_core::{DisplayMode, EngineResult, NodeId, VisualStyle, VisualStyleLibrary};
+use rc3d_gizmo::Gizmo;
 use rc3d_actions::Action;
 use rc3d_actions::SectionPlaneAction;
 use rc3d_render::render_action::DrawCall;
@@ -12,10 +13,11 @@ use rc3d_scene::SceneGraph;
 
 type PreRenderHook = Box<dyn FnMut(&mut Renderer)>;
 type PickCallback = Box<dyn FnMut(&mut SceneGraph, NodeId, Vec3)>;
+type PickHitCallback = Box<dyn FnMut(&mut SceneGraph, &rc3d_actions::PickHit)>;
 type PanelMouseHook = Box<dyn Fn(f32, f32, u32, u32) -> bool>;
 
 use crate::background::BackgroundSettings;
-use crate::camera::CameraController;
+use crate::camera::{CameraController, ViewPreset};
 use crate::fps_tracker::FpsTracker;
 use crate::viewport::ViewportCameraSet;
 use crate::world::World;
@@ -53,6 +55,10 @@ pub struct Engine {
     /// scene. Receives the scene graph, the picked NodeId, and the
     /// world-space intersection point.
     pub on_pick: Option<PickCallback>,
+    /// Called with the full pick hit (face / edge indices) after [`Self::pick_at`].
+    pub on_pick_hit: Option<PickHitCallback>,
+    /// Ray pick granularity. Default [`rc3d_actions::PickMode::Node`].
+    pub pick_mode: rc3d_actions::PickMode,
 
     /// Optional keyboard event hook. Receives the physical key. Return `true`
     /// to request a redraw after handling the keypress.
@@ -65,6 +71,15 @@ pub struct Engine {
 
     /// Nodes hidden from rendering (e.g. via editor Hide command).
     pub hidden_nodes: HashSet<NodeId>,
+
+    /// Named visual styles (HOOPS-style catalog) applied to subtrees.
+    pub visual_styles: VisualStyleLibrary,
+
+    /// Transform manipulator overlay (drawn from selection each frame).
+    pub gizmo: Gizmo,
+
+    /// Shared pointer / modifier / click-vs-drag state for [`Self::handle_window_event`].
+    pub input: crate::input_state::InputState,
 }
 
 impl Engine {
@@ -89,16 +104,98 @@ impl Engine {
             hud_text_hook: None,
             pre_render_hook: None,
             on_pick: None,
+            on_pick_hit: None,
+            pick_mode: rc3d_actions::PickMode::Node,
             panel_overlay_key_hook: None,
             panel_overlay_mouse_hook: None,
             hidden_nodes: HashSet::new(),
+            visual_styles: VisualStyleLibrary::builtin(),
+            gizmo: Gizmo::new(),
+            input: {
+                let s = window.inner_size();
+                crate::input_state::InputState {
+                    window_size: (s.width, s.height),
+                    ..Default::default()
+                }
+            },
         }
+    }
+
+    pub fn visual_styles(&self) -> &VisualStyleLibrary {
+        &self.visual_styles
+    }
+
+    pub fn visual_styles_mut(&mut self) -> &mut VisualStyleLibrary {
+        &mut self.visual_styles
+    }
+
+    /// Apply a catalog style to a Separator (or any node). Returns false if unknown.
+    pub fn apply_visual_style(&mut self, id: NodeId, name: &str) -> bool {
+        let Some(style) = self.visual_styles.get(name).cloned() else {
+            return false;
+        };
+        self.world.graph.apply_visual_style(id, &style);
+        true
+    }
+
+    pub fn register_visual_style(&mut self, style: VisualStyle) {
+        self.visual_styles.register(style);
+    }
+
+    /// Resolve PMI names on every `AnnotationSet` and stamp unbound points.
+    pub fn bind_scene_pmi(&mut self) -> usize {
+        self.world.graph.bind_pmi()
+    }
+
+    /// Append a JSON PMI sidecar to `set_id` and apply bindings.
+    pub fn apply_pmi_json(&mut self, set_id: NodeId, json: &str) -> Result<usize, String> {
+        let doc = rc3d_scene::PmiDocument::from_json(json).map_err(|e| e.to_string())?;
+        Ok(rc3d_scene::apply_pmi_document(&mut self.world.graph, set_id, &doc))
+    }
+
+    /// Apply `name` to the current selection, or to scene roots if nothing is selected.
+    pub fn apply_visual_style_to_selected(&mut self, name: &str) -> usize {
+        let selected: Vec<NodeId> = self.world.graph.selected_nodes().iter().copied().collect();
+        let targets = if selected.is_empty() {
+            self.world.graph.roots().to_vec()
+        } else {
+            selected
+        };
+        let mut n = 0;
+        for id in targets {
+            if self.apply_visual_style(id, name) {
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Set the global display mode (Shaded, Flat, Wireframe, etc.).
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
         if let Some(ref mut r) = self.renderer {
             r.set_display_mode(mode);
+        }
+    }
+
+    /// HOOPS Isolate/Ghost: selected stays shaded; unselected filled draws
+    /// become translucent. No-op when the selection is empty.
+    pub fn set_ghost_unselected(&mut self, enabled: bool) {
+        if let Some(ref mut r) = self.renderer {
+            r.set_ghost_unselected(enabled);
+        }
+    }
+
+    pub fn set_ghost_opacity(&mut self, opacity: f32) {
+        if let Some(ref mut r) = self.renderer {
+            r.set_ghost_opacity(opacity);
+        }
+    }
+
+    /// Weighted blended OIT for overlapping transparent / ghost / transmission draws.
+    /// Default is on; disable to fall back to painter's algorithm.
+    pub fn set_wboit(&mut self, enabled: bool) {
+        if let Some(ref mut r) = self.renderer {
+            r.set_wboit(enabled);
         }
     }
 
@@ -117,6 +214,13 @@ impl Engine {
         }
     }
 
+    /// Halftone / glitch stylize (three.js HalftonePass / GlitchPass analog).
+    pub fn set_post_stylize(&mut self, halftone: f32, glitch: f32) {
+        if let Some(ref mut r) = self.renderer {
+            r.set_post_stylize(halftone, glitch);
+        }
+    }
+
     /// Set the adaptive quality control mode.
     ///
     /// `AdaptiveControl::Disabled` locks quality at High.
@@ -132,6 +236,7 @@ impl Engine {
     /// existing graph, use [`import`](Self::import) instead.
     pub fn load_scene(&mut self, graph: SceneGraph) {
         self.world.graph = graph;
+        crate::import::resolve_file_nodes(&mut self.world.graph);
         self.world.collector.invalidate_mesh_cache();
         self.world.invalidate_caches(self.renderer.as_mut().unwrap());
     }
@@ -166,16 +271,77 @@ impl Engine {
 
     /// Set the viewport layout mode (Single, Quad, LeftRight, TopBottom).
     ///
-    /// Rebuilds the viewports to match the surface size.
+    /// `Quad` installs the HOOPS-style Front/Right/Top/Persp camera pack.
+    /// Other modes drop viewport-camera bindings (camera nodes stay in the graph).
     pub fn set_layout_mode(&mut self, mode: LayoutMode) {
+        match mode {
+            LayoutMode::Quad => self.apply_standard_quad_views(),
+            other => {
+                self.viewport_cameras.cameras.clear();
+                self.rebuild_layout(other);
+            }
+        }
+    }
+
+    fn rebuild_layout(&mut self, mode: LayoutMode) {
         let renderer = self.renderer.as_mut().expect("renderer not initialized");
         let (w, h) = (renderer.config.width, renderer.config.height);
         let layout = renderer.viewport_layout_mut();
         layout.layout_mode = mode;
         layout.rebuild(w, h);
-        // Re-sync camera viewport ids after the layout rebuild re-allocates them
         self.viewport_cameras
             .remap_viewport_ids_from_layout(layout);
+        self.viewport_cameras.bind_camera_nodes(layout);
+    }
+
+    /// Default four-view pack: Persp (Iso) + Top/Front/Right orthographic cameras.
+    pub fn apply_standard_quad_views(&mut self) {
+        self.rebuild_layout(LayoutMode::Quad);
+        let aabb = rc3d_scene::GetBoundingBoxAction::compute_scene_aabb(&self.world.graph);
+        let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        let layout = renderer.viewport_layout_mut();
+        self.viewport_cameras
+            .install_standard_quad(&mut self.world.graph, layout, aabb);
+    }
+
+    pub fn cycle_layout_mode(&mut self) {
+        let current = self
+            .renderer
+            .as_ref()
+            .expect("renderer not initialized")
+            .viewport_layout()
+            .layout_mode;
+        let next = match current {
+            LayoutMode::Single => LayoutMode::Quad,
+            LayoutMode::Quad => LayoutMode::LeftRight,
+            LayoutMode::LeftRight => LayoutMode::TopBottom,
+            LayoutMode::TopBottom => LayoutMode::Single,
+        };
+        self.set_layout_mode(next);
+    }
+
+    pub fn cycle_active_viewport(&mut self) {
+        let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        let layout = renderer.viewport_layout_mut();
+        layout.cycle_active();
+        let id = layout.active_id;
+        self.viewport_cameras.set_active(id, layout);
+    }
+
+    /// Apply a named view preset to the active viewport camera, or the main orbit camera.
+    pub fn set_view_preset(&mut self, preset: ViewPreset) {
+        let aabb = rc3d_scene::GetBoundingBoxAction::compute_scene_aabb(&self.world.graph);
+        if let Some(vc) = self.viewport_cameras.active_mut() {
+            vc.controller.set_view_preset(preset);
+            if let Some(ref box_) = aabb {
+                vc.controller.fit_bounds(box_, std::f32::consts::FRAC_PI_4);
+            }
+            return;
+        }
+        self.controller.set_view_preset(preset);
+        if let Some(ref box_) = aabb {
+            self.controller.fit_bounds(box_, std::f32::consts::FRAC_PI_4);
+        }
     }
 
     /// Mutable access to the viewport layout (for splitter drag, quad splits, etc.).
@@ -202,6 +368,10 @@ impl Engine {
         // 2. Evaluate engines (animation, simulation, etc.)
         self.world.evaluate_engines();
 
+        if crate::import::resolve_file_nodes(&mut self.world.graph) > 0 {
+            self.world.collector.invalidate_mesh_cache();
+        }
+
         // 3. Set materials on renderer (so shader lookups work during draw)
         renderer.set_materials(self.world.materials.clone());
 
@@ -212,13 +382,17 @@ impl Engine {
 
         // 5. Update camera nodes from controller state
         let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
+        let quad_pack = renderer.viewport_layout().layout_mode == LayoutMode::Quad
+            && self.viewport_cameras.cameras.len() >= 4;
 
-        // Legacy path: update all PerspectiveCamera/OrthographicCamera nodes
-        // from the main CameraController so orbit/pan/zoom take effect.
-        let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
-        for &root in &roots {
-            self.controller
-                .update_camera_recursive(&mut self.world.graph, root, aspect);
+        // Legacy path: copy the main orbit onto every camera node.
+        // Skip when the four-view pack owns distinct cameras.
+        if !quad_pack {
+            let roots: Vec<NodeId> = self.world.graph.roots().to_vec();
+            for &root in &roots {
+                self.controller
+                    .update_camera_recursive(&mut self.world.graph, root, aspect);
+            }
         }
 
         // Viewport-camera path: update cameras bound to specific viewports
@@ -241,6 +415,10 @@ impl Engine {
         // 9. Transfer light sets from collector to renderer
         let light_sets = std::mem::take(&mut self.world.collector.light_sets);
         renderer.set_light_sets(light_sets);
+        renderer.set_light_probe(
+            self.world.collector.light_probe_sh,
+            self.world.collector.light_probe_intensity,
+        );
 
         // 9b. Collect section planes from scene graph
         let mut section_action = SectionPlaneAction::new();
@@ -260,12 +438,27 @@ impl Engine {
             self.world.collector.camera_pos = Vec3::new(0.0, 2.0, 8.0);
         }
 
-        // 11. Apply camera matrices to draw calls
-        rc3d_render::render_action::apply_world_camera(
+        // 11. Apply camera matrices to draw calls (single-view path only)
+        let (sw, sh) = (renderer.config.width, renderer.config.height);
+        let stereo_eyes = if quad_pack {
+            None
+        } else {
+            crate::viewport::collect_stereo_eyes(&self.world.graph, sw, sh)
+        };
+        let stereo_pack = stereo_eyes.is_some();
+        if !quad_pack && !stereo_pack {
+            rc3d_render::render_action::apply_world_camera(
+                &mut self.world.collector.draw_calls,
+                self.world.collector.view_matrix,
+                self.world.collector.projection_matrix,
+                self.world.collector.camera_pos,
+            );
+        }
+
+        rc3d_render::apply_ghost_unselected(
             &mut self.world.collector.draw_calls,
-            self.world.collector.view_matrix,
-            self.world.collector.projection_matrix,
-            self.world.collector.camera_pos,
+            renderer.ghost_unselected,
+            renderer.ghost_opacity,
         );
 
         // 10. Cache draw calls for static-frame fast path
@@ -286,9 +479,41 @@ impl Engine {
             h(renderer);
         }
 
+        crate::gizmo_bind::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+        if self.gizmo.visible {
+            renderer.gizmo_line_batches = self.gizmo.generate_lines();
+        } else {
+            renderer.gizmo_line_batches.clear();
+        }
+
+        renderer.update_cube_cameras(&self.world.graph, &self.world.cached_draw_calls);
+
         // 15. Render using cached draw calls for consistent state
-        let dc = &self.world.cached_draw_calls;
-        let stats = renderer.render_draw_calls(dc, &self.world.graph);
+        let stats = if quad_pack {
+            let eyes = self
+                .viewport_cameras
+                .collect_quad_eyes(&self.world.graph, renderer.viewport_layout());
+            if let Some(eye) = eyes.iter().find(|e| !e.orthographic).or(eyes.first()) {
+                renderer.set_scene_view_projection(eye.view, eye.projection);
+            }
+            renderer.render_standard_quad_views(
+                &mut self.world.cached_draw_calls,
+                &self.world.graph,
+                &eyes,
+            )
+        } else if let Some((mode, eyes)) = stereo_eyes {
+            if let Some(eye) = eyes.first() {
+                renderer.set_scene_view_projection(eye.view, eye.projection);
+            }
+            renderer.render_stereo_views(
+                &mut self.world.cached_draw_calls,
+                &self.world.graph,
+                &eyes,
+                mode,
+            )
+        } else {
+            renderer.render_draw_calls(&self.world.cached_draw_calls, &self.world.graph)
+        };
 
         // 16. Update HUD overlay (renders FPS + markup text in top-left corner)
         let mut mode_name = format!(
@@ -296,6 +521,15 @@ impl Engine {
             renderer.display_mode(),
             renderer.ibl_preset_name(),
         );
+        if quad_pack {
+            mode_name.push_str(" | Quad: Persp/Top/Front/Right");
+        }
+        if stereo_pack {
+            mode_name.push_str(" | Stereo");
+        }
+        if renderer.enable_wboit {
+            mode_name.push_str(" | WBOIT");
+        }
         let markup_text = renderer.collect_markup_text(&self.world.graph);
         if !markup_text.is_empty() {
             mode_name.push('\n');
@@ -325,10 +559,52 @@ impl Engine {
         stats
     }
 
+    /// Composite the four-view pack to an RGBA image (layout is restored afterwards).
+    pub fn render_quad_pack_image(&mut self, width: u32, height: u32) -> (u32, u32, Vec<u8>) {
+        let _ = self.render();
+        let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        let (ow, oh) = (renderer.config.width, renderer.config.height);
+        let saved_mode = renderer.viewport_layout().layout_mode;
+        renderer.viewport_layout_mut().layout_mode = LayoutMode::Quad;
+        renderer.viewport_layout_mut().rebuild(width.max(1), height.max(1));
+        self.viewport_cameras
+            .remap_viewport_ids_from_layout(renderer.viewport_layout());
+        self.viewport_cameras
+            .bind_camera_nodes(renderer.viewport_layout_mut());
+        self.viewport_cameras
+            .update_all(&mut self.world.graph, renderer.viewport_layout());
+        let eyes = self
+            .viewport_cameras
+            .collect_quad_eyes(&self.world.graph, renderer.viewport_layout());
+        let mut dcs = self.world.cached_draw_calls.clone();
+        let image = renderer.render_standard_quad_to_image(
+            &mut dcs,
+            &self.world.graph,
+            &eyes,
+            width.max(1),
+            height.max(1),
+        );
+        let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        renderer.viewport_layout_mut().layout_mode = saved_mode;
+        renderer.viewport_layout_mut().rebuild(ow, oh);
+        self.viewport_cameras
+            .remap_viewport_ids_from_layout(renderer.viewport_layout());
+        self.viewport_cameras
+            .bind_camera_nodes(renderer.viewport_layout_mut());
+        image
+    }
+
     /// Handle window resize.
     pub fn resize(&mut self, width: u32, height: u32) {
+        self.input.window_size = (width, height);
         if let Some(ref mut r) = self.renderer {
             r.resize(width, height);
+        }
+        if let Some(ref mut r) = self.renderer {
+            let layout = r.viewport_layout_mut();
+            self.viewport_cameras
+                .remap_viewport_ids_from_layout(layout);
+            self.viewport_cameras.bind_camera_nodes(layout);
         }
     }
 
@@ -367,22 +643,19 @@ impl Engine {
     /// Ray-pick at a window pixel and invoke [`Self::on_pick`] on the nearest hit.
     /// Empty space clears the scene-graph selection.
     pub fn pick_at(&mut self, screen_x: f32, screen_y: f32, width: u32, height: u32) {
-        let vw = width.max(1) as f32;
-        let vh = height.max(1) as f32;
-        let view = if self.world.collector.view_matrix != Mat4::IDENTITY {
-            self.world.collector.view_matrix
-        } else {
-            self.controller.view_matrix()
+        let Some((lx, ly, vw, vh, view, proj)) =
+            self.pointer_pick_frame(screen_x, screen_y, width, height)
+        else {
+            return;
         };
-        let proj = if self.world.collector.projection_matrix != Mat4::IDENTITY {
-            self.world.collector.projection_matrix
-        } else {
-            Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, vw / vh.max(1.0), 0.1, 1000.0)
-        };
-        let ray = rc3d_actions::Ray::from_screen_point(screen_x, screen_y, vw, vh, view, proj);
-        let mut picker = rc3d_actions::RayPickAction::new(ray);
+        let ray = rc3d_actions::Ray::from_screen_point(lx, ly, vw, vh, view, proj);
+        let mut picker = rc3d_actions::RayPickAction::with_mode(ray, self.pick_mode);
         rc3d_actions::apply_to_all_roots(&mut picker, &self.world.graph);
         if let Some(hit) = picker.hits.first().cloned() {
+            if let Some(mut cb) = self.on_pick_hit.take() {
+                cb(&mut self.world.graph, &hit);
+                self.on_pick_hit = Some(cb);
+            }
             if let Some(mut cb) = self.on_pick.take() {
                 cb(&mut self.world.graph, hit.node, hit.point);
                 self.on_pick = Some(cb);

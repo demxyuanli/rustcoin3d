@@ -141,7 +141,7 @@ pub(crate) struct FrameState {
     pub occlusion_dims: (u32, u32, u32),
     pub clip_planes: Vec<[f32; 4]>,
     /// Per clip plane: cap fill color when `Some`, aligned with `clip_planes`.
-    pub section_cap_tints: Vec<Option<[f32; 4]>>,
+    pub section_cap_tints: Vec<Option<rc3d_scene::SectionCapStyle>>,
     pub scene_vp: Mat4,
     pub scene_vp_inv: Mat4,
     pub scene_depth_reversed_z: bool,
@@ -222,6 +222,13 @@ pub(crate) struct GpuInternals {
     pub texture_cache: TextureCache,
     pub ibl_diffuse: [f32; 4],
     pub ibl_specular: [f32; 4],
+    pub sh_l2: [[f32; 4]; 9],
+    pub sh_intensity: [f32; 4],
+    pub ibl: Option<crate::ibl::IblResources>,
+    pub ibl_sampler: wgpu::Sampler,
+    pub morph_dummy: wgpu::Buffer,
+    pub morph_params_dummy: wgpu::Buffer,
+    pub cube_camera: Option<crate::cube_camera::CubeCameraGpu>,
     pub shadow_compare_sampler: wgpu::Sampler,
     pub csm_shadow: Option<CsmShadowResources>,
     pub post_fx_pipelines: PostFxPipelines,
@@ -255,6 +262,7 @@ pub(crate) struct GpuInternals {
     pub decal_pass: Option<crate::render_passes::pass_effects::DecalPass>,
     pub volume_pass: Option<crate::render_passes::pass_effects::VolumePass>,
     pub point_cloud_pass: Option<crate::render_passes::pass_effects::PointCloudPass>,
+    pub custom_shader_pass: Option<crate::custom_shader::CustomShaderPass>,
     pub selection_outline_pipelines:
         Option<crate::selection_outline::SelectionOutlinePipelines>,
     pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
@@ -277,6 +285,9 @@ pub(crate) struct GpuInternals {
     pub upscale_pipeline: Option<wgpu::RenderPipeline>,
     pub upscale_bgl: Option<wgpu::BindGroupLayout>,
     pub upscale_sampler: Option<wgpu::Sampler>,
+    /// Red/cyan anaglyph composite (two full-size eye tiles).
+    pub anaglyph_pipeline: Option<wgpu::RenderPipeline>,
+    pub anaglyph_bgl: Option<wgpu::BindGroupLayout>,
     /// Screen-space edge detection pipeline + BGL + uniform buffer.
     pub ss_edge_pipeline: Option<wgpu::RenderPipeline>,
     pub ss_edge_bgl: Option<wgpu::BindGroupLayout>,
@@ -312,6 +323,28 @@ pub(crate) struct GpuInternals {
     /// Velocity buffer for motion blur + TAA (144 bytes, updated each frame).
     pub velocity_buffer: Option<wgpu::Buffer>,
     pub draw_bufs: DrawBatchBufs,
+    /// Offscreen color tiles for the standard four-view pack (Front/Right/Top/Persp).
+    pub quad_tiles: Vec<QuadViewTile>,
+    /// Dedicated WBOIT targets (not tied to HDR post-FX).
+    pub wboit_targets: Option<WboitTargets>,
+}
+
+pub(crate) struct WboitTargets {
+    pub width: u32,
+    pub height: u32,
+    pub accum_view: wgpu::TextureView,
+    pub revealage_view: wgpu::TextureView,
+    #[allow(dead_code)]
+    pub accum_tex: wgpu::Texture,
+    #[allow(dead_code)]
+    pub revealage_tex: wgpu::Texture,
+}
+
+pub(crate) struct QuadViewTile {
+    pub width: u32,
+    pub height: u32,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
 }
 
 pub(crate) struct DrawBatchBufs {

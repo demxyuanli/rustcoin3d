@@ -523,6 +523,8 @@ fn ensure_scene_setup(mut graph: SceneGraph) -> SceneGraph {
             NodeData::DirectionalLight(_)
                 | NodeData::PointLight(_)
                 | NodeData::SpotLight(_)
+                | NodeData::HemisphereLight(_)
+                | NodeData::LightProbe(_)
         )
     });
 

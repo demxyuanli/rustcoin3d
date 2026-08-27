@@ -5,8 +5,7 @@ use crate::render_passes::FramePresentation;
 
 /// Result of acquiring a surface for rendering.
 ///
-/// The closure `f` receives the raw texture pointer at the moment of acquisition,
-/// allowing callers to capture it for later use (e.g., selection outline pass).
+/// The closure `f` receives the raw texture pointer at the moment of acquisition.
 /// Returns whatever the closure produces along with the acquired swapchain (if any)
 /// and the effective rendering dimensions.
 pub(super) fn acquire_surface<R>(

@@ -16,7 +16,8 @@ pub(super) fn pass_shadow_depth(
     // Build per-cascade frustums once for CPU-side pre-culling.
     // Each cascade only submits draws whose AABB intersects its frustum.
     let cascade_frustums: Vec<Frustum> = (0..cascade_count)
-        .map(|c| Frustum::from_view_projection(ctx.csm_view_proj[c as usize], ctx.depth_reversed_z))
+        // CSM ortho is forward-Z (near=0, far=1), not the camera reverse-Z flag.
+        .map(|c| Frustum::from_view_projection(ctx.csm_view_proj[c as usize], false))
         .collect();
 
     let dummy = ShadowDrawUniforms {
@@ -46,6 +47,9 @@ pub(super) fn pass_shadow_depth(
 
         for &draw_idx in ctx.solid_order {
             let dc = ctx.visible[draw_idx];
+            if !dc.appearance().wants_filled() {
+                continue;
+            }
 
             // ── Cascade frustum culling ──
             // Skip draws whose AABB does not intersect this cascade's frustum.
@@ -68,7 +72,43 @@ pub(super) fn pass_shadow_depth(
 
             if let Some(offset) = renderer.gpu.shadow_pool.push_shadow_array(&uniforms) {
                 pass.set_bind_group(0, renderer.gpu.shadow_pool.bind_group(), &[offset]);
-                renderer.draw_mesh_batched(&mut pass, mesh_id, &mut last_bound_mesh);
+                renderer.draw_mesh_batched(
+                    &mut pass,
+                    mesh_id,
+                    dc.index_draw_range(),
+                    &mut last_bound_mesh,
+                );
+            }
+        }
+
+        // Transparent casters write depth so glass / ghost parts darken the receiver.
+        for &draw_idx in ctx.transparent_order {
+            let dc = ctx.visible[draw_idx];
+            if dc.opacity < 0.08 || !dc.appearance().wants_filled() {
+                continue;
+            }
+            if let Some(ref aabb) = dc.aabb {
+                if !cascade_frustum.intersects_aabb(aabb) {
+                    continue;
+                }
+            }
+            let mesh_id = match ctx.mesh_handles[draw_idx] {
+                Some(id) => id,
+                None => continue,
+            };
+            let vp = ctx.csm_view_proj[cascade_idx as usize] * dc.model_matrix;
+            let active = ShadowDrawUniforms {
+                shadow_mvp: vp.to_cols_array_2d(),
+            };
+            let uniforms = [active, dummy, dummy, dummy];
+            if let Some(offset) = renderer.gpu.shadow_pool.push_shadow_array(&uniforms) {
+                pass.set_bind_group(0, renderer.gpu.shadow_pool.bind_group(), &[offset]);
+                renderer.draw_mesh_batched(
+                    &mut pass,
+                    mesh_id,
+                    dc.index_draw_range(),
+                    &mut last_bound_mesh,
+                );
             }
         }
     }

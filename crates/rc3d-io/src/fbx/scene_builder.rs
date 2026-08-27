@@ -105,9 +105,7 @@ pub fn build_scene(data: &FbxData) -> Result<SceneGraph, super::FbxError> {
             if !geo.indices.is_empty() {
                 graph.add_child(
                     sep,
-                    NodeData::IndexedFaceSet(IndexedFaceSetNode {
-                        coord_index: geo.indices.clone(),
-                    }),
+                    NodeData::IndexedFaceSet(IndexedFaceSetNode::from_coord_index(geo.indices.clone())),
                 );
             }
         }

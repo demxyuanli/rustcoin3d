@@ -70,6 +70,8 @@ let ids: Vec<NodeId> = graph.subtree_preorder_ids(root);
 | `Group` | `GroupNode` | SoGroup | Ordered children container, no state save/restore |
 | `Billboard` | `BillboardNode` | SoBillboard | Rotates children to face camera (axis-aligned or spherical) |
 | `Transform` | `TransformNode` | SoTransform | Translation, rotation (quaternion), scale, center, scaleOrientation |
+| `Rotation` | `RotationNode` | SoRotation | Axis-angle rotation; multiplies the current model matrix |
+| `RotationXYZ` | `RotationXYZNode` | SoRotationXYZ | Rotation about X, Y, or Z (radians) |
 | `ResetTransform` | `ResetTransformNode` | SoResetTransform | Resets model matrix to identity |
 | `File` | `FileNode` | SoFile/SoWWWInline | External file reference for composition |
 
@@ -80,7 +82,7 @@ let ids: Vec<NodeId> = graph.subtree_preorder_ids(root);
 | `Coordinate3` | `Coordinate3Node` | Vertex positions (Vec\<Vec3\>) |
 | `TextureCoordinate2` | `TextureCoordinate2Node` | UV coordinates per vertex |
 | `Normal` | `NormalNode` | Per-vertex normals |
-| `Material` | `MaterialNode` | PBR material parameters |
+| `Material` | `MaterialNode` | PBR parameters, `toon_steps`, `visualize_normals`, `visualize_depth` |
 | `ShapeHints` | `ShapeHintsNode` | Vertex ordering, shape type, face type, crease angle |
 | `MaterialBinding` | `MaterialBindingNode` | Material binding mode (per-vertex, per-face, etc.) |
 | `Texture2Transform` | `Texture2TransformNode` | 2D UV transformation (translation, rotation, scale, center) |
@@ -95,7 +97,7 @@ let ids: Vec<NodeId> = graph.subtree_preorder_ids(root);
 | `Sphere` | `SphereNode` | Variable | UV sphere (radius, segments) |
 | `Cone` | `ConeNode` | Variable | Cone (bottom radius, height, segments) |
 | `Cylinder` | `CylinderNode` | Variable | Cylinder (radius, height, segments) |
-| `IndexedFaceSet` | `IndexedFaceSetNode` | Arbitrary | General triangle mesh with indexed vertices |
+| `IndexedFaceSet` | `IndexedFaceSetNode` | Arbitrary | Triangle mesh; optional `face_ids` + `SceneGraph` face/edge tints |
 | `IndexedLineSet` | `IndexedLineSetNode` | Arbitrary | Line segments (line width, color) |
 | `SkinnedMesh` | `SkinnedMeshNode` | Arbitrary | Skeleton + vertex skinning data + animation clips |
 | `MorphTarget` | `MorphTargetNode` | Arbitrary | Blend shape targets with position/normal/tangent deltas |
@@ -106,7 +108,8 @@ let ids: Vec<NodeId> = graph.subtree_preorder_ids(root);
 |---------|--------|------------|
 | `PerspectiveCamera` | `PerspectiveCameraNode` | position, orientation, fov, near, far, aspect, reverse_depth |
 | `OrthographicCamera` | `OrthographicCameraNode` | position, orientation, height, near, far, aspect, reverse_depth |
-| `StereoCamera` | `StereoCameraNode` | base camera, IPD, convergence distance, mode (anaglyph/quad) |
+| `StereoCamera` | `StereoCameraNode` | base camera, IPD, convergence; `Engine` renders L/R eyes (SBS / top-bottom / anaglyph). IPD~0 = mono |
+| `CubeCamera` | `CubeCameraNode` | position, near, far, resolution, update_period, enabled — 6-face capture to local IBL |
 
 Helper method:
 ```rust
@@ -120,6 +123,9 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 | `DirectionalLight` | `DirectionalLightNode` | direction, color, intensity, light_group | CSM (4 cascades) |
 | `PointLight` | `PointLightNode` | position, color, intensity, light_group | Omni cubemap |
 | `SpotLight` | `SpotLightNode` | position, direction, color, intensity, cutoff, falloff, light_group | - |
+| `HemisphereLight` | `HemisphereLightNode` | sky_color, ground_color, intensity, direction | - |
+| `LightProbe` | `LightProbeNode` | sh (9 RGB L2 coeffs), intensity | - |
+| `Sprite` | `SpriteNode` | texture_path, color, size, size_attenuation, center, opacity | - |
 | `AreaLight` | `AreaLightNode` | position, direction, color, intensity, width, height, shape | - |
 
 ### 3.6 Traversal Control
@@ -129,9 +135,11 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 | `Lod` | `LodNode` | Level-of-detail based on camera distance (levels: Vec\<LodLevel\>) |
 | `Switch` | `SwitchNode` | Conditional child visibility (which_child: -1=all, -2=none, 0..N=specific) |
 | `MultipleCopy` | `MultipleCopyNode` | Repeat children N times with N transform matrices |
-| `SectionPlane` | `SectionPlaneNode` | Clipping plane (plane equation, enable, cap color) |
+| `SectionPlane` | `SectionPlaneNode` | Clipping plane (equation, cap color, optional hatch) |
 | `PickStyle` | `PickStyleNode` | Controls raypick-ability of children |
-| `EventCallback` | `EventCallbackNode` | Event routing marker for HandleEventAction |
+| `EventCallback` | `EventCallbackNode` | Event routing marker for HandleEventAction (`Engine::handle_window_event`) |
+| `TransformManip` | `TransformManipNode` | Scene-graph transform manipulator (mode, space, size, target). `target = None` binds the preceding sibling Transform. Child `Dragger` nodes filter gizmo handles |
+| `Dragger` | `DraggerNode` | Composable axis/plane/rotate/scale part under a `TransformManip` |
 
 ### 3.7 Annotation Nodes
 
@@ -139,6 +147,7 @@ PerspectiveCameraNode::look_at(eye, target, up, fov, aspect)
 |---------|--------|-------------|
 | `Text2` | `Text2Node` | Screen-space 2D text (position, size, color, string) |
 | `Text3` | `Text3Node` | World-space 3D text (position, size, color, string) |
+| `Font` | `FontNode` | Coin3D SoFont: `name`, `size` (0 keeps text size), `FontStyle` (Sans/Serif/Typewriter). Applies to subsequent Text2/Text3 siblings. World labels rasterize to SDF. |
 | `Measurement` | `MeasurementNode` | Distance/angle/radius/diameter measurement |
 | `Markup` | `MarkupNode` | Rich markup (lines, rects, circles, dimensions, leaders, callouts) |
 | `Annotation` | `AnnotationNode` | Overlay rendering group — children rendered without depth test (Coin3D SoAnnotation) |
@@ -187,8 +196,11 @@ graph.add_child(obj_ann, NodeData::AnnotationSet(AnnotationSetNode {
         AnnotationElement::Datum { position, size, ... },
     ],
     visible: true,
+    pmi: vec![], // PmiRecord: id / kind / bindings (node_name, face, edge) / tolerances
 }));
 ```
+
+`AnnotationSet.pmi` is the semantic layer (STEP-style id, face/edge refs, ±tol). `SceneGraph::set_name` + `bind_pmi` resolve `node_name` to `NodeId` and stamp unbound `AnnotationPoint`s. JSON interchange: `PmiDocument` (`Engine::apply_pmi_json`). Visual geometry is unchanged.
 
 `AnnotationSet` captures `model_matrix` from its position in the scene graph (including accumulated Transforms within the same `Separator`). The renderer projects all 3D annotation points to screen-space `MarkupVertex` in `pass_markup::project_annotation_elements`.
 
@@ -203,6 +215,8 @@ graph.add_child(obj_ann, NodeData::AnnotationSet(AnnotationSetNode {
 | `Volume` | `VolumeNode` | Volumetric data metadata |
 | `PointCloud` | `PointCloudNode` | Out-of-core point cloud reference |
 | `MorphTarget` | `MorphTargetNode` | Blend shape deltas |
+| `InstancedMesh` | `InstancedMeshNode` | GPU-instanced mesh (per-instance transforms) |
+| `BatchedMesh` | `BatchedMeshNode` | Packed multi-geometry batch; instances reference geometry ranges + local transforms |
 
 ### 3.9 Extensibility Nodes
 
@@ -322,15 +336,17 @@ pub struct Joint {
 pub struct AnimationClip {
     pub name: String,
     pub duration: f32,
-    pub tracks: HashMap<usize, JointTrack>,  // joint_index → keyframes
+    pub tracks: Vec<JointTrack>,           // skeleton joints
+    pub object_tracks: Vec<ObjectTrack>,   // any Transform / MorphTarget node
 }
 
-pub struct JointTrack {
-    pub translations: Vec<(f32, Vec3)>,   // (time, value) pairs
-    pub rotations: Vec<(f32, Quat)>,
-    pub scales: Vec<(f32, Vec3)>,
+pub struct ObjectTrack {
+    pub binding: PropertyBinding,          // NodeId + Translation/Rotation/Scale/MorphWeight
+    pub keyframes: Vec<ObjectKeyframe>,    // Vec3 / Quat / Scalar
 }
 ```
+
+`AnimationMixer` (driven by `AnimationMixerEngine` each frame) samples object tracks and writes `TransformNode` TRS or `MorphTargetNode.weights`. Bindings use live `NodeId` values, so clips are built against a concrete scene (CAD assembly setup). Joint sampling is unchanged (`sample_all` / GPU skinning). `LoopMode::{Repeat, Once, PingPong}` wraps player time.
 
 ### 6.3 GPU Skinning
 
@@ -423,11 +439,15 @@ pub enum FieldValue {
 Fields can be connected for value propagation (Coin3D engine pattern):
 
 ```rust
-// Connect field A → field B (A's value flows to B on update)
+// Intra-node FieldMap (FieldId, same node)
 field_map.connect(source_field_id, dest_field_id);
-
-// Manually propagate a field's value to all connected fields
 field_map.propagate(field_id);
+
+// Cross-node typed fields (Coin3D SoField::connectFrom)
+graph.connect_fields(FieldRef::new(src, 0), FieldRef::new(dst, 0));
+graph.field_sources(FieldRef::new(dst, 0)); // reverse lookup
+graph.field_targets(FieldRef::new(src, 0));
+// World::evaluate_engines calls graph.propagate_fields() after engines
 ```
 
 ### 9.3 Field Descriptors

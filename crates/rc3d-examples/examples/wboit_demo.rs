@@ -2,8 +2,8 @@
 //!
 //! Demonstrates overlapping transparent objects rendered with OIT.
 //! Without WBOIT, the painter's algorithm produces incorrect blending when
-//! transparent objects overlap; WBOIT resolves this by accumulating weighted
-//! premultiplied colors and compositing the result.
+//! transparent objects overlap. WBOIT accumulates weighted premultiplied color
+//! and composites onto the CAD (LDR) shade target — HDR post is not required.
 //!
 //! The scene shows multiple semi-transparent shapes (spheres, cubes, tori,
 //! cylinders) at varying opacities, with an opaque ground plane behind them
@@ -17,11 +17,9 @@ use rc3d_scene::node_data::*;
 
 fn main() {
     run_example("WBOIT Demo", |engine| {
-        // Enable HDR post-processing (required for WBOIT) and WBOIT itself
-        if let Some(ref mut r) = engine.renderer {
-            r.hdr_post_processing = true;
-            r.enable_wboit = true;
-        }
+        // WBOIT is the default CAD path (no HDR required). Nested spheres below
+        // overlap so painter sorting would fail without OIT.
+        engine.set_wboit(true);
 
         let graph = engine.scene_mut();
         let root = graph.add_root(NodeData::Separator(SeparatorNode));
@@ -174,6 +172,39 @@ fn main() {
             bottom_radius: 1.0,
             height: 2.0,
         }));
+
+        // Nested overlapping spheres (same origin) — painter order is ambiguous.
+        for (i, (color, opacity, radius)) in [
+            (Vec3::new(0.95, 0.2, 0.15), 0.35, 1.6),
+            (Vec3::new(0.15, 0.45, 0.95), 0.40, 1.15),
+            (Vec3::new(0.95, 0.85, 0.15), 0.50, 0.7),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sep = graph.add_child(root, NodeData::Separator(SeparatorNode));
+            graph.add_child(
+                sep,
+                NodeData::Transform(TransformNode::from_translation(Vec3::new(
+                    0.0,
+                    2.4,
+                    2.0 + i as f32 * 0.05,
+                ))),
+            );
+            graph.add_child(
+                sep,
+                NodeData::Material(MaterialNode {
+                    base_color: color,
+                    metallic: 0.05,
+                    roughness: 0.25,
+                    opacity,
+                    alpha_mode: AlphaMode::Blend,
+                    double_sided: true,
+                    ..Default::default()
+                }),
+            );
+            graph.add_child(sep, NodeData::Sphere(SphereNode { radius }));
+        }
 
         // Picking support
         graph.add_child(root, NodeData::EventCallback(EventCallbackNode::default()));

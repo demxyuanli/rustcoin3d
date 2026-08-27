@@ -1,10 +1,11 @@
-//! Picking example — click a shape to outline it (three.js OutlinePass).
+//! Picking example — node outline plus HOOPS-style face / edge tint.
 //!
-//! Left-click selects; click empty space clears. Orbit with the right mouse button.
+//! Left-click selects the node and tints the picked CAD face. Left-drag orbits.
 //!
 //! Usage: cargo run -p rc3d-examples --example picking
 //!   --screenshot --screenshot-exit  writes target/picking.png with the red cube outlined
 
+use rc3d_actions::PickMode;
 use rc3d_core::math::Vec3;
 use rc3d_core::DisplayMode;
 use rc3d_examples::common::run_example;
@@ -101,18 +102,39 @@ fn main() {
             sep5,
             NodeData::Material(MaterialNode::from_diffuse(Vec3::new(0.7, 0.2, 0.8))),
         );
-        graph.add_child(sep5, NodeData::Cube(CubeNode::default()));
+        let purple_cube = graph.add_child(sep5, NodeData::Cube(CubeNode::default()));
+        graph.set_face_tint(purple_cube, 0, [1.0, 0.45, 0.08, 1.0]);
+        graph.set_face_tint(purple_cube, 2, [0.15, 0.85, 0.45, 1.0]);
+        graph.set_edge_tint(purple_cube, 0, 0, [1.0, 1.0, 0.2, 1.0]);
 
         graph.add_child(root, NodeData::EventCallback(EventCallbackNode::default()));
 
         graph.select(red_cube);
 
+        engine.pick_mode = PickMode::Face;
         engine.on_pick = Some(Box::new(|graph, node, _point| {
             graph.clear_selection();
             graph.select(node);
         }));
+        engine.on_pick_hit = Some(Box::new(|graph, hit| {
+            if let Some(tri) = hit.face_index {
+                let face = graph.face_id_from_triangle(hit.node, tri);
+                let hues = [
+                    [1.0, 0.35, 0.12, 1.0],
+                    [0.2, 0.75, 1.0, 1.0],
+                    [0.95, 0.85, 0.15, 1.0],
+                    [0.7, 0.25, 0.9, 1.0],
+                ];
+                graph.set_face_tint(hit.node, face, hues[face as usize % hues.len()]);
+            }
+            if let Some(edge) = hit.edge_index {
+                if let Some(tri) = hit.face_index {
+                    graph.set_edge_tint(hit.node, tri, edge as u8, [1.0, 1.0, 0.25, 1.0]);
+                }
+            }
+        }));
         engine.hud_text_hook = Some(Box::new(|| {
-            "Left-click a shape to outline it".to_string()
+            "Click a face to tint it; empty click clears node selection".to_string()
         }));
     });
 }

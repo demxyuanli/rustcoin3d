@@ -36,7 +36,12 @@ impl LightSubsystem {
                 }
                 None
             }
-            NodeData::Group(_) | NodeData::Billboard(_) | NodeData::Transform(_) => {
+            NodeData::Group(_)
+            | NodeData::Billboard(_)
+            | NodeData::Transform(_)
+            | NodeData::Rotation(_)
+            | NodeData::RotationXYZ(_)
+            | NodeData::Font(_) => {
                 for &c in &entry.children {
                     if let Some(d) = Self::walk_dir_light(graph, c) {
                         return Some(d);

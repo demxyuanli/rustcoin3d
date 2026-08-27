@@ -15,22 +15,27 @@
 //! ```
 
 pub mod animation;
+pub mod batched;
 pub mod camera;
 pub mod geometry;
 pub mod group;
 pub mod kits;
 pub mod light;
+pub mod manip;
 pub mod material;
 pub mod query;
 pub mod scene;
 pub mod shape;
 
 pub use animation::*;
+pub use batched::*;
 pub use camera::*;
 pub use geometry::*;
 pub use group::*;
 pub use light::*;
+pub use manip::*;
 pub use material::*;
 pub use query::*;
 pub use scene::*;
 pub use shape::*;
+pub use rc3d_scene::node_data::{FontNode, FontStyle, RotationAxis, RotationNode, RotationXYZNode};

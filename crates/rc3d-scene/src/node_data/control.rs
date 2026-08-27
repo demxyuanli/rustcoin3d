@@ -38,19 +38,36 @@ pub struct LodLevel {
     pub max_distance: f32,
 }
 
+fn default_lod_range_scale() -> f32 {
+    1.0
+}
+
 /// LOD switch node (Coin3D SoLOD / SoLevelOfDetail pattern).
 /// Selects one child group based on camera distance.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(Default)]
 pub struct LodNode {
     pub levels: Vec<LodLevel>,
     pub current_level: usize,
+    /// Per-separator distance scale. Effective distance is `camera_dist / range_scale`.
+    #[serde(default = "default_lod_range_scale")]
+    pub range_scale: f32,
+}
+
+impl Default for LodNode {
+    fn default() -> Self {
+        Self {
+            levels: Vec::new(),
+            current_level: 0,
+            range_scale: 1.0,
+        }
+    }
 }
 
 impl LodNode {
     /// Select the LOD level based on camera distance.
     /// Each `LodLevel.max_distance` defines the threshold: pick the first level
     /// whose `max_distance >= distance`, or the last level if none matches.
+    /// `distance` should already include [`Self::range_scale`].
     pub fn select_level(&mut self, distance: f32) {
         for (i, level) in self.levels.iter().enumerate() {
             if distance <= level.max_distance {
@@ -63,8 +80,58 @@ impl LodNode {
 }
 
 
+/// Filled cap + optional ANSI-style hatch on a [`SectionPlaneNode`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SectionCapStyle {
+    pub color: [f32; 4],
+    pub hatch_enabled: bool,
+    pub hatch_spacing: f32,
+    pub hatch_angle_deg: f32,
+    /// Line half-width as a fraction of [`Self::hatch_spacing`] (0.02..0.45).
+    pub hatch_width: f32,
+    pub hatch_color: [f32; 4],
+    /// Second family at 90 deg in the plane (ISO/ANSI cross hatch).
+    pub hatch_cross: bool,
+}
+
+impl SectionCapStyle {
+    pub fn from_plane(sp: &SectionPlaneNode) -> Option<Self> {
+        if !sp.cap_enabled {
+            return None;
+        }
+        Some(Self {
+            color: sp.cap_color,
+            hatch_enabled: sp.hatch_enabled,
+            hatch_spacing: sp.hatch_spacing,
+            hatch_angle_deg: sp.hatch_angle_deg,
+            hatch_width: sp.hatch_width,
+            hatch_color: sp.hatch_color,
+            hatch_cross: sp.hatch_cross,
+        })
+    }
+
+    pub fn hatch_params_gpu(self) -> [f32; 4] {
+        [
+            self.hatch_spacing.max(1.0e-4),
+            self.hatch_angle_deg.to_radians(),
+            self.hatch_width.clamp(0.02, 0.45),
+            if self.hatch_enabled { 1.0 } else { 0.0 },
+        ]
+    }
+
+    pub fn hatch_extra_gpu(self) -> [f32; 4] {
+        [
+            if self.hatch_cross { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+            0.0,
+        ]
+    }
+}
+
 /// Section/cutting plane node (Coin3D SoClipPlane pattern).
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct SectionPlaneNode {
     pub plane: [f32; 4],
     pub enabled: bool,
@@ -72,6 +139,13 @@ pub struct SectionPlaneNode {
     pub cap_color: [f32; 4],
     /// When true, render a filled cap at the clip plane intersection.
     pub cap_enabled: bool,
+    /// Procedural hatch on the cap (HOOPS section hatching). Off by default.
+    pub hatch_enabled: bool,
+    pub hatch_spacing: f32,
+    pub hatch_angle_deg: f32,
+    pub hatch_width: f32,
+    pub hatch_color: [f32; 4],
+    pub hatch_cross: bool,
 }
 
 impl Default for SectionPlaneNode {
@@ -81,6 +155,12 @@ impl Default for SectionPlaneNode {
             enabled: true,
             cap_color: [0.5, 0.5, 0.5, 1.0],
             cap_enabled: false,
+            hatch_enabled: false,
+            hatch_spacing: 0.12,
+            hatch_angle_deg: 45.0,
+            hatch_width: 0.18,
+            hatch_color: [0.18, 0.10, 0.10, 1.0],
+            hatch_cross: true,
         }
     }
 }
@@ -136,6 +216,35 @@ pub struct Text3Node {
 impl Default for Text3Node {
     fn default() -> Self {
         Self { string: String::new(), position: Vec3::ZERO, size: 16.0, color: [1.0, 1.0, 1.0, 1.0] }
+    }
+}
+
+/// Coin3D `SoFontStyle` family (generic faces when `FontNode::name` is empty).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FontStyle {
+    #[default]
+    Sans,
+    Serif,
+    Typewriter,
+}
+
+/// Font property node (Coin3D `SoFont`). Applies to subsequent `Text2` / `Text3` siblings.
+///
+/// `size` of `0.0` leaves the text node's own size unchanged.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FontNode {
+    pub name: String,
+    pub size: f32,
+    pub style: FontStyle,
+}
+
+impl Default for FontNode {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            size: 10.0,
+            style: FontStyle::Sans,
+        }
     }
 }
 
@@ -573,6 +682,9 @@ pub struct AnnotationSetNode {
     pub visible: bool,
     #[serde(default)]
     pub style: AnnotationStyle,
+    /// STEP-style PMI semantics bound to [`Self::elements`] (HOOPS PMI).
+    #[serde(default)]
+    pub pmi: Vec<super::pmi::PmiRecord>,
 }
 
 impl Default for AnnotationSetNode {
@@ -581,6 +693,7 @@ impl Default for AnnotationSetNode {
             elements: Vec::new(),
             visible: true,
             style: AnnotationStyle::default(),
+            pmi: Vec::new(),
         }
     }
 }

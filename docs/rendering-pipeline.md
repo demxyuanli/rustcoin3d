@@ -129,6 +129,8 @@ Shader: `shaders/cluster_tree_cull.wgsl`
 | DirectionalLight | CSM (4 cascades) | Frustum | direction, color, intensity |
 | PointLight | Omni (cubemap) | Cluster | position, color, intensity |
 | SpotLight | - | Cluster | position, direction, cutoff, falloff |
+| HemisphereLight | - | - | sky/ground color, intensity, up direction |
+| LightProbe | - | - | L2 SH 9 RGB coeffs, intensity |
 | AreaLight | - | - | position, direction, size, shape |
 
 ### 4.2 Cluster-Based Light Culling
@@ -312,5 +314,5 @@ CPU render pass:
 | Shaded | Full PBR shading | Default solid pass |
 | ShadedWithEdges | PBR + edge overlay | Solid pass + edge pass (depth-tested) |
 | Wireframe | Wireframe only | Separate wireframe pass |
-| HiddenLine | Hidden line removal | Wireframe with depth pre-pass |
+| HiddenLine | Hidden line removal | Dark fill + visible crease + dashed occluded edges (inverted depth) |
 | Flat | Flat (no lighting) | Flat color vertex shader |

@@ -126,6 +126,7 @@ pub fn resolve_animations(
                 name: stack.name.clone(),
                 duration: max_time,
                 tracks: all_tracks,
+                object_tracks: Vec::new(),
             });
         }
     }
