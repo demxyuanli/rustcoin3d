@@ -68,20 +68,57 @@ pub fn find_transform_for_selection(graph: &SceneGraph) -> Option<NodeId> {
     None
 }
 
+/// View/projection from a camera node, if `node` is perspective or orthographic.
+pub fn camera_node_view_proj(graph: &SceneGraph, node: NodeId) -> Option<(Mat4, Mat4)> {
+    match graph.get(node).map(|e| &e.data) {
+        Some(NodeData::PerspectiveCamera(c)) => Some((c.view_matrix(), c.projection_matrix())),
+        Some(NodeData::OrthographicCamera(c)) => Some((c.view_matrix(), c.projection_matrix())),
+        _ => None,
+    }
+}
+
 fn first_camera_matrices(graph: &SceneGraph, node: NodeId) -> Option<(Mat4, Mat4)> {
+    if let Some(m) = camera_node_view_proj(graph, node) {
+        return Some(m);
+    }
     let entry = graph.get(node)?;
-    match &entry.data {
-        NodeData::PerspectiveCamera(c) => Some((c.view_matrix(), c.projection_matrix())),
-        NodeData::OrthographicCamera(c) => Some((c.view_matrix(), c.projection_matrix())),
-        _ => {
-            for &child in &entry.children {
-                if let Some(m) = first_camera_matrices(graph, child) {
-                    return Some(m);
-                }
-            }
-            None
+    for &child in &entry.children {
+        if let Some(m) = first_camera_matrices(graph, child) {
+            return Some(m);
         }
     }
+    None
+}
+
+/// World view + projection for picking in a layout viewport.
+pub fn viewport_pick_matrices(
+    graph: &SceneGraph,
+    vc: &crate::viewport::ViewportCamera,
+    vport: &rc3d_render::viewport::Viewport,
+) -> (Mat4, Mat4) {
+    if let Some(m) = camera_node_view_proj(graph, vc.camera_node) {
+        return m;
+    }
+    let aspect = vport.rect.aspect();
+    let v = vc.controller.view_matrix();
+    let p = match vport.projection_type {
+        rc3d_render::viewport::ProjectionType::Perspective => {
+            Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 1000.0)
+        }
+        rc3d_render::viewport::ProjectionType::Orthographic => {
+            let height = vc.controller.distance * 1.2;
+            let w = height * aspect;
+            rc3d_render::shadow_map::orthographic_wgpu_rh(
+                -w * 0.5,
+                w * 0.5,
+                -height * 0.5,
+                height * 0.5,
+                0.1,
+                1000.0,
+            )
+        }
+    };
+    (v, p)
 }
 
 /// View/projection used to draw the last frame (or the first camera node).

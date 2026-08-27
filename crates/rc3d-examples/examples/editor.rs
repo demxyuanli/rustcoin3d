@@ -126,14 +126,7 @@ impl ApplicationHandler for EditorApp {
                     interaction::on_cursor_moved(&mut ctx, window, &input);
                     self.interaction = ctx.interaction;
                 }
-                engine.dispatch_routed_event(
-                    &event,
-                    EventRouteOpts {
-                        left_orbit: false,
-                        pick_on_click: false,
-                        camera: true,
-                    },
-                );
+                engine.dispatch_routed_event(&event, EventRouteOpts::editor());
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 engine.feed_input(&event);
@@ -153,24 +146,10 @@ impl ApplicationHandler for EditorApp {
                     }
                     self.interaction = ctx.interaction;
                 }
-                engine.dispatch_routed_event(
-                    &event,
-                    EventRouteOpts {
-                        left_orbit: false,
-                        pick_on_click: false,
-                        camera: true,
-                    },
-                );
+                engine.dispatch_routed_event(&event, EventRouteOpts::editor());
             }
             WindowEvent::MouseWheel { .. } => {
-                engine.handle_window_event(
-                    &event,
-                    EventRouteOpts {
-                        left_orbit: false,
-                        pick_on_click: false,
-                        camera: true,
-                    },
-                );
+                engine.handle_window_event(&event, EventRouteOpts::editor());
             }
             WindowEvent::ModifiersChanged(_) => {
                 engine.feed_input(&event);
@@ -196,14 +175,7 @@ impl ApplicationHandler for EditorApp {
                 }
             }
             _ => {
-                engine.handle_window_event(
-                    &event,
-                    EventRouteOpts {
-                        left_orbit: false,
-                        pick_on_click: false,
-                        camera: true,
-                    },
-                );
+                engine.handle_window_event(&event, EventRouteOpts::editor());
             }
         }
     }

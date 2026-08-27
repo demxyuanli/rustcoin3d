@@ -306,24 +306,16 @@ pub fn on_left_up(
     }
 }
 
-/// Like `gizmo::pick_view_proj` but takes camera node directly instead of ViewportCamera.
+/// Like [`rc3d_engine_api::viewport_pick_matrices`] but takes a camera node
+/// and a look-at fallback when the node is not a camera.
 fn pick_view_proj_for_node(
     graph: &rc3d_scene::SceneGraph,
     camera_node: NodeId,
     vport: &rc3d_render::viewport::Viewport,
 ) -> (Mat4, Mat4) {
-    if let Some(e) = graph.get(camera_node) {
-        match &e.data {
-            rc3d_scene::NodeData::PerspectiveCamera(c) => {
-                return (c.view_matrix(), c.projection_matrix())
-            }
-            rc3d_scene::NodeData::OrthographicCamera(c) => {
-                return (c.view_matrix(), c.projection_matrix())
-            }
-            _ => {}
-        }
+    if let Some(m) = rc3d_engine_api::camera_node_view_proj(graph, camera_node) {
+        return m;
     }
-    // Fallback
     let aspect = vport.rect.aspect();
     let v = Mat4::look_at_rh(
         rc3d_core::math::Vec3::new(0.0, 0.0, 5.0),

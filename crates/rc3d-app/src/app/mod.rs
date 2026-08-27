@@ -1,4 +1,4 @@
-use rc3d_engine_api::Engine;
+use rc3d_engine_api::{Engine, EventRouteOpts};
 use rc3d_editor::Editor;
 use winit::{
     application::ApplicationHandler,
@@ -66,13 +66,32 @@ impl ApplicationHandler for App {
                 if let Some(ref mut engine) = self.engine {
                     engine.resize(size.width, size.height);
                 }
-            }
-            WindowEvent::CloseRequested => event_loop.exit(),
-            _ => {
                 if let (Some(ref mut editor), Some(ref window)) =
                     (&mut self.editor, &self.window)
                 {
-                    editor.handle_event(window, &event);
+                    editor.resize(size.width, size.height, window.scale_factor() as f32);
+                }
+            }
+            WindowEvent::CloseRequested => event_loop.exit(),
+            _ => {
+                let egui_consumed = if let (Some(ref mut editor), Some(ref window)) =
+                    (&mut self.editor, &self.window)
+                {
+                    editor.handle_event(window, &event)
+                } else {
+                    false
+                };
+                let is_pointer = matches!(
+                    event,
+                    WindowEvent::CursorMoved { .. }
+                        | WindowEvent::MouseInput { .. }
+                        | WindowEvent::MouseWheel { .. }
+                );
+                if egui_consumed && !is_pointer {
+                    return;
+                }
+                if let Some(ref mut engine) = self.engine {
+                    engine.handle_window_event(&event, EventRouteOpts::editor());
                 }
             }
         }
