@@ -128,8 +128,8 @@ impl BgPass {
         });
         let layout_2d = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Bg 2D PPL"),
-            bind_group_layouts: &[&bgl_2d],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl_2d)],
+            immediate_size: 0,
         });
         let pipeline_2d = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Background 2D"),
@@ -150,7 +150,7 @@ impl BgPass {
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
             depth_stencil: None,
             multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
-            multiview: None, cache: None,
+            multiview_mask: None, cache: None,
         });
 
         // ── Cubemap BGL (uniform + texture_cube + sampler) ──
@@ -187,8 +187,8 @@ impl BgPass {
         });
         let layout_cubemap = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Bg Cube PPL"),
-            bind_group_layouts: &[&bgl_cubemap],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl_cubemap)],
+            immediate_size: 0,
         });
         let pipeline_cubemap = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Background Cubemap"),
@@ -209,7 +209,7 @@ impl BgPass {
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
             depth_stencil: None,
             multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
-            multiview: None, cache: None,
+            multiview_mask: None, cache: None,
         });
 
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -345,6 +345,7 @@ impl BgPass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: settings.top_color[0] as f64,
@@ -357,7 +358,7 @@ impl BgPass {
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         scene_region.apply_to_pass(&mut pass);
 

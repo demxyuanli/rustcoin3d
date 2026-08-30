@@ -37,8 +37,8 @@ fn compose_hud_text(
 fn glyphon_depth_stencil(compare: wgpu::CompareFunction) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32FloatStencil8,
-        depth_write_enabled: false,
-        depth_compare: compare,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(compare),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     }
@@ -107,11 +107,11 @@ impl HudRenderer {
         let label_attrs = Attrs::new().family(Family::SansSerif);
         let swash_cache = SwashCache::new();
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 22.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "", label_attrs, Shaping::Advanced);
+        buffer.set_size(Some(width as f32), Some(height as f32));
+        buffer.set_text("", &label_attrs, Shaping::Advanced, None);
         let mut empty_buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 17.0));
-        empty_buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        empty_buffer.set_text(&mut font_system, "", label_attrs, Shaping::Advanced);
+        empty_buffer.set_size(Some(width as f32), Some(height as f32));
+        empty_buffer.set_text("", &label_attrs, Shaping::Advanced, None);
         empty_buffer.shape_until_scroll(&mut font_system, false);
         let mut hud = Self {
             font_system,
@@ -142,7 +142,7 @@ impl HudRenderer {
         self.width = width;
         self.height = height;
         self.buffer
-            .set_size(&mut self.font_system, Some(width as f32), Some(height as f32));
+            .set_size(Some(width as f32), Some(height as f32));
         self.viewport.update(queue, Resolution { width, height });
     }
 
@@ -156,13 +156,9 @@ impl HudRenderer {
         for cmd in &self.positioned_texts {
             crate::font_loader::ensure_named_font(&mut self.font_system, &cmd.font_name);
             let mut buf = Buffer::new(&mut self.font_system, Metrics::new(cmd.size, cmd.size * 1.2));
-            buf.set_size(&mut self.font_system, Some(self.width as f32), Some(self.height as f32));
-            buf.set_text(
-                &mut self.font_system,
-                &cmd.string,
-                crate::font_loader::attrs_from_font(&cmd.font_name, cmd.font_style),
-                Shaping::Advanced,
-            );
+            buf.set_size(Some(self.width as f32), Some(self.height as f32));
+            let attrs = crate::font_loader::attrs_from_font(&cmd.font_name, cmd.font_style);
+            buf.set_text(&cmd.string, &attrs, Shaping::Advanced, None);
             buf.shape_until_scroll(&mut self.font_system, false);
             self.positioned_buffers.push(buf);
         }
@@ -298,12 +294,7 @@ impl HudRenderer {
         mode_name: &str,
     ) {
         let text = compose_hud_text(&self.overlay_lines, fps, frame_time_ms, stats, mode_name);
-        self.buffer.set_text(
-            &mut self.font_system,
-            &text,
-                self.label_attrs,
-            Shaping::Advanced,
-        );
+        self.buffer.set_text(&text, &self.label_attrs, Shaping::Advanced, None);
         self.buffer.shape_until_scroll(&mut self.font_system, false);
     }
 

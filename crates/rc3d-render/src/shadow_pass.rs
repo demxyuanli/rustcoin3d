@@ -101,7 +101,7 @@ pub(super) fn create_shadow_compare_sampler(device: &wgpu::Device) -> wgpu::Samp
         label: Some("Shadow compare"),
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         compare: Some(wgpu::CompareFunction::Less),
         ..Default::default()
     })

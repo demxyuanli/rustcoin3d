@@ -274,9 +274,9 @@ struct ControlPanelApp {
 }
 
 impl eframe::App for ControlPanelApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut s = self.state.lock().expect("panel state lock");
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Controls");
 
             if self.config.sections.visibility {
@@ -365,6 +365,6 @@ impl eframe::App for ControlPanelApp {
             }
         });
         drop(s);
-        ctx.request_repaint();
+        ui.ctx().request_repaint();
     }
 }

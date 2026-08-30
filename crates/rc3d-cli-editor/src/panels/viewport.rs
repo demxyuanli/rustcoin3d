@@ -50,8 +50,8 @@ impl ViewportPanel {
         ));
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context, state: &EngineState, pixels_per_point: f32) {
-        let inner = egui::CentralPanel::default().show(ctx, |ui| {
+    pub fn ui(&mut self, ui: &mut egui::Ui, state: &EngineState, pixels_per_point: f32) {
+        let inner = egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Viewport");
             ui.separator();
 

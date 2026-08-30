@@ -187,7 +187,7 @@ pub fn apply_theme(ctx: &egui::Context, theme: UiTheme, load_fonts: bool) {
     visuals.widgets.open.corner_radius = CornerRadius::same(4);
     ctx.set_visuals(visuals);
 
-    ctx.style_mut(|style| {
+    ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0_f32, 6.0_f32);
         style.spacing.button_padding = egui::vec2(10.0_f32, 5.0_f32);
         style.spacing.menu_margin = egui::Margin::same(6);

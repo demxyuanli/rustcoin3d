@@ -20,6 +20,7 @@ pub(super) fn pass_depth_prepass(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: load_op,
                 store: wgpu::StoreOp::Store,
@@ -37,7 +38,7 @@ pub(super) fn pass_depth_prepass(
             }),
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     // Prepass uploads the shared instance/indirect buffers; the solid pass
     // re-records the identical layout without re-uploading (see draw_opaque).
@@ -75,6 +76,7 @@ pub(super) fn pass_solid_and_outline(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: color_load,
                 store: wgpu::StoreOp::Store,
@@ -92,7 +94,7 @@ pub(super) fn pass_solid_and_outline(
             }),
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
 
     // Meshlet draw path: uses basic (full-buffer direct draw) or GPU cull

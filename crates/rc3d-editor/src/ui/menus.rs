@@ -18,7 +18,7 @@ pub(super) fn menu_bar(
     push: &mut impl FnMut(EditorCommand),
 ) {
     let loc = ui_ctx.ui_locale;
-    egui::menu::bar(ui, |ui| {
+    egui::MenuBar::new().ui(ui, |ui| {
         file_menu(ui, ui_ctx, chrome, push);
         edit_menu(ui, loc, push);
         view_menu(ui, ui_ctx, chrome, push);

@@ -15,11 +15,11 @@ rc3d-engine-api = { workspace = true }
 rc3d-gizmo = { workspace = true }
 wgpu = { workspace = true }
 winit = { workspace = true }
-egui = "0.31"
-egui-wgpu = "0.31"
-egui-winit = "0.31"
-eframe = { version = "0.31", default-features = false, features = ["wgpu"] }
-egui_ltreeview = "=0.1.10"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
+eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
+egui_ltreeview = "0.9"
 rfd = "0.15"
 log = { workspace = true }
 image = { workspace = true }

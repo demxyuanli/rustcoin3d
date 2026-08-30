@@ -35,6 +35,7 @@ pub(super) fn pass_wireframe(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -49,7 +50,7 @@ pub(super) fn pass_wireframe(
             }),
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     renderer.apply_scene_viewport(&mut pass);
 

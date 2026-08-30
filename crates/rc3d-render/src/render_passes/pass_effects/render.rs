@@ -28,16 +28,16 @@ impl DecalPass {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Decal PPL"), bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+            label: Some("Decal PPL"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Decal"), layout: Some(&layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: false, depth_compare: wgpu::CompareFunction::Always, stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
+            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
             multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
-            multiview: None, cache: None,
+            multiview_mask: None, cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Decal Sampler"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
@@ -70,6 +70,7 @@ impl DecalPass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -84,7 +85,7 @@ impl DecalPass {
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);
@@ -210,15 +211,15 @@ impl VolumePass {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Volume PPL"), bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+            label: Some("Volume PPL"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Volume Raymarch"), layout: Some(&layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::LessEqual, stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
-            multisample: wgpu::MultisampleState { count: 1, ..Default::default() }, multiview: None, cache: None,
+            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::LessEqual), stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
+            multisample: wgpu::MultisampleState { count: 1, ..Default::default() }, multiview_mask: None, cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Volume Sampler"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
@@ -251,6 +252,7 @@ impl VolumePass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -259,7 +261,7 @@ impl VolumePass {
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);
@@ -327,16 +329,16 @@ impl PointCloudPass {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("PointCloud PPL"), bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+            label: Some("PointCloud PPL"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("PointCloud"), layout: Some(&layout),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::LessEqual, stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
+            depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32FloatStencil8, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::LessEqual), stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
             multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
-            multiview: None, cache: None,
+            multiview_mask: None, cache: None,
         });
         Self { bgl, pipeline, sim: GpuParticleSim::new(device) }
     }
@@ -371,6 +373,7 @@ impl PointCloudPass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -379,7 +382,7 @@ impl PointCloudPass {
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);

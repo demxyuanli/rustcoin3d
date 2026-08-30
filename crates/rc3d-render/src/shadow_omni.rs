@@ -115,7 +115,7 @@ impl OmniShadowMap {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
@@ -206,8 +206,8 @@ impl OmniShadowRenderer {
 
         let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Omni Shadow PLL"),
-            bind_group_layouts: &[&shadow_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&shadow_bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -216,7 +216,7 @@ impl OmniShadowRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[crate::vertex::Vertex::desc()],
+                buffers: &[Some(crate::vertex::Vertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -232,8 +232,8 @@ impl OmniShadowRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState {
                     constant: 2,
@@ -242,7 +242,7 @@ impl OmniShadowRenderer {
                 },
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -394,7 +394,7 @@ pub(crate) fn render_omni_shadow_pass(
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(&pipeline);
             draw_omni_casters(renderer, &mut pass, ctx, vps[face as usize], *pl_pos, z_far);

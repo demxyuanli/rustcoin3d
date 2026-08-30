@@ -204,4 +204,5 @@ SoEngine                          rc3d-engine：28 种（Gate/Decompose/Concaten
 - 2026-08-29：默认待办收窄为 T0–T1 交互（套索、EventCallback 拦截、剖面手柄、X-ray）；OIT/离屏/Path/T2 传感器从 Partial 划出；T3 与 three.js 对照缺口不进默认迭代。
 - 2026-08-29：`rc3d-studio` 无边框窗口 + Fluent 风格 egui chrome（Win11 Mica/圆角）；3D 仍走中央 region，不用 HTML/XAML 做菜单壳。
 - 2026-08-30：Studio Hierarchy 改用 `egui_ltreeview`（缩进钩线、多选、右键、拖拽重排）。
+- 2026-08-30：依赖链升级 — wgpu 24→30、egui/eframe 0.31→0.36、glyphon 0.8→0.12、egui_ltreeview 0.1.10→0.9；MSRV 1.95。
 - 2026-08-29：Studio File 菜单接到场景 JSON 打开/保存与网格导入；未保存关闭需确认。

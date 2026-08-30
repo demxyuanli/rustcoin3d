@@ -134,7 +134,7 @@ pub fn parallel_upload_gpu_data(
     });
 
     {
-        let mut mapped = staging.slice(..).get_mapped_range_mut();
+        let mut mapped = staging.slice(..).get_mapped_range_mut().expect("staging map");
         let src: &[u8] = bytemuck::cast_slice(&cache.gpu_data);
         // Copy sequentially for correctness — parallel memcpy to a single mapped range
         // is not safe in Rust's aliasing model.

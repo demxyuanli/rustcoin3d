@@ -10,7 +10,7 @@ struct PushConstants {
     sample_count: u32,
 }
 
-var<push_constant> pc: PushConstants;
+var<immediate> pc: PushConstants;
 
 const PI: f32 = 3.141592653589793;
 

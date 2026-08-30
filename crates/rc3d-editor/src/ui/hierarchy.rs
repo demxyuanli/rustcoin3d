@@ -64,19 +64,13 @@ pub(super) fn draw_hierarchy(
                 &pal,
             );
             let add_id = ui.make_persistent_id("rc3d_hier_add_root");
-            if add.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(add_id));
-            }
-            egui::popup::popup_below_widget(
-                ui,
-                add_id,
-                &add,
-                egui::popup::PopupCloseBehavior::CloseOnClick,
-                |ui| {
+            egui::Popup::from_toggle_button_response(&add)
+                .id(add_id)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                .show(|ui| {
                     ui.set_min_width(160.0_f32);
                     super::menus::create_node_menu(ui, sel, loc, push);
-                },
-            );
+                });
         });
     });
     ui.separator();
@@ -88,7 +82,7 @@ pub(super) fn draw_hierarchy(
     if tree_selected != ui_ctx.selected {
         state.set_selected(scene_selected.clone());
         for id in &scene_selected {
-            state.expand_parents_of(*id);
+            state.expand_parents_of(id);
         }
     }
 
@@ -96,8 +90,6 @@ pub(super) fn draw_hierarchy(
         .allow_multi_selection(true)
         .indent_hint_style(IndentHintStyle::Hook)
         .row_layout(RowLayout::AlignedIcons)
-        .fill_space_horizontal(true)
-        .fill_space_vertical(true)
         .override_indent(Some(16.0_f32))
         .fallback_context_menu(|ui, nodes| {
             ui.set_min_width(180.0_f32);
@@ -155,6 +147,7 @@ pub(super) fn draw_hierarchy(
                     index,
                 });
             }
+            Action::Activate(_) | Action::DragExternal(_) | Action::MoveExternal(_) => {}
         }
     }
 }

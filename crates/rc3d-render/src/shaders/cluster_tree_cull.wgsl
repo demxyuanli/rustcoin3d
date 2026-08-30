@@ -23,7 +23,7 @@ struct PushConstants {
 @group(0) @binding(5) var<storage, read_write> next_visible: array<u32>;
 @group(0) @binding(6) var<storage, read_write> next_visible_count: atomic<u32>;
 
-var<push_constant> pc: PushConstants;
+var<immediate> pc: PushConstants;
 
 fn sphere_in_frustum(center: vec3<f32>, radius: f32) -> bool {
     for (var i = 0u; i < 6u; i++) {

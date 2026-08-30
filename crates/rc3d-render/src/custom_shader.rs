@@ -51,8 +51,8 @@ impl CustomShaderPass {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("CustomShader PLL"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         Self {
             bgl,
@@ -93,7 +93,7 @@ impl CustomShaderPass {
                 vertex: wgpu::VertexState {
                     module: &module,
                     entry_point: Some("vs_main"),
-                    buffers: &[Vertex::desc()],
+                    buffers: &[Some(Vertex::desc())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -113,8 +113,8 @@ impl CustomShaderPass {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32FloatStencil8,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -122,7 +122,7 @@ impl CustomShaderPass {
                     count: 1,
                     ..Default::default()
                 },
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
             self.pipelines.insert(key, CachedPipeline { pipeline });
@@ -166,6 +166,7 @@ impl CustomShaderPass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -180,7 +181,7 @@ impl CustomShaderPass {
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         scene_region.apply_to_pass(&mut pass);
 

@@ -87,9 +87,8 @@ impl super::Renderer {
         self.gpu.interaction_downscale_view = Some(down_view);
 
         // Upscale from intermediate to swapchain
-        let swapchain_frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(_) => return stats,
+        let Some(swapchain_frame) = self.acquire_surface_texture() else {
+            return stats;
         };
         let swapchain_view = swapchain_frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let upscale_bgl = self.gpu.upscale_bgl.as_ref().unwrap();
@@ -123,6 +122,7 @@ impl super::Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &swapchain_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
@@ -130,7 +130,7 @@ impl super::Renderer {
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             upscale_pass.set_pipeline(self.gpu.upscale_pipeline.as_ref().unwrap());
             upscale_pass.set_bind_group(0, &upscale_bg, &[]);
@@ -143,7 +143,7 @@ impl super::Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
         // Occlusion depth readback is handled non-blockingly inside
         // execute_passes (async map kicked after submit, harvested next frame).
-        swapchain_frame.present();
+        self.queue.present(swapchain_frame);
 
         stats
     }
@@ -289,6 +289,7 @@ impl super::Renderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: shade_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -306,7 +307,7 @@ impl super::Renderer {
                 }),
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         self.apply_scene_viewport(&mut pass);
         pass.set_pipeline(&scene_pl.section_cap_fill);
@@ -390,8 +391,8 @@ impl super::Renderer {
 
         let slice = buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = slice.get_mapped_range().expect("readback map");
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         for row in 0..height as usize {
             let src = row * padded_bytes_per_row as usize;
@@ -528,6 +529,7 @@ impl super::Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.05,
@@ -540,7 +542,7 @@ impl super::Renderer {
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(pipeline);
             for (i, bg) in bind_groups.iter().enumerate() {
@@ -598,7 +600,7 @@ impl super::Renderer {
             .map(|v| v.rect)
             .collect();
         let stats = self.render_quad_tiles(draw_calls, scene, eyes, &rects);
-        let Ok(frame) = self.surface.get_current_texture() else {
+        let Some(frame) = self.acquire_surface_texture() else {
             return stats;
         };
         let view = frame
@@ -618,7 +620,7 @@ impl super::Renderer {
             hook(&mut encoder, &view);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        frame.present();
+        self.queue.present(frame);
         stats
     }
 
@@ -693,8 +695,8 @@ impl super::Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
         let slice = buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = slice.get_mapped_range().expect("readback map");
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         for row in 0..h as usize {
             let src = row * padded_bytes_per_row as usize;

@@ -101,9 +101,9 @@ impl GpuTimer {
         buf_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         if let Ok(Ok(())) = rx.recv() {
-            let view = buf_slice.get_mapped_range();
+            let view = buf_slice.get_mapped_range().expect("timestamp map");
             let timestamps: &[u64] = bytemuck::cast_slice(&view);
             let active_count = (self.labels.len() * 2).min(timestamps.len());
             self.last_timestamps = timestamps[..active_count].to_vec();

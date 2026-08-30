@@ -76,8 +76,8 @@ impl EguiPainter {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("egui pipeline"),
-            bind_group_layouts: &[&uniform_bgl, &texture_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&uniform_bgl), Some(&texture_bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -86,7 +86,7 @@ impl EguiPainter {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<EguiVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -106,7 +106,7 @@ impl EguiPainter {
                             shader_location: 2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -137,7 +137,7 @@ impl EguiPainter {
             },
             multisample: wgpu::MultisampleState::default(),
             depth_stencil: None,
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -217,11 +217,6 @@ impl EguiPainter {
                 let rgba: Vec<u8> = img.pixels.iter()
                     .flat_map(|c| [c.r(), c.g(), c.b(), c.a()]).collect();
                 (rgba, img.size)
-            }
-            egui::epaint::ImageData::Font(img) => {
-                let srgba: Vec<u8> = img.srgba_pixels(None)
-                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()]).collect();
-                (srgba, img.size)
             }
         };
         let w = size[0] as u32;

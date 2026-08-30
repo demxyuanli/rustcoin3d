@@ -30,6 +30,7 @@ pub(crate) fn encode_hud_overlay(
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -44,7 +45,7 @@ pub(crate) fn encode_hud_overlay(
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         renderer.apply_scene_viewport(&mut pass);
         hud.render_plane_annotations(&mut pass, depth_reversed_z);
@@ -56,6 +57,7 @@ pub(crate) fn encode_hud_overlay(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -63,7 +65,7 @@ pub(crate) fn encode_hud_overlay(
         })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     hud.render_hud_chrome(&mut pass);
 }

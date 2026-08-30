@@ -333,8 +333,8 @@ fn raster_label_mask(
     crate::font_loader::ensure_named_font(font_system, font_name);
     let attrs = crate::font_loader::attrs_from_font(font_name, font_style);
     let mut buffer = Buffer::new(font_system, Metrics::new(raster_px, raster_px * 1.2));
-    buffer.set_size(font_system, Some(4096.0), Some(4096.0));
-    buffer.set_text(font_system, text, attrs, Shaping::Advanced);
+    buffer.set_size(Some(4096.0), Some(4096.0));
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
     let mut min_x = i32::MAX;

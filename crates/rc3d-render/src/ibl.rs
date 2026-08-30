@@ -207,8 +207,8 @@ fn load_equirectangular_hdr(
 
         let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("IBL Mip Blit PLL"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -233,7 +233,7 @@ fn load_equirectangular_hdr(
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -244,7 +244,7 @@ fn load_equirectangular_hdr(
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -292,6 +292,7 @@ fn load_equirectangular_hdr(
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &dst_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -299,7 +300,7 @@ fn load_equirectangular_hdr(
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bg, &[]);
@@ -410,8 +411,8 @@ fn create_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
 
     let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("BRDF LUT PLL"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
 
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

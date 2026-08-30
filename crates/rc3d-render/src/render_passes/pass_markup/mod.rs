@@ -277,6 +277,7 @@ pub fn pass_markup(
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -291,7 +292,7 @@ pub fn pass_markup(
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(markup_pl);
@@ -349,6 +350,7 @@ pub fn pass_markup(
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -356,7 +358,7 @@ pub fn pass_markup(
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         pass.set_pipeline(&renderer.gpu.pipelines.markup_lines_screen);
         let mvp = screen_space_ortho(surface_w as f32, surface_h as f32).to_cols_array_2d();

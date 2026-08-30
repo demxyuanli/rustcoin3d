@@ -113,8 +113,8 @@ impl GpuSkinningPass {
 
         let pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Skinning PLL"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

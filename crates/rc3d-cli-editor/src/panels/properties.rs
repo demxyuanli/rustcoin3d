@@ -11,11 +11,11 @@ impl PropertiesPanel {
         Self
     }
 
-    pub fn ui(&self, ctx: &egui::Context, state: &EngineState) {
-        egui::SidePanel::right("properties")
-            .min_width(220.0)
+    pub fn ui(&self, ui: &mut egui::Ui, state: &EngineState) {
+        egui::Panel::right("properties")
+            .min_size(220.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.heading("Properties");
                 ui.separator();
 

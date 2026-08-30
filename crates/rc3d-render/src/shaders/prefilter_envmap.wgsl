@@ -14,7 +14,7 @@ struct PushConstants {
     resolution: u32,
 }
 
-var<push_constant> pc: PushConstants;
+var<immediate> pc: PushConstants;
 
 fn cubemap_direction(face: u32, uv: vec2<f32>) -> vec3<f32> {
     let uc = 2.0 * uv - 1.0;

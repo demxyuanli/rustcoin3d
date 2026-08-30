@@ -16,11 +16,11 @@ impl DiagnosticsPanel {
         Self { tab: DiagTab::Log }
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context, state: &EngineState, fps: f64, frame_time_ms: f64) {
-        egui::TopBottomPanel::bottom("diagnostics")
-            .min_height(120.0)
+    pub fn ui(&mut self, ui: &mut egui::Ui, state: &EngineState, fps: f64, frame_time_ms: f64) {
+        egui::Panel::bottom("diagnostics")
+            .min_size(120.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.tab, DiagTab::Log, "Log");
                     ui.selectable_value(&mut self.tab, DiagTab::Tests, "Tests");

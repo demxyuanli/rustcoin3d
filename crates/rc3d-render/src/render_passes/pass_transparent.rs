@@ -207,6 +207,7 @@ pub(super) fn pass_transparent(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -221,7 +222,7 @@ pub(super) fn pass_transparent(
             stencil_ops: None,
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     renderer.apply_scene_viewport(&mut pass);
 
@@ -266,6 +267,7 @@ pub(super) fn pass_transparent_wboit(
             Some(wgpu::RenderPassColorAttachment {
                 view: accum_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: 0.0,
@@ -279,6 +281,7 @@ pub(super) fn pass_transparent_wboit(
             Some(wgpu::RenderPassColorAttachment {
                 view: revealage_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: 1.0,
@@ -299,7 +302,7 @@ pub(super) fn pass_transparent_wboit(
             stencil_ops: None,
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     renderer.apply_scene_viewport(&mut pass);
 
@@ -354,6 +357,7 @@ pub(super) fn pass_wboit_composite(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: target_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -361,7 +365,7 @@ pub(super) fn pass_wboit_composite(
         })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
 
     pass.set_pipeline(if composite_hdr {

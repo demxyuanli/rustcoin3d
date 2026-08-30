@@ -300,9 +300,10 @@ pub(super) fn pass_ssao(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &fx.ssao_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
         })],
-        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&pl.ssao_pipeline);
     pass.set_bind_group(0, &ssao_bg, &[]);
@@ -330,9 +331,10 @@ pub(super) fn pass_ssao_blur(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &fx.ssao_blur_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
         })],
-        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&pl.ssao_blur_pipeline);
     pass.set_bind_group(0, &blur_bg, &[]);
@@ -350,9 +352,10 @@ pub(super) fn pass_tonemap_hdr_to_post_ldr(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &fx.post_ldr_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(bg_color), store: wgpu::StoreOp::Store },
         })],
-        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&pl.tonemap_pipeline);
     pass.set_bind_group(0, &fx.tonemap_bg, &[]);
@@ -417,6 +420,7 @@ pub(super) fn pass_fxaa_ldr_to_swapchain(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: swap_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 // Fullscreen blit destination. Line overlays (wireframe / edges)
                 // run after this pass and Load when any draw is filled.
@@ -426,7 +430,7 @@ pub(super) fn pass_fxaa_ldr_to_swapchain(
         })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&pl.fxaa_ldr_pipeline);
     pass.set_bind_group(0, &fxaa_bg, &[]);
@@ -445,9 +449,10 @@ pub(super) fn pass_blit_post_ldr_to_swapchain(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: swap_view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(bg_color), store: wgpu::StoreOp::Store },
         })],
-        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&pl.blit_pipeline);
     pass.set_bind_group(0, &fx.blit_bg, &[]);

@@ -146,8 +146,8 @@ impl CubeCameraGpu {
         });
         let capture_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("CubeCamera capture PLL"),
-            bind_group_layouts: &[&capture_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&capture_bgl)],
+            immediate_size: 0,
         });
         let capture_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("CubeCamera capture pipeline"),
@@ -155,7 +155,7 @@ impl CubeCameraGpu {
             vertex: wgpu::VertexState {
                 module: &capture_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -174,13 +174,13 @@ impl CubeCameraGpu {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -210,7 +210,7 @@ impl CubeCameraGpu {
             label: Some("CubeCamera cube sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let to_eq_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -240,8 +240,8 @@ impl CubeCameraGpu {
         });
         let to_eq_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("CubeCamera to-eq PLL"),
-            bind_group_layouts: &[&to_eq_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&to_eq_bgl)],
+            immediate_size: 0,
         });
         let to_eq_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("CubeCamera to-eq pipeline"),
@@ -265,7 +265,7 @@ impl CubeCameraGpu {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let to_eq_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -310,8 +310,8 @@ impl CubeCameraGpu {
         });
         let blit_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("CubeCamera mip blit PLL"),
-            bind_group_layouts: &[&blit_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blit_bgl)],
+            immediate_size: 0,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("CubeCamera mip blit"),
@@ -335,14 +335,14 @@ impl CubeCameraGpu {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("CubeCamera mip sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -566,6 +566,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &gpu.face_color[face],
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.04,
@@ -585,7 +586,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(&gpu.capture_pipeline);
             for (i, (vb, ib, count, _, _)) in mesh_bufs.iter().enumerate() {
@@ -614,6 +615,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &eq_mip0,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
@@ -621,7 +623,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         pass.set_pipeline(&gpu.to_eq_pipeline);
         pass.set_bind_group(0, &gpu.to_eq_bg, &[]);
@@ -664,6 +666,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &dst_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -671,7 +674,7 @@ pub fn update_cube_cameras(renderer: &mut Renderer, scene: &SceneGraph, draws: &
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
-                occlusion_query_set: None,
+                occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(&gpu.blit_pipeline);
             pass.set_bind_group(0, &bg, &[]);

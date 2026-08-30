@@ -158,13 +158,9 @@ fn rasterize_horizontal_mask(
     size: f32,
 ) -> Option<PlaneGlyphRaster> {
     let mut buffer = Buffer::new(font_system, Metrics::new(size, size * 1.2));
-    buffer.set_size(font_system, Some(4096.0), Some(4096.0));
-    buffer.set_text(
-        font_system,
-        text,
-        Attrs::new().family(Family::SansSerif),
-        Shaping::Advanced,
-    );
+    buffer.set_size(Some(4096.0), Some(4096.0));
+    let attrs = Attrs::new().family(Family::SansSerif);
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
     let mut min_x = i32::MAX;

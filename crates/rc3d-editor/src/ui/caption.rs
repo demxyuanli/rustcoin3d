@@ -4,7 +4,7 @@ use crate::ui::types::{CaptionAction, EditorChromeState, EditorUiContext};
 const CAPTION_H: f32 = 32.0;
 const BTN_W: f32 = 46.0;
 
-pub(super) fn draw_caption(ctx: &egui::Context, chrome: &mut EditorChromeState, ui_ctx: &EditorUiContext) {
+pub(super) fn draw_caption(ui: &mut egui::Ui, chrome: &mut EditorChromeState, ui_ctx: &EditorUiContext) {
     if !chrome.caption.enabled {
         return;
     }
@@ -13,14 +13,14 @@ pub(super) fn draw_caption(ctx: &egui::Context, chrome: &mut EditorChromeState, 
     let title = chrome.caption.title.clone();
     let mut action = None;
 
-    egui::TopBottomPanel::top("rc3d_caption")
-        .exact_height(CAPTION_H)
+    egui::Panel::top("rc3d_caption")
+        .exact_size(CAPTION_H)
         .frame(
             egui::Frame::NONE
                 .fill(pal.layer)
                 .inner_margin(egui::Margin::ZERO),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             ui.set_min_height(CAPTION_H);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

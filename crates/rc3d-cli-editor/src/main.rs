@@ -186,45 +186,44 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                     }
                 }
 
-                render_ctx
-                    .egui_ctx
-                    .begin_pass(render_ctx.egui_winit.take_egui_input(window));
-
                 let ppp = render_ctx.pixels_per_point;
-                self.diagnostics_panel.ui(
-                    &render_ctx.egui_ctx,
-                    &state,
-                    self.fps_smoother,
-                    dt * 1000.0,
+                let egui_output = render_ctx.egui_ctx.run_ui(
+                    render_ctx.egui_winit.take_egui_input(window),
+                    |ui| {
+                        self.diagnostics_panel.ui(
+                            ui,
+                            &state,
+                            self.fps_smoother,
+                            dt * 1000.0,
+                        );
+                        self.properties_panel.ui(ui, &state);
+                        self.viewport_panel.ui(ui, &state, ppp);
+                    },
                 );
-                self.properties_panel
-                    .ui(&render_ctx.egui_ctx, &state);
-                self.viewport_panel
-                    .ui(&render_ctx.egui_ctx, &state, ppp);
-
-                let egui_output = render_ctx.egui_ctx.end_pass();
                 let paint_jobs = render_ctx.egui_ctx.tessellate(
                     egui_output.shapes,
                     render_ctx.pixels_per_point,
                 );
 
                 let viewport_tex_id = self.viewport_panel.viewport_texture_id;
-                for (id, delta) in egui_output.textures_delta.set {
-                    if id == viewport_tex_id {
+                for (id, deltas) in &egui_output.textures_delta.set {
+                    if *id == viewport_tex_id {
                         continue;
                     }
-                    render_ctx.egui_painter.update_texture(
-                        &render_ctx.renderer.device,
-                        &render_ctx.renderer.queue,
-                        id,
-                        &delta,
-                    );
+                    for delta in deltas {
+                        render_ctx.egui_painter.update_texture(
+                            &render_ctx.renderer.device,
+                            &render_ctx.renderer.queue,
+                            *id,
+                            delta,
+                        );
+                    }
                 }
-                for id in egui_output.textures_delta.free {
-                    if id == viewport_tex_id {
+                for id in &egui_output.textures_delta.free {
+                    if *id == viewport_tex_id {
                         continue;
                     }
-                    render_ctx.egui_painter.free_texture(&id);
+                    render_ctx.egui_painter.free_texture(id);
                 }
 
                 let screen_size = window.inner_size();
@@ -237,17 +236,10 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                     screen_size.height,
                 );
 
-                let surface_tex = match render_ctx.renderer.acquire_surface_texture() {
-                    Ok(t) => t,
-                    Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                        let size = window.inner_size();
-                        render_ctx.resize(size.width, size.height, window.scale_factor() as f32);
-                        return;
-                    }
-                    Err(e) => {
-                        log::error!("Surface error: {:?}", e);
-                        return;
-                    }
+                let Some(surface_tex) = render_ctx.renderer.acquire_surface_texture() else {
+                    let size = window.inner_size();
+                    render_ctx.resize(size.width, size.height, window.scale_factor() as f32);
+                    return;
                 };
                 let swap_view = surface_tex
                     .texture
@@ -264,6 +256,7 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &swap_view,
                             resolve_target: None,
+                            depth_slice: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color {
                                     r: 0.05,
@@ -276,7 +269,7 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                         })],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
-                        occlusion_query_set: None,
+                        occlusion_query_set: None, multiview_mask: None,
                     });
                     render_ctx.egui_painter.draw_batches(&mut rp, &batches);
                 }
@@ -284,7 +277,7 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                     .renderer
                     .queue
                     .submit(std::iter::once(encoder.finish()));
-                surface_tex.present();
+                render_ctx.renderer.queue.present(surface_tex);
 
                 window.request_redraw();
             }

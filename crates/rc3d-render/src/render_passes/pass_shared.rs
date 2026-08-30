@@ -15,9 +15,9 @@ pub(super) fn acquire_surface<R>(
 ) -> (R, Option<(wgpu::SurfaceTexture, wgpu::TextureView)>, u32, u32) {
     match presentation {
         FramePresentation::Swapchain => {
-            let acquired = renderer.surface.get_current_texture();
+            let acquired = renderer.acquire_surface_texture();
             match acquired {
-                Ok(output) => {
+                Some(output) => {
                     let tex_ptr = std::ptr::from_ref(&output.texture);
                     let v = output
                         .texture
@@ -25,13 +25,7 @@ pub(super) fn acquire_surface<R>(
                     let result = f(tex_ptr, renderer.config.width, renderer.config.height);
                     (result, Some((output, v)), renderer.config.width, renderer.config.height)
                 }
-                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                    renderer.surface.configure(&renderer.device, &renderer.config);
-                    // Caller must handle the None return — typically by returning FrameStats::default()
-                    let result = f(std::ptr::null(), 0, 0);
-                    (result, None, 0, 0)
-                }
-                Err(_) => {
+                None => {
                     let result = f(std::ptr::null(), 0, 0);
                     (result, None, 0, 0)
                 }

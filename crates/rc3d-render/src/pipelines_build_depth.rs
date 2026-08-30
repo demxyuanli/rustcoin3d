@@ -46,16 +46,16 @@ pub(super) fn build_depth_mode_pipelines(
 
     let depth_stencil = wgpu::DepthStencilState {
         format: depth_format,
-        depth_write_enabled: true,
-        depth_compare: depth_cmp_prepass,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(depth_cmp_prepass),
         stencil: stencil_unchanged.clone(),
         bias: wgpu::DepthBiasState::default(),
     };
 
     let depth_stencil_solid = wgpu::DepthStencilState {
         format: depth_format,
-        depth_write_enabled: true,
-        depth_compare: depth_cmp_main,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(depth_cmp_main),
         stencil: wgpu::StencilState {
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Always,
@@ -87,7 +87,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: lit_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -111,7 +111,7 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(depth_stencil_solid.clone()),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -121,7 +121,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: lit_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -145,7 +145,7 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(depth_stencil_solid),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -155,7 +155,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: flat_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -178,11 +178,11 @@ pub(super) fn build_depth_mode_pipelines(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            depth_write_enabled: false,
+            depth_write_enabled: Some(false),
             ..depth_stencil.clone()
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -192,7 +192,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: flat_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -215,11 +215,11 @@ pub(super) fn build_depth_mode_pipelines(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            depth_compare: depth_cmp_main,
+            depth_compare: Some(depth_cmp_main),
             ..depth_stencil.clone()
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -229,7 +229,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: flat_shader,
             entry_point: Some("vs_line"),
-            buffers: &[LineVertex::desc()],
+            buffers: &[Some(LineVertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -252,8 +252,8 @@ pub(super) fn build_depth_mode_pipelines(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            depth_write_enabled: false,
-            depth_compare: depth_cmp_overlay,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth_cmp_overlay),
             bias: wgpu::DepthBiasState {
                 constant: 24,
                 slope_scale: 3.0,
@@ -262,7 +262,7 @@ pub(super) fn build_depth_mode_pipelines(
             ..depth_stencil.clone()
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -272,7 +272,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: line_aa_shader,
             entry_point: Some("vs_line_expanded"),
-            buffers: &[LineVertexExpanded::desc()],
+            buffers: &[Some(LineVertexExpanded::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -295,8 +295,8 @@ pub(super) fn build_depth_mode_pipelines(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            depth_write_enabled: false,
-            depth_compare: depth_cmp_overlay,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth_cmp_overlay),
             bias: wgpu::DepthBiasState {
                 constant: 24,
                 slope_scale: 3.0,
@@ -305,7 +305,7 @@ pub(super) fn build_depth_mode_pipelines(
             ..depth_stencil.clone()
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -315,7 +315,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: flat_shader,
             entry_point: Some("vs_line_hidden"),
-            buffers: &[LineVertex::desc()],
+            buffers: &[Some(LineVertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -338,13 +338,13 @@ pub(super) fn build_depth_mode_pipelines(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            depth_write_enabled: false,
-            depth_compare: depth_cmp_hidden,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth_cmp_hidden),
             bias: wgpu::DepthBiasState::default(),
             ..depth_stencil.clone()
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -361,7 +361,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: section_cap_mesh_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -385,12 +385,12 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: if depth_reversed_z {
+            depth_write_enabled: Some(false),
+            depth_compare: Some(if depth_reversed_z {
                 wgpu::CompareFunction::GreaterEqual
             } else {
                 wgpu::CompareFunction::LessEqual
-            },
+            }),
             stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Always,
@@ -410,7 +410,7 @@ pub(super) fn build_depth_mode_pipelines(
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -421,7 +421,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: flat_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -445,8 +445,8 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Always,
@@ -466,7 +466,7 @@ pub(super) fn build_depth_mode_pipelines(
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -506,8 +506,8 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
             stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Equal,
@@ -527,7 +527,7 @@ pub(super) fn build_depth_mode_pipelines(
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -537,7 +537,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: lit_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -561,13 +561,13 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: depth_cmp_main,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth_cmp_main),
             stencil: stencil_unchanged.clone(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -580,7 +580,7 @@ pub(super) fn build_depth_mode_pipelines(
         vertex: wgpu::VertexState {
             module: lit_shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -619,13 +619,13 @@ pub(super) fn build_depth_mode_pipelines(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: depth_cmp_main,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth_cmp_main),
             stencil: stencil_unchanged.clone(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 

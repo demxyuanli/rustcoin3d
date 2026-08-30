@@ -374,8 +374,8 @@ impl PipelineSet {
 
         let shadow_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Shadow depth PLL"),
-            bind_group_layouts: &[&shadow_draw_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&shadow_draw_bgl)],
+            immediate_size: 0,
         });
 
         let shadow_depth_format = wgpu::TextureFormat::Depth32Float;
@@ -385,7 +385,7 @@ impl PipelineSet {
             vertex: wgpu::VertexState {
                 module: &shadow_depth_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[Some(Vertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: None,
@@ -400,25 +400,25 @@ impl PipelineSet {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: shadow_depth_format,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
         let lit_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Lit PBR PLL"),
-            bind_group_layouts: &[&phong_bgl, &pbr_material_bgl, &shadow_resource_bgl, &ibl_instance_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&phong_bgl), Some(&pbr_material_bgl), Some(&shadow_resource_bgl), Some(&ibl_instance_bgl)],
+            immediate_size: 0,
         });
         let flat_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Flat PLL"),
-            bind_group_layouts: &[&flat_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&flat_bgl)],
+            immediate_size: 0,
         });
 
         let forward = build_depth_mode_pipelines(
@@ -487,7 +487,7 @@ impl PipelineSet {
             vertex: wgpu::VertexState {
                 module: &flat_shader,
                 entry_point: Some("vs_line"),
-                buffers: &[LineVertex::desc()],
+                buffers: &[Some(LineVertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -511,7 +511,7 @@ impl PipelineSet {
             },
             depth_stencil: None,
             multisample: viewport_border_ms,
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -521,7 +521,7 @@ impl PipelineSet {
             vertex: wgpu::VertexState {
                 module: &flat_shader,
                 entry_point: Some("vs_markup"),
-                buffers: &[MarkupVertex::desc()],
+                buffers: &[Some(MarkupVertex::desc())],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -545,7 +545,7 @@ impl PipelineSet {
             },
             depth_stencil: None,
             multisample: viewport_border_ms,
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -556,7 +556,7 @@ impl PipelineSet {
                 vertex: wgpu::VertexState {
                     module: &flat_shader,
                     entry_point: Some("vs_markup"),
-                    buffers: &[MarkupVertex::desc()],
+                    buffers: &[Some(MarkupVertex::desc())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -580,13 +580,13 @@ impl PipelineSet {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: false,
-                    depth_compare: cmp,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(cmp),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: viewport_border_ms,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -602,7 +602,7 @@ impl PipelineSet {
                 vertex: wgpu::VertexState {
                     module: &flat_shader,
                     entry_point: Some("vs_line"),
-                    buffers: &[LineVertex::desc()],
+                    buffers: &[Some(LineVertex::desc())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -626,13 +626,13 @@ impl PipelineSet {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: false,
-                    depth_compare: cmp,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(cmp),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: viewport_border_ms,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -677,13 +677,13 @@ impl PipelineSet {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let world_label_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World Label PLL"),
-            bind_group_layouts: &[&world_label_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&world_label_bgl)],
+            immediate_size: 0,
         });
         let make_world_label_pipeline = |label: &str, cmp: wgpu::CompareFunction| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -692,7 +692,7 @@ impl PipelineSet {
                 vertex: wgpu::VertexState {
                     module: &world_label_shader,
                     entry_point: Some("vs_world_label"),
-                    buffers: &[WorldLabelVertex::desc()],
+                    buffers: &[Some(WorldLabelVertex::desc())],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -716,13 +716,13 @@ impl PipelineSet {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: false,
-                    depth_compare: cmp,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(cmp),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: viewport_border_ms,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };

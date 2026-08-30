@@ -39,7 +39,7 @@ pub(super) fn pass_shadow_depth(
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
 
         pass.set_pipeline(&renderer.gpu.pipelines.shadow_depth);

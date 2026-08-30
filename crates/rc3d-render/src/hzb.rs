@@ -174,8 +174,8 @@ impl HzbBaker {
 
         let depth_to_mip0_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("HZB Depth To Mip0 PLL"),
-            bind_group_layouts: &[&depth_to_mip0_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&depth_to_mip0_bgl)],
+            immediate_size: 0,
         });
 
         let depth_to_mip0_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -224,8 +224,8 @@ impl HzbBaker {
 
         let downsample_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("HZB Downsample PLL"),
-            bind_group_layouts: &[&downsample_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&downsample_bgl)],
+            immediate_size: 0,
         });
 
         let downsample_max_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

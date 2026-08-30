@@ -165,14 +165,14 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         label: Some("SSAO point sampler"),
         mag_filter: wgpu::FilterMode::Nearest,
         min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         ..Default::default()
     });
 
     let tonemap_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Tonemap PLL"), bind_group_layouts: &[&tonemap_bgl], push_constant_ranges: &[],
+        label: Some("Tonemap PLL"), bind_group_layouts: &[Some(&tonemap_bgl)], immediate_size: 0,
     });
     let tonemap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Post ACES+FXAA+Bloom+SSAO"),
@@ -184,7 +184,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
     });
 
     let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -203,7 +203,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let blit_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Blit PLL"), bind_group_layouts: &[&blit_bgl], push_constant_ranges: &[],
+        label: Some("Blit PLL"), bind_group_layouts: &[Some(&blit_bgl)], immediate_size: 0,
     });
     let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Blit post LDR to swapchain"),
@@ -215,7 +215,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
     });
 
     let bloom_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -239,7 +239,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let bloom_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Bloom PLL"), bind_group_layouts: &[&bloom_bgl], push_constant_ranges: &[],
+        label: Some("Bloom PLL"), bind_group_layouts: &[Some(&bloom_bgl)], immediate_size: 0,
     });
     let bloom_prefilter = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Bloom prefilter"), layout: Some(&bloom_pll), module: &bloom_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
@@ -275,7 +275,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let velocity_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Velocity PLL"), bind_group_layouts: &[&velocity_bgl], push_constant_ranges: &[],
+        label: Some("Velocity PLL"), bind_group_layouts: &[Some(&velocity_bgl)], immediate_size: 0,
     });
     let velocity_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Velocity"), layout: Some(&velocity_pll), module: &velocity_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
@@ -307,7 +307,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let xray_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("X-Ray PLL"), bind_group_layouts: &[&xray_bgl], push_constant_ranges: &[],
+        label: Some("X-Ray PLL"), bind_group_layouts: &[Some(&xray_bgl)], immediate_size: 0,
     });
     let xray_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("X-Ray"), layout: Some(&xray_pll), module: &xray_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
@@ -339,7 +339,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let ssao_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("SSAO PLL"), bind_group_layouts: &[&ssao_bgl], push_constant_ranges: &[],
+        label: Some("SSAO PLL"), bind_group_layouts: &[Some(&ssao_bgl)], immediate_size: 0,
     });
     let ssao_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SSAO"),
@@ -351,7 +351,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
     });
 
     let ssao_blur_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -375,7 +375,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         ],
     });
     let ssao_blur_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("SSAO Blur PLL"), bind_group_layouts: &[&ssao_blur_bgl], push_constant_ranges: &[],
+        label: Some("SSAO Blur PLL"), bind_group_layouts: &[Some(&ssao_blur_bgl)], immediate_size: 0,
     });
     let ssao_blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SSAO Blur"),
@@ -387,7 +387,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(),         multiview: None, cache: None,
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(),         multiview_mask: None, cache: None,
     });
 
     let fxaa_ldr_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -413,8 +413,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     });
     let fxaa_ldr_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("FXAA LDR PLL"),
-        bind_group_layouts: &[&fxaa_ldr_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&fxaa_ldr_bgl)],
+        immediate_size: 0,
     });
     let fxaa_ldr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("FXAA LDR"),
@@ -441,7 +441,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -470,8 +470,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     });
     let smaa_edge_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("SMAA Edge PLL"),
-        bind_group_layouts: &[&smaa_edge_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&smaa_edge_bgl)],
+        immediate_size: 0,
     });
     let smaa_edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SMAA Edge"),
@@ -498,7 +498,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -537,8 +537,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
     });
     let smaa_blend_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("SMAA Blend PLL"),
-        bind_group_layouts: &[&smaa_blend_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&smaa_blend_bgl)],
+        immediate_size: 0,
     });
     let smaa_blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("SMAA Blend"),
@@ -565,7 +565,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -598,8 +598,8 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
 
     let wboit_composite_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("WBOIT Composite PLL"),
-        bind_group_layouts: &[&wboit_accum_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&wboit_accum_bgl)],
+        immediate_size: 0,
     });
 
     let wboit_composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -635,7 +635,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -672,7 +672,7 @@ pub fn create_post_fx_pipelines(device: &wgpu::Device, surface_format: wgpu::Tex
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 

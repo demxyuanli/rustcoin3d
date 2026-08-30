@@ -113,8 +113,8 @@ fn ensure_anaglyph_pipeline(renderer: &mut Renderer) {
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Anaglyph Pipeline Layout"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
     let pipeline = renderer
         .device
@@ -142,7 +142,7 @@ fn ensure_anaglyph_pipeline(renderer: &mut Renderer) {
                 ..Default::default()
             },
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             depth_stencil: None,
             cache: None,
         });
@@ -194,6 +194,7 @@ fn blit_anaglyph(renderer: &Renderer, target: &wgpu::TextureView) {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
@@ -201,7 +202,7 @@ fn blit_anaglyph(renderer: &Renderer, target: &wgpu::TextureView) {
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bg, &[]);
@@ -243,7 +244,7 @@ impl Renderer {
         }
         let rects = stereo_view_rects(mode, sw, sh);
         let stats = self.render_quad_tiles(draw_calls, scene, eyes, &rects);
-        let Ok(frame) = self.surface.get_current_texture() else {
+        let Some(frame) = self.acquire_surface_texture() else {
             return stats;
         };
         let view = frame
@@ -254,7 +255,7 @@ impl Renderer {
         } else {
             self.blit_quad_tiles_to_view(&view, &rects);
         }
-        frame.present();
+        self.queue.present(frame);
         stats
     }
 }

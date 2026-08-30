@@ -95,6 +95,7 @@ pub(crate) fn encode_viewport_borders(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -102,7 +103,7 @@ pub(crate) fn encode_viewport_borders(
         })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(&renderer.gpu.pipelines.viewport_border_lines);
     let wpx = ew as f32;

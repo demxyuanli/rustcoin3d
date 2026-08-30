@@ -13,18 +13,19 @@ pub struct OffscreenTarget {
 
 impl OffscreenTarget {
     pub async fn new(width: u32, height: u32) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("offscreen adapter");
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .expect("offscreen device");
 
@@ -121,9 +122,9 @@ impl OffscreenTarget {
         buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         if rx.recv().is_ok() {
-            let data = buffer.slice(..).get_mapped_range().to_vec();
+            let data = buffer.slice(..).get_mapped_range().expect("offscreen map").to_vec();
             buffer.unmap();
             data
         } else {

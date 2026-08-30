@@ -23,7 +23,7 @@ pub struct LabelFont {
 
 impl LabelFont {
     pub fn attrs(&self) -> Attrs<'static> {
-        self.attrs
+        self.attrs.clone()
     }
 }
 

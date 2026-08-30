@@ -41,9 +41,9 @@ impl super::Renderer {
                         ready_clone.store(true, std::sync::atomic::Ordering::Release);
                     }
                 });
-                self.device.poll(wgpu::Maintain::Poll);
+                self.device.poll(wgpu::PollType::Poll).unwrap();
                 if mapping_ready.load(std::sync::atomic::Ordering::Acquire) {
-                    let mapped = buf_slice.get_mapped_range();
+                    let mapped = buf_slice.get_mapped_range().expect("gpu cull map");
                     let byte_count = mapped.len();
                     if byte_count >= 4 {
                         let count = u32::from_le_bytes([mapped[0], mapped[1], mapped[2], mapped[3]]);

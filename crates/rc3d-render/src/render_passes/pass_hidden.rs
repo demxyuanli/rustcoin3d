@@ -32,6 +32,7 @@ pub(super) fn pass_hidden_edges(
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
+            depth_slice: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -49,7 +50,7 @@ pub(super) fn pass_hidden_edges(
             }),
         }),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     renderer.apply_scene_viewport(&mut pass);
 

@@ -28,15 +28,18 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.95"
 license = "BSD-3-Clause"
+
+# gpu-allocator 0.28 allows windows 0.53-0.62. Cargo.lock pins it to 0.62.2 so
+# wgpu-hal DX12 types match. wry 0.51 still uses windows 0.61 (separate copy).
 
 [workspace.dependencies]
 glam = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 slotmap = { version = "1.0", features = ["serde"] }
-wgpu = "24"
+wgpu = "30"
 winit = "0.30"
 bytemuck = { version = "1.21", features = ["derive"] }
 pollster = "0.4"
@@ -46,7 +49,7 @@ lru = "0.12"
 env_logger = "0.11"
 rayon = "1.10"
 tracy-client = { version = "0.18", default-features = false }
-glyphon = "0.8"
+glyphon = "0.12"
 meshopt = "0.6"
 draco-core = "1.2"
 basisu = "0.1"

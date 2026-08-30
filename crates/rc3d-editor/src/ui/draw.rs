@@ -12,7 +12,7 @@ use crate::ui::i18n::{t, tf};
 use crate::ui::types::{EditorChromeState, EditorDisplayMode, EditorUiContext};
 
 pub(super) fn build_ui(
-    ctx: &egui::Context,
+    ctx: &mut egui::Ui,
     graph: &SceneGraph,
     ui_ctx: &EditorUiContext,
     context_menu_pos: &mut Option<egui::Pos2>,
@@ -26,17 +26,17 @@ pub(super) fn build_ui(
 
     crate::ui::caption::draw_caption(ctx, chrome, ui_ctx);
 
-    egui::TopBottomPanel::top("rc3d_menu").show(ctx, |ui| {
+    egui::Panel::top("rc3d_menu").show(ctx, |ui| {
         super::menus::menu_bar(ui, ui_ctx, chrome, &mut push);
     });
 
-    egui::TopBottomPanel::top("rc3d_toolbar")
-        .exact_height(32.0_f32)
+    egui::Panel::top("rc3d_toolbar")
+        .exact_size(32.0_f32)
         .show(ctx, |ui| {
             super::icons::draw_toolbar(ui, ui_ctx, &mut push);
         });
 
-    egui::TopBottomPanel::bottom("rc3d_status").show(ctx, |ui| {
+    egui::Panel::bottom("rc3d_status").show(ctx, |ui| {
         ui.horizontal(|ui| {
             let doc = crate::document::document_display_name(ui_ctx.document_path.as_deref());
             let dirty = if ui_ctx.document_dirty { "*" } else { "" };
@@ -67,14 +67,14 @@ pub(super) fn build_ui(
         });
     });
 
-    egui::SidePanel::left("hierarchy")
-        .default_width(240.0)
+    egui::Panel::left("hierarchy")
+        .default_size(240.0)
         .show(ctx, |ui| {
             super::hierarchy::draw_hierarchy(ui, graph, ui_ctx, &mut push);
         });
 
-    egui::SidePanel::right("inspector")
-        .default_width(280.0)
+    egui::Panel::right("inspector")
+        .default_size(280.0)
         .show(ctx, |ui| {
             ui.heading(t(loc, "panel.inspector"));
             ui.separator();
@@ -101,9 +101,9 @@ pub(super) fn build_ui(
         });
 
     if chrome.document_open {
-        egui::TopBottomPanel::bottom("document")
+        egui::Panel::bottom("document")
             .resizable(true)
-            .default_height(180.0)
+            .default_size(180.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(t(loc, "panel.document"));

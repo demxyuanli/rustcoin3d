@@ -55,8 +55,16 @@ impl EditorUi {
             Some(max_texture_side),
         );
         let format = engine.surface_format();
-        let egui_renderer =
-            egui_wgpu::Renderer::new(engine.wgpu_device(), format, None, 1, false);
+        let egui_renderer = egui_wgpu::Renderer::new(
+            engine.wgpu_device(),
+            format,
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                depth_stencil_format: None,
+                dithering: false,
+                predictable_texture_filtering: false,
+            },
+        );
         let size = window.inner_size();
         let screen_descriptor = ScreenDescriptor {
             size_in_pixels: [size.width.max(1), size.height.max(1)],
@@ -174,9 +182,9 @@ impl EditorUi {
         let show_console = &mut self.show_console;
         let console_ref = &mut self.console_entries;
         let chrome = &mut self.chrome;
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             draw::build_ui(
-                ctx,
+                ui,
                 graph,
                 ui_ctx,
                 ctx_menu,
@@ -192,9 +200,11 @@ impl EditorUi {
         let device = engine.wgpu_device();
         let queue = engine.wgpu_queue();
 
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(device, queue, *id, image_delta);
+        for (id, image_deltas) in &full_output.textures_delta.set {
+            for image_delta in image_deltas {
+                self.egui_renderer
+                    .update_texture(device, queue, *id, image_delta);
+            }
         }
         self.textures_to_free
             .extend(full_output.textures_delta.free.iter().copied());
@@ -237,6 +247,7 @@ impl EditorUi {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -244,7 +255,7 @@ impl EditorUi {
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         self.egui_renderer.render(
             &mut pass.forget_lifetime(),

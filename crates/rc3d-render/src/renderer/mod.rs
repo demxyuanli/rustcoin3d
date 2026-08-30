@@ -565,8 +565,18 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
-    pub fn acquire_surface_texture(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
-        self.surface.get_current_texture()
+    pub fn acquire_surface_texture(&self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(tex)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => Some(tex),
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&self.device, &self.config);
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => None,
+        }
     }
 
     pub fn last_diagnostics(&self) -> Option<&FrameDiagnostics> {
@@ -578,10 +588,7 @@ impl Renderer {
     }
 
     pub async fn new(window: &winit::window::Window) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
         let surface = unsafe {
             instance
@@ -597,6 +604,7 @@ impl Renderer {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect("failed to find adapter");
@@ -607,12 +615,13 @@ impl Renderer {
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
             | wgpu::Features::PIPELINE_CACHE
-            | wgpu::Features::MULTI_DRAW_INDIRECT;
+            | wgpu::Features::IMMEDIATES;
         let features = adapter.features() & requested_features;
         let wireframe_supported = true; // wireframe pass uses line-list edges, not PolygonMode::Line
         let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
-        let multi_draw_indirect_supported = features.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
+        // multi_draw_indirect is core in wgpu 30; MULTI_DRAW_INDIRECT_COUNT remains optional.
+        let multi_draw_indirect_supported = true;
 
         let adapter_info = adapter.get_info();
         let is_integrated = matches!(
@@ -637,13 +646,10 @@ impl Renderer {
         log::info!("GPU tier: {:?} (integrated={})", tier, is_integrated);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features: features,
-                    ..Default::default()
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: features,
+                ..Default::default()
+            })
             .await
             .expect("failed to create device");
 
@@ -659,6 +665,7 @@ impl Renderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
@@ -741,8 +748,8 @@ impl Renderer {
         });
         let upscale_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Upscale Pipeline Layout"),
-            bind_group_layouts: &[&upscale_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&upscale_bgl)],
+            immediate_size: 0,
         });
         let upscale_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Upscale Pipeline"),
@@ -768,7 +775,7 @@ impl Renderer {
                 ..Default::default()
             },
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             depth_stencil: None,
             cache: None,
         });
@@ -829,8 +836,8 @@ impl Renderer {
         });
         let ss_edge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("SS Edge Pipeline Layout"),
-            bind_group_layouts: &[&ss_edge_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&ss_edge_bgl)],
+            immediate_size: 0,
         });
         let ss_edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("SS Edge Pipeline"),
@@ -856,7 +863,7 @@ impl Renderer {
                 ..Default::default()
             },
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             depth_stencil: None,
             cache: None,
         });
@@ -893,7 +900,7 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let ibl_res = crate::ibl::IblResources::new(
@@ -1748,7 +1755,7 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let ibl_res = crate::ibl::IblResources::new(

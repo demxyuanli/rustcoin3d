@@ -271,8 +271,8 @@ impl ClusterRenderer {
 
         let cull_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cull PLL"),
-            bind_group_layouts: &[&cull_dynamic_bgl, &cull_static_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&cull_dynamic_bgl), Some(&cull_static_bgl)],
+            immediate_size: 0,
         });
 
         let cull_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -342,8 +342,8 @@ impl ClusterRenderer {
 
         let compact_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compact PLL"),
-            bind_group_layouts: &[&compact_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&compact_bgl)],
+            immediate_size: 0,
         });
 
         let compact_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -371,8 +371,8 @@ impl ClusterRenderer {
 
         let finalize_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Finalize PLL"),
-            bind_group_layouts: &[&finalize_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&finalize_bgl)],
+            immediate_size: 0,
         });
 
         let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

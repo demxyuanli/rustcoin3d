@@ -627,7 +627,7 @@ pub(super) fn execute_passes(
                     let (bw, bh, brow) = renderer.frame.occlusion_dims;
                     let padded_w = (brow / 4) as usize;
                     {
-                        let mapped = buf.slice(..).get_mapped_range();
+                        let mapped = buf.slice(..).get_mapped_range().expect("occlusion map");
                         let raw: &[f32] = bytemuck::cast_slice(&mapped);
                         let mut data = Vec::with_capacity((bw * bh) as usize);
                         for row in 0..bh as usize {
@@ -772,13 +772,13 @@ pub(super) fn execute_passes(
                 status_cb.store(v, std::sync::atomic::Ordering::Release);
             });
             renderer.frame.occlusion_map_pending = Some(status);
-            renderer.device.poll(wgpu::Maintain::Poll);
+            renderer.device.poll(wgpu::PollType::Poll).unwrap();
         }
     }
 
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
         drop(vw);
-        surface_tex.present();
+        renderer.queue.present(surface_tex);
     }
     let t_present = t0.elapsed().as_secs_f64() * 1000.0 - t_submit;
 
@@ -927,6 +927,7 @@ pub(super) fn render_overlay_only_frame(
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(bg_color),
                     store: wgpu::StoreOp::Store,
@@ -934,7 +935,7 @@ pub(super) fn render_overlay_only_frame(
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
     }
 
@@ -1008,7 +1009,7 @@ pub(super) fn render_overlay_only_frame(
 
     if let Some((surface_tex, vw)) = acquired_swapchain.take() {
         drop(vw);
-        surface_tex.present();
+        renderer.queue.present(surface_tex);
     }
 
     let t_total = t_entry.elapsed().as_secs_f64() * 1000.0;
@@ -1061,8 +1062,8 @@ fn ensure_occlusion_downsample_resources(
         });
         let pll = renderer.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Occlusion Downsample PLL"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = renderer.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Occlusion Downsample Pipe"),

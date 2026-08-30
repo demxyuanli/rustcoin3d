@@ -143,7 +143,7 @@ fn measure_text_world(
     text: &str,
     font_size: f32,
     font_system: &mut FontSystem,
-    label_attrs: Attrs<'_>,
+    label_attrs: &Attrs<'_>,
     at: [f32; 3],
     up_axis: [f32; 3],
     model: glam::Mat4,
@@ -155,7 +155,7 @@ fn measure_text_world(
     label_height_factor: f32,
 ) -> Option<(f32, f32)> {
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, 1.0));
-    buffer.set_text(font_system, text, label_attrs, Shaping::Advanced);
+    buffer.set_text(text, label_attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
     let max_line_w = buffer
@@ -800,7 +800,7 @@ pub(super) fn project_annotation_elements(
                         &fcf_text,
                         style.font_size,
                         fs,
-                        *attrs,
+                        attrs,
                         frame_pos,
                         [0.0, 1.0, 0.0],
                         ctx.model,

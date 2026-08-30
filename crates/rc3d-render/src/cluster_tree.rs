@@ -146,11 +146,8 @@ impl ClusterTree {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ClusterTree Cull Layout"),
-            bind_group_layouts: &[bgl],
-            push_constant_ranges: &[wgpu::PushConstantRange {
-                stages: wgpu::ShaderStages::COMPUTE,
-                range: 0..16, // cluster_count, hzb_mip, use_hzb, _pad
-            }],
+            bind_group_layouts: &[Some(bgl)],
+            immediate_size: 16,
         });
 
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -303,7 +300,7 @@ impl ClusterTree {
         pass.set_pipeline(&self.cull_pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         let pc: [u32; 4] = [cluster_count, hzb_mip, use_hzb, 0];
-        pass.set_push_constants(0, bytemuck::bytes_of(&pc));
+        pass.set_immediates(0, bytemuck::bytes_of(&pc));
         let wg_count = cluster_count.div_ceil(64);
         pass.dispatch_workgroups(wg_count, 1, 1);
     }

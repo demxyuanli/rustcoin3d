@@ -134,28 +134,28 @@ impl SelectionOutlinePipelines {
 
         let depth_prepass_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("selection_depth_prepass_pll"),
-            bind_group_layouts: &[flat_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(flat_bgl)],
+            immediate_size: 0,
         });
         let mask_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("selection_mask_pll"),
-            bind_group_layouts: &[flat_bgl, &mask_aux_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(flat_bgl), Some(&mask_aux_bgl)],
+            immediate_size: 0,
         });
         let blit_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("selection_blit_pll"),
-            bind_group_layouts: &[&blit_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blit_bgl)],
+            immediate_size: 0,
         });
         let fs_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("selection_fs_pll"),
-            bind_group_layouts: &[&fs_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&fs_bgl)],
+            immediate_size: 0,
         });
         let overlay_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("selection_overlay_pll"),
-            bind_group_layouts: &[&overlay_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&overlay_bgl)],
+            immediate_size: 0,
         });
 
         let ms = wgpu::MultisampleState::default();
@@ -598,7 +598,7 @@ pub(crate) fn encode_selection_outline_pass(
             color_attachments: &[Some(color_att(&tg.prepass_color_view, wgpu::LoadOp::Clear(clear_c)))],
             depth_stencil_attachment: Some(depth_att(&tg.prepass_depth_view, depth_clear)),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(depth_prepass_pl);
@@ -628,7 +628,7 @@ pub(crate) fn encode_selection_outline_pass(
             color_attachments: &[Some(color_att(&tg.mask_view, wgpu::LoadOp::Clear(wgpu::Color::WHITE)))],
             depth_stencil_attachment: Some(depth_att(&tg.mask_depth_view, depth_clear)),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(mask_pl);
@@ -761,7 +761,7 @@ fn mesh_depth_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::desc()],
+            buffers: &[Some(Vertex::desc())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -783,13 +783,13 @@ fn mesh_depth_pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: true,
-            depth_compare,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(depth_compare),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -827,7 +827,7 @@ fn fullscreen_pipeline(
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
         multisample: ms,
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -947,6 +947,7 @@ fn color_att<'a>(
     wgpu::RenderPassColorAttachment {
         view,
         resolve_target: None,
+        depth_slice: None,
         ops: wgpu::Operations {
             load,
             store: wgpu::StoreOp::Store,
@@ -981,7 +982,7 @@ fn fullscreen(
         color_attachments: &[Some(color_att(view, load))],
         depth_stencil_attachment: None,
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: None, multiview_mask: None,
     });
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bg, &[]);

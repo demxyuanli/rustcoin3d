@@ -59,8 +59,8 @@ impl SsEdgeResources {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Edge Detect Pipeline Layout"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -87,7 +87,7 @@ impl SsEdgeResources {
                 ..Default::default()
             },
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             depth_stencil: None,
             cache: None,
         });
@@ -158,6 +158,7 @@ impl SsEdgeResources {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -165,7 +166,7 @@ impl SsEdgeResources {
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: None, multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bg, &[]);
