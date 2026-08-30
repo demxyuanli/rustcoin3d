@@ -107,6 +107,76 @@ impl SceneGraph {
         id
     }
 
+    /// Move `id` under `new_parent` (or to roots when `None`) at `index`.
+    /// Returns false if the node is missing, the parent is invalid, or the move
+    /// would create a cycle.
+    pub fn reparent(&mut self, id: NodeId, new_parent: Option<NodeId>, mut index: usize) -> bool {
+        if !self.nodes.contains_key(id) {
+            return false;
+        }
+        if let Some(p) = new_parent {
+            if p == id || !self.nodes.contains_key(p) {
+                return false;
+            }
+            let mut walk = Some(p);
+            while let Some(n) = walk {
+                if n == id {
+                    return false;
+                }
+                walk = self.parent(n);
+            }
+        }
+
+        let old_parent = self.parent(id);
+        let old_idx = match old_parent {
+            Some(p) => self
+                .nodes
+                .get(p)
+                .and_then(|e| e.children.iter().position(|&c| c == id)),
+            None => self.roots.iter().position(|&r| r == id),
+        };
+        if old_parent == new_parent {
+            if let Some(oi) = old_idx {
+                if oi < index {
+                    index = index.saturating_sub(1);
+                }
+                if oi == index {
+                    return true;
+                }
+            }
+        }
+
+        match old_parent {
+            Some(p) => {
+                if let Some(e) = self.nodes.get_mut(p) {
+                    e.children.retain(|&c| c != id);
+                    e.dirty_flags |= crate::node_entry::dirty_flags::CHILDREN;
+                }
+            }
+            None => {
+                self.roots.retain(|&r| r != id);
+            }
+        }
+        if let Some(e) = self.nodes.get_mut(id) {
+            e.parent = new_parent;
+            e.dirty_flags |= crate::node_entry::dirty_flags::CHILDREN;
+        }
+        match new_parent {
+            Some(p) => {
+                if let Some(e) = self.nodes.get_mut(p) {
+                    let idx = index.min(e.children.len());
+                    e.children.insert(idx, id);
+                    e.dirty_flags |= crate::node_entry::dirty_flags::CHILDREN;
+                }
+            }
+            None => {
+                let idx = index.min(self.roots.len());
+                self.roots.insert(idx, id);
+            }
+        }
+        true
+    }
+
     pub fn remove(&mut self, id: NodeId) {
         // Extract needed data before any mutation (avoid borrow conflict)
         let (parent_id, children) = match self.nodes.get(id) {

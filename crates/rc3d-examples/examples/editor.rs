@@ -3,10 +3,11 @@
 //!
 //! Camera: middle drag = orbit | right drag = pan | wheel = zoom.
 //! Gizmo: toolbar Move / Rotate / Scale, or T / R / G, then drag handles.
+//! Ctrl+drag: box select. Alt+drag: lasso select.
 //! Ctrl+Z / Ctrl+Y: undo / redo (also under Edit in the menu bar).
 //! C: cycle layout (Single -> Quad -> Left/Right -> Top/Bottom)
 //! Tab: cycle active viewport (when multi-viewport)
-//! P: section edit on/off, [ / ]: nudge planes
+//! P: section edit on/off (3D plane widget; drag along the normal)
 //! X / Y / Z: axis clip toggles (without Ctrl)
 //! F: fit camera to selection
 //! M: measurement mode, click two points
@@ -15,7 +16,7 @@
 //! I: cycle IBL preset
 
 use rc3d_editor::{
-    interaction, Editor, EditorCommand, EditorContext, EditorInteractionState,
+    apply_command, interaction, Editor, EditorContext, EditorInteractionState, EditorSession,
 };
 use rc3d_engine_api::{
     sync_gizmo_from_selection, CameraController, Engine, EventRouteOpts,
@@ -38,6 +39,7 @@ struct EditorApp {
     editor: Option<Editor>,
     window: Option<winit::window::Window>,
     interaction: EditorInteractionState,
+    session: EditorSession,
 }
 
 impl EditorApp {
@@ -48,6 +50,7 @@ impl EditorApp {
             editor: None,
             window: None,
             interaction: EditorInteractionState::default(),
+            session: EditorSession::default(),
         }
     }
 }
@@ -105,8 +108,9 @@ impl ApplicationHandler for EditorApp {
         match event {
             WindowEvent::RedrawRequested => {
                 for cmd in editor.take_commands() {
-                    apply_editor_command(engine, cmd);
+                    apply_command(engine, &mut self.interaction, &mut self.session, cmd);
                 }
+                interaction::sync_section_overlay(engine, &self.interaction);
                 engine.render();
                 window.request_redraw();
             }
@@ -167,6 +171,10 @@ impl ApplicationHandler for EditorApp {
                     PhysicalKey::Code(KeyCode::KeyT) => engine.set_gizmo_mode(GizmoMode::Translate),
                     PhysicalKey::Code(KeyCode::KeyR) => engine.set_gizmo_mode(GizmoMode::Rotate),
                     PhysicalKey::Code(KeyCode::KeyG) => engine.set_gizmo_mode(GizmoMode::Scale),
+                    PhysicalKey::Code(KeyCode::KeyP) => {
+                        self.interaction.section_edit_mode =
+                            !self.interaction.section_edit_mode;
+                    }
                     PhysicalKey::Code(KeyCode::Escape) => {
                         engine.world.graph.clear_selection();
                         sync_gizmo_from_selection(&mut engine.gizmo, &engine.world.graph);
@@ -184,45 +192,6 @@ impl ApplicationHandler for EditorApp {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
-    }
-}
-
-fn apply_editor_command(engine: &mut Engine, cmd: EditorCommand) {
-    match cmd {
-        EditorCommand::ApplyVisualStyle(name) => {
-            engine.apply_visual_style_to_selected(&name);
-        }
-        EditorCommand::SetViewportLayoutMode(mode) => {
-            engine.set_layout_mode(mode);
-        }
-        EditorCommand::CycleViewportLayout => {
-            engine.cycle_layout_mode();
-        }
-        EditorCommand::CycleActiveViewport => {
-            engine.cycle_active_viewport();
-        }
-        EditorCommand::SetViewPreset(preset) => {
-            engine.set_view_preset(preset);
-        }
-        EditorCommand::SetWboit(enabled) => {
-            engine.set_wboit(enabled);
-        }
-        EditorCommand::SetGizmoMode(mode) => {
-            engine.set_gizmo_mode(mode);
-        }
-        EditorCommand::SetSelection(Some(id)) => {
-            engine.world.graph.clear_selection();
-            engine.world.graph.select(id);
-            sync_gizmo_from_selection(&mut engine.gizmo, &engine.world.graph);
-        }
-        EditorCommand::SetSelection(None) => {
-            engine.world.graph.clear_selection();
-            sync_gizmo_from_selection(&mut engine.gizmo, &engine.world.graph);
-        }
-        EditorCommand::FitSelection => {
-            interaction::fit_selection_to_view(engine);
-        }
-        _ => {}
     }
 }
 
@@ -358,6 +327,7 @@ fn main() {
     println!("rustcoin3d Editor (egui in-viewport, Unity-style layout)");
     println!("  Menu bar, tools row, Hierarchy / Inspector, bottom status.");
     println!("  Left click: pick (gizmo on Transform sibling). Drag handles to move.");
+    println!("  Ctrl+drag: box select. Alt+drag: lasso select. P: section plane handles.");
     println!("  T / R / G: translate / rotate / scale. Middle orbit, right pan.");
     println!("  Open Help from the Help menu for shortcuts.");
 
@@ -529,6 +499,15 @@ fn build_demo_scene() -> SceneGraph {
             }),
         );
     }
+
+    graph.add_child(
+        root,
+        NodeData::SectionPlane(SectionPlaneNode {
+            plane: [0.0, 1.0, 0.0, 0.0],
+            enabled: true,
+            ..Default::default()
+        }),
+    );
 
     graph.add_child(
         root,

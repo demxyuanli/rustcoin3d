@@ -60,6 +60,7 @@ impl DecalPass {
         commands: &[DecalDrawCommand],
         _viewport_w: u32,
         _viewport_h: u32,
+        scene_region: crate::viewport::ViewportRect,
     ) {
         if commands.is_empty() {
             return;
@@ -85,6 +86,7 @@ impl DecalPass {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);
 
         // Load decal texture from file (shared across all commands).
@@ -239,6 +241,7 @@ impl VolumePass {
         commands: &[VolumeDrawCommand],
         _viewport_w: u32,
         _viewport_h: u32,
+        scene_region: crate::viewport::ViewportRect,
     ) {
         if commands.is_empty() {
             return;
@@ -258,6 +261,7 @@ impl VolumePass {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);
 
         let placeholder_vol = device.create_texture(&wgpu::TextureDescriptor {
@@ -349,6 +353,7 @@ impl PointCloudPass {
         _inv_projection: glam::Mat4,
         viewport_w: u32,
         viewport_h: u32,
+        scene_region: crate::viewport::ViewportRect,
     ) {
         if commands.is_empty() {
             return;
@@ -376,6 +381,7 @@ impl PointCloudPass {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        scene_region.apply_to_pass(&mut pass);
         pass.set_pipeline(&self.pipeline);
 
         for cmd in commands {

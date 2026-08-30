@@ -103,6 +103,8 @@ pub(super) fn execute_passes(
 
     let ew = eff_width.max(1);
     let eh = eff_height.max(1);
+    renderer.pass_target_size = (ew, eh);
+    let pass_vp = renderer.current_pass_viewport();
 
     if renderer.gpu.depth_texture.is_none() {
         renderer.create_depth_texture();
@@ -152,7 +154,7 @@ pub(super) fn execute_passes(
 
     // ── Background pass (gradient / image / solid) ──
     if let Some(ref bg) = renderer.gpu.bg_pass {
-        bg.encode(&renderer.device, &renderer.queue, &mut encoder, shade_view, &renderer.gpu.bg_settings, ew, eh, ctx.camera_inv_proj);
+        bg.encode(&renderer.device, &renderer.queue, &mut encoder, shade_view, &renderer.gpu.bg_settings, ew, eh, ctx.camera_inv_proj, pass_vp);
     }
 
     // ── GPU compute culling dispatch ──
@@ -347,6 +349,7 @@ pub(super) fn execute_passes(
                 &depth_view,
                 ctx.visible,
                 0.0,
+                pass_vp,
             );
         }
     }
@@ -405,6 +408,7 @@ pub(super) fn execute_passes(
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
                     shade_view, &depth_view, &ctx.effect_commands.decals, ew, eh,
+                    pass_vp,
                 );
             }
         }
@@ -414,6 +418,7 @@ pub(super) fn execute_passes(
                 pass.encode(
                     &renderer.device, &renderer.queue, &mut encoder,
                     shade_view, &depth_view, &ctx.effect_commands.volumes, ew, eh,
+                    pass_vp,
                 );
             }
         }
@@ -424,6 +429,7 @@ pub(super) fn execute_passes(
                     &renderer.device, &renderer.queue, &mut encoder,
                     shade_view, &depth_view, &ctx.effect_commands.point_clouds,
                     ctx.scene_vp, ctx.camera_inv_proj, ew, eh,
+                    pass_vp,
                 );
             }
         }
@@ -899,6 +905,7 @@ pub(super) fn render_overlay_only_frame(
 
     let ew = eff_width.max(1);
     let eh = eff_height.max(1);
+    renderer.pass_target_size = (ew, eh);
 
     let bg_color = wgpu::Color {
         r: 0.02,

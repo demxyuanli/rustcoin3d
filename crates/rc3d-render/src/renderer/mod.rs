@@ -115,6 +115,10 @@ pub struct Renderer {
     pub wireframe_overlay: bool,
     pub grid_enabled: bool,
     pub hud_enabled: bool,
+    /// Pixel region used as the 3D film (egui central hole). Full surface when unset.
+    pub scene_region: crate::viewport::ViewportRect,
+    /// Size of the color target for the pass currently being encoded.
+    pub(crate) pass_target_size: (u32, u32),
     pub outline_width: f32,
     /// Selection/bbox outline color. Default: orange.
     pub outline_color: [f32; 4],
@@ -148,6 +152,8 @@ pub struct Renderer {
     pub dof_aperture: f32,
     pub screen_space_selection_outline: bool,
     pub ibl_preset: IblPreset,
+    /// Optional equirectangular HDR/image used as the IBL environment map.
+    ibl_env_path: Option<PathBuf>,
     pub post_fx_params: crate::post_processor::PostEffectParams,
 
     /// When true, the renderer skips expensive passes (shadows, edges, SSAO)
@@ -958,6 +964,8 @@ impl Renderer {
             wireframe_overlay: false,
             grid_enabled: false,
             hud_enabled: true,
+            scene_region: crate::viewport::ViewportRect::default(),
+            pass_target_size: (1, 1),
             outline_width: 1.0,
             outline_color: [1.0, 0.5, 0.0, 1.0], // orange
             feature_edge_color: [0.9, 0.15, 0.1, 1.0], // red
@@ -977,6 +985,7 @@ impl Renderer {
             dof_aperture: 2.0,
             screen_space_selection_outline: true,
             ibl_preset,
+            ibl_env_path: None,
             post_fx_params: crate::post_processor::PostEffectParams::default(),
             interaction_active: false,
             cad_tier_authoritative: false,
@@ -1196,6 +1205,13 @@ impl Renderer {
 
         // ── Multi-viewport layout ──
         renderer.frame.viewport_layout.rebuild(renderer.config.width, renderer.config.height);
+        renderer.scene_region = crate::viewport::ViewportRect {
+            x: 0,
+            y: 0,
+            width: renderer.config.width.max(1),
+            height: renderer.config.height.max(1),
+        };
+        renderer.pass_target_size = (renderer.config.width.max(1), renderer.config.height.max(1));
 
         renderer.apply_tier_config(false);
         renderer
@@ -1308,6 +1324,13 @@ impl Renderer {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.frame.viewport_layout.rebuild(width, height);
+            self.scene_region = crate::viewport::ViewportRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            self.pass_target_size = (width, height);
             self.create_depth_texture();
             self.gpu.selection_outline_targets = None;
             self.gpu.ldr_shade_tex = None;
@@ -1353,15 +1376,43 @@ impl Renderer {
         self.frame.has_lod_nodes
     }
 
-    /// Enable GPU compute culling with buffers sized for max_objects.
-    /// Allocates transform_buffer (storage), indirect_args (storage+indirect),
-    /// and instance_indices (storage). Call once during setup.
     /// Enable parallel scene traversal using rayon thread pool.
     /// Best for scenes with 10K+ objects and multiple dirty subtrees.
     pub fn set_parallel_traversal(&mut self, enabled: bool) {
         self.frame.parallel_traversal_enabled = enabled;
     }
 
+    pub fn parallel_traversal_enabled(&self) -> bool {
+        self.frame.parallel_traversal_enabled
+    }
+
+    pub fn gpu_culling_enabled(&self) -> bool {
+        self.gpu.gpu_cull_enabled
+    }
+
+    /// Toggle GPU frustum culling. First enable allocates cull buffers.
+    pub fn set_gpu_culling(&mut self, enabled: bool) {
+        if enabled {
+            if self.gpu.gpu_cull_pass.is_none() {
+                let max = self.gpu.max_gpu_cull_objects.max(4096);
+                self.enable_gpu_culling(max);
+            } else {
+                self.gpu.gpu_cull_enabled = true;
+            }
+        } else {
+            self.gpu.gpu_cull_enabled = false;
+        }
+    }
+
+    pub fn csm_shadow_params(&self) -> (u32, u32) {
+        self.gpu
+            .csm_shadow
+            .as_ref()
+            .map(|c| (c.resolution, c.cascade_count))
+            .unwrap_or((2048, 4))
+    }
+
+    /// Enable GPU compute culling with buffers sized for max_objects.
     pub fn enable_gpu_culling(&mut self, max_objects: u64) {
         let stride = std::mem::size_of::<crate::vertex::GpuObjectTransform>() as u64;
         self.gpu.transform_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1470,8 +1521,40 @@ impl Renderer {
         &self.settings
     }
 
-    fn is_vsync_enabled(&self) -> bool {
+    pub fn vsync_enabled(&self) -> bool {
         matches!(self.config.present_mode, wgpu::PresentMode::AutoVsync)
+    }
+
+    fn is_vsync_enabled(&self) -> bool {
+        self.vsync_enabled()
+    }
+
+    pub fn set_scene_region(&mut self, rect: crate::viewport::ViewportRect) {
+        self.scene_region = rect.clamped_to(self.config.width, self.config.height);
+    }
+
+    /// GPU viewport for the current pass target.
+    ///
+    /// Swapchain / full-window intermediates keep the egui hole (`scene_region`).
+    /// Offscreen tiles (quad views, screenshots) fill the whole target — applying
+    /// window-space `scene_region` there clips geometry into a rectangle.
+    pub(crate) fn current_pass_viewport(&self) -> crate::viewport::ViewportRect {
+        let (tw, th) = (self.pass_target_size.0.max(1), self.pass_target_size.1.max(1));
+        let (sw, sh) = (self.config.width.max(1), self.config.height.max(1));
+        if tw == sw && th == sh {
+            self.scene_region.clamped_to(tw, th)
+        } else {
+            crate::viewport::ViewportRect {
+                x: 0,
+                y: 0,
+                width: tw,
+                height: th,
+            }
+        }
+    }
+
+    pub fn apply_scene_viewport(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.current_pass_viewport().apply_to_pass(pass);
     }
 
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
@@ -1641,7 +1724,24 @@ impl Renderer {
 
     pub fn set_ibl_preset(&mut self, preset: IblPreset) {
         self.ibl_preset = preset;
-        let ibl_path = resolve_studio_hdr_path();
+        self.rebuild_ibl();
+        log::info!("IBL preset switched to {}", preset.name());
+    }
+
+    /// Load an equirectangular HDR/image as the IBL environment map.
+    pub fn set_ibl_from_path(&mut self, path: PathBuf) {
+        self.ibl_env_path = Some(path);
+        self.rebuild_ibl();
+        log::info!("IBL environment loaded from custom path");
+    }
+
+    fn rebuild_ibl(&mut self) {
+        let preset = self.ibl_preset;
+        let ibl_path = self
+            .ibl_env_path
+            .clone()
+            .filter(|p| p.is_file())
+            .unwrap_or_else(resolve_studio_hdr_path);
         let ibl_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("IBL sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1679,7 +1779,6 @@ impl Renderer {
         if let Some(cc) = self.gpu.cube_camera.as_mut() {
             cc.mark_dirty();
         }
-        log::info!("IBL preset switched to {}", preset.name());
     }
 
     pub fn display_mode(&self) -> DisplayMode {

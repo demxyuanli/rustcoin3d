@@ -11,12 +11,23 @@ use rc3d_core::NodeId;
 pub struct ViewportId(pub u32);
 
 /// Pixel-space rectangle for a viewport within the surface.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewportRect {
     pub x: u32,
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl Default for ViewportRect {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+    }
 }
 
 impl ViewportRect {
@@ -31,6 +42,28 @@ impl ViewportRect {
 
     pub fn aspect(&self) -> f32 {
         self.width as f32 / self.height.max(1) as f32
+    }
+
+    /// Clip this rect so it stays inside a `tw` x `th` render target.
+    pub fn clamped_to(&self, tw: u32, th: u32) -> Self {
+        let tw = tw.max(1);
+        let th = th.max(1);
+        let x = self.x.min(tw.saturating_sub(1));
+        let y = self.y.min(th.saturating_sub(1));
+        Self {
+            x,
+            y,
+            width: self.width.max(1).min(tw.saturating_sub(x)),
+            height: self.height.max(1).min(th.saturating_sub(y)),
+        }
+    }
+
+    /// Map clip-space (-1..1) onto this pixel rect of the current render target.
+    pub fn apply_to_pass(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let w = self.width.max(1);
+        let h = self.height.max(1);
+        pass.set_viewport(self.x as f32, self.y as f32, w as f32, h as f32, 0.0, 1.0);
+        pass.set_scissor_rect(self.x, self.y, w, h);
     }
 }
 
@@ -87,6 +120,8 @@ pub struct ViewportLayout {
     pub viewports: Vec<Viewport>,
     pub layout_mode: LayoutMode,
     pub active_id: ViewportId,
+    /// Pixel region of the window that 3D viewports occupy (egui central hole).
+    pub region: ViewportRect,
     /// Quad layout: vertical split position as fraction of width (0.1 - 0.9).
     pub quad_h_split: f32,
     /// Quad layout: horizontal split position as fraction of height (0.1 - 0.9).
@@ -100,6 +135,7 @@ impl ViewportLayout {
             viewports: Vec::new(),
             layout_mode: LayoutMode::Single,
             active_id: ViewportId(0),
+            region: ViewportRect::default(),
             quad_h_split: 0.5,
             quad_v_split: 0.5,
             next_id: 0,
@@ -119,6 +155,26 @@ impl ViewportLayout {
 
     /// Rebuild viewports for the current layout mode at the given surface size.
     pub fn rebuild(&mut self, surface_width: u32, surface_height: u32) {
+        self.rebuild_in_rect(ViewportRect {
+            x: 0,
+            y: 0,
+            width: surface_width.max(1),
+            height: surface_height.max(1),
+        });
+    }
+
+    /// Rebuild viewports tiled inside `region` (window pixels, top-left origin).
+    pub fn rebuild_in_rect(&mut self, region: ViewportRect) {
+        self.region = ViewportRect {
+            x: region.x,
+            y: region.y,
+            width: region.width.max(1),
+            height: region.height.max(1),
+        };
+        let ox = self.region.x;
+        let oy = self.region.y;
+        let surface_width = self.region.width;
+        let surface_height = self.region.height;
         let preserved_active_idx = self
             .viewports
             .iter()
@@ -132,7 +188,12 @@ impl ViewportLayout {
                 self.viewports.push(Viewport {
                     id,
                     name: "Perspective".into(),
-                    rect: ViewportRect { x: 0, y: 0, width: surface_width, height: surface_height },
+                    rect: ViewportRect {
+                        x: ox,
+                        y: oy,
+                        width: surface_width,
+                        height: surface_height,
+                    },
                     camera_node: None,
                     projection_type: ProjectionType::Perspective,
                     is_active: true,
@@ -155,7 +216,12 @@ impl ViewportLayout {
                     self.viewports.push(Viewport {
                         id,
                         name: name.into(),
-                        rect: ViewportRect { x, y, width: w.max(1), height: h.max(1) },
+                        rect: ViewportRect {
+                            x: ox + x,
+                            y: oy + y,
+                            width: w.max(1),
+                            height: h.max(1),
+                        },
                         camera_node: None,
                         projection_type: pt,
                         is_active,
@@ -174,7 +240,12 @@ impl ViewportLayout {
                 self.viewports.push(Viewport {
                     id: id0,
                     name: "Left".into(),
-                    rect: ViewportRect { x: 0, y: 0, width: hw.max(1), height: surface_height },
+                    rect: ViewportRect {
+                        x: ox,
+                        y: oy,
+                        width: hw.max(1),
+                        height: surface_height,
+                    },
                     camera_node: None,
                     projection_type: ProjectionType::Perspective,
                     is_active: true,
@@ -184,8 +255,8 @@ impl ViewportLayout {
                     id: id1,
                     name: "Right".into(),
                     rect: ViewportRect {
-                        x: hw,
-                        y: 0,
+                        x: ox + hw,
+                        y: oy,
                         width: rw,
                         height: surface_height,
                     },
@@ -201,7 +272,12 @@ impl ViewportLayout {
                 self.viewports.push(Viewport {
                     id: id0,
                     name: "Top".into(),
-                    rect: ViewportRect { x: 0, y: 0, width: surface_width, height: hh.max(1) },
+                    rect: ViewportRect {
+                        x: ox,
+                        y: oy,
+                        width: surface_width,
+                        height: hh.max(1),
+                    },
                     camera_node: None,
                     projection_type: ProjectionType::Perspective,
                     is_active: true,
@@ -211,8 +287,8 @@ impl ViewportLayout {
                     id: id1,
                     name: "Bottom".into(),
                     rect: ViewportRect {
-                        x: 0,
-                        y: hh,
+                        x: ox,
+                        y: oy + hh,
                         width: surface_width,
                         height: bh,
                     },
@@ -247,16 +323,15 @@ impl ViewportLayout {
         surface_width: u32,
         surface_height: u32,
     ) -> Option<ViewportSplitAxis> {
-        let w = surface_width as f32;
-        let h = surface_height as f32;
+        let (ox, oy, w, h) = self.split_origin_size(surface_width, surface_height);
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
         match self.layout_mode {
             LayoutMode::Single => None,
             LayoutMode::Quad => {
-                let vx = w * self.quad_h_split;
-                let hy = h * self.quad_v_split;
+                let vx = ox + w * self.quad_h_split;
+                let hy = oy + h * self.quad_v_split;
                 let dx = (px - vx).abs();
                 let dy = (py - hy).abs();
                 let on_v = dx <= VIEWPORT_SPLITTER_HIT_PX;
@@ -273,7 +348,7 @@ impl ViewportLayout {
                 }
             }
             LayoutMode::LeftRight => {
-                let vx = w * self.quad_h_split;
+                let vx = ox + w * self.quad_h_split;
                 if (px - vx).abs() <= VIEWPORT_SPLITTER_HIT_PX {
                     Some(ViewportSplitAxis::HorizontalFraction)
                 } else {
@@ -281,7 +356,7 @@ impl ViewportLayout {
                 }
             }
             LayoutMode::TopBottom => {
-                let hy = h * self.quad_v_split;
+                let hy = oy + h * self.quad_v_split;
                 if (py - hy).abs() <= VIEWPORT_SPLITTER_HIT_PX {
                     Some(ViewportSplitAxis::VerticalFraction)
                 } else {
@@ -300,15 +375,29 @@ impl ViewportLayout {
         surface_width: u32,
         surface_height: u32,
     ) {
-        let w = surface_width.max(1) as f32;
-        let h = surface_height.max(1) as f32;
+        let (ox, oy, w, h) = self.split_origin_size(surface_width, surface_height);
+        let w = w.max(1.0);
+        let h = h.max(1.0);
         match axis {
             ViewportSplitAxis::HorizontalFraction => {
-                self.quad_h_split = (px / w).clamp(0.1, 0.9);
+                self.quad_h_split = ((px - ox) / w).clamp(0.1, 0.9);
             }
             ViewportSplitAxis::VerticalFraction => {
-                self.quad_v_split = (py / h).clamp(0.1, 0.9);
+                self.quad_v_split = ((py - oy) / h).clamp(0.1, 0.9);
             }
+        }
+    }
+
+    fn split_origin_size(&self, surface_width: u32, surface_height: u32) -> (f32, f32, f32, f32) {
+        if self.region.width > 0 && self.region.height > 0 {
+            (
+                self.region.x as f32,
+                self.region.y as f32,
+                self.region.width as f32,
+                self.region.height as f32,
+            )
+        } else {
+            (0.0, 0.0, surface_width as f32, surface_height as f32)
         }
     }
 

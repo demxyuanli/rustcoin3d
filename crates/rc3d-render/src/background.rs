@@ -310,6 +310,7 @@ impl BgPass {
         screen_w: u32,
         screen_h: u32,
         camera_inv_proj: glam::Mat4,
+        scene_region: crate::viewport::ViewportRect,
     ) {
         let mode = match settings.mode {
             BgMode::VerticalGradient => 0u32,
@@ -358,6 +359,7 @@ impl BgPass {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        scene_region.apply_to_pass(&mut pass);
 
         if is_cubemap {
             let cube_v = self.cube_view.as_ref().unwrap_or(&self.fallback_cube_view);

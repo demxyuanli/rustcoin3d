@@ -8,14 +8,21 @@ use serde::{Deserialize, Serialize};
 /// When HandleEventAction encounters this node during traversal,
 /// the application-level handler decides whether to consume the event.
 /// The `enabled` flag controls whether the node participates in routing.
+/// `consume` (Coin3D `setHandled`) stops camera / click-pick after routing.
+/// Missing in old scenes deserializes as `false` so existing files keep camera.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EventCallbackNode {
     pub enabled: bool,
+    #[serde(default)]
+    pub consume: bool,
 }
 
 impl Default for EventCallbackNode {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            consume: false,
+        }
     }
 }
 

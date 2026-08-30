@@ -138,6 +138,7 @@ impl CustomShaderPass {
         depth_view: &wgpu::TextureView,
         draws: &[&DrawCall],
         time: f32,
+        scene_region: crate::viewport::ViewportRect,
     ) {
         let mut items: Vec<&DrawCall> = draws
             .iter()
@@ -181,6 +182,7 @@ impl CustomShaderPass {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        scene_region.apply_to_pass(&mut pass);
 
         for dc in items {
             let Some(src) = dc.custom_wgsl.as_deref() else {

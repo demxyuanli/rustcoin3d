@@ -308,6 +308,7 @@ impl NodeData {
             ],
             NodeData::EventCallback(_) => vec![
                 FieldDescriptor { name: "enabled", field_index: 0 },
+                FieldDescriptor { name: "consume", field_index: 1 },
             ],
             NodeData::PickStyle(_) => vec![
                 FieldDescriptor { name: "pickable", field_index: 0 },

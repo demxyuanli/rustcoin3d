@@ -132,6 +132,7 @@ pub fn pass_grid(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     let grid_pl = if depth_reversed_z {
         &renderer.gpu.pipelines.grid_lines_reverse
@@ -241,6 +242,7 @@ pub fn pass_gizmo_lines(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     let grid_pl = if depth_reversed_z {
         &renderer.gpu.pipelines.grid_lines_reverse

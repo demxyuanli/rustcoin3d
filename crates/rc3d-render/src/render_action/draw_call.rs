@@ -239,6 +239,35 @@ pub fn apply_ghost_unselected(draw_calls: &mut [DrawCall], enabled: bool, opacit
     }
 }
 
+/// Default HOOPS X-ray fill opacity (all filled geometry, edges kept).
+pub const XRAY_FILL_OPACITY: f32 = 0.28;
+
+/// HOOPS X-ray visual style: every filled draw becomes translucent and keeps
+/// (or gains) crease edges. Unlike Isolate/Ghost this is not gated on selection.
+pub fn apply_xray(draw_calls: &mut [DrawCall], enabled: bool, opacity: f32) {
+    if !enabled {
+        return;
+    }
+    let xray_a = opacity.clamp(0.02, 0.95);
+    for dc in draw_calls.iter_mut() {
+        if dc.is_overlay || dc.custom_wgsl.is_some() {
+            continue;
+        }
+        if dc.vertices.is_empty() && dc.meshlet_data.is_none() {
+            continue;
+        }
+        if !dc.appearance().wants_filled() {
+            continue;
+        }
+        dc.opacity = dc.opacity.min(xray_a);
+        dc.alpha_mode = rc3d_scene::AlphaMode::Blend;
+        dc.double_sided = true;
+        if dc.edge_style == EdgeStyle::None {
+            dc.edge_style = EdgeStyle::Crease;
+        }
+    }
+}
+
 /// Recomputes MVP and projection-related flags using the given view/projection
 /// without re-traversing the scene graph (e.g. orbit camera overlay on collected geometry).
 pub fn apply_world_camera(

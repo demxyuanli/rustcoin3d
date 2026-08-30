@@ -198,6 +198,18 @@ impl CameraController {
         self.position_changed.set(true);
     }
 
+    /// Point the camera along `from` (vector from target toward the eye).
+    pub fn set_view_from_direction(&mut self, from: Vec3) {
+        let d = from.normalize_or_zero();
+        if d.length_squared() < 1.0e-8 {
+            return;
+        }
+        self.pitch = d.y.clamp(-1.0, 1.0).asin();
+        self.yaw = d.x.atan2(d.z);
+        self.up = if d.y.abs() > 0.999 { -Vec3::Z } else { Vec3::Y };
+        self.position_changed.set(true);
+    }
+
     /// Update a camera node in the scene graph from current state.
     pub fn update_camera_node(&self, graph: &mut SceneGraph, camera_node: NodeId, aspect: f32) {
         let eye = self.eye_position();

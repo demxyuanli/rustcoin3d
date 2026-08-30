@@ -51,6 +51,7 @@ pub(super) fn pass_hidden_edges(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_stencil_reference(0);
     pass.set_pipeline(&scene_pl.edge_overlay_hidden);

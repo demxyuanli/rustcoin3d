@@ -308,6 +308,7 @@ impl super::Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        self.apply_scene_viewport(&mut pass);
         pass.set_pipeline(&scene_pl.section_cap_fill);
         let mut last_bound_mesh = None;
         for &(plane, style) in cap_specs {
@@ -569,6 +570,16 @@ impl super::Renderer {
         scene: &SceneGraph,
         eyes: &[QuadViewEye],
     ) -> FrameStats {
+        self.render_standard_quad_views_with_overlay(draw_calls, scene, eyes, None)
+    }
+
+    pub fn render_standard_quad_views_with_overlay(
+        &mut self,
+        draw_calls: &mut [DrawCall],
+        scene: &SceneGraph,
+        eyes: &[QuadViewEye],
+        mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> FrameStats {
         if eyes.len() < 2 || self.gpu.upscale_pipeline.is_none() {
             apply_world_camera_ex(
                 draw_calls,
@@ -577,7 +588,7 @@ impl super::Renderer {
                 eyes.first().map(|e| e.camera_pos).unwrap_or(glam::Vec3::ZERO),
                 eyes.first().map(|e| e.orthographic).unwrap_or(false),
             );
-            return self.render_draw_calls(draw_calls, scene);
+            return self.render_draw_calls_with_overlay(draw_calls, scene, post_swapchain_overlay);
         }
         let rects: Vec<ViewportRect> = self
             .frame
@@ -603,6 +614,9 @@ impl super::Renderer {
         crate::render_passes::pass_viewport::encode_viewport_borders(
             self, &mut encoder, &view, sw, sh,
         );
+        if let Some(ref mut hook) = post_swapchain_overlay {
+            hook(&mut encoder, &view);
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         stats

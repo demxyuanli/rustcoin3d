@@ -16,9 +16,8 @@ pub(super) fn pass_edge_overlay(
     // Reset line pool cursor for this pass
     renderer.gpu.line_pool.reset();
 
-    let config = &renderer.config;
-    let viewport_w = config.width as f32;
-    let viewport_h = config.height as f32;
+    let viewport_w = renderer.current_pass_viewport().width.max(1) as f32;
+    let viewport_h = renderer.current_pass_viewport().height.max(1) as f32;
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Edge Overlay Pass (AA)"),
@@ -44,6 +43,7 @@ pub(super) fn pass_edge_overlay(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_stencil_reference(0);
     pass.set_pipeline(&pl.edge_overlay_aa);
@@ -161,6 +161,7 @@ fn pass_fallback_edge(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_stencil_reference(0);
     pass.set_pipeline(&pl.edge_overlay);

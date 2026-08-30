@@ -223,6 +223,7 @@ pub(super) fn pass_transparent(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_pipeline(&scene_pl.solid_alpha);
     pass.set_stencil_reference(1);
@@ -300,6 +301,7 @@ pub(super) fn pass_transparent_wboit(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_pipeline(&scene_pl.wboit_accum);
     pass.set_stencil_reference(1);

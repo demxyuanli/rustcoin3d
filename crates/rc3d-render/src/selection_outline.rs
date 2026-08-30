@@ -600,6 +600,7 @@ pub(crate) fn encode_selection_outline_pass(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(depth_prepass_pl);
         let mut last_mesh = None;
         for &i in ctx.solid_order {
@@ -629,6 +630,7 @@ pub(crate) fn encode_selection_outline_pass(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(mask_pl);
         let mut last_mesh = None;
         for &i in ctx.selected_order {

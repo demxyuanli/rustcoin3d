@@ -63,6 +63,11 @@ impl CommandHistory {
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
+
+    pub fn clear(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
 }
 
 /// Command: change a Transform node's translation.
@@ -304,6 +309,57 @@ impl Command for CreateNodeCommand {
     }
     fn description(&self) -> &str {
         "CreateNode"
+    }
+}
+
+/// Command: move existing nodes to a new parent / sibling slot.
+#[derive(Debug)]
+pub struct ReparentNodesCommand {
+    ids: Vec<NodeId>,
+    new_parent: Option<NodeId>,
+    index: usize,
+    old: Vec<(NodeId, Option<NodeId>, usize)>,
+}
+
+impl ReparentNodesCommand {
+    pub fn new(ids: Vec<NodeId>, new_parent: Option<NodeId>, index: usize) -> Self {
+        Self {
+            ids,
+            new_parent,
+            index,
+            old: Vec::new(),
+        }
+    }
+}
+
+impl Command for ReparentNodesCommand {
+    fn execute(&mut self, graph: &mut SceneGraph) {
+        self.old.clear();
+        for &id in &self.ids {
+            let parent = graph.parent(id);
+            let index = match parent {
+                Some(p) => graph
+                    .children(p)
+                    .and_then(|c| c.iter().position(|&x| x == id))
+                    .unwrap_or(0),
+                None => graph.roots().iter().position(|&x| x == id).unwrap_or(0),
+            };
+            self.old.push((id, parent, index));
+        }
+        let mut idx = self.index;
+        for &id in &self.ids {
+            if graph.reparent(id, self.new_parent, idx) {
+                idx += 1;
+            }
+        }
+    }
+    fn undo(&mut self, graph: &mut SceneGraph) {
+        for &(id, parent, index) in self.old.iter().rev() {
+            graph.reparent(id, parent, index);
+        }
+    }
+    fn description(&self) -> &str {
+        "Reparent"
     }
 }
 

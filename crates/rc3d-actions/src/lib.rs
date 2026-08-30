@@ -34,7 +34,7 @@ pub use measurement::{MeasurementAction, MeasurementMode};
 pub use state::State;
 pub use undo::{
     AddChildCommand, Command, CommandHistory, CompoundCommand,
-    CreateNodeCommand, DeleteNodeCommand, RemoveChildCommand,
+    CreateNodeCommand, DeleteNodeCommand, RemoveChildCommand, ReparentNodesCommand,
     SetFieldCommand,
     SetRotationCommand, SetScaleCommand, SetTranslationCommand,
 };

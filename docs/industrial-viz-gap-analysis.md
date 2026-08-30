@@ -25,10 +25,10 @@
 
 | 区域 | Implemented | Partial | Missing |
 |------|-------------|---------|---------|
-| Tier 0 编辑器 | 多视口、四视图包、Gizmo 库 + Engine 绘制/拖拽、`Engine::handle_window_event` 统一示例输入 | 场景图 EventCallback 消费仍浅（命中后无节点级拦截） | — |
-| Tier 1 工业 | 透明排序、stencil 选择/包围盒、ScenePath/Search、剖面节点+GPU 裁剪、框选（frustum）、帽面+剖面线 | 剖面拖动手柄、OIT、离屏与主路径合一 | 套索、X-ray 全场景 |
-| Tier 2 场景图 | Switch/MultiCopy/LOD 节点、Text2/3、EventCallback、结构化拾取、Engine 连接图 + SoEngine 族、跨节点 Field 图 | Field 描述符、面索引拾取、传感器 API | — |
-| Tier 3 高级 | Undo 命令栈骨架、Measurement/Markup 数据节点 | — | 布尔/STEP/网格修复/立体等（**见 §八 Backlog**） |
+| Tier 0 编辑器 | 多视口、四视图包、Gizmo 库 + Engine 绘制/拖拽、`Engine::handle_window_event` 统一示例输入、EventCallback 节点级 `consume` | — | — |
+| Tier 1 工业 | 透明排序（WBOIT）、stencil 选择/包围盒、ScenePath/Search、剖面节点+GPU 裁剪+3D 手柄、框选/套索、帽面+剖面线、离屏截图桥、X-ray 全场景风格 | — | — |
+| Tier 2 场景图 | Switch/MultiCopy/LOD、Text2/3、EventCallback 节点、结构化拾取、Engine 连接图 + SoEngine 族、跨节点 Field 图、FieldSensor/NodeSensor、面索引拾取 | — | — |
+| Tier 3 高级 | Undo 命令栈骨架、Measurement/Markup 数据节点 | — | 布尔/STEP 接入可视化主路径/网格修复等（**见 §八 Backlog，不进默认迭代**） |
 
 ---
 
@@ -38,18 +38,18 @@
 |---|------|-------------|------|
 | T0-1 | **Manipulator/Gizmo** | Done | `TransformManip` / `Dragger` 场景图节点 + `Engine.gizmo` 每帧同步；无选区时显示首个启用操纵器；子 dragger 过滤手柄 |
 | T0-2 | **多视口** | Done | `ViewportLayout` Quad/分屏 + `Engine::apply_standard_quad_views` 前/侧/顶/透视相机包 |
-| T0-3 | **场景图事件路由** | Done | `Engine::handle_window_event`：`HandleEventAction` + 相机 + 单击拾取；键盘/滚轮非 pick 全树；指针 view·proj 取光标下视口（viewport-local）；`run_example` / editor / annotation_edit 共用 |
-| T0-4 | **相机与视口** | Done | `ViewportCameraSet` + 默认四视图包（`vp.Top/Front/Right/Persp`）；拟合、正交/透视、`ViewPreset` |
+| T0-3 | **场景图事件路由** | Done | `HandleEventAction` + 相机 + 单击拾取；命中路径上 `EventCallback.consume` 会 `EventContext.consume` 并跳过相机/click-pick；键盘/滚轮全树 |
+| T0-4 | **相机与视口** | Done | `ViewportCameraSet` + 默认四视图包（`vp.Top/Front/Right/Persp`）；拟合、正交/透视、`ViewPreset`；Studio 3D 区左上角 26 面导航 Cube（FreeCAD 式，点击对齐 / 拖拽旋转） |
 
 | # | 差距 | 状态 (2026) | 说明 |
 |---|------|-------------|------|
 | T1-1 | **透明排序** | Done | WBOIT 默认开启（LDR/HDR）；`Engine::set_wboit(false)` 回退画家算法 |
-| T1-2 | **交互式剖面** | Partial | `SectionPlane` + 应用内拖动法向偏移（manip 模式） |
-| T1-3 | **注释/标注/尺寸** | Partial | `Measurement`/`Markup` 节点；无完整 GD&T 工具 |
-| T1-4 | **选择高亮** | Partial | Stencil/包围盒；框选已加，套索/过滤待办 |
+| T1-2 | **交互式剖面** | Done | `SectionPlane` + 剖面编辑模式 3D 平面 widget（法向箭头 + 四边形，沿法向拖 `plane.w`） |
+| T1-3 | **注释/标注/尺寸** | Partial | `Measurement`/`Markup` 节点；无完整 GD&T 工具（T3，不进默认迭代） |
+| T1-4 | **选择高亮** | Done | Stencil/包围盒；框选（Ctrl+拖）+ 套索（Alt+拖） |
 | T1-5 | **LOD 场景图** | Done | `LodNode` 距离切层 + `range_scale` 按段缩放（`set_lod_range_scale`） |
-| T1-6 | **离屏渲染** | Partial | `OffscreenTarget` + 与主渲染器同尺寸的截图桥接 API |
-| T1-7 | **路径系统** | Partial | `ScenePath`/`SearchAction`/`GetMatrixAction` |
+| T1-6 | **离屏渲染** | Done | `OffscreenTarget` + `render_to_image` |
+| T1-7 | **路径系统** | Done | `ScenePath`/`SearchAction`/`GetMatrixAction` |
 
 （Tier 2/3 细分项同上方总表与 §八。）
 
@@ -62,7 +62,7 @@
 ## 三、阶段路线图（进度摘要）
 
 - **Phase 0**：Gizmo/多视口/事件/视口相机 — `handle_window_event` 已统一示例输入；持续打磨「节点级」操纵器。
-- **Phase 1**：透明/剖面/高亮/LOD/Path/框选/拟合 — WBOIT 已落地；帽面、X-ray 为后续。
+- **Phase 1**：透明/剖面/高亮/LOD/Path/框选/拟合 — WBOIT、帽面、套索、X-ray 已落地。
 - **Phase 2**：Field 传感器、Engine 扩展、SoDetail 级拾取 — 已启动（传感器模块 + 三角索引）。
 - **Phase 3**：见 **§八 Backlog**，不占用默认迭代。
 
@@ -74,17 +74,18 @@
 
 - [x] **`crates/rc3d-gizmo/`** — Transform Gizmo 库
 - [x] **多视口** — `Viewport`、Quad、活动边框、split fractions、可拖拽分割条；`apply_standard_quad_views` 前/侧/顶/透视预设
-- [x] **HandleEventAction** + `EventCallback` + 非鼠标遍历；编辑器指针与滚轮经光标命中视口的 view·proj 派发
+- [x] **HandleEventAction** + `EventCallback` + 非鼠标遍历；指针命中路径节点级 `consume`（跳过相机/单击拾取）；编辑器指针与滚轮经光标命中视口的 view·proj 派发
 - [x] **示例输入统一** — `Engine::handle_window_event`（`feed_input` + `dispatch_routed_event`）；`run_example` / `run_example_with_hooks` / editor / annotation_edit；`stl_diagnostic_full_test` 无交互循环
 - [x] **视口级相机** — `ViewportCameraSet`、per-viewport controller、拟合选中、默认四视图包
 
 ### Phase 1
 
 - [x] **透明** — WBOIT 默认（LDR/HDR）；`set_wboit(false)` 回退画家算法
-- [x] **剖面** — 节点 + GPU clip + 应用内 manip（偏移）
+- [x] **剖面** — 节点 + GPU clip + 3D 平面 widget（编辑器 P / ToggleSectionEdit）
 - [x] **剖面线** — `SectionPlaneNode.hatch_*` 程序化 ANSI/ISO 交叉线（`section_caps`）
-- [x] **高亮** — stencil + bbox；框选
+- [x] **高亮** — stencil + bbox；框选（Ctrl）+ 套索（Alt）
 - [x] **Isolate/Ghost** — 选中保持着色，未选中半透明（`set_ghost_unselected`；空选择为 no-op）
+- [x] **X-ray** — 全场景半透明填充 + 保留折边（`Engine::set_xray_mode`；后处理深度描边仍可叠加）
 - [x] **边分类** — `EdgeStyle` Hard / Perimeter / Adjacent / Silhouette / Full；`Crease` = hard+perimeter
 - [x] **HiddenLine Fast HLR** — 暗填充 + 可见折边 + 反转深度虚线被挡边（非解析 HLR）
 - [x] **命名 Visual Style** — `VisualStyleLibrary` 可注册、可套到 Separator 子树（`triangle` / View 菜单）
@@ -105,6 +106,8 @@
 - [x] **Text2/3** + glyphon
 - [x] **拾取** — 三角/子对象 ID（IndexedFaceSet）
 - [x] **子图元着色** — `set_face_tint` / `set_edge_tint`（立方体面 `tri/2`，IFS `face_ids`；`picking`）
+- [x] **`rc3d-studio` 窗口壳** — 无边框 caption + egui Fluent 2 深色/浅色主题；View 菜单切换语言（en / zh-Hans，词条在 `rc3d-editor/i18n/`）；Hierarchy 用 `egui_ltreeview`；Win11 Mica/圆角/阴影（`winit` DWM）。不是 Fluent UI React / WinUI 菜单壳。
+- [x] **`rc3d-studio` 文档生命周期** — New / Open JSON / Import mesh / Save / Save As；caption 脏标记；关闭未保存确认。
 
 ### Phase 3
 
@@ -198,3 +201,7 @@ SoEngine                          rc3d-engine：28 种（Gate/Decompose/Concaten
 - 2026-04：与实现同步；增加 I/P/M 总表、§八 Backlog、 checklist 更新。
 - 2026-05：增加 **§九** — FBX 蒙皮/动画待验证与暂缓说明；明确优先回到基础能力。
 - 2026-08：CAD 装配物体轨道 — `AnimationClip.object_tracks` + `AnimationMixer` 写入任意 `TransformNode` / morph 权重，不依赖骨骼。 FBX 蒙皮验收仍见 §九。
+- 2026-08-29：默认待办收窄为 T0–T1 交互（套索、EventCallback 拦截、剖面手柄、X-ray）；OIT/离屏/Path/T2 传感器从 Partial 划出；T3 与 three.js 对照缺口不进默认迭代。
+- 2026-08-29：`rc3d-studio` 无边框窗口 + Fluent 风格 egui chrome（Win11 Mica/圆角）；3D 仍走中央 region，不用 HTML/XAML 做菜单壳。
+- 2026-08-30：Studio Hierarchy 改用 `egui_ltreeview`（缩进钩线、多选、右键、拖拽重排）。
+- 2026-08-29：Studio File 菜单接到场景 JSON 打开/保存与网格导入；未保存关闭需确认。

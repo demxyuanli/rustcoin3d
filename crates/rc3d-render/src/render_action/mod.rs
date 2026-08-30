@@ -80,8 +80,9 @@ fn material_element_for_node(
 
 mod draw_call;
 pub use draw_call::{
-    apply_ghost_unselected, apply_world_camera, apply_world_camera_ex,
+    apply_ghost_unselected, apply_world_camera, apply_world_camera_ex, apply_xray,
     view_projection_from_draw_call, DrawCall, GHOST_UNSELECTED_OPACITY, SkinnedMeshDrawPayload,
+    XRAY_FILL_OPACITY,
 };
 
 

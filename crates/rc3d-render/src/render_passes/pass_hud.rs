@@ -46,6 +46,7 @@ pub(crate) fn encode_hud_overlay(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        renderer.apply_scene_viewport(&mut pass);
         hud.render_plane_annotations(&mut pass, depth_reversed_z);
     }
 

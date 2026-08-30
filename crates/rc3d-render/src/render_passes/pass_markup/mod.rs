@@ -293,6 +293,7 @@ pub fn pass_markup(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        renderer.apply_scene_viewport(&mut pass);
         pass.set_pipeline(markup_pl);
         let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
         let uniforms = crate::vertex::FlatUniforms {

@@ -78,8 +78,13 @@ pub struct Engine {
     /// Transform manipulator overlay (drawn from selection each frame).
     pub gizmo: Gizmo,
 
+    /// Extra overlay line batches (section-plane widget, etc.) drawn with the gizmo.
+    pub overlay_line_batches: Vec<(Vec<rc3d_render::LineVertex>, [f32; 4])>,
+
     /// Shared pointer / modifier / click-vs-drag state for [`Self::handle_window_event`].
     pub input: crate::input_state::InputState,
+    /// Last 3D film rect applied from the host (egui central hole).
+    scene_region: rc3d_render::viewport::ViewportRect,
 }
 
 impl Engine {
@@ -111,12 +116,19 @@ impl Engine {
             hidden_nodes: HashSet::new(),
             visual_styles: VisualStyleLibrary::builtin(),
             gizmo: Gizmo::new(),
+            overlay_line_batches: Vec::new(),
             input: {
                 let s = window.inner_size();
                 crate::input_state::InputState {
                     window_size: (s.width, s.height),
                     ..Default::default()
                 }
+            },
+            scene_region: rc3d_render::viewport::ViewportRect {
+                x: 0,
+                y: 0,
+                width: window.inner_size().width.max(1),
+                height: window.inner_size().height.max(1),
             },
         }
     }
@@ -196,6 +208,13 @@ impl Engine {
     pub fn set_wboit(&mut self, enabled: bool) {
         if let Some(ref mut r) = self.renderer {
             r.set_wboit(enabled);
+        }
+    }
+
+    /// HOOPS X-ray: all filled geometry translucent with crease edges kept.
+    pub fn set_xray_mode(&mut self, enabled: bool) {
+        if let Some(ref mut r) = self.renderer {
+            r.set_xray_mode(enabled);
         }
     }
 
@@ -285,13 +304,47 @@ impl Engine {
 
     fn rebuild_layout(&mut self, mode: LayoutMode) {
         let renderer = self.renderer.as_mut().expect("renderer not initialized");
-        let (w, h) = (renderer.config.width, renderer.config.height);
+        let region = self.scene_region;
+        {
+            let layout = renderer.viewport_layout_mut();
+            layout.layout_mode = mode;
+            layout.rebuild_in_rect(region);
+        }
+        renderer.set_scene_region(region);
         let layout = renderer.viewport_layout_mut();
-        layout.layout_mode = mode;
-        layout.rebuild(w, h);
         self.viewport_cameras
             .remap_viewport_ids_from_layout(layout);
         self.viewport_cameras.bind_camera_nodes(layout);
+    }
+
+    /// Size the 3D film to `rect` (window pixels). Call each frame after egui layout.
+    pub fn apply_scene_region(&mut self, rect: rc3d_render::viewport::ViewportRect) {
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let rect = rect.clamped_to(renderer.config.width, renderer.config.height);
+        let same = self.scene_region == rect;
+        self.scene_region = rect;
+        renderer.set_scene_region(rect);
+        if same {
+            return;
+        }
+        renderer.viewport_layout_mut().rebuild_in_rect(rect);
+        let layout = renderer.viewport_layout_mut();
+        self.viewport_cameras
+            .remap_viewport_ids_from_layout(layout);
+        self.viewport_cameras.bind_camera_nodes(layout);
+    }
+
+    pub fn scene_region(&self) -> rc3d_render::viewport::ViewportRect {
+        self.scene_region
+    }
+
+    /// True when the last cursor position lies inside the 3D film rectangle.
+    pub fn pointer_in_scene_region(&self) -> bool {
+        let (cx, cy) = (self.input.cursor_pos.0 as f32, self.input.cursor_pos.1 as f32);
+        self.scene_region.contains(cx, cy)
     }
 
     /// Default four-view pack: Persp (Iso) + Top/Front/Right orthographic cameras.
@@ -344,6 +397,24 @@ impl Engine {
         }
     }
 
+    /// Orient the active camera along `from` (target toward eye). Does not fit bounds.
+    pub fn set_view_from_direction(&mut self, from: rc3d_core::math::Vec3) {
+        if let Some(vc) = self.viewport_cameras.active_mut() {
+            vc.controller.set_view_from_direction(from);
+            return;
+        }
+        self.controller.set_view_from_direction(from);
+    }
+
+    /// Orbit the active camera by yaw/pitch deltas (radians-scale, same as mouse orbit).
+    pub fn orbit_view(&mut self, dx: f32, dy: f32) {
+        if let Some(vc) = self.viewport_cameras.active_mut() {
+            vc.controller.orbit(dx, dy);
+            return;
+        }
+        self.controller.orbit(dx, dy);
+    }
+
     /// Mutable access to the viewport layout (for splitter drag, quad splits, etc.).
     pub fn viewport_layout_mut(&mut self) -> &mut ViewportLayout {
         self.renderer
@@ -358,6 +429,14 @@ impl Engine {
     /// controller state, traverses the scene graph, and submits draw calls
     /// to the GPU.
     pub fn render(&mut self) -> FrameStats {
+        self.render_with_overlay(None)
+    }
+
+    /// Render a frame and optionally composite a post-swapchain overlay (egui).
+    pub fn render_with_overlay(
+        &mut self,
+        post_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> FrameStats {
         // Extract pre-render hook to avoid borrow conflict with renderer
         let mut pre_hook = self.pre_render_hook.take();
         let renderer = self.renderer.as_mut().expect("renderer not initialized");
@@ -381,7 +460,14 @@ impl Engine {
         self.world.collector.set_hidden_nodes(&self.hidden_nodes);
 
         // 5. Update camera nodes from controller state
-        let aspect = renderer.config.width as f32 / renderer.config.height.max(1) as f32;
+        let aspect = renderer
+            .viewport_layout()
+            .active()
+            .map(|v| v.rect.aspect())
+            .filter(|a| a.is_finite() && *a > 1.0e-4)
+            .unwrap_or_else(|| {
+                renderer.config.width as f32 / renderer.config.height.max(1) as f32
+            });
         let quad_pack = renderer.viewport_layout().layout_mode == LayoutMode::Quad
             && self.viewport_cameras.cameras.len() >= 4;
 
@@ -460,6 +546,11 @@ impl Engine {
             renderer.ghost_unselected,
             renderer.ghost_opacity,
         );
+        rc3d_render::apply_xray(
+            &mut self.world.collector.draw_calls,
+            renderer.xray_mode,
+            rc3d_render::XRAY_FILL_OPACITY,
+        );
 
         // 10. Cache draw calls for static-frame fast path
         self.world.cached_draw_calls = self.world.collector.draw_calls.clone();
@@ -480,11 +571,13 @@ impl Engine {
         }
 
         crate::gizmo_bind::sync_gizmo_from_selection(&mut self.gizmo, &self.world.graph);
+        renderer.gizmo_line_batches.clear();
         if self.gizmo.visible {
             renderer.gizmo_line_batches = self.gizmo.generate_lines();
-        } else {
-            renderer.gizmo_line_batches.clear();
         }
+        renderer
+            .gizmo_line_batches
+            .extend(self.overlay_line_batches.iter().cloned());
 
         renderer.update_cube_cameras(&self.world.graph, &self.world.cached_draw_calls);
 
@@ -496,23 +589,30 @@ impl Engine {
             if let Some(eye) = eyes.iter().find(|e| !e.orthographic).or(eyes.first()) {
                 renderer.set_scene_view_projection(eye.view, eye.projection);
             }
-            renderer.render_standard_quad_views(
+            renderer.render_standard_quad_views_with_overlay(
                 &mut self.world.cached_draw_calls,
                 &self.world.graph,
                 &eyes,
+                post_overlay,
             )
         } else if let Some((mode, eyes)) = stereo_eyes {
             if let Some(eye) = eyes.first() {
                 renderer.set_scene_view_projection(eye.view, eye.projection);
             }
-            renderer.render_stereo_views(
+            let stats = renderer.render_stereo_views(
                 &mut self.world.cached_draw_calls,
                 &self.world.graph,
                 &eyes,
                 mode,
-            )
+            );
+            let _ = post_overlay;
+            stats
         } else {
-            renderer.render_draw_calls(&self.world.cached_draw_calls, &self.world.graph)
+            renderer.render_draw_calls_with_overlay(
+                &self.world.cached_draw_calls,
+                &self.world.graph,
+                post_overlay,
+            )
         };
 
         // 16. Update HUD overlay (renders FPS + markup text in top-left corner)
@@ -599,6 +699,13 @@ impl Engine {
         self.input.window_size = (width, height);
         if let Some(ref mut r) = self.renderer {
             r.resize(width, height);
+            self.scene_region = rc3d_render::viewport::ViewportRect {
+                x: 0,
+                y: 0,
+                width: width.max(1),
+                height: height.max(1),
+            };
+            r.set_scene_region(self.scene_region);
         }
         if let Some(ref mut r) = self.renderer {
             let layout = r.viewport_layout_mut();

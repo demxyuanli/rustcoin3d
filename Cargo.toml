@@ -21,6 +21,7 @@ members = [
     "crates/rc3d-engine-api",
     "crates/rc3d-editor",
     "crates/rc3d-examples",
+    "crates/rc3d-studio",
 ]
 resolver = "2"
 
@@ -74,6 +75,7 @@ rc3d-effects = { path = "crates/rc3d-effects" }
 rc3d-engine-api = { path = "crates/rc3d-engine-api" }
 rc3d-editor = { path = "crates/rc3d-editor" }
 rc3d-examples = { path = "crates/rc3d-examples" }
+rc3d-studio = { path = "crates/rc3d-studio" }
 
 [profile.test]
 opt-level = 1

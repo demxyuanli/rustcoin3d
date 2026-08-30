@@ -18,9 +18,14 @@ pub struct EditorInteractionState {
     pub section_edit_mode: bool,
     pub box_select_drag: bool,
     pub box_select_anchor: (f32, f32),
+    pub lasso_drag: bool,
+    pub lasso_points: Vec<(f32, f32)>,
+    pub section_hovered: Option<NodeId>,
+    pub section_drag: Option<(NodeId, [f32; 4])>,
     pub view_split_drag: Option<ViewportSplitAxis>,
     pub left_pick_arm_pos: Option<(f64, f64)>,
     pub left_drag_suppresses_pick: bool,
+    pub markup: rc3d_actions::MarkupAction,
 }
 
 impl Default for EditorInteractionState {
@@ -33,9 +38,14 @@ impl Default for EditorInteractionState {
             section_edit_mode: false,
             box_select_drag: false,
             box_select_anchor: (0.0, 0.0),
+            lasso_drag: false,
+            lasso_points: Vec::new(),
+            section_hovered: None,
+            section_drag: None,
             view_split_drag: None,
             left_pick_arm_pos: None,
             left_drag_suppresses_pick: false,
+            markup: rc3d_actions::MarkupAction::new(),
         }
     }
 }

@@ -47,6 +47,8 @@ pub struct EventRouteResult {
     pub camera_changed: bool,
     pub redraw: bool,
     pub overlay_consumed: bool,
+    /// Scene-graph `EventCallback.consume` (Coin3D setHandled).
+    pub scene_consumed: bool,
     pub hit_node: Option<NodeId>,
     pub event_callback_nodes: Vec<NodeId>,
 }
@@ -57,8 +59,8 @@ impl Engine {
         &self,
         cx: f32,
         cy: f32,
-        surface_w: u32,
-        surface_h: u32,
+        _surface_w: u32,
+        _surface_h: u32,
     ) -> Option<(f32, f32, f32, f32, Mat4, Mat4)> {
         if !self.viewport_cameras.cameras.is_empty() {
             let r = self.renderer.as_ref()?;
@@ -76,10 +78,13 @@ impl Engine {
                 return Some((lx, ly, vw, vh, v, p));
             }
         }
-        let vw = surface_w.max(1) as f32;
-        let vh = surface_h.max(1) as f32;
+        let region = self.scene_region();
+        let lx = cx - region.x as f32;
+        let ly = cy - region.y as f32;
+        let vw = region.width.max(1) as f32;
+        let vh = region.height.max(1) as f32;
         let (v, p) = scene_pick_matrices(self);
-        Some((cx, cy, vw, vh, v, p))
+        Some((lx, ly, vw, vh, v, p))
     }
 
     /// Update [`Engine::input`] from a winit event (cursor, modifiers, click-vs-drag).
@@ -99,6 +104,7 @@ impl Engine {
             WindowEvent::ModifiersChanged(mods) => {
                 self.input.shift_pressed = mods.state().shift_key();
                 self.input.ctrl_pressed = mods.state().control_key();
+                self.input.alt_pressed = mods.state().alt_key();
             }
             WindowEvent::Resized(size) => {
                 self.input.window_size = (size.width, size.height);
@@ -132,6 +138,26 @@ impl Engine {
         );
         let (ww, wh) = self.input.window_size;
 
+        let pointer_event = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        );
+        let cam_held = self.controller.middle_orbit_held
+            || self.controller.left_orbit_held
+            || self.controller.panning;
+        let is_pointer_release = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            }
+        );
+        if pointer_event && !self.pointer_in_scene_region() && !cam_held && !is_pointer_release {
+            return result;
+        }
+
         if let WindowEvent::MouseInput {
             state,
             button: MouseButton::Left,
@@ -151,28 +177,10 @@ impl Engine {
                         self.input.left_dragged = false;
                     }
                 }
-                ElementState::Released => {
-                    if opts.pick_on_click
-                        && !self.input.left_dragged
-                        && (self.on_pick.is_some() || self.on_pick_hit.is_some())
-                    {
-                        if let Some((x, y)) = self.input.pending_pick {
-                            self.pick_at(x, y, ww, wh);
-                            result.redraw = true;
-                        }
-                    }
-                    self.input.pending_pick = None;
-                    self.input.left_dragged = false;
-                }
+                ElementState::Released => {}
             }
         }
 
-        let pointer_event = matches!(
-            event,
-            WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. }
-        );
         if !result.overlay_consumed {
             let (lx, ly, vw, vh, view, proj) = if pointer_event {
                 self.pointer_pick_frame(cx, cy, ww, wh)
@@ -193,7 +201,28 @@ impl Engine {
                 apply_to_all_roots(&mut action, &self.world.graph);
                 result.hit_node = action.hit_node;
                 result.event_callback_nodes = action.event_callback_nodes;
+                result.scene_consumed = action.ctx.consumed;
             }
+        }
+
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if opts.pick_on_click
+                && !result.scene_consumed
+                && !self.input.left_dragged
+                && (self.on_pick.is_some() || self.on_pick_hit.is_some())
+            {
+                if let Some((x, y)) = self.input.pending_pick {
+                    self.pick_at(x, y, ww, wh);
+                    result.redraw = true;
+                }
+            }
+            self.input.pending_pick = None;
+            self.input.left_dragged = false;
         }
 
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
@@ -206,8 +235,9 @@ impl Engine {
             }
         }
 
-        let left_orbit = opts.left_orbit && !result.overlay_consumed;
-        if opts.camera {
+        let skip_camera = result.overlay_consumed || result.scene_consumed;
+        let left_orbit = opts.left_orbit && !skip_camera;
+        if opts.camera && !skip_camera {
             result.camera_changed = self.controller.dispatch_window_event(
                 event,
                 self.input.cursor_prev,

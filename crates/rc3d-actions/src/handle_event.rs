@@ -47,13 +47,48 @@ impl HandleEventAction {
         let Some(entry) = graph.get(node) else {
             return;
         };
-        if let NodeData::EventCallback(ec) = &entry.data {
-            if ec.enabled {
-                self.event_callback_nodes.push(node);
-            }
-        }
+        self.record_event_callback(node, &entry.data);
         for &c in &entry.children {
             self.collect_event_callback_nodes(graph, c);
+        }
+    }
+
+    fn record_event_callback(&mut self, node: NodeId, data: &NodeData) {
+        let NodeData::EventCallback(ec) = data else {
+            return;
+        };
+        if !ec.enabled {
+            return;
+        }
+        self.event_callback_nodes.push(node);
+        if ec.consume {
+            self.ctx.consume();
+        }
+    }
+
+    /// Coin3D pick-path: the hit node, its ancestors, and EventCallback siblings
+    /// of nodes on that path (same Separator as the picked shape).
+    fn collect_callbacks_on_pick_path(&mut self, graph: &SceneGraph, hit: NodeId) {
+        self.record_event_callback_at(graph, hit);
+        let mut child = hit;
+        let mut cur = graph.parent(hit);
+        while let Some(id) = cur {
+            self.record_event_callback_at(graph, id);
+            if let Some(entry) = graph.get(id) {
+                for &sib in &entry.children {
+                    if sib != child {
+                        self.record_event_callback_at(graph, sib);
+                    }
+                }
+            }
+            child = id;
+            cur = graph.parent(id);
+        }
+    }
+
+    fn record_event_callback_at(&mut self, graph: &SceneGraph, node: NodeId) {
+        if let Some(entry) = graph.get(node) {
+            self.record_event_callback(node, &entry.data);
         }
     }
 }
@@ -76,10 +111,16 @@ impl Action for HandleEventAction {
             Event::MouseMove { x, y, .. } => {
                 let (pw, ph) = self.ctx.pointer_pick_viewport.unwrap_or((1.0, 1.0));
                 self.pick_first(graph, root, *x, *y, pw, ph);
+                if let Some(hit) = self.hit_node {
+                    self.collect_callbacks_on_pick_path(graph, hit);
+                }
             }
             Event::ButtonPress { x, y, .. } | Event::ButtonRelease { x, y, .. } => {
                 let (pw, ph) = self.ctx.pointer_pick_viewport.unwrap_or((1.0, 1.0));
                 self.pick_first(graph, root, *x, *y, pw, ph);
+                if let Some(hit) = self.hit_node {
+                    self.collect_callbacks_on_pick_path(graph, hit);
+                }
             }
         }
     }

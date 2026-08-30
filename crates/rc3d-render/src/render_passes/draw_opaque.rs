@@ -180,6 +180,7 @@ pub(super) fn draw_opaque_triangle_batches(
     flat_solid_pipeline: &wgpu::RenderPipeline,
     upload_buffers: bool,
 ) {
+    renderer.apply_scene_viewport(pass);
     let any_flat = ctx
         .solid_order
         .iter()

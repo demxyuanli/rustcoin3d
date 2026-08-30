@@ -51,6 +51,7 @@ pub(super) fn pass_wireframe(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    renderer.apply_scene_viewport(&mut pass);
 
     pass.set_stencil_reference(0);
     // Line list per topological edge (same as edge overlay). PolygonMode::Line draws each

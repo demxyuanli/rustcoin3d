@@ -6,8 +6,10 @@ rust-version.workspace = true
 
 [dependencies]
 rc3d-core = { workspace = true }
+rc3d-fields = { workspace = true }
 rc3d-scene = { workspace = true }
 rc3d-actions = { workspace = true }
+serde_json = { workspace = true }
 rc3d-render = { workspace = true }
 rc3d-engine-api = { workspace = true }
 rc3d-gizmo = { workspace = true }
@@ -17,8 +19,10 @@ egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
 eframe = { version = "0.31", default-features = false, features = ["wgpu"] }
+egui_ltreeview = "=0.1.10"
 rfd = "0.15"
 log = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 slotmap = { workspace = true }

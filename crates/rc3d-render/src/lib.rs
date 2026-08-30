@@ -90,8 +90,8 @@ pub use offscreen::OffscreenTarget;
 pub use pipelines::{DepthModePipelines, PipelineSet};
 pub use vector_hlr::hidden_line_svg;
 pub use render_action::{
-    apply_ghost_unselected, apply_world_camera, apply_world_camera_ex, DrawCall,
-    GHOST_UNSELECTED_OPACITY,
+    apply_ghost_unselected, apply_world_camera, apply_world_camera_ex, apply_xray, DrawCall,
+    GHOST_UNSELECTED_OPACITY, XRAY_FILL_OPACITY,
     RenderCollector, SkinnedMeshDrawPayload,
 };
 pub use shape_cache::{

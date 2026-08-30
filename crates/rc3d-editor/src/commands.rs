@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use rc3d_actions::MarkupTool;
-use rc3d_core::NodeId;
+use rc3d_core::{EdgeStyle, FillStyle, NodeId};
 use rc3d_gizmo::GizmoMode;
+use rc3d_render::background::BgMode;
 use rc3d_render::ibl::IblPreset;
 use rc3d_render::renderer::CadDisplayTier;
 use rc3d_render::viewport::LayoutMode;
@@ -23,6 +24,7 @@ pub enum EditorCommand {
     Undo,
     Redo,
     FitSelection,
+    FitAll,
     ToggleMeasurement,
     ToggleSectionEdit,
     CycleIbl,
@@ -30,6 +32,7 @@ pub enum EditorCommand {
     CycleActiveViewport,
     SetDisplayMode(EditorDisplayMode),
     SetSelection(Option<NodeId>),
+    SetSelectionMany(Vec<NodeId>),
     SetNodeVisibility(NodeId, bool),
     PreviewTransformTranslation(NodeId, [f32; 3]),
     CommitTransformTranslation {
@@ -49,9 +52,39 @@ pub enum EditorCommand {
         old: [f32; 4],
         new: [f32; 4],
     },
+    NewScene,
+    OpenScene(PathBuf),
+    SaveScene,
+    SaveSceneAs(PathBuf),
     ImportPath(PathBuf),
     ExportIvPath(PathBuf),
     ExportDiagnosticsJsonPath(PathBuf),
+    ExportScreenshot(PathBuf),
+    ExportHiddenLineSvg(PathBuf),
+    ExportQuadPack(PathBuf),
+    LoadIblHdr(PathBuf),
+    SetGpuCulling(bool),
+    SetParallelTraversal(bool),
+    SetCsmShadow {
+        resolution: u32,
+        cascade_count: u32,
+    },
+    SetInteractionRenderScale(f32),
+    SetWalkMode(bool),
+    SetBgMode(BgMode),
+    SetBgTopColor([f32; 4]),
+    SetBgBotColor([f32; 4]),
+    SetBgImage(PathBuf),
+    SetPostEffects {
+        vignette: f32,
+        chromatic: f32,
+        bloom: f32,
+        grain: f32,
+    },
+    SetPostStylize {
+        halftone: f32,
+        glitch: f32,
+    },
     SetGizmoMode(GizmoMode),
     SetRenderFeature {
         feature_name: &'static str,
@@ -64,10 +97,22 @@ pub enum EditorCommand {
     SetOutlineColor([f32; 4]),
     SetXrayMode(bool),
     SetGhostUnselected(bool),
+    SetGhostOpacity(f32),
+    SetFillStyle(FillStyle),
+    SetEdgeStyle(EdgeStyle),
+    SetFeatureEdgeColor([f32; 4]),
+    SetWireframeEdgeColor([f32; 4]),
+    SetHiddenEdgeColor([f32; 4]),
+    SetCreaseAngle(f32),
+    SetSsEdgeThreshold(f32),
     SetWboit(bool),
     ApplyVisualStyle(String),
     SetViewportLayoutMode(LayoutMode),
     SetViewPreset(rc3d_engine_api::camera::ViewPreset),
+    SetUiTheme(crate::ui::theme::UiTheme),
+    SetUiLocale(crate::ui::i18n::UiLocale),
+    SetViewFromDirection([f32; 3]),
+    OrbitView { dx: f32, dy: f32 },
     SetGridEnabled(bool),
     SetHudEnabled(bool),
     SetVsyncEnabled(bool),
@@ -92,10 +137,20 @@ pub enum EditorCommand {
     },
     DeleteNode(NodeId),
     DuplicateNode(NodeId),
+    ReparentNodes {
+        ids: Vec<NodeId>,
+        parent: Option<NodeId>,
+        index: usize,
+    },
     RenameNode(NodeId, String),
     SetMeasurementMode(Option<MeasurementType>),
     SaveBookmark(usize),
     RecallBookmark(usize),
+    SetNodeField {
+        node: NodeId,
+        field_index: u16,
+        value: rc3d_fields::FieldValue,
+    },
     SetMarkupTool(MarkupTool),
     MarkupMouseDown {
         screen_pos: [f32; 2],
@@ -133,6 +188,7 @@ mod tests {
             EditorDisplayMode::Shaded,
             EditorDisplayMode::ShadedWithEdges,
             EditorDisplayMode::HiddenLine,
+            EditorDisplayMode::Flat,
             EditorDisplayMode::FlatWithEdge,
         ] {
             let cmd = EditorCommand::SetDisplayMode(*mode);

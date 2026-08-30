@@ -74,6 +74,90 @@ pub fn select_nodes_in_screen_box(
     graph.select_many(picked);
 }
 
+fn point_in_polygon(x: f32, y: f32, poly: &[(f32, f32)]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if ((yi > y) != (yj > y))
+            && (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Selects shape nodes whose AABB center projects inside the screen-space lasso polygon.
+pub fn select_nodes_in_screen_lasso(
+    graph: &mut SceneGraph,
+    root: NodeId,
+    points: &[(f32, f32)],
+    win_w: f32,
+    win_h: f32,
+    view: Mat4,
+    proj: Mat4,
+) {
+    if points.len() < 3 {
+        return;
+    }
+    let poly: Vec<(f32, f32)> = points
+        .iter()
+        .map(|(px, py)| to_ndc(*px, *py, win_w, win_h))
+        .collect();
+    let mvp = proj * view;
+    let mut stack = vec![root];
+    let mut picked: Vec<NodeId> = Vec::new();
+    while let Some(n) = stack.pop() {
+        let Some(entry) = graph.get(n) else { continue };
+        for &c in &entry.children {
+            stack.push(c);
+        }
+        if !is_shape_data(&entry.data) {
+            continue;
+        }
+        let mut bbox = GetBoundingBoxAction::new();
+        bbox.apply(graph, n);
+        if bbox.bounding_box.min.x > bbox.bounding_box.max.x {
+            continue;
+        }
+        let c = 0.5 * (bbox.bounding_box.min + bbox.bounding_box.max);
+        let p = mvp * c.extend(1.0);
+        let wv = p.w.abs().max(1e-6);
+        let nx = p.x / wv;
+        let ny = p.y / wv;
+        if point_in_polygon(nx, ny, &poly) {
+            picked.push(n);
+        }
+    }
+    graph.clear_selection();
+    graph.select_many(picked);
+}
+
+/// Lasso points in **window** coordinates; `vport` is the active sub-rect.
+pub fn select_nodes_in_viewport_lasso(
+    graph: &mut SceneGraph,
+    root: NodeId,
+    points: &[(f32, f32)],
+    vport: &Viewport,
+    view: Mat4,
+    proj: Mat4,
+) {
+    let w = vport.rect.width.max(1) as f32;
+    let h = vport.rect.height.max(1) as f32;
+    let local: Vec<(f32, f32)> = points
+        .iter()
+        .map(|(px, py)| (*px - vport.rect.x as f32, *py - vport.rect.y as f32))
+        .collect();
+    select_nodes_in_screen_lasso(graph, root, &local, w, h, view, proj);
+}
+
 /// `corner_*` in **window** coordinates; `vport` defines a sub-rect in that window.
 pub fn select_nodes_in_viewport_box(
     graph: &mut SceneGraph,

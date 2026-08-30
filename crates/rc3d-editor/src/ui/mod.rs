@@ -1,7 +1,14 @@
 //! In-viewport editor UI (egui) composited after the main scene pass.
 
+pub mod caption;
 pub mod draw;
+pub mod hierarchy;
+pub mod i18n;
+pub mod icons;
+pub mod menus;
+pub mod nav_cube;
 pub mod panel;
+pub mod theme;
 pub mod types;
 
 use std::collections::VecDeque;
@@ -11,7 +18,10 @@ use rc3d_engine_api::Engine;
 use rc3d_scene::SceneGraph;
 use wgpu;
 
-pub use types::{EditorDisplayMode, EditorUiContext, NodeDataType, RenderFeatureFlags};
+pub use types::{
+    CaptionAction, CaptionBarState, EditorChromeState, EditorDisplayMode, EditorUiContext,
+    NodeDataType, PixelRect, RenderFeatureFlags,
+};
 
 pub struct EditorUi {
     egui_ctx: egui::Context,
@@ -27,6 +37,9 @@ pub struct EditorUi {
     /// Console log ring buffer.
     console_entries: Vec<String>,
     show_console: bool,
+    chrome: crate::ui::types::EditorChromeState,
+    fonts_ready: bool,
+    applied_theme: Option<crate::ui::theme::UiTheme>,
 }
 
 impl EditorUi {
@@ -61,6 +74,9 @@ impl EditorUi {
             context_menu_pos: None,
             console_entries: Vec::new(),
             show_console: false,
+            chrome: crate::ui::types::EditorChromeState::default(),
+            fonts_ready: false,
+            applied_theme: None,
         }
     }
 
@@ -104,6 +120,43 @@ impl EditorUi {
         self.on_window_event(window, event)
     }
 
+    pub fn enable_studio_shell(&mut self, title: &str) {
+        self.chrome.caption.enabled = true;
+        self.chrome.caption.title = title.to_string();
+        crate::ui::theme::apply_theme(&self.egui_ctx, crate::ui::theme::UiTheme::Dark, true);
+        self.fonts_ready = true;
+        // First `render` applies session theme (Dark or Light) without reloading fonts.
+        self.applied_theme = None;
+    }
+
+    pub fn set_window_maximized(&mut self, maximized: bool) {
+        self.chrome.caption.maximized = maximized;
+    }
+
+    pub fn take_caption_action(&mut self) -> Option<CaptionAction> {
+        self.chrome.caption.action.take()
+    }
+
+    pub fn sync_document_chrome(&mut self, title: String, dirty: bool) {
+        if !self.chrome.caption.enabled {
+            return;
+        }
+        self.chrome.caption.title = title;
+        self.chrome.caption.dirty = dirty;
+    }
+
+    pub fn close_after_save(&self) -> bool {
+        self.chrome.caption.close_after_save
+    }
+
+    pub fn clear_close_after_save(&mut self) {
+        self.chrome.caption.close_after_save = false;
+    }
+
+    pub fn request_close_prompt(&mut self) {
+        self.chrome.caption.close_prompt = true;
+    }
+
     pub fn render(
         &mut self,
         window: &winit::window::Window,
@@ -112,9 +165,15 @@ impl EditorUi {
         ui_ctx: &EditorUiContext,
     ) {
         let raw_input = self.winit_state.take_egui_input(window);
+        if self.applied_theme != Some(ui_ctx.ui_theme) {
+            crate::ui::theme::apply_theme(&self.egui_ctx, ui_ctx.ui_theme, !self.fonts_ready);
+            self.fonts_ready = true;
+            self.applied_theme = Some(ui_ctx.ui_theme);
+        }
         let ctx_menu = &mut self.context_menu_pos;
         let show_console = &mut self.show_console;
         let console_ref = &mut self.console_entries;
+        let chrome = &mut self.chrome;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             draw::build_ui(
                 ctx,
@@ -123,6 +182,7 @@ impl EditorUi {
                 ctx_menu,
                 show_console,
                 console_ref,
+                chrome,
                 &mut self.command_queue,
             );
         });
@@ -192,4 +252,51 @@ impl EditorUi {
             &screen,
         );
     }
+
+    pub fn scene_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
+        points_to_pixel(self.chrome.scene_rect_points, self.pixels_per_point)
+    }
+
+    pub fn document_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
+        if !self.chrome.document_open {
+            return None;
+        }
+        points_to_pixel(self.chrome.document_rect_points, self.pixels_per_point)
+    }
+
+    pub fn document_html_visible(&self) -> bool {
+        self.chrome.document_open && self.chrome.document_html
+    }
+
+    pub fn document_open(&self) -> bool {
+        self.chrome.document_open
+    }
+
+    /// True when the pointer (window pixels) is on the nav cube, or the cube is being dragged.
+    pub fn nav_cube_blocks_scene_pointer(&self, px: f32, py: f32) -> bool {
+        if self.chrome.nav_cube_dragging {
+            return true;
+        }
+        let Some(r) = points_to_pixel(self.chrome.nav_cube_rect_points, self.pixels_per_point)
+        else {
+            return false;
+        };
+        px >= r.x as f32
+            && py >= r.y as f32
+            && px < (r.x + r.width) as f32
+            && py < (r.y + r.height) as f32
+    }
+}
+
+fn points_to_pixel(rect: Option<[f32; 4]>, ppp: f32) -> Option<crate::ui::types::PixelRect> {
+    let [x, y, w, h] = rect?;
+    if w < 2.0 || h < 2.0 {
+        return None;
+    }
+    Some(crate::ui::types::PixelRect {
+        x: (x * ppp).round().max(0.0) as u32,
+        y: (y * ppp).round().max(0.0) as u32,
+        width: (w * ppp).round().max(1.0) as u32,
+        height: (h * ppp).round().max(1.0) as u32,
+    })
 }

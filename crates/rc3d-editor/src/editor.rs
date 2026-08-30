@@ -64,4 +64,53 @@ impl Editor {
     pub fn toggle_console(&mut self) {
         self.ui.toggle_console();
     }
+
+    pub fn scene_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
+        self.ui.scene_pixel_rect()
+    }
+
+    pub fn document_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
+        self.ui.document_pixel_rect()
+    }
+
+    pub fn document_html_visible(&self) -> bool {
+        self.ui.document_html_visible()
+    }
+
+    pub fn document_open(&self) -> bool {
+        self.ui.document_open()
+    }
+
+    pub fn nav_cube_blocks_scene_pointer(&self, px: f32, py: f32) -> bool {
+        self.ui.nav_cube_blocks_scene_pointer(px, py)
+    }
+
+    /// Frameless caption + Fluent dark visuals. Used by the studio host only.
+    pub fn enable_studio_shell(&mut self, title: &str) {
+        self.ui.enable_studio_shell(title);
+    }
+
+    pub fn set_window_maximized(&mut self, maximized: bool) {
+        self.ui.set_window_maximized(maximized);
+    }
+
+    pub fn take_caption_action(&mut self) -> Option<crate::ui::types::CaptionAction> {
+        self.ui.take_caption_action()
+    }
+
+    pub fn sync_document_chrome(&mut self, title: String, dirty: bool) {
+        self.ui.sync_document_chrome(title, dirty);
+    }
+
+    pub fn close_after_save(&self) -> bool {
+        self.ui.close_after_save()
+    }
+
+    pub fn clear_close_after_save(&mut self) {
+        self.ui.clear_close_after_save();
+    }
+
+    pub fn request_close_prompt(&mut self) {
+        self.ui.request_close_prompt();
+    }
 }

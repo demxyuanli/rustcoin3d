@@ -102,9 +102,16 @@ pub fn on_left_down(
 
     let left_orbit_enabled = !editor_ui_enabled && !ctx.interaction.measurement_mode;
 
-    if left_orbit_enabled && !input.ctrl_pressed {
+    if left_orbit_enabled && !input.ctrl_pressed && !input.alt_pressed {
         ctx.interaction.left_pick_arm_pos = Some(input.cursor_pos);
         ctx.interaction.left_drag_suppresses_pick = false;
+        return;
+    }
+    if input.alt_pressed {
+        let p = (input.cursor_pos.0 as f32, input.cursor_pos.1 as f32);
+        ctx.interaction.lasso_drag = true;
+        ctx.interaction.lasso_points.clear();
+        ctx.interaction.lasso_points.push(p);
         return;
     }
     if input.ctrl_pressed {
@@ -114,6 +121,24 @@ pub fn on_left_down(
             input.cursor_pos.1 as f32,
         );
         return;
+    }
+    if ctx.interaction.section_edit_mode {
+        if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
+            let mut best: Option<(rc3d_core::NodeId, f32, [f32; 4])> = None;
+            for (id, plane) in crate::section_edit::enabled_section_planes(&ctx.engine.world.graph)
+            {
+                if let Some(d) = crate::section_edit::hit_test(&ray, plane) {
+                    if best.as_ref().map_or(true, |(_, bd, _)| d < *bd) {
+                        best = Some((id, d, plane));
+                    }
+                }
+            }
+            if let Some((id, _, plane)) = best {
+                ctx.interaction.section_drag = Some((id, plane));
+                ctx.interaction.section_hovered = Some(id);
+                return;
+            }
+        }
     }
     if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
         gizmo::sync_gizmo_from_selection(
@@ -159,7 +184,10 @@ pub fn on_left_up(
 
     if left_orbit_enabled
         && !input.ctrl_pressed
+        && !input.alt_pressed
         && !ctx.interaction.box_select_drag
+        && !ctx.interaction.lasso_drag
+        && ctx.interaction.section_drag.is_none()
         && !ctx.interaction.gizmo_dragging
     {
         if ctx.interaction.left_pick_arm_pos.is_some() {
@@ -179,6 +207,19 @@ pub fn on_left_up(
     }
     if ctx.interaction.view_split_drag.is_some() {
         ctx.interaction.view_split_drag = None;
+    }
+    if ctx.interaction.section_drag.take().is_some() {
+        return;
+    }
+    if ctx.interaction.lasso_drag {
+        ctx.interaction.lasso_drag = false;
+        let points = std::mem::take(&mut ctx.interaction.lasso_points);
+        apply_lasso_selection(ctx, window, &points);
+        gizmo::sync_gizmo_from_selection(
+            &mut ctx.engine.gizmo,
+            &ctx.engine.world.graph,
+        );
+        return;
     }
     if ctx.interaction.box_select_drag {
         ctx.interaction.box_select_drag = false;
@@ -368,6 +409,46 @@ pub fn on_cursor_moved(
         window.request_redraw();
         return;
     }
+    if ctx.interaction.lasso_drag {
+        let p = (input.cursor_pos.0 as f32, input.cursor_pos.1 as f32);
+        if let Some(&(lx, ly)) = ctx.interaction.lasso_points.last() {
+            let dx = p.0 - lx;
+            let dy = p.1 - ly;
+            if dx * dx + dy * dy >= 16.0 {
+                ctx.interaction.lasso_points.push(p);
+            }
+        } else {
+            ctx.interaction.lasso_points.push(p);
+        }
+        window.request_redraw();
+        return;
+    }
+    if let Some((id, start_plane)) = ctx.interaction.section_drag {
+        if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
+            if let Some(pt) = crate::section_edit::drag_point_on_normal(&ray, start_plane) {
+                let n = rc3d_core::math::Vec3::new(start_plane[0], start_plane[1], start_plane[2]);
+                let plane = crate::section_edit::plane_from_point(n, pt);
+                crate::section_edit::set_section_plane(&mut ctx.engine.world.graph, id, plane);
+            }
+        }
+        window.request_redraw();
+        return;
+    }
+    if ctx.interaction.section_edit_mode {
+        ctx.interaction.section_hovered = None;
+        if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
+            let mut best: Option<(rc3d_core::NodeId, f32)> = None;
+            for (id, plane) in crate::section_edit::enabled_section_planes(&ctx.engine.world.graph)
+            {
+                if let Some(d) = crate::section_edit::hit_test(&ray, plane) {
+                    if best.as_ref().map_or(true, |(_, bd)| d < *bd) {
+                        best = Some((id, d));
+                    }
+                }
+            }
+            ctx.interaction.section_hovered = best.map(|(id, _)| id);
+        }
+    }
     if ctx.interaction.gizmo_dragging {
         if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
             if let Some((n, old_mat)) = ctx.interaction.gizmo_pending_transform {
@@ -402,6 +483,72 @@ pub fn on_cursor_moved(
     }
 }
 
+fn apply_lasso_selection(
+    ctx: &mut EditorContext,
+    window: &winit::window::Window,
+    points: &[(f32, f32)],
+) {
+    if points.len() < 3 {
+        return;
+    }
+    let s = window.inner_size();
+    let roots = ctx.engine.world.graph.roots().to_vec();
+    let has_vp_cams = !ctx.engine.viewport_cameras.cameras.is_empty();
+    let vp_id_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.viewport_id);
+    let cam_node_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.camera_node);
+
+    if has_vp_cams {
+        if let (Some(vp_id), Some(cam_node)) = (vp_id_opt, cam_node_opt) {
+            if let Some(r) = ctx.engine.renderer.as_ref() {
+                if let Some(avp) = r.viewport_layout().viewports.iter().find(|v| v.id == vp_id) {
+                    let (v, p) = pick_view_proj_for_node(&ctx.engine.world.graph, cam_node, avp);
+                    let temp_vp = rc3d_render::viewport::Viewport {
+                        id: avp.id,
+                        rect: avp.rect,
+                        projection_type: avp.projection_type,
+                        name: String::new(),
+                        camera_node: None,
+                        is_active: false,
+                    };
+                    for &root in &roots {
+                        crate::box_select::select_nodes_in_viewport_lasso(
+                            &mut ctx.engine.world.graph,
+                            root,
+                            points,
+                            &temp_vp,
+                            v,
+                            p,
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        let (v, p) = active_camera_matrices(ctx.engine, s.width as f32, s.height as f32);
+        for &root in &roots {
+            crate::box_select::select_nodes_in_screen_lasso(
+                &mut ctx.engine.world.graph,
+                root,
+                points,
+                s.width as f32,
+                s.height as f32,
+                v,
+                p,
+            );
+        }
+    }
+}
+
+/// Refresh section-plane overlay lines on the engine (call once per frame).
+pub fn sync_section_overlay(engine: &mut Engine, interaction: &crate::context::EditorInteractionState) {
+    if interaction.section_edit_mode {
+        engine.overlay_line_batches =
+            crate::section_edit::widget_batches(&engine.world.graph, interaction.section_hovered);
+    } else {
+        engine.overlay_line_batches.clear();
+    }
+}
+
 /// Fit the camera to the bounding box of all selected nodes.
 pub fn fit_selection_to_view(engine: &mut Engine) {
     if engine.world.graph.selected_nodes().is_empty() {
@@ -420,10 +567,21 @@ pub fn fit_selection_to_view(engine: &mut Engine) {
         }
     }
     if let Some(b) = aabb {
-        if let Some(vc) = engine.viewport_cameras.active_mut() {
-            vc.controller.fit_bounds(&b, 60.0f32.to_radians());
-        } else {
-            engine.controller.fit_bounds(&b, 60.0f32.to_radians());
-        }
+        fit_aabb_to_view(engine, &b);
+    }
+}
+
+/// Fit the camera to the bounding box of the whole scene.
+pub fn fit_scene_to_view(engine: &mut Engine) {
+    if let Some(b) = rc3d_scene::GetBoundingBoxAction::compute_scene_aabb(&engine.world.graph) {
+        fit_aabb_to_view(engine, &b);
+    }
+}
+
+fn fit_aabb_to_view(engine: &mut Engine, b: &rc3d_core::Aabb) {
+    if let Some(vc) = engine.viewport_cameras.active_mut() {
+        vc.controller.fit_bounds(b, 60.0f32.to_radians());
+    } else {
+        engine.controller.fit_bounds(b, 60.0f32.to_radians());
     }
 }
