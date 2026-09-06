@@ -19,6 +19,7 @@ type PanelMouseHook = Box<dyn Fn(f32, f32, u32, u32) -> bool>;
 use crate::background::BackgroundSettings;
 use crate::camera::{CameraController, ViewPreset};
 use crate::fps_tracker::FpsTracker;
+use crate::overlay::OverlayViewport;
 use crate::viewport::ViewportCameraSet;
 use crate::world::World;
 
@@ -85,6 +86,9 @@ pub struct Engine {
     pub input: crate::input_state::InputState,
     /// Last 3D film rect applied from the host (egui central hole).
     scene_region: rc3d_render::viewport::ViewportRect,
+    /// Independent overlay worlds composited after the main film (nav cube, etc.).
+    pub overlay_viewports: Vec<OverlayViewport>,
+    pub compositor: rc3d_render::CompositorGraph,
 }
 
 impl Engine {
@@ -130,6 +134,8 @@ impl Engine {
                 width: window.inner_size().width.max(1),
                 height: window.inner_size().height.max(1),
             },
+            overlay_viewports: Vec::new(),
+            compositor: rc3d_render::CompositorGraph::identity(),
         }
     }
 
@@ -318,27 +324,119 @@ impl Engine {
     }
 
     /// Size the 3D film to `rect` (window pixels). Call each frame after egui layout.
-    pub fn apply_scene_region(&mut self, rect: rc3d_render::viewport::ViewportRect) {
+    /// Returns `true` when the region changed — the caller must schedule a Full
+    /// redraw, otherwise the retained film keeps the stale size (dock resizes).
+    pub fn apply_scene_region(&mut self, rect: rc3d_render::viewport::ViewportRect) -> bool {
         let renderer = match self.renderer.as_mut() {
             Some(r) => r,
-            None => return,
+            None => return false,
         };
         let rect = rect.clamped_to(renderer.config.width, renderer.config.height);
         let same = self.scene_region == rect;
         self.scene_region = rect;
         renderer.set_scene_region(rect);
         if same {
-            return;
+            return false;
         }
         renderer.viewport_layout_mut().rebuild_in_rect(rect);
         let layout = renderer.viewport_layout_mut();
         self.viewport_cameras
             .remap_viewport_ids_from_layout(layout);
         self.viewport_cameras.bind_camera_nodes(layout);
+        true
     }
 
     pub fn scene_region(&self) -> rc3d_render::viewport::ViewportRect {
         self.scene_region
+    }
+
+    pub fn add_overlay_viewport(&mut self, viewport: OverlayViewport) {
+        self.overlay_viewports
+            .retain(|o| o.name != viewport.name);
+        self.overlay_viewports.push(viewport);
+    }
+
+    pub fn overlay_viewport(&self, name: &str) -> Option<&OverlayViewport> {
+        self.overlay_viewports.iter().find(|o| o.name == name)
+    }
+
+    pub fn overlay_viewport_mut(&mut self, name: &str) -> Option<&mut OverlayViewport> {
+        self.overlay_viewports.iter_mut().find(|o| o.name == name)
+    }
+
+    /// Size an overlay in the top-right of the current 3D film (window pixels).
+    pub fn layout_overlay_top_right(&mut self, name: &str, size_px: u32, margin_px: u32) {
+        let region = self.scene_region;
+        if let Some(ov) = self.overlay_viewport_mut(name) {
+            ov.layout_top_right_of(region, size_px, margin_px);
+        }
+    }
+
+    fn render_overlay_viewports(&mut self) {
+        let (eye, up) = {
+            let cam = self
+                .viewport_cameras
+                .active()
+                .map(|vc| &vc.controller)
+                .unwrap_or(&self.controller);
+            (
+                (cam.eye_position() - cam.target).normalize_or_zero(),
+                cam.up,
+            )
+        };
+        let mut overlays = std::mem::take(&mut self.overlay_viewports);
+        let Some(renderer) = self.renderer.as_mut() else {
+            self.overlay_viewports = overlays;
+            return;
+        };
+        let enabled: Vec<usize> = overlays
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.enabled && o.rect.width > 0 && o.rect.height > 0)
+            .map(|(i, _)| i)
+            .collect();
+        if enabled.is_empty() {
+            renderer.prepare_overlay_tiles(&[]);
+            self.overlay_viewports = overlays;
+            return;
+        }
+
+        let rects: Vec<rc3d_render::viewport::ViewportRect> =
+            enabled.iter().map(|&i| overlays[i].rect).collect();
+        renderer.prepare_overlay_tiles(&rects);
+
+        for (tile_i, &ov_i) in enabled.iter().enumerate() {
+            let ov = &mut overlays[ov_i];
+            if ov.follow_main_camera {
+                ov.aim(eye, up);
+            }
+            ov.world.reset_collector(DisplayMode::Shaded);
+            ov.world.traverse_all_roots();
+            rc3d_render::render_action::apply_world_camera_ex(
+                &mut ov.world.collector.draw_calls,
+                ov.view,
+                ov.projection,
+                ov.camera_pos,
+                ov.orthographic,
+            );
+            renderer.set_materials(ov.world.materials.clone());
+            let lights = std::mem::take(&mut ov.world.collector.light_sets);
+            renderer.set_light_sets(lights);
+            renderer.set_light_probe(
+                ov.world.collector.light_probe_sh,
+                ov.world.collector.light_probe_intensity,
+            );
+            renderer.set_clip_planes(Vec::new(), Vec::new());
+            renderer.render_overlay_world_tile(
+                tile_i,
+                &ov.world.collector.draw_calls,
+                &ov.world.graph,
+                ov.projection,
+                ov.clear_color,
+            );
+            renderer.push_overlay_blit_rect(ov.rect);
+        }
+        self.overlay_viewports = overlays;
     }
 
     /// True when the last cursor position lies inside the 3D film rectangle.
@@ -439,10 +537,14 @@ impl Engine {
     ) -> FrameStats {
         // Extract pre-render hook to avoid borrow conflict with renderer
         let mut pre_hook = self.pre_render_hook.take();
+        self.render_overlay_viewports();
         let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        renderer.set_compositor(&self.compositor);
 
-        // 1. Reapply CAD tier constraints
+        // CAD look before collector so HiddenLine / edges affect this frame's draw list.
+        // Pass flags are applied again after update_tier in the frame scheduler.
         renderer.reapply_cad_tier_constraints();
+        renderer.apply_compositor_cad_look();
 
         // 2. Evaluate engines (animation, simulation, etc.)
         self.world.evaluate_engines();
@@ -657,6 +759,27 @@ impl Engine {
         self.fps.push(stats.frame_time_ms as f32);
 
         stats
+    }
+
+    /// Blit the retained scene film and paint egui once (no PBR).
+    /// Returns `false` when blit cannot run (caller should Full-render).
+    pub fn present_ui_overlay_only(
+        &mut self,
+        post_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> bool {
+        let renderer = self.renderer.as_mut().expect("renderer not initialized");
+        renderer.interaction_active = false;
+        if !renderer.present_post_overlay_only(post_overlay) {
+            return false;
+        }
+        true
+    }
+
+    /// Hint the renderer that the user is actively orbiting/panning (enables interaction fast paths).
+    pub fn set_interaction_active(&mut self, active: bool) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.interaction_active = active;
+        }
     }
 
     /// Composite the four-view pack to an RGBA image (layout is restored afterwards).

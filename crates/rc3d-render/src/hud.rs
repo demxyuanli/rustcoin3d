@@ -233,14 +233,26 @@ impl HudRenderer {
     }
 
     /// Upload FPS / scene Text2 buffers (no depth; drawn on top).
-    pub fn prepare_hud_chrome_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    /// `origin` is the top-left of the 3D film in target pixels (egui hole).
+    pub fn prepare_hud_chrome_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        origin: [f32; 2],
+        clip: [i32; 4],
+    ) {
         self.prepare_positioned_texts();
-        let bounds = self.text_bounds();
+        let bounds = TextBounds {
+            left: clip[0],
+            top: clip[1],
+            right: clip[2],
+            bottom: clip[3],
+        };
         let mut areas = Vec::with_capacity(1 + self.positioned_texts.len());
         areas.push(TextArea {
             buffer: &self.buffer,
-            left: 12.0,
-            top: 12.0,
+            left: origin[0] + 12.0,
+            top: origin[1] + 12.0,
             scale: 1.0,
             bounds,
             default_color: Color::rgb(240, 240, 240),
@@ -281,9 +293,11 @@ impl HudRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         depth_reversed_z: bool,
+        chrome_origin: [f32; 2],
+        chrome_clip: [i32; 4],
     ) {
         self.prepare_plane_annotation_atlas(device, queue, depth_reversed_z);
-        self.prepare_hud_chrome_atlas(device, queue);
+        self.prepare_hud_chrome_atlas(device, queue, chrome_origin, chrome_clip);
     }
 
     pub fn set_fps_buffer_text(

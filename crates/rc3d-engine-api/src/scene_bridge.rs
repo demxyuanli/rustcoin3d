@@ -2,9 +2,6 @@
 //!
 //! Converts `Scene` → `SceneGraph`, stores `RenderConfig` / `EffectGraph`,
 //! and provides file import conveniences.
-//!
-//! Note: `impl App` extension methods (`from_scene`, `with_effects_config`, etc.)
-//! remain in `rc3d-app/src/scene_bridge.rs` because they access private `App` fields.
 
 use rc3d_core::math::{Mat4, Vec3};
 use rc3d_scene::SceneGraph;

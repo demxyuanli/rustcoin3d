@@ -4,7 +4,8 @@
 use rc3d_gizmo::GizmoMode;
 
 pub use rc3d_engine_api::{
-    find_transform_for_selection, sync_gizmo_from_selection, viewport_pick_matrices as pick_view_proj,
+    find_transform_for_selection, sync_gizmo_from_selection,
+    viewport_pick_matrices as pick_view_proj,
 };
 
 #[cfg(test)]

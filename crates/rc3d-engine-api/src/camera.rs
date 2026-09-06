@@ -372,6 +372,10 @@ impl CameraController {
         });
     }
 
+    pub fn is_flying(&self) -> bool {
+        self.fly_to.is_some()
+    }
+
     /// Advance fly-to animation by `dt` seconds. Returns true while animation is active.
     pub fn tick_fly(&mut self, dt: f32) -> bool {
         let Some(ref fly) = self.fly_to else {
@@ -393,10 +397,6 @@ impl CameraController {
             f.elapsed += dt;
         }
         true
-    }
-
-    pub fn is_flying(&self) -> bool {
-        self.fly_to.is_some()
     }
 
     fn forward_vector(&self) -> Vec3 {

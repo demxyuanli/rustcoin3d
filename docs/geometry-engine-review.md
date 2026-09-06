@@ -29,7 +29,7 @@ geometry parsing, evaluation, healing, boolean operations, and meshing internals
 | rc3d-pdf | 215 | PDF export |
 | rc3d-examples | 196 | Examples |
 | rc3d-script | 108 | Scripting |
-| rc3d-app | 82 | Application entry |
+| rc3d-studio | — | Desktop editor host |
 
 ### Geometry Engine (SCOPE REDUCTION)
 

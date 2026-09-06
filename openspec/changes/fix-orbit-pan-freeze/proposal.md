@@ -20,7 +20,6 @@ Orbit and pan camera interactions freeze the display on Windows — the viewport
 
 ## Impact
 
-- `crates/rc3d-app/src/app/event_handler.rs` — render scheduling logic in `RedrawRequested` and camera event handlers
-- `crates/rc3d-app/src/app/app_state.rs` — possible new fields for interaction render state
-- `crates/rc3d-app/src/app/mod.rs` — `ApplicationHandler` trait implementation (new `AboutToWait` handler)
+- `crates/rc3d-studio/src/app.rs` — render scheduling in `RedrawRequested` and camera event handlers
+- `crates/rc3d-engine-api` — interaction render state on `Engine`
 - No API or breaking changes

@@ -116,7 +116,13 @@ fn ray_hit_quad(ray: &Ray, origin: Vec3, n: Vec3, u: Vec3, v: Vec3, size: f32) -
     }
 }
 
-fn ray_hit_axis_capsule(ray: &Ray, origin: Vec3, axis: Vec3, length: f32, radius: f32) -> Option<f32> {
+fn ray_hit_axis_capsule(
+    ray: &Ray,
+    origin: Vec3,
+    axis: Vec3,
+    length: f32,
+    radius: f32,
+) -> Option<f32> {
     let ro = ray.origin - origin;
     let rd = ray.direction;
     let a = rd.dot(rd) - rd.dot(axis).powi(2);

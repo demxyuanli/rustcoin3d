@@ -84,9 +84,7 @@ fn point_in_polygon(x: f32, y: f32, poly: &[(f32, f32)]) -> bool {
     for i in 0..n {
         let (xi, yi) = poly[i];
         let (xj, yj) = poly[j];
-        if ((yi > y) != (yj > y))
-            && (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi)
-        {
+        if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi) {
             inside = !inside;
         }
         j = i;

@@ -1,10 +1,14 @@
-use crate::ui::theme::{paint_icon_glyph, CAPTION_GLYPH, ThemePalette};
+use crate::ui::theme::{paint_icon_glyph, ThemePalette, CAPTION_GLYPH};
 use crate::ui::types::{CaptionAction, EditorChromeState, EditorUiContext};
 
 const CAPTION_H: f32 = 32.0;
 const BTN_W: f32 = 46.0;
 
-pub(super) fn draw_caption(ui: &mut egui::Ui, chrome: &mut EditorChromeState, ui_ctx: &EditorUiContext) {
+pub(super) fn draw_caption(
+    ui: &mut egui::Ui,
+    chrome: &mut EditorChromeState,
+    ui_ctx: &EditorUiContext,
+) {
     if !chrome.caption.enabled {
         return;
     }
@@ -15,10 +19,14 @@ pub(super) fn draw_caption(ui: &mut egui::Ui, chrome: &mut EditorChromeState, ui
 
     egui::Panel::top("rc3d_caption")
         .exact_size(CAPTION_H)
+        .show_separator_line(false)
         .frame(
             egui::Frame::NONE
                 .fill(pal.layer)
-                .inner_margin(egui::Margin::ZERO),
+                .inner_margin(egui::Margin::ZERO)
+                .outer_margin(egui::Margin::ZERO)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(egui::CornerRadius::ZERO),
         )
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -106,7 +114,13 @@ fn caption_button(ui: &mut egui::Ui, icon: CaptionIcon, pal: &ThemePalette) -> e
     } else {
         pal.text_secondary
     };
-    paint_icon_glyph(ui.painter(), rect, icon.codepoint(), CAPTION_GLYPH, icon_color);
+    paint_icon_glyph(
+        ui.painter(),
+        rect,
+        icon.codepoint(),
+        CAPTION_GLYPH,
+        icon_color,
+    );
     resp
 }
 

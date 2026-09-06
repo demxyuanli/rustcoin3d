@@ -19,6 +19,7 @@ pub(crate) fn encode_hud_overlay(
         return;
     }
     renderer.prepare_hud_overlay_for_render();
+    let film = renderer.current_pass_viewport();
     let Some(hud) = renderer.gpu.hud.as_ref() else {
         return;
     };
@@ -51,7 +52,9 @@ pub(crate) fn encode_hud_overlay(
         hud.render_plane_annotations(&mut pass, depth_reversed_z);
     }
 
-    // HUD chrome (no depth needed)
+    // HUD chrome (no depth). Keep the full-target viewport so glyphon pixel
+    // coords match the swapchain; scissor to the 3D film so egui chrome cannot
+    // cover the stats, and draw after overlay tiles so the nav cube cannot either.
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("HUD Overlay Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -67,5 +70,6 @@ pub(crate) fn encode_hud_overlay(
         timestamp_writes: None,
         occlusion_query_set: None, multiview_mask: None,
     });
+    pass.set_scissor_rect(film.x, film.y, film.width.max(1), film.height.max(1));
     hud.render_hud_chrome(&mut pass);
 }

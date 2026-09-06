@@ -10,26 +10,27 @@ and interactive scene editing.
 |----------|-------------|
 | [Architecture](docs/architecture.md) | Crate dependency graph, core design principles, key data structures, NodeData reference |
 | [Rendering Pipeline](docs/rendering-pipeline.md) | Full frame pipeline, culling, lighting, PBR shading, post-processing, draw call batching |
-| [Scene Graph](docs/scene-graph.md) | SceneGraph API, all 47 node types, traversal model, dirty flags, animation, serialization |
-| [Engine System](docs/engine-system.md) | 12 simulation engines, time management, physics, sensors, field connections |
-| [Shaders](docs/shaders.md) | Complete catalog of 45 WGSL shaders with data structures and performance notes |
+| [Scene Graph](docs/scene-graph.md) | SceneGraph API, all 62 node types, traversal model, dirty flags, animation, serialization |
+| [Engine System](docs/engine-system.md) | Simulation engines, time management, physics, sensors, field connections |
+| [Shaders](docs/shaders.md) | Complete catalog of 66 WGSL shaders with data structures and performance notes |
 | [Gap Analysis](docs/industrial-viz-gap-analysis.md) | Coin3D/HOOPS comparison, roadmap, TODO checklist |
 | [Optimization Guide](docs/optimization-guide.md) | GPU culling, mesh pool, static frame fast path, LightSetTable, shared utils |
+| [Changelog](CHANGELOG.md) | Release notes and notable changes |
 
 ## Quick Start
 
 ```bash
+# Desktop editor
+cargo run -p rc3d-studio
+
 # Build all examples
-cargo build -p rc3d-app --examples
+cargo build -p rc3d-examples --examples
 
 # Import and view a 3D file
-cargo run -p rc3d-app --example import_viewer -- model.stl
-
-# Editor with scene graph inspector
-cargo run -p rc3d-app --example editor
+cargo run -p rc3d-examples --example import_viewer -- model.stl
 
 # Stress test with adaptive quality
-cargo run -p rc3d-app --example adaptive_stress_test
+cargo run -p rc3d-examples --example adaptive_stress_test
 
 # CLI editor (terminal)
 cargo run -p rc3d-cli-editor
@@ -41,19 +42,22 @@ cargo run -p rc3d-cli-editor
 crates/
 ├── rc3d-core/       — Math, AABB, BVH, ID types, shared utils (graph, hash, ring, sort)
 ├── rc3d-fields/     — Field/connection system (Coin3D-style)
-├── rc3d-scene/      — Scene graph (SlotMap<NodeId, NodeEntry>), 47 node types, animation
+├── rc3d-scene/      — Scene graph (SlotMap<NodeId, NodeEntry>), 62 node types, animation
 ├── rc3d-nodes/      — Re-exports (convenience crate)
 ├── rc3d-mesh/       — Triangle mesh, meshlet generation, LOD, tessellation
 ├── rc3d-nurbs/      — NURBS curves and surfaces
 ├── rc3d-actions/    — Traversal actions (ray pick, bounding box, undo, events, intersection)
 ├── rc3d-engine/     — Simulation engines, time management, physics, scheduler
-├── rc3d-io/         — File import (STL, OBJ, glTF, FBX, Inventor)
-├── rc3d-render/     — wgpu renderer (PBR, shadows, culling, post-fx, 45 shaders)
+├── rc3d-io/         — File import (STL, OBJ, glTF, FBX, Inventor) and export
+├── rc3d-render/     — wgpu renderer (PBR, shadows, culling, post-fx, 66 shaders)
 ├── rc3d-gizmo/      — 3D manipulator (translate, rotate, scale)
 ├── rc3d-script/     — Rhai scripting engine
 ├── rc3d-pointcloud/ — Large-scale point cloud octree (OOC)
 ├── rc3d-pdf/        — 3D PDF export
-├── rc3d-app/        — Application framework, 42 examples, editor UI, camera control
+├── rc3d-engine-api/ — Engine facade (window, camera, render, compositor)
+├── rc3d-editor/     — Editor library (keymap, commands, apply, Fluent UI)
+├── rc3d-examples/   — Demo applications (51 examples)
+├── rc3d-studio/     — Desktop editor host (workspaces, i18n, case library)
 └── rc3d-cli-editor/ — Terminal-based editor
 ```
 
@@ -71,6 +75,8 @@ wgpu-based cluster-deferred PBR renderer:
 | **Selection** | Screen-space outline, edge overlay, bounding box, x-ray mode |
 | **Display** | Shaded, wireframe, hidden-line, flat, shaded-with-edges |
 | **Adaptive** | 5-level quality controller with EMA+hysteresis, interaction-aware reduction |
+| **CAD tiers** | Visualization / IndustrialDisplay / ProductRendering with GPU clamping, orbit downgrade + cooldown recovery |
+| **Compositor** | Node-based compositing graph (Mix with 16 blend modes, Math, transforms, CAD presets) executed as GPU ping-pong passes |
 
 ### Rendering Pipeline (per frame)
 
@@ -95,37 +101,34 @@ Frame Start
 ## Scene Graph (minimal example)
 
 ```rust
-use rc3d_app::{App, CameraController};
 use rc3d_core::math::Vec3;
+use rc3d_examples::common::run_example;
 use rc3d_scene::node_data::*;
 
 fn main() {
-    let mut g = rc3d_scene::SceneGraph::new();
-    let root = g.add_root(NodeData::Separator(SeparatorNode));
-    g.add_child(root, NodeData::PerspectiveCamera(
-        PerspectiveCameraNode::look_at(
-            Vec3::new(3.0, 2.0, 5.0), Vec3::ZERO, Vec3::Y,
-            std::f32::consts::FRAC_PI_4, 800.0 / 600.0,
-        ),
-    ));
-    g.add_child(root, NodeData::DirectionalLight(DirectionalLightNode {
-        direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
-        color: Vec3::ONE, intensity: 1.0, light_group: None,
-    }));
-    g.add_child(root, NodeData::Material(MaterialNode {
-        base_color: Vec3::new(0.8, 0.2, 0.2),
-        roughness: 0.4, metallic: 0.0, ..Default::default()
-    }));
-    g.add_child(root, NodeData::Cube(CubeNode::default()));
-
-    let orbit = CameraController::new(Vec3::ZERO, 10.0);
-    winit::event_loop::EventLoop::new().unwrap()
-        .run_app(&mut App::new(g).with_camera_controller(orbit))
-        .expect("event loop");
+    run_example("Cube", |engine| {
+        let graph = engine.scene_mut();
+        let root = graph.add_root(NodeData::Separator(SeparatorNode));
+        graph.add_child(root, NodeData::PerspectiveCamera(
+            PerspectiveCameraNode::look_at(
+                Vec3::new(3.0, 2.0, 5.0), Vec3::ZERO, Vec3::Y,
+                std::f32::consts::FRAC_PI_4, 800.0 / 600.0,
+            ),
+        ));
+        graph.add_child(root, NodeData::DirectionalLight(DirectionalLightNode {
+            direction: Vec3::new(-1.0, -1.0, -1.0).normalize(),
+            color: Vec3::ONE, intensity: 1.0, light_group: None,
+        }));
+        graph.add_child(root, NodeData::Material(MaterialNode {
+            base_color: Vec3::new(0.8, 0.2, 0.2),
+            roughness: 0.4, metallic: 0.0, ..Default::default()
+        }));
+        graph.add_child(root, NodeData::Cube(CubeNode::default()));
+    });
 }
 ```
 
-## Examples (42 demos)
+## Examples (51 demos)
 
 | Category | Examples |
 |----------|----------|
@@ -136,22 +139,23 @@ fn main() {
 | Camera | `stereo_camera`, `walk_camera` |
 | Import | `import_viewer`, `import_viewer_async`, `iv_viewer` |
 | Animation | `animation_demo`, `animation_control_panel`, `blend_animation` |
-| Editor | `editor`, `selection_set`, `picking`, `markup_dimensions` |
+| Editor | `selection_set`, `picking`, `markup_dimensions` |
 | Engines | `engines_demo`, `scripted_scene` |
-| Effects | `post_effects`, `volumetric_demo`, `decal_viewer` |
+| Effects | `post_effects`, `volumetric_demo`, `decal_viewer`, `text3d` |
 | Specialized | `point_cloud_viewer`, `nurbs_viewer`, `profile_viewer`, `section_caps` |
-| Diagnostics | `adaptive_stress_test`, `large_scene_stress` |
+| Diagnostics | `adaptive_stress_test`, `large_scene_stress`, `bench` |
 
-## Node Types (47 variants)
+## Node Types (62 variants)
 
 | Category | Variants |
 |----------|----------|
-| **Grouping** | Separator, Group, Billboard, Transform, Coordinate3, TextureCoordinate2, Normal, ShapeHints, MaterialBinding, ResetTransform, Texture2Transform, File |
-| **Shapes** | Triangle, Cube, Sphere, Cone, Cylinder, IndexedFaceSet, IndexedLineSet, SkinnedMesh, MorphTarget |
-| **Cameras** | PerspectiveCamera, OrthographicCamera, StereoCamera |
-| **Lights** | DirectionalLight, PointLight, SpotLight, AreaLight |
+| **Grouping** | Separator, Group, Billboard, Transform, Rotation, RotationXYZ, Coordinate3, TextureCoordinate2, Normal, ShapeHints, MaterialBinding, ResetTransform, Texture2Transform, File |
+| **Shapes** | Triangle, Cube, Sphere, Cone, Cylinder, IndexedFaceSet, IndexedLineSet, SkinnedMesh, MorphTarget, Sprite, BatchedMesh, InstancedMesh |
+| **Cameras** | PerspectiveCamera, OrthographicCamera, StereoCamera, CubeCamera |
+| **Lights** | DirectionalLight, PointLight, SpotLight, AreaLight, HemisphereLight, LightProbe |
 | **Traversal** | Lod, Switch, MultipleCopy, SectionPlane, PickStyle, EventCallback |
-| **Annotations** | Text2, Text3, Measurement, Markup, Annotation |
+| **Annotations** | Text2, Text3, Measurement, Markup, Annotation, Font |
+| **Manipulators** | TransformManip, Dragger, Rotation |
 | **Specialized** | ExplodedView, ReflectionPlane, Decal, RayTracing, Volume, PointCloud, Environment, Material |
 | **Extensibility** | HandlerNode(Arc\<dyn NodeHandler\>), Custom(u16, Box\<dyn CustomNodeData\>) |
 
@@ -176,20 +180,34 @@ Key optimizations:
 
 ```bash
 cargo check --workspace          # fast compile check
-cargo test                        # 222 tests
-cargo build -p rc3d-app --examples
-cargo clippy --workspace          # lint check
+cargo test                       # 328 tests
+cargo build -p rc3d-examples --examples
+cargo run -p rc3d-studio         # desktop editor
+cargo clippy --workspace         # lint check
 ```
+
+## Studio Desktop Editor
+
+`rc3d-studio` is the flagship desktop application:
+
+- **Workspaces**: Model / LookDev / Compositor quick layouts
+- **Docks**: side dock (Hierarchy+Inspector split, Render, History, Assets), bottom dock (Document, Compositor), movable tool strip
+- **Compositor editor**: Blender-style node graph (egui-snarl) with two-level Add menu, collapse state persistence
+- **Case library**: 24 parameter/process demo cases with step-by-step guidance
+- **i18n**: English / Simplified Chinese (450-key catalogs)
+- **Keymap**: default shortcuts with per-user overrides persisted to `%APPDATA%\rustcoin3d\ui-prefs.json`
+- **CAD matrix check**: `rc3d-studio --cad-matrix` runs the tier/compositor verification matrix
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| wgpu 24 | GPU abstraction (Vulkan/Metal/DX12) |
+| wgpu 30 | GPU abstraction (Vulkan/Metal/DX12) |
 | winit 0.30 | Window creation and event loop |
+| egui 0.36 / eframe 0.36 | Immediate-mode UI (editor + studio) |
 | glam 0.29 | Linear algebra (Vec3, Mat4, Quat) |
 | slotmap | Stable-ID arena storage for scene graph |
-| glyphon | GPU text rendering (HUD) |
+| glyphon 0.12 | GPU text rendering (HUD) |
 | rayon | Parallel traversal |
 | rhai | Embedded scripting |
 | meshopt | Mesh optimization (meshlets, LOD) |

@@ -187,7 +187,7 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                 }
 
                 let ppp = render_ctx.pixels_per_point;
-                let egui_output = render_ctx.egui_ctx.run_ui(
+                let mut egui_output = render_ctx.egui_ctx.run_ui(
                     render_ctx.egui_winit.take_egui_input(window),
                     |ui| {
                         self.diagnostics_panel.ui(
@@ -225,6 +225,7 @@ impl ApplicationHandler<AppEvent> for CliEditorApp {
                     }
                     render_ctx.egui_painter.free_texture(id);
                 }
+                egui_output.textures_delta.clear();
 
                 let screen_size = window.inner_size();
                 let batches = render_ctx.egui_painter.upload(

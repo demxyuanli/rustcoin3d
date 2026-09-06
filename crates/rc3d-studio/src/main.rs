@@ -1,8 +1,13 @@
-//! Product editor host: egui chrome + central 3D region + document panel.
+//! Product editor host: egui chrome + central 3D region.
 
 mod app;
-mod document;
+mod cad_matrix;
+mod cases;
+mod host;
+mod host_cmds;
 mod prefs;
+mod present;
+mod redraw;
 mod scene;
 mod ui_ctx;
 mod win_shell;
@@ -14,8 +19,9 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,rc3d=info"))
         .init();
 
+    let cad_matrix = std::env::args().skip(1).any(|a| a == "--cad-matrix");
     let event_loop = EventLoop::new().expect("event loop");
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = StudioApp::new(scene::build_demo_scene());
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+    let mut app = StudioApp::new(scene::build_demo_scene(), cad_matrix);
     event_loop.run_app(&mut app).expect("run");
 }

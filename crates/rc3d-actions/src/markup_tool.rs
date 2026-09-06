@@ -13,6 +13,12 @@ pub enum MarkupTool {
     Freehand,
 }
 
+impl MarkupTool {
+    pub fn is_drawing(self) -> bool {
+        !matches!(self, MarkupTool::Select)
+    }
+}
+
 /// Interactive markup drawing state machine.
 pub struct MarkupAction {
     pub tool: MarkupTool,
@@ -74,6 +80,20 @@ impl MarkupAction {
     /// Handle mouse move (updates preview).
     pub fn on_mouse_move(&mut self, screen_pos: Vec2) {
         self.current_mouse = screen_pos;
+        if self.tool == MarkupTool::Freehand && !self.click_points.is_empty() {
+            if let Some(last) = self.click_points.last() {
+                if (*last - screen_pos).length_squared() >= 16.0 {
+                    self.click_points.push(screen_pos);
+                }
+            }
+            let points: Vec<[f32; 2]> = self.click_points.iter().map(|p| [p.x, p.y]).collect();
+            self.preview_element = Some(MarkupElement::Freehand {
+                points,
+                color: [1.0, 0.0, 0.0, 0.5],
+                width: 1.0,
+            });
+            return;
+        }
         if !self.click_points.is_empty() {
             self.update_preview();
         }

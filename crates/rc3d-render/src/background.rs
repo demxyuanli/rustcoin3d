@@ -351,7 +351,7 @@ impl BgPass {
                         r: settings.top_color[0] as f64,
                         g: settings.top_color[1] as f64,
                         b: settings.top_color[2] as f64,
-                        a: 1.0,
+                        a: settings.top_color[3] as f64,
                     }),
                     store: wgpu::StoreOp::Store,
                 },

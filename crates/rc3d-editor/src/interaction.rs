@@ -1,16 +1,17 @@
 //! Editor interaction: mouse-down, mouse-up, cursor-move, box-select, gizmo drag.
 //!
-//! These functions were extracted from `rc3d-app::App` and refactored to operate
-//! on an `EditorContext` (which wraps `&mut Engine`) plus explicit window/input
-//! parameters.
+//! These functions operate on an `EditorContext` (which wraps `&mut Engine`)
+//! plus explicit window/input parameters.
 
 use rc3d_actions::{Ray, RayPickAction};
 use rc3d_core::math::{Mat4, Quat};
 use rc3d_core::NodeId;
 use rc3d_engine_api::{Engine, InputState};
 
+use crate::commands::EditorCommand;
 use crate::context::EditorContext;
 use crate::gizmo;
+use crate::ui::types::SelectKind;
 
 /// Build a pick ray from the current cursor position, using viewport cameras
 /// if available, otherwise falling back to the main camera controller.
@@ -20,24 +21,30 @@ pub fn build_pick_ray(
     window: &winit::window::Window,
 ) -> Option<Ray> {
     let s = window.inner_size();
-    engine.pointer_pick_frame(
-        input.cursor_pos.0 as f32,
-        input.cursor_pos.1 as f32,
-        s.width,
-        s.height,
-    )
-    .map(|(lx, ly, vw, vh, v, p)| Ray::from_screen_point(lx, ly, vw, vh, v, p))
+    engine
+        .pointer_pick_frame(
+            input.cursor_pos.0 as f32,
+            input.cursor_pos.1 as f32,
+            s.width,
+            s.height,
+        )
+        .map(|(lx, ly, vw, vh, v, p)| Ray::from_screen_point(lx, ly, vw, vh, v, p))
 }
 
 /// Perform a ray pick and toggle selection on the hit node.
-pub fn do_pick(engine: &mut Engine, input: &InputState, window: &winit::window::Window) {
+pub fn do_pick(
+    engine: &mut Engine,
+    input: &InputState,
+    window: &winit::window::Window,
+    locked: &std::collections::HashSet<NodeId>,
+) {
     let Some(ray) = build_pick_ray(engine, input, window) else {
         return;
     };
     let mut picker = RayPickAction::new(ray);
     rc3d_actions::apply_to_all_roots(&mut picker, &engine.world.graph);
 
-    if let Some(hit) = picker.hits.first() {
+    if let Some(hit) = picker.hits.iter().find(|h| !locked.contains(&h.node)) {
         if !input.shift_pressed {
             engine.world.graph.clear_selection();
         }
@@ -75,6 +82,7 @@ pub fn on_left_down(
                 s.width,
                 s.height,
             ) {
+                ctx.interaction.view_split_hover = Some(axis);
                 ctx.interaction.view_split_drag = Some(axis);
                 return;
             }
@@ -100,6 +108,19 @@ pub fn on_left_down(
         vcs.set_active(vp_id, layout);
     }
 
+    if ctx.interaction.markup.tool.is_drawing() {
+        ctx.push_command(EditorCommand::MarkupMouseDown {
+            screen_pos: screen_xy(input),
+        });
+        return;
+    }
+    if ctx.interaction.measurement_mode {
+        if let Some(world) = pick_measure_world(ctx.engine, input, window) {
+            ctx.push_command(EditorCommand::MeasurementPick { world });
+        }
+        return;
+    }
+
     let left_orbit_enabled = !editor_ui_enabled && !ctx.interaction.measurement_mode;
 
     if left_orbit_enabled && !input.ctrl_pressed && !input.alt_pressed {
@@ -107,19 +128,18 @@ pub fn on_left_down(
         ctx.interaction.left_drag_suppresses_pick = false;
         return;
     }
-    if input.alt_pressed {
+    let tool_lasso = ctx.interaction.select_kind == SelectKind::Lasso;
+    let tool_box = ctx.interaction.select_kind == SelectKind::Box;
+    if input.alt_pressed || tool_lasso {
         let p = (input.cursor_pos.0 as f32, input.cursor_pos.1 as f32);
         ctx.interaction.lasso_drag = true;
         ctx.interaction.lasso_points.clear();
         ctx.interaction.lasso_points.push(p);
         return;
     }
-    if input.ctrl_pressed {
+    if input.ctrl_pressed || tool_box {
         ctx.interaction.box_select_drag = true;
-        ctx.interaction.box_select_anchor = (
-            input.cursor_pos.0 as f32,
-            input.cursor_pos.1 as f32,
-        );
+        ctx.interaction.box_select_anchor = (input.cursor_pos.0 as f32, input.cursor_pos.1 as f32);
         return;
     }
     if ctx.interaction.section_edit_mode {
@@ -141,36 +161,37 @@ pub fn on_left_down(
         }
     }
     if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
-        gizmo::sync_gizmo_from_selection(
-            &mut ctx.engine.gizmo,
-            &ctx.engine.world.graph,
-        );
+        gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
         if ctx.engine.gizmo.visible {
-            if let Some((h, _)) = ctx.engine.gizmo.hit_test(&ray) {
-                if let Some(n) = ctx.engine.gizmo.target_node {
-                    if let Some(e) = ctx.engine.world.graph.get(n) {
-                        if let rc3d_scene::NodeData::Transform(t) = &e.data {
-                            let old = Mat4::from_scale_rotation_translation(
-                                t.scale,
-                                Quat::from_mat4(&t.rotation),
-                                t.translation,
-                            );
-                            ctx.interaction.gizmo_pending_transform = Some((n, old));
+            let locked_target = ctx
+                .engine
+                .gizmo
+                .target_node
+                .is_some_and(|n| ctx.interaction.locked_nodes.contains(&n));
+            if !locked_target {
+                if let Some((h, _)) = ctx.engine.gizmo.hit_test(&ray) {
+                    if let Some(n) = ctx.engine.gizmo.target_node {
+                        if let Some(e) = ctx.engine.world.graph.get(n) {
+                            if let rc3d_scene::NodeData::Transform(t) = &e.data {
+                                let old = Mat4::from_scale_rotation_translation(
+                                    t.scale,
+                                    Quat::from_mat4(&t.rotation),
+                                    t.translation,
+                                );
+                                ctx.interaction.gizmo_pending_transform = Some((n, old));
+                            }
                         }
                     }
+                    ctx.engine.gizmo.start_drag(&ray, h);
+                    ctx.interaction.gizmo_dragging = true;
+                    return;
                 }
-                ctx.engine.gizmo.start_drag(&ray, h);
-                ctx.interaction.gizmo_dragging = true;
-                return;
             }
         }
     }
     // Fallback: pick
-    do_pick(ctx.engine, input, window);
-    gizmo::sync_gizmo_from_selection(
-        &mut ctx.engine.gizmo,
-        &ctx.engine.world.graph,
-    );
+    do_pick(ctx.engine, input, window, &ctx.interaction.locked_nodes);
+    gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
 }
 
 /// Handle left mouse button release.
@@ -180,6 +201,13 @@ pub fn on_left_up(
     input: &InputState,
     editor_ui_enabled: bool,
 ) {
+    if ctx.interaction.markup.tool.is_drawing() {
+        ctx.push_command(EditorCommand::MarkupMouseUp {
+            screen_pos: screen_xy(input),
+        });
+        return;
+    }
+
     let left_orbit_enabled = !editor_ui_enabled && !ctx.interaction.measurement_mode;
 
     if left_orbit_enabled
@@ -193,11 +221,8 @@ pub fn on_left_up(
         if ctx.interaction.left_pick_arm_pos.is_some() {
             let _ = ctx.interaction.left_pick_arm_pos.take();
             if !ctx.interaction.left_drag_suppresses_pick {
-                do_pick(ctx.engine, input, window);
-                gizmo::sync_gizmo_from_selection(
-                    &mut ctx.engine.gizmo,
-                    &ctx.engine.world.graph,
-                );
+                do_pick(ctx.engine, input, window, &ctx.interaction.locked_nodes);
+                gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
             }
             ctx.interaction.left_drag_suppresses_pick = false;
         }
@@ -215,10 +240,7 @@ pub fn on_left_up(
         ctx.interaction.lasso_drag = false;
         let points = std::mem::take(&mut ctx.interaction.lasso_points);
         apply_lasso_selection(ctx, window, &points);
-        gizmo::sync_gizmo_from_selection(
-            &mut ctx.engine.gizmo,
-            &ctx.engine.world.graph,
-        );
+        gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
         return;
     }
     if ctx.interaction.box_select_drag {
@@ -228,8 +250,16 @@ pub fn on_left_up(
         let s = window.inner_size();
         let roots = ctx.engine.world.graph.roots().to_vec();
         let has_vp_cams = !ctx.engine.viewport_cameras.cameras.is_empty();
-        let vp_id_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.viewport_id);
-        let cam_node_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.camera_node);
+        let vp_id_opt = ctx
+            .engine
+            .viewport_cameras
+            .active()
+            .map(|vc| vc.viewport_id);
+        let cam_node_opt = ctx
+            .engine
+            .viewport_cameras
+            .active()
+            .map(|vc| vc.camera_node);
         let anchor = ctx.interaction.box_select_anchor;
         let cursor = (input.cursor_pos.0 as f32, input.cursor_pos.1 as f32);
 
@@ -239,11 +269,8 @@ pub fn on_left_up(
                 if let Some(r) = ctx.engine.renderer.as_ref() {
                     if let Some(avp) = r.viewport_layout().viewports.iter().find(|v| v.id == vp_id)
                     {
-                        let (v, p) = pick_view_proj_for_node(
-                            &ctx.engine.world.graph,
-                            cam_node,
-                            avp,
-                        );
+                        let (v, p) =
+                            pick_view_proj_for_node(&ctx.engine.world.graph, cam_node, avp);
                         // Clone viewport rect info since avp borrows from r
                         let vp_rect = avp.rect;
                         let vp_projection_type = avp.projection_type;
@@ -288,10 +315,7 @@ pub fn on_left_up(
                 );
             }
         }
-        gizmo::sync_gizmo_from_selection(
-            &mut ctx.engine.gizmo,
-            &ctx.engine.world.graph,
-        );
+        gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
         return;
     }
     if ctx.interaction.gizmo_dragging {
@@ -317,13 +341,11 @@ pub fn on_left_up(
                         );
                     }
                     if (new_scale - old_scale).length_squared() > 1e-8 {
-                        ctx.push_command(
-                            crate::commands::EditorCommand::CommitTransformScale {
-                                node: n,
-                                old: old_scale.to_array(),
-                                new: new_scale.to_array(),
-                            },
-                        );
+                        ctx.push_command(crate::commands::EditorCommand::CommitTransformScale {
+                            node: n,
+                            old: old_scale.to_array(),
+                            new: new_scale.to_array(),
+                        });
                     }
                     let old_q: [f32; 4] = [old_rot.x, old_rot.y, old_rot.z, old_rot.w];
                     let new_q: [f32; 4] = [new_rot.x, new_rot.y, new_rot.z, new_rot.w];
@@ -390,6 +412,7 @@ pub fn on_cursor_moved(
     input: &InputState,
 ) {
     if let Some(axis) = ctx.interaction.view_split_drag {
+        ctx.interaction.view_split_hover = Some(axis);
         let s = window.inner_size();
         if let Some(ref mut r) = ctx.engine.renderer {
             r.viewport_layout_mut().apply_split_drag(
@@ -401,11 +424,31 @@ pub fn on_cursor_moved(
             );
             r.viewport_layout_mut().rebuild(s.width, s.height);
         }
-        ctx.engine
-            .viewport_cameras
-            .remap_viewport_ids_from_layout(
-                ctx.engine.renderer.as_ref().unwrap().viewport_layout(),
-            );
+        ctx.engine.viewport_cameras.remap_viewport_ids_from_layout(
+            ctx.engine.renderer.as_ref().unwrap().viewport_layout(),
+        );
+        window.request_redraw();
+        return;
+    }
+    ctx.interaction.view_split_hover = if let Some(ref r) = ctx.engine.renderer {
+        if r.viewport_layout().viewports.len() > 1 {
+            let s = window.inner_size();
+            r.viewport_layout().splitter_hit(
+                input.cursor_pos.0 as f32,
+                input.cursor_pos.1 as f32,
+                s.width,
+                s.height,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if ctx.interaction.markup.tool.is_drawing() && !ctx.interaction.markup.click_points.is_empty() {
+        ctx.push_command(EditorCommand::MarkupMouseMove {
+            screen_pos: screen_xy(input),
+        });
         window.request_redraw();
         return;
     }
@@ -473,14 +516,28 @@ pub fn on_cursor_moved(
     }
     if ctx.engine.renderer.is_some() {
         if let Some(ray) = build_pick_ray(ctx.engine, input, window) {
-            gizmo::sync_gizmo_from_selection(
-                &mut ctx.engine.gizmo,
-                &ctx.engine.world.graph,
-            );
-            ctx.engine.gizmo.hovered =
-                ctx.engine.gizmo.hit_test(&ray).map(|(h, _)| h);
+            gizmo::sync_gizmo_from_selection(&mut ctx.engine.gizmo, &ctx.engine.world.graph);
+            ctx.engine.gizmo.hovered = ctx.engine.gizmo.hit_test(&ray).map(|(h, _)| h);
         }
     }
+}
+
+fn screen_xy(input: &InputState) -> [f32; 2] {
+    [input.cursor_pos.0 as f32, input.cursor_pos.1 as f32]
+}
+
+fn pick_measure_world(
+    engine: &Engine,
+    input: &InputState,
+    window: &winit::window::Window,
+) -> Option<[f32; 3]> {
+    let ray = build_pick_ray(engine, input, window)?;
+    let mut picker = RayPickAction::new(ray.clone());
+    rc3d_actions::apply_to_all_roots(&mut picker, &engine.world.graph);
+    if let Some(hit) = picker.hits.first() {
+        return Some(hit.point.to_array());
+    }
+    crate::measurement::ground_hit(&ray).map(|p| p.to_array())
 }
 
 fn apply_lasso_selection(
@@ -494,8 +551,16 @@ fn apply_lasso_selection(
     let s = window.inner_size();
     let roots = ctx.engine.world.graph.roots().to_vec();
     let has_vp_cams = !ctx.engine.viewport_cameras.cameras.is_empty();
-    let vp_id_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.viewport_id);
-    let cam_node_opt = ctx.engine.viewport_cameras.active().map(|vc| vc.camera_node);
+    let vp_id_opt = ctx
+        .engine
+        .viewport_cameras
+        .active()
+        .map(|vc| vc.viewport_id);
+    let cam_node_opt = ctx
+        .engine
+        .viewport_cameras
+        .active()
+        .map(|vc| vc.camera_node);
 
     if has_vp_cams {
         if let (Some(vp_id), Some(cam_node)) = (vp_id_opt, cam_node_opt) {
@@ -540,7 +605,10 @@ fn apply_lasso_selection(
 }
 
 /// Refresh section-plane overlay lines on the engine (call once per frame).
-pub fn sync_section_overlay(engine: &mut Engine, interaction: &crate::context::EditorInteractionState) {
+pub fn sync_section_overlay(
+    engine: &mut Engine,
+    interaction: &crate::context::EditorInteractionState,
+) {
     if interaction.section_edit_mode {
         engine.overlay_line_batches =
             crate::section_edit::widget_batches(&engine.world.graph, interaction.section_hovered);

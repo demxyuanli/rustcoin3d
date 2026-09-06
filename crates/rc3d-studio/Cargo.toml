@@ -22,7 +22,3 @@ log = { workspace = true }
 env_logger = { workspace = true }
 wgpu = { workspace = true }
 serde_json = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-wry = "0.51"
-dpi = "0.1"

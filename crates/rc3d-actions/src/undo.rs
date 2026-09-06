@@ -68,6 +68,38 @@ impl CommandHistory {
         self.undo_stack.clear();
         self.redo_stack.clear();
     }
+
+    pub fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    pub fn undo_log(&self) -> Vec<String> {
+        self.undo_stack
+            .iter()
+            .map(|c| c.description().to_string())
+            .collect()
+    }
+
+    pub fn redo_log(&self) -> Vec<String> {
+        self.redo_stack
+            .iter()
+            .rev()
+            .map(|c| c.description().to_string())
+            .collect()
+    }
+
+    pub fn jump_to_undo_len(&mut self, len: usize, graph: &mut SceneGraph) {
+        while self.undo_stack.len() > len {
+            if !self.undo(graph) {
+                break;
+            }
+        }
+        while self.undo_stack.len() < len {
+            if !self.redo(graph) {
+                break;
+            }
+        }
+    }
 }
 
 /// Command: change a Transform node's translation.

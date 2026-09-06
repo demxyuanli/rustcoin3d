@@ -61,6 +61,7 @@ fn main() {
                     position: *pos,
                     size: 32.0,
                     color: *color,
+                    ..Default::default()
                 }),
             );
         }

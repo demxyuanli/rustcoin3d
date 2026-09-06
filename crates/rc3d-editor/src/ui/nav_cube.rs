@@ -2,16 +2,22 @@
 
 use std::sync::OnceLock;
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use egui::{Pos2, Rect, Sense, Ui, Vec2};
 use rc3d_core::math::{Mat4, Vec3};
 
 use crate::commands::EditorCommand;
 use crate::ui::i18n::t;
 use crate::ui::types::{EditorChromeState, EditorUiContext};
+use rc3d_engine_api::{OverlayViewport, OVERLAY_NAV_CUBE};
+use rc3d_scene::node_data::{
+    Coordinate3Node, DirectionalLightNode, FaceMaterialGroup, HemisphereLightNode,
+    IndexedFaceSetNode, MaterialNode, NodeData, SeparatorNode, Text3Node, TransformNode,
+};
+use rc3d_scene::SceneGraph;
 
-const SIZE: f32 = 118.0;
-const MARGIN: f32 = 10.0;
-const CHAMFER: f32 = 0.32;
+pub const SIZE: f32 = 118.0;
+pub const MARGIN: f32 = 10.0;
+const CHAMFER: f32 = 0.45;
 const ORBIT_SCALE: f32 = 0.012;
 
 struct NavFace {
@@ -109,22 +115,20 @@ fn push_face(out: &mut Vec<NavFace>, verts: Vec<Vec3>, label: Option<&'static st
     }
     n = n.normalize();
     let center: Vec3 = verts.iter().copied().sum::<Vec3>() / verts.len() as f32;
-    if n.dot(center) < 0.0 {
-        n = -n;
-        let mut flipped = verts;
-        flipped.reverse();
-        out.push(NavFace {
-            verts: flipped,
-            normal: n,
-            label,
-        });
-    } else {
-        out.push(NavFace {
-            verts,
-            normal: n,
-            label,
-        });
+    // Convex cube at the origin: the centroid direction is the outward face normal.
+    let outward = center.normalize_or_zero();
+    if outward.length_squared() < 1.0e-10 {
+        return;
     }
+    let mut verts = verts;
+    if n.dot(outward) < 0.0 {
+        verts.reverse();
+    }
+    out.push(NavFace {
+        verts,
+        normal: outward,
+        label,
+    });
 }
 
 fn view_matrix(from: Vec3, up: Vec3) -> Mat4 {
@@ -172,20 +176,6 @@ fn point_in_poly(p: Pos2, verts: &[Pos2]) -> bool {
     true
 }
 
-fn shade(base: Color32, n: Vec3, hover: bool) -> Color32 {
-    let light = Vec3::new(0.35, 0.8, 0.45).normalize();
-    let wrap = 0.5 + 0.5 * n.dot(light).clamp(-1.0, 1.0);
-    let mut r = base.r() as f32 * wrap;
-    let mut g = base.g() as f32 * wrap;
-    let mut b = base.b() as f32 * wrap;
-    if hover {
-        r = r * 0.45 + 96.0;
-        g = g * 0.45 + 170.0;
-        b = b * 0.45 + 240.0;
-    }
-    Color32::from_rgb(r as u8, g as u8, b as u8)
-}
-
 pub(super) fn draw_nav_cube(
     ui: &mut Ui,
     scene_rect: Rect,
@@ -194,7 +184,7 @@ pub(super) fn draw_nav_cube(
     push: &mut impl FnMut(EditorCommand),
 ) {
     let rect = Rect::from_min_size(
-        Pos2::new(scene_rect.min.x + MARGIN, scene_rect.min.y + MARGIN),
+        Pos2::new(scene_rect.max.x - MARGIN - SIZE, scene_rect.min.y + MARGIN),
         Vec2::splat(SIZE),
     );
     chrome.nav_cube_rect_points = Some([rect.min.x, rect.min.y, rect.width(), rect.height()]);
@@ -219,28 +209,16 @@ pub(super) fn draw_nav_cube(
     let half = SIZE * 0.36;
 
     let pointer = response.hover_pos();
-    let painter = ui.painter_at(rect);
-    let pal = ui_ctx.ui_theme.palette();
-    let loc = ui_ctx.ui_locale;
-    let backdrop = if pal.dark {
-        Color32::from_rgba_unmultiplied(18, 20, 24, 150)
-    } else {
-        Color32::from_rgba_unmultiplied(240, 240, 244, 180)
-    };
-
-    painter.circle_filled(origin, SIZE * 0.48, backdrop);
 
     struct Drawn {
         pts: Vec<Pos2>,
         depth: f32,
-        normal: Vec3,
-        label: Option<&'static str>,
         dir: [f32; 3],
-        kind: u8,
+        slot: u32,
     }
 
     let mut drawn = Vec::with_capacity(26);
-    for face in faces() {
+    for (slot, face) in faces().iter().enumerate() {
         if face.normal.dot(from.normalize_or_zero()) <= 0.04 {
             continue;
         }
@@ -252,23 +230,18 @@ pub(super) fn draw_nav_cube(
             depth += z;
         }
         depth /= face.verts.len() as f32;
-        let kind = if face.label.is_some() {
-            0
-        } else if face.verts.len() == 3 {
-            2
-        } else {
-            1
-        };
         drawn.push(Drawn {
             pts,
             depth,
-            normal: face.normal,
-            label: face.label,
             dir: face.normal.to_array(),
-            kind,
+            slot: slot as u32,
         });
     }
-    drawn.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
+    drawn.sort_by(|a, b| {
+        a.depth
+            .partial_cmp(&b.depth)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut hit: Option<usize> = None;
     if let Some(pos) = pointer {
@@ -279,43 +252,7 @@ pub(super) fn draw_nav_cube(
             }
         }
     }
-
-    let stroke = Stroke::new(
-        1.0_f32,
-        if pal.dark {
-            Color32::from_rgb(28, 30, 36)
-        } else {
-            Color32::from_rgb(160, 166, 176)
-        },
-    );
-    for (i, f) in drawn.iter().enumerate() {
-        let hover = hit == Some(i);
-        let base = match f.kind {
-            0 => Color32::from_rgb(232, 234, 238),
-            1 => Color32::from_rgb(196, 202, 214),
-            _ => Color32::from_rgb(168, 178, 196),
-        };
-        painter.add(egui::Shape::convex_polygon(
-            f.pts.clone(),
-            shade(base, f.normal, hover),
-            stroke,
-        ));
-        if let Some(key) = f.label {
-            let c = f.pts.iter().copied().fold(Pos2::ZERO, |a, p| {
-                Pos2::new(a.x + p.x, a.y + p.y)
-            });
-            let n = f.pts.len() as f32;
-            let center = Pos2::new(c.x / n, c.y / n);
-            let font = egui::FontId::proportional(10.0);
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                t(loc, key),
-                font,
-                Color32::from_rgb(32, 36, 44),
-            );
-        }
-    }
+    chrome.nav_cube_hover_slot = hit.map(|i| drawn[i].slot);
 
     if response.clicked() {
         if let Some(i) = hit {
@@ -324,4 +261,211 @@ pub(super) fn draw_nav_cube(
     }
 
     response.on_hover_cursor(egui::CursorIcon::PointingHand);
+}
+
+fn face_kind_color(kind: u8) -> Vec3 {
+    match kind {
+        0 => Vec3::new(0.91, 0.92, 0.94),
+        1 => Vec3::new(0.77, 0.79, 0.84),
+        _ => Vec3::new(0.66, 0.70, 0.77),
+    }
+}
+
+fn face_kind(face: &NavFace) -> u8 {
+    if face.label.is_some() {
+        0
+    } else if face.verts.len() == 3 {
+        2
+    } else {
+        1
+    }
+}
+
+fn face_material(color: Vec3, hover: bool) -> MaterialNode {
+    let mut mat = MaterialNode::from_diffuse(color);
+    mat.roughness = 0.55;
+    mat.metallic = 0.0;
+    if hover {
+        mat.base_color = color * 0.5 + Vec3::new(0.22, 0.48, 0.92) * 0.5;
+        mat.diffuse_color = mat.base_color;
+        mat.emissive_color = Vec3::new(0.18, 0.38, 0.72);
+    } else {
+        mat.emissive_color = color * 0.06;
+    }
+    mat
+}
+
+fn face_basis(n: Vec3) -> (Vec3, Vec3) {
+    let n = n.normalize_or_zero();
+    let mut bit = Vec3::Y - n * n.dot(Vec3::Y);
+    if bit.length_squared() < 0.04 {
+        bit = -Vec3::Z - n * n.dot(-Vec3::Z);
+    }
+    let bit = bit.normalize_or_zero();
+    let tan = bit.cross(n).normalize_or_zero();
+    (tan, bit)
+}
+
+fn nav_label_key(name: &str) -> Option<&'static str> {
+    match name {
+        "nav.front" => Some("nav.front"),
+        "nav.back" => Some("nav.back"),
+        "nav.top" => Some("nav.top"),
+        "nav.bottom" => Some("nav.bottom"),
+        "nav.left" => Some("nav.left"),
+        "nav.right" => Some("nav.right"),
+        _ => None,
+    }
+}
+
+fn visit_nodes(graph: &mut SceneGraph, mut visit: impl FnMut(&mut rc3d_scene::NodeEntry)) {
+    let mut stack: Vec<rc3d_core::NodeId> = graph.roots().to_vec();
+    while let Some(id) = stack.pop() {
+        let kids = graph
+            .get(id)
+            .map(|e| e.children.clone())
+            .unwrap_or_default();
+        if let Some(e) = graph.get_mut(id) {
+            visit(e);
+        }
+        stack.extend(kids);
+    }
+}
+
+/// Update overlay labels / hover materials from editor chrome (call before GPU render).
+pub fn sync_overlay(
+    ov: &mut OverlayViewport,
+    locale: crate::ui::i18n::UiLocale,
+    theme: crate::ui::theme::UiTheme,
+    hover_slot: Option<u32>,
+) {
+    let dark = theme.palette().dark;
+    let label_color = if dark {
+        [0.12, 0.14, 0.18, 1.0]
+    } else {
+        [0.16, 0.18, 0.22, 1.0]
+    };
+    visit_nodes(&mut ov.world.graph, |entry| match &mut entry.data {
+        NodeData::IndexedFaceSet(ifs) => {
+            for (i, mat) in ifs.materials.iter_mut().enumerate() {
+                let kind = if i < 6 {
+                    0
+                } else if i < 18 {
+                    1
+                } else {
+                    2
+                };
+                *mat = face_material(face_kind_color(kind), hover_slot == Some(i as u32));
+            }
+        }
+        NodeData::Text3(text) => {
+            if let Some(key) = entry.name.as_deref().and_then(nav_label_key) {
+                text.string = t(locale, key).to_string();
+                text.color = label_color;
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Independent overlay world for the navigation cube (own scene graph + camera).
+pub fn nav_cube_overlay() -> OverlayViewport {
+    let mut graph = SceneGraph::new();
+    let root = graph.add_root(NodeData::Separator(SeparatorNode));
+    let light_id = graph.add_child(
+        root,
+        NodeData::DirectionalLight(DirectionalLightNode {
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            color: Vec3::ONE,
+            intensity: 1.15,
+            light_group: None,
+        }),
+    );
+    graph.add_child(
+        root,
+        NodeData::HemisphereLight(HemisphereLightNode {
+            sky_color: Vec3::new(0.92, 0.94, 0.98),
+            ground_color: Vec3::new(0.42, 0.44, 0.48),
+            intensity: 0.55,
+            direction: Vec3::Y,
+        }),
+    );
+
+    let mut points = Vec::new();
+    let mut coord_index = Vec::new();
+    let mut tri_slots = Vec::new();
+    let mut materials = Vec::with_capacity(26);
+    for (slot, face) in faces().iter().enumerate() {
+        let base = points.len() as i32;
+        points.extend_from_slice(&face.verts);
+        let n = face.verts.len();
+        for i in 0..n {
+            coord_index.push(base + i as i32);
+        }
+        coord_index.push(-1);
+        let kind = face_kind(face);
+        materials.push(face_material(face_kind_color(kind), false));
+        let tri_count = n.saturating_sub(2);
+        for _ in 0..tri_count {
+            tri_slots.push(slot as u32);
+        }
+    }
+
+    graph.add_child(
+        root,
+        NodeData::Coordinate3(Coordinate3Node::from_points(points)),
+    );
+    graph.add_child(
+        root,
+        NodeData::IndexedFaceSet(IndexedFaceSetNode {
+            coord_index,
+            material_groups: FaceMaterialGroup::compact_from_triangle_slots(&tri_slots),
+            materials,
+            face_ids: Vec::new(),
+        }),
+    );
+
+    for face in faces() {
+        let Some(key) = face.label else {
+            continue;
+        };
+        let center: Vec3 = face.verts.iter().copied().sum::<Vec3>() / face.verts.len() as f32;
+        let (tan, bit) = face_basis(face.normal);
+        let rotation = Mat4::from_cols(
+            tan.extend(0.0),
+            bit.extend(0.0),
+            face.normal.extend(0.0),
+            Vec3::ZERO.extend(1.0),
+        );
+        let isol = graph.add_child(root, NodeData::Separator(SeparatorNode));
+        let tf = graph.add_child(
+            isol,
+            NodeData::Transform(TransformNode::from_trs(
+                center + face.normal * 0.045,
+                rotation,
+                Vec3::ONE,
+            )),
+        );
+        let text_id = graph.add_child(
+            tf,
+            NodeData::Text3(Text3Node {
+                string: String::new(),
+                position: Vec3::ZERO,
+                size: 11.0,
+                color: [0.12, 0.14, 0.18, 1.0],
+                plane_aligned: true,
+            }),
+        );
+        if let Some(e) = graph.get_mut(text_id) {
+            e.name = Some(key.to_string());
+        }
+    }
+
+    let mut ov = OverlayViewport::new(OVERLAY_NAV_CUBE, graph);
+    ov.light_id = Some(light_id);
+    ov.follow_main_camera = true;
+    ov.orthographic = true;
+    ov.ortho_half = 1.55;
+    ov.eye_distance = 4.0;
+    ov
 }

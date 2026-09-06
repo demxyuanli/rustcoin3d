@@ -17,7 +17,7 @@
 ## 4. Testing and verification
 
 - [x] 4.1 Build with `rtk cargo check --workspace` to verify no compile errors
-- [x] 4.2 Run `cargo build -p rc3d-app --examples` to build all examples for linking verification
-- [ ] 4.3 Manual test: run `editor` example, orbit/pan with middle/right mouse, verify smooth continuous rendering
+- [x] 4.2 Run `cargo build -p rc3d-examples --examples` to build all examples for linking verification
+- [ ] 4.3 Manual test: run `rc3d-studio`, orbit/pan with middle/right mouse, verify smooth continuous rendering
 - [ ] 4.4 Manual test: verify zoom still works smoothly
 - [ ] 4.5 Manual test: verify static scene (no interaction) still renders correctly

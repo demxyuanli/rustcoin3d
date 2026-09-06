@@ -1,21 +1,26 @@
+//! winit host: window lifecycle, event routing and frame scheduling.
+//! Frame presentation lives in `present.rs`, redraw policy in `redraw.rs`,
+//! command/prefs handling in `host_cmds.rs`.
+
 use rc3d_core::DisplayMode;
 use rc3d_editor::{
-    apply_command, interaction, CaptionAction, Editor, EditorCommand, EditorContext,
-    EditorInteractionState, EditorSession,
+    apply_command, interaction, Editor, EditorContext, EditorInteractionState, EditorSession,
 };
-use rc3d_engine_api::{sync_gizmo_from_selection, CameraController, Engine, EventRouteOpts};
-use rc3d_gizmo::GizmoMode;
-use rc3d_render::viewport::ViewportRect;
+use rc3d_engine_api::{CameraController, Engine, EventRouteOpts};
 use rc3d_scene::SceneGraph;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::CursorIcon;
 
-use crate::document::DocumentWebView;
-use crate::ui_ctx;
+use crate::host::HostState;
+use crate::host_cmds;
+use crate::present::{apply_scene_region_from_editor, present_frame, FrameDeps, FrameOutcome};
+use crate::redraw::{
+    route_scene_pointer, schedule_pointer_redraw, schedule_redraw, should_keep_redrawing,
+    viewport_splitter_cursor, PointerPhase, RedrawKind,
+};
 use crate::win_shell;
 
 pub struct StudioApp {
@@ -23,48 +28,49 @@ pub struct StudioApp {
     engine: Option<Engine>,
     editor: Option<Editor>,
     window: Option<winit::window::Window>,
-    interaction: EditorInteractionState,
-    session: EditorSession,
-    docs: Option<DocumentWebView>,
-    cursor_pos: Option<PhysicalPosition<f64>>,
+    state: HostState,
     on_resize_edge: bool,
+    cad_matrix: bool,
 }
 
 impl StudioApp {
-    pub fn new(graph: SceneGraph) -> Self {
+    pub fn new(graph: SceneGraph, cad_matrix: bool) -> Self {
         let prefs = crate::prefs::load();
         let mut session = EditorSession::default();
         session.ui_theme = prefs.theme;
         session.ui_locale = prefs.locale;
+        session.keymap = prefs.keymap.clone();
+        session.file_dialog_dir = prefs.last_folder.clone();
+        let mut pending = graph;
+        if let Some(path) = &prefs.last_document {
+            if let Ok(g) = rc3d_editor::document::load_native_scene(path) {
+                pending = g;
+                session.document_path = Some(path.clone());
+            }
+        }
         Self {
-            pending_graph: Some(graph),
+            pending_graph: Some(pending),
             engine: None,
             editor: None,
             window: None,
-            interaction: EditorInteractionState::default(),
-            session,
-            docs: None,
-            cursor_pos: None,
+            state: HostState {
+                interaction: EditorInteractionState::default(),
+                session,
+                cursor_pos: None,
+                recent: prefs.recent,
+                last_autosave: std::time::Instant::now(),
+                last_prefs_save: std::time::Instant::now(),
+                pending_redraw: RedrawKind::Full,
+                scene_presented: false,
+                last_ui_pointer_redraw: std::time::Instant::now(),
+                active_case: None,
+                docks_resizing: false,
+                viewport_split_resizing: false,
+            },
             on_resize_edge: false,
+            cad_matrix,
         }
     }
-}
-
-fn sync_surface_to_window(
-    engine: &mut Engine,
-    editor: &mut Editor,
-    window: &winit::window::Window,
-) -> bool {
-    let size = window.inner_size();
-    if size.width < 2 || size.height < 2 {
-        return false;
-    }
-    let (ew, eh) = engine.input.window_size;
-    if ew != size.width || eh != size.height {
-        engine.resize(size.width, size.height);
-        editor.resize(size.width, size.height, window.scale_factor() as f32);
-    }
-    true
 }
 
 impl ApplicationHandler for StudioApp {
@@ -81,16 +87,47 @@ impl ApplicationHandler for StudioApp {
         engine.load_scene(graph);
         engine.controller = CameraController::new(rc3d_core::math::Vec3::ZERO, 10.0);
         engine.set_display_mode(DisplayMode::Shaded);
-        if let Some(r) = engine.renderer.as_mut() {
-            r.set_hud_enabled(false);
-        }
+        engine.add_overlay_viewport(rc3d_editor::ui::nav_cube::nav_cube_overlay());
         let mut editor = Editor::new(&window, &engine);
         editor.enable_studio_shell("rustcoin3d Studio");
-        let docs = DocumentWebView::new(&window);
+        {
+            let p = crate::prefs::load();
+            let chrome = editor.chrome_mut();
+            chrome.side_tab = p.side_tab;
+            chrome.bottom_tab = p.bottom_tab;
+            chrome.workspace = p.workspace;
+            chrome.tool_strip_pos = p.tool_strip_pos;
+            chrome.side_dock_width = p.side_dock_width;
+            chrome.bottom_dock_height = p.bottom_dock_height;
+            chrome.inspector_ratio = p.inspector_ratio;
+            engine
+                .viewport_layout_mut()
+                .set_quad_splits(p.viewport_h_split, p.viewport_v_split);
+            engine.set_layout_mode(p.viewport_layout_mode);
+        }
         self.engine = Some(engine);
         self.editor = Some(editor);
-        self.docs = Some(docs);
         self.window = Some(window);
+        if self.cad_matrix {
+            let engine = self.engine.as_mut().expect("engine");
+            let report = crate::cad_matrix::run(engine);
+            let path = std::path::Path::new("target/cad-matrix-report.txt");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            match std::fs::write(path, &report.text) {
+                Ok(()) => log::info!("CAD matrix report written to {}", path.display()),
+                Err(e) => log::error!("CAD matrix report write failed: {e}"),
+            }
+            for line in report.text.lines() {
+                if line.starts_with("FAIL") || line.starts_with("result:") {
+                    log::warn!("{line}");
+                } else {
+                    log::info!("{line}");
+                }
+            }
+            std::process::exit(if report.passed { 0 } else { 1 });
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -106,7 +143,7 @@ impl ApplicationHandler for StudioApp {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = &event {
-            self.cursor_pos = Some(*position);
+            self.state.cursor_pos = Some(*position);
             if let Some(dir) = win_shell::resize_direction(
                 *position,
                 window.inner_size(),
@@ -126,7 +163,7 @@ impl ApplicationHandler for StudioApp {
             ..
         } = &event
         {
-            if let Some(pos) = self.cursor_pos {
+            if let Some(pos) = self.state.cursor_pos {
                 if let Some(dir) = win_shell::resize_direction(
                     pos,
                     window.inner_size(),
@@ -158,82 +195,35 @@ impl ApplicationHandler for StudioApp {
                 | WindowEvent::RedrawRequested
         );
         if egui_consumed && !is_pointer && !keep_for_host {
+            schedule_redraw(&mut self.state, window, RedrawKind::UiOnly);
             return;
         }
         match event {
             WindowEvent::RedrawRequested => {
-                if !sync_surface_to_window(engine, editor, window) {
-                    window.request_redraw();
+                let outcome = present_frame(
+                    FrameDeps {
+                        engine,
+                        editor,
+                        window,
+                        event_loop,
+                    },
+                    &mut self.state,
+                );
+                if outcome == FrameOutcome::EarlyReturn {
                     return;
                 }
-                for cmd in editor.take_commands() {
-                    let persist = matches!(
-                        cmd,
-                        EditorCommand::SetUiTheme(_) | EditorCommand::SetUiLocale(_)
-                    );
-                    apply_command(engine, &mut self.interaction, &mut self.session, cmd);
-                    if persist {
-                        crate::prefs::save(self.session.ui_theme, self.session.ui_locale);
-                    }
+                if should_keep_redrawing(engine, &self.state.interaction, editor) {
+                    schedule_redraw(&mut self.state, window, RedrawKind::Full);
                 }
-                if editor.close_after_save() {
-                    if !self.session.dirty {
-                        event_loop.exit();
-                        return;
-                    }
-                    editor.clear_close_after_save();
-                }
-                editor.sync_document_chrome(self.session.window_title(), self.session.dirty);
-                let ui_ctx = ui_ctx::build_ui_ctx(engine, &self.session);
-                editor.set_window_maximized(window.is_maximized());
-                editor.render(window, engine, &ui_ctx);
-                match editor.take_caption_action() {
-                    Some(CaptionAction::Close) => {
-                        event_loop.exit();
-                        return;
-                    }
-                    Some(CaptionAction::Minimize) => {
-                        window.set_minimized(true);
-                        window.request_redraw();
-                        return;
-                    }
-                    Some(CaptionAction::ToggleMaximize) => {
-                        window.set_maximized(!window.is_maximized());
-                        let _ = sync_surface_to_window(engine, editor, window);
-                        window.request_redraw();
-                        return;
-                    }
-                    Some(CaptionAction::Drag) => {
-                        let _ = window.drag_window();
-                    }
-                    Some(CaptionAction::ShowSystemMenu) => {
-                        if let Some(pos) = self.cursor_pos {
-                            window.show_window_menu(pos);
-                        }
-                    }
-                    None => {}
-                }
-                if let Some(r) = editor.scene_pixel_rect() {
-                    engine.apply_scene_region(ViewportRect {
-                        x: r.x,
-                        y: r.y,
-                        width: r.width,
-                        height: r.height,
-                    });
-                }
-                if let Some(docs) = self.docs.as_ref() {
-                    docs.sync(editor.document_pixel_rect(), editor.document_html_visible());
-                }
-                interaction::sync_section_overlay(engine, &self.interaction);
-                let device = engine.wgpu_device().clone();
-                let queue = engine.wgpu_queue().clone();
-                engine.render_with_overlay(Some(&mut |enc, view| {
-                    editor.paint(&device, &queue, enc, view);
-                }));
-                window.request_redraw();
             }
             WindowEvent::CloseRequested => {
-                if self.session.dirty {
+                host_cmds::save_prefs(
+                    &self.state.session,
+                    editor,
+                    engine,
+                    &self.state.recent,
+                );
+                if self.state.session.dirty {
                     editor.request_close_prompt();
                 } else {
                     event_loop.exit();
@@ -244,6 +234,8 @@ impl ApplicationHandler for StudioApp {
                     engine.resize(size.width, size.height);
                     editor.resize(size.width, size.height, window.scale_factor() as f32);
                 }
+                self.state.scene_presented = false;
+                schedule_redraw(&mut self.state, window, RedrawKind::Full);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 let size = window.inner_size();
@@ -251,73 +243,128 @@ impl ApplicationHandler for StudioApp {
                     engine.resize(size.width, size.height);
                     editor.resize(size.width, size.height, window.scale_factor() as f32);
                 }
+                self.state.scene_presented = false;
+                schedule_redraw(&mut self.state, window, RedrawKind::Full);
             }
             WindowEvent::CursorMoved { .. } => {
                 if self.on_resize_edge {
                     return;
                 }
                 engine.feed_input(&event);
-                if !route_scene_pointer(engine, editor, &self.interaction, PointerPhase::Move) {
-                    return;
+                apply_scene_region_from_editor(engine, editor);
+                if route_scene_pointer(engine, editor, &self.state.interaction, PointerPhase::Move)
+                {
+                    let input = engine.input;
+                    let cmds = {
+                        let mut ctx = EditorContext::with_interaction(
+                            engine,
+                            std::mem::take(&mut self.state.interaction),
+                        );
+                        interaction::on_cursor_moved(&mut ctx, window, &input);
+                        let cmds = std::mem::take(&mut ctx.commands);
+                        self.state.interaction = ctx.interaction;
+                        cmds
+                    };
+                    for cmd in cmds {
+                        apply_command(
+                            engine,
+                            &mut self.state.interaction,
+                            &mut self.state.session,
+                            cmd,
+                        );
+                    }
+                    engine.dispatch_routed_event(&event, EventRouteOpts::editor());
+                } else if self.state.interaction.view_split_drag.is_none() {
+                    self.state.interaction.view_split_hover = None;
                 }
-                let input = engine.input;
-                let cmds = {
-                    let mut ctx = EditorContext::with_interaction(
-                        engine,
-                        std::mem::take(&mut self.interaction),
-                    );
-                    interaction::on_cursor_moved(&mut ctx, window, &input);
-                    let cmds = std::mem::take(&mut ctx.commands);
-                    self.interaction = ctx.interaction;
-                    cmds
-                };
-                for cmd in cmds {
-                    apply_command(engine, &mut self.interaction, &mut self.session, cmd);
+                if let Some(cursor) = viewport_splitter_cursor(
+                    self.state
+                        .interaction
+                        .view_split_drag
+                        .or(self.state.interaction.view_split_hover),
+                ) {
+                    window.set_cursor(cursor);
+                } else {
+                    window.set_cursor(CursorIcon::Default);
                 }
-                engine.dispatch_routed_event(&event, EventRouteOpts::editor());
+                schedule_pointer_redraw(
+                    &mut self.state,
+                    window,
+                    engine,
+                    editor,
+                    PointerPhase::Move,
+                    true,
+                );
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                engine.feed_input(&event);
+                apply_scene_region_from_editor(engine, editor);
                 let phase = match state {
                     ElementState::Pressed => PointerPhase::Press,
                     ElementState::Released => PointerPhase::Release,
                 };
-                if !route_scene_pointer(engine, editor, &self.interaction, phase) {
-                    return;
-                }
-                engine.feed_input(&event);
-                let input = engine.input;
-                if button == MouseButton::Left {
-                    let cmds = {
-                        let mut ctx = EditorContext::with_interaction(
-                            engine,
-                            std::mem::take(&mut self.interaction),
-                        );
-                        match state {
-                            ElementState::Pressed => {
-                                interaction::on_left_down(&mut ctx, window, &input, true);
+                if route_scene_pointer(engine, editor, &self.state.interaction, phase) {
+                    let input = engine.input;
+                    if button == MouseButton::Left {
+                        let cmds = {
+                            let mut ctx = EditorContext::with_interaction(
+                                engine,
+                                std::mem::take(&mut self.state.interaction),
+                            );
+                            match state {
+                                ElementState::Pressed => {
+                                    interaction::on_left_down(&mut ctx, window, &input, true);
+                                }
+                                ElementState::Released => {
+                                    interaction::on_left_up(&mut ctx, window, &input, true);
+                                }
                             }
-                            ElementState::Released => {
-                                interaction::on_left_up(&mut ctx, window, &input, true);
-                            }
+                            let cmds = std::mem::take(&mut ctx.commands);
+                            self.state.interaction = ctx.interaction;
+                            cmds
+                        };
+                        for cmd in cmds {
+                            apply_command(
+                                engine,
+                                &mut self.state.interaction,
+                                &mut self.state.session,
+                                cmd,
+                            );
                         }
-                        let cmds = std::mem::take(&mut ctx.commands);
-                        self.interaction = ctx.interaction;
-                        cmds
-                    };
-                    for cmd in cmds {
-                        apply_command(engine, &mut self.interaction, &mut self.session, cmd);
                     }
+                    engine.dispatch_routed_event(&event, EventRouteOpts::editor());
                 }
-                engine.dispatch_routed_event(&event, EventRouteOpts::editor());
+                schedule_pointer_redraw(
+                    &mut self.state,
+                    window,
+                    engine,
+                    editor,
+                    phase,
+                    false,
+                );
             }
             WindowEvent::MouseWheel { .. } => {
-                if !route_scene_pointer(engine, editor, &self.interaction, PointerPhase::Wheel) {
-                    return;
+                apply_scene_region_from_editor(engine, editor);
+                if route_scene_pointer(
+                    engine,
+                    editor,
+                    &self.state.interaction,
+                    PointerPhase::Wheel,
+                ) {
+                    engine.handle_window_event(&event, EventRouteOpts::editor());
                 }
-                engine.handle_window_event(&event, EventRouteOpts::editor());
+                schedule_pointer_redraw(
+                    &mut self.state,
+                    window,
+                    engine,
+                    editor,
+                    PointerPhase::Wheel,
+                    false,
+                );
             }
             WindowEvent::ModifiersChanged(_) => {
                 engine.feed_input(&event);
+                schedule_redraw(&mut self.state, window, RedrawKind::UiOnly);
             }
             WindowEvent::KeyboardInput {
                 event: ref key, ..
@@ -330,151 +377,19 @@ impl ApplicationHandler for StudioApp {
                         camera: false,
                     },
                 );
-                let ctrl = engine.input.ctrl_pressed;
-                let shift = engine.input.shift_pressed;
-                match key.physical_key {
-                    PhysicalKey::Code(KeyCode::KeyN) if ctrl => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::NewScene,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyO) if ctrl => {
-                        if let Some(path) = rc3d_editor::pick_open_scene() {
-                            apply_command(
-                                engine,
-                                &mut self.interaction,
-                                &mut self.session,
-                                EditorCommand::OpenScene(path),
-                            );
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS) if ctrl && shift => {
-                        if let Some(path) = rc3d_editor::pick_save_scene() {
-                            apply_command(
-                                engine,
-                                &mut self.interaction,
-                                &mut self.session,
-                                EditorCommand::SaveSceneAs(path),
-                            );
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS) if ctrl => {
-                        if self.session.document_path.is_some() {
-                            apply_command(
-                                engine,
-                                &mut self.interaction,
-                                &mut self.session,
-                                EditorCommand::SaveScene,
-                            );
-                        } else if let Some(path) = rc3d_editor::pick_save_scene() {
-                            apply_command(
-                                engine,
-                                &mut self.interaction,
-                                &mut self.session,
-                                EditorCommand::SaveSceneAs(path),
-                            );
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::KeyZ) if ctrl => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::Undo,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyY) if ctrl => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::Redo,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyT) => engine.set_gizmo_mode(GizmoMode::Translate),
-                    PhysicalKey::Code(KeyCode::KeyR) => engine.set_gizmo_mode(GizmoMode::Rotate),
-                    PhysicalKey::Code(KeyCode::KeyG) => engine.set_gizmo_mode(GizmoMode::Scale),
-                    PhysicalKey::Code(KeyCode::KeyP) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::ToggleSectionEdit,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyF) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::FitSelection,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyW) if !ctrl => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::SetDisplayMode(
-                                rc3d_editor::EditorDisplayMode::Wireframe,
-                            ),
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS) if !ctrl => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::SetDisplayMode(rc3d_editor::EditorDisplayMode::Shaded),
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyE) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::SetDisplayMode(
-                                rc3d_editor::EditorDisplayMode::ShadedWithEdges,
-                            ),
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyH) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::SetDisplayMode(
-                                rc3d_editor::EditorDisplayMode::HiddenLine,
-                            ),
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyL) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::SetDisplayMode(
-                                rc3d_editor::EditorDisplayMode::FlatWithEdge,
-                            ),
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::KeyI) => {
-                        apply_command(
-                            engine,
-                            &mut self.interaction,
-                            &mut self.session,
-                            EditorCommand::CycleIbl,
-                        );
-                    }
-                    PhysicalKey::Code(KeyCode::Escape) => {
-                        engine.world.graph.clear_selection();
-                        sync_gizmo_from_selection(&mut engine.gizmo, &engine.world.graph);
-                    }
-                    _ => {}
+                if let PhysicalKey::Code(code) = key.physical_key {
+                    host_cmds::dispatch_key(
+                        engine,
+                        editor,
+                        &mut self.state.interaction,
+                        &mut self.state.session,
+                        &mut self.state.recent,
+                        &mut self.state.active_case,
+                        code,
+                    );
                 }
+                // Keys apply commands immediately (not via editor queue) — Full until that path is unified.
+                schedule_redraw(&mut self.state, window, RedrawKind::Full);
             }
             _ => {
                 engine.handle_window_event(&event, EventRouteOpts::editor());
@@ -483,50 +398,23 @@ impl ApplicationHandler for StudioApp {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if let (Some(engine), Some(editor)) =
+            (self.engine.as_mut(), self.editor.as_mut())
+        {
+            host_cmds::maybe_autosave(engine, &self.state.session, &mut self.state.last_autosave);
+            host_cmds::maybe_prefs(
+                &self.state.session,
+                editor,
+                engine,
+                &self.state.recent,
+                &mut self.state.last_prefs_save,
+            );
+            if should_keep_redrawing(engine, &self.state.interaction, editor) {
+                if let Some(window) = self.window.as_ref() {
+                    schedule_redraw(&mut self.state, window, RedrawKind::Full);
+                }
+            }
         }
     }
 }
 
-#[derive(Clone, Copy)]
-enum PointerPhase {
-    Move,
-    Press,
-    Release,
-    Wheel,
-}
-
-fn scene_pointer_captured(engine: &Engine, interaction: &EditorInteractionState) -> bool {
-    let c = &engine.controller;
-    c.middle_orbit_held
-        || c.left_orbit_held
-        || c.panning
-        || interaction.gizmo_dragging
-        || interaction.box_select_drag
-        || interaction.lasso_drag
-        || interaction.section_drag.is_some()
-        || interaction.view_split_drag.is_some()
-        || !interaction.markup.click_points.is_empty()
-}
-
-fn route_scene_pointer(
-    engine: &Engine,
-    editor: &rc3d_editor::Editor,
-    interaction: &EditorInteractionState,
-    phase: PointerPhase,
-) -> bool {
-    let captured = scene_pointer_captured(engine, interaction);
-    let (px, py) = (
-        engine.input.cursor_pos.0 as f32,
-        engine.input.cursor_pos.1 as f32,
-    );
-    if editor.nav_cube_blocks_scene_pointer(px, py) && !captured {
-        return false;
-    }
-    let in_scene = engine.pointer_in_scene_region();
-    match phase {
-        PointerPhase::Wheel | PointerPhase::Press => in_scene,
-        PointerPhase::Move | PointerPhase::Release => in_scene || captured,
-    }
-}

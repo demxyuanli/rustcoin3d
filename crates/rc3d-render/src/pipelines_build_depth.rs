@@ -242,25 +242,22 @@ pub(super) fn build_depth_mode_pipelines(
             })],
             compilation_options: Default::default(),
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::LineList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            depth_write_enabled: Some(false),
-            depth_compare: Some(depth_cmp_overlay),
-            bias: wgpu::DepthBiasState {
-                constant: 24,
-                slope_scale: 3.0,
-                clamp: 0.0,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
             },
-            ..depth_stencil.clone()
-        }),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                depth_write_enabled: Some(false),
+                depth_compare: Some(depth_cmp_overlay),
+                // wgpu 30 rejects depth bias on LineList; overlay uses LessEqual/GreaterEqual instead.
+                bias: wgpu::DepthBiasState::default(),
+                ..depth_stencil.clone()
+            }),
         multisample: ms,
         multiview_mask: None,
         cache: None,

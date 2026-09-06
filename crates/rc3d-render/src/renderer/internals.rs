@@ -62,7 +62,6 @@ pub struct TierConfig {
     pub motion_blur: bool,
     pub ssao: bool,
     pub taa: bool,
-    #[allow(dead_code)]
     pub fxaa: bool,
     pub color_grading: bool,
     pub ssr: bool,
@@ -86,13 +85,13 @@ impl TierConfig {
             },
             CadDisplayTier::IndustrialDisplay => Self {
                 flat_shading: false, shadows: true,  edges: false, motion_blur: false,
-                ssao: false, taa: false, fxaa: false, color_grading: false,
+                ssao: true, taa: true, fxaa: false, color_grading: true,
                 ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
             },
             CadDisplayTier::ProductRendering => Self {
                 flat_shading: false, shadows: true,  edges: false, motion_blur: false,
-                ssao: false, taa: false, fxaa: false, color_grading: false,
-                ssr: false, volumetric_fog: false, dof: false, hdr_post: true,
+                ssao: true, taa: true, fxaa: false, color_grading: true,
+                ssr: true, volumetric_fog: true, dof: true, hdr_post: true,
             },
         }
     }
@@ -153,6 +152,7 @@ pub(crate) struct FrameState {
     pub perf_mode_cooldown: u8,
     pub last_diagnostics: Option<FrameDiagnostics>,
     pub last_hud_update_frame: u64,
+    pub last_cad_hud: String,
     pub viewport_layout: ViewportLayout,
     #[allow(dead_code)]
     pub frame_stats: FrameStats,
@@ -268,6 +268,11 @@ pub(crate) struct GpuInternals {
     pub selection_outline_targets: Option<crate::selection_outline::SelectionOutlineTargets>,
     pub ldr_shade_tex: Option<wgpu::Texture>,
     pub ldr_shade_view: Option<wgpu::TextureView>,
+    /// Last scene film (pre-egui) for UiOnly frames.
+    pub ui_retain_tex: Option<wgpu::Texture>,
+    pub ui_retain_view: Option<wgpu::TextureView>,
+    /// Bind group sampling `ui_retain_view` (rebuilt with the retain texture).
+    pub ui_retain_blit_bg: Option<wgpu::BindGroup>,
     /// Intermediate HDR texture for dynamic resolution scaling during interaction.
     pub interaction_downscale_tex: Option<wgpu::Texture>,
     pub interaction_downscale_view: Option<wgpu::TextureView>,
@@ -285,6 +290,11 @@ pub(crate) struct GpuInternals {
     pub upscale_pipeline: Option<wgpu::RenderPipeline>,
     pub upscale_bgl: Option<wgpu::BindGroupLayout>,
     pub upscale_sampler: Option<wgpu::Sampler>,
+    /// Alpha-aware blit for transparent overlay tiles (nav cube, etc.).
+    pub overlay_blit_pipeline: Option<wgpu::RenderPipeline>,
+    pub overlay_blit_bgl: Option<wgpu::BindGroupLayout>,
+    pub overlay_blit_sampler: Option<wgpu::Sampler>,
+    pub overlay_depth_sampler: Option<wgpu::Sampler>,
     /// Red/cyan anaglyph composite (two full-size eye tiles).
     pub anaglyph_pipeline: Option<wgpu::RenderPipeline>,
     pub anaglyph_bgl: Option<wgpu::BindGroupLayout>,
@@ -325,8 +335,11 @@ pub(crate) struct GpuInternals {
     pub draw_bufs: DrawBatchBufs,
     /// Offscreen color tiles for the standard four-view pack (Front/Right/Top/Persp).
     pub quad_tiles: Vec<QuadViewTile>,
+    /// Offscreen color tiles for independent overlay worlds (nav cube, etc.).
+    pub overlay_tiles: Vec<QuadViewTile>,
     /// Dedicated WBOIT targets (not tied to HDR post-FX).
     pub wboit_targets: Option<WboitTargets>,
+    pub compositor: Option<crate::compositor::CompositorGpu>,
 }
 
 pub(crate) struct WboitTargets {
@@ -345,6 +358,9 @@ pub(crate) struct QuadViewTile {
     pub height: u32,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    /// Depth attachment used while rendering this tile (for transparent blit).
+    /// `(texture, depth+stencil view, depth-only sample view)`.
+    pub depth: Option<(wgpu::Texture, wgpu::TextureView, wgpu::TextureView)>,
 }
 
 pub(crate) struct DrawBatchBufs {

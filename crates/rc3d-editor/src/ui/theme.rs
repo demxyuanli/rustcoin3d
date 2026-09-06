@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Shadow, Stroke, Visuals};
+use egui::{
+    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Shadow, Stroke, Visuals,
+};
 
 pub const ICON_FONT: &str = "studio_icons";
 pub const TOOL_GLYPH: f32 = 16.0;
@@ -19,7 +21,6 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x60, 0xCD, 0xFF);
 pub const ACCENT_FILL: Color32 = Color32::from_rgb(0x00, 0x78, 0xD4);
 pub const STROKE: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 pub const CLOSE_HOVER: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
-pub const CAPTION_FILL: Color32 = LAYER;
 pub const HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 18);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -127,16 +128,45 @@ fn stroke(color: Color32) -> Stroke {
     Stroke::new(1.0_f32, color)
 }
 
+/// Opaque, zero-gap chrome around the 3D hole. No separator outer_margin,
+/// so the swapchain background cannot show between panels.
+pub fn chrome_panel_frame(pal: &ThemePalette, inner: egui::Margin) -> egui::Frame {
+    egui::Frame::NONE
+        .fill(pal.layer)
+        .inner_margin(inner)
+        .outer_margin(egui::Margin::ZERO)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::ZERO)
+        .shadow(Shadow::NONE)
+}
+
+/// Floating overlay over the 3D hole (tool strip). Radius and shadow are OK here.
+pub fn floating_overlay_frame(pal: &ThemePalette, inner: egui::Margin) -> egui::Frame {
+    let edge = if pal.dark {
+        Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x28)
+    } else {
+        Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x24)
+    };
+    let shadow = if pal.dark { 0x70 } else { 0x38 };
+    egui::Frame::NONE
+        .fill(pal.layer)
+        .inner_margin(inner)
+        .stroke(Stroke::new(1.0_f32, edge))
+        .corner_radius(CornerRadius::same(6))
+        .shadow(Shadow {
+            offset: [0, 2],
+            blur: 12,
+            spread: 0,
+            color: Color32::from_black_alpha(shadow),
+        })
+}
+
 fn overlay(dark: bool, alpha: u8) -> Color32 {
     if dark {
         Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, alpha)
     } else {
         Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, alpha)
     }
-}
-
-pub fn apply_fluent_dark(ctx: &egui::Context) {
-    apply_theme(ctx, UiTheme::Dark, true);
 }
 
 pub fn apply_theme(ctx: &egui::Context, theme: UiTheme, load_fonts: bool) {
@@ -200,10 +230,9 @@ fn install_fonts(ctx: &egui::Context) {
     let mut loaded = false;
 
     if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
-        fonts.font_data.insert(
-            "segoe_ui".to_owned(),
-            Arc::new(FontData::from_owned(bytes)),
-        );
+        fonts
+            .font_data
+            .insert("segoe_ui".to_owned(), Arc::new(FontData::from_owned(bytes)));
         if let Some(proportional) = fonts.families.get_mut(&FontFamily::Proportional) {
             proportional.insert(0, "segoe_ui".to_owned());
         }
@@ -239,10 +268,9 @@ fn install_fonts(ctx: &egui::Context) {
         r"C:\Windows\Fonts\segmdl2.ttf",
     ] {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert(
-                ICON_FONT.to_owned(),
-                Arc::new(FontData::from_owned(bytes)),
-            );
+            fonts
+                .font_data
+                .insert(ICON_FONT.to_owned(), Arc::new(FontData::from_owned(bytes)));
             fonts.families.insert(
                 FontFamily::Name(ICON_FONT.into()),
                 vec![ICON_FONT.to_owned()],

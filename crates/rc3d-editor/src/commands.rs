@@ -9,9 +9,9 @@ use rc3d_render::renderer::CadDisplayTier;
 use rc3d_render::viewport::LayoutMode;
 use rc3d_scene::node_data::MeasurementType;
 
-use crate::ui::types::{EditorDisplayMode, NodeDataType};
+use crate::ui::types::{EditorDisplayMode, NodeDataType, SelectKind};
 
-/// Editor-local adaptive quality mode (mirrors rc3d-app::adaptive_quality).
+/// Editor-local adaptive quality mode (mirrors Engine adaptive quality).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdaptiveQualityMode {
     Off,
@@ -27,6 +27,8 @@ pub enum EditorCommand {
     FitAll,
     ToggleMeasurement,
     ToggleSectionEdit,
+    SetSectionEdit(bool),
+    SetSelectKind(SelectKind),
     CycleIbl,
     CycleViewportLayout,
     CycleActiveViewport,
@@ -54,6 +56,15 @@ pub enum EditorCommand {
     },
     NewScene,
     OpenScene(PathBuf),
+    /// Load a Studio case-library demo by stable id (e.g. "pbr-ball").
+    LoadCase(String),
+    /// Update an active case parameter (id from CaseParamDef).
+    SetCaseParam {
+        id: String,
+        value: f32,
+    },
+    /// Run a case process step by index.
+    RunCaseStep(usize),
     SaveScene,
     SaveSceneAs(PathBuf),
     ImportPath(PathBuf),
@@ -112,7 +123,10 @@ pub enum EditorCommand {
     SetUiTheme(crate::ui::theme::UiTheme),
     SetUiLocale(crate::ui::i18n::UiLocale),
     SetViewFromDirection([f32; 3]),
-    OrbitView { dx: f32, dy: f32 },
+    OrbitView {
+        dx: f32,
+        dy: f32,
+    },
     SetGridEnabled(bool),
     SetHudEnabled(bool),
     SetVsyncEnabled(bool),
@@ -164,6 +178,37 @@ pub enum EditorCommand {
     ClearAllMarkup {
         node: NodeId,
     },
+    MeasurementPick {
+        world: [f32; 3],
+    },
+    CancelTool,
+    HideSelected,
+    IsolateSelected,
+    RevealHidden,
+    ToggleLockSelected,
+    ToggleLockNode(NodeId),
+    CycleDisplayMode,
+    HistoryJump {
+        undo_len: usize,
+    },
+    BindKey {
+        action: crate::keymap::KeyAction,
+        chord: crate::keymap::KeyChord,
+    },
+}
+
+impl EditorCommand {
+    /// False for chrome/tool-mode changes that do not require a Full PBR frame.
+    pub fn needs_scene_redraw(&self) -> bool {
+        !matches!(
+            self,
+            Self::SetUiTheme(_)
+                | Self::SetUiLocale(_)
+                | Self::BindKey { .. }
+                | Self::SetSelectKind(_)
+                | Self::SetMarkupTool(_)
+        )
+    }
 }
 
 #[cfg(test)]

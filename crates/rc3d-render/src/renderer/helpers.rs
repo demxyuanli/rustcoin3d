@@ -370,7 +370,7 @@ impl Renderer {
         });
         if need_new {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("LDR shade (FXAA source)"),
+                label: Some("LDR shade film"),
                 size: wgpu::Extent3d {
                     width: w,
                     height: h,
@@ -389,5 +389,202 @@ impl Renderer {
             self.gpu.ldr_shade_tex = Some(texture);
             self.gpu.ldr_shade_view = Some(view);
         }
+    }
+
+    /// Full-size RGBA retain of the last scene film (pre-egui) for UI-only redraws.
+    pub(crate) fn ensure_ui_retain_target(&mut self) {
+        let w = self.config.width.max(1);
+        let h = self.config.height.max(1);
+        let fmt = self.config.format;
+        let need_new = self.gpu.ui_retain_tex.as_ref().map_or(true, |t| {
+            let s = t.size();
+            s.width != w || s.height != h || t.format() != fmt
+        });
+        if !need_new {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("UI retain frame"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let blit_bg = self.gpu.upscale_bgl.as_ref().and_then(|bgl| {
+            let sampler = self.gpu.upscale_sampler.as_ref()?;
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("UI retain blit"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }))
+        });
+        self.gpu.ui_retain_tex = Some(texture);
+        self.gpu.ui_retain_view = Some(view);
+        self.gpu.ui_retain_blit_bg = blit_bg;
+    }
+
+    /// Blit retained scene film to a swapchain view. Returns false if blit resources are missing.
+    pub(crate) fn blit_ui_retain_to_view(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        dst_view: &wgpu::TextureView,
+    ) -> bool {
+        let Some(pipeline) = self.gpu.upscale_pipeline.as_ref() else {
+            return false;
+        };
+        let Some(bind_group) = self.gpu.ui_retain_blit_bg.as_ref() else {
+            return false;
+        };
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blit UI retain"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: dst_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        true
+    }
+
+    /// Blit a source texture view to a target via the upscale pipeline.
+    pub(crate) fn blit_texture_view_to_target(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src_view: &wgpu::TextureView,
+        dst_view: &wgpu::TextureView,
+    ) -> bool {
+        let Some(pipeline) = self.gpu.upscale_pipeline.as_ref() else {
+            return false;
+        };
+        let Some(bgl) = self.gpu.upscale_bgl.as_ref() else {
+            return false;
+        };
+        let Some(sampler) = self.gpu.upscale_sampler.as_ref() else {
+            return false;
+        };
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fullscreen blit"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Fullscreen blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: dst_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        true
+    }
+
+    pub(crate) fn copy_texture_full(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+        dst: &wgpu::Texture,
+    ) {
+        let w = src.width().min(dst.width());
+        let h = src.height().min(dst.height());
+        if w == 0 || h == 0 {
+            return;
+        }
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: src,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: dst,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// Snapshot the scene film (must be called before egui) into the UI retain buffer.
+    pub(crate) fn capture_ui_retain(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+    ) {
+        self.ensure_ui_retain_target();
+        if let Some(dst) = self.gpu.ui_retain_tex.as_ref() {
+            self.copy_texture_full(encoder, src, dst);
+        }
+    }
+
+    pub fn has_ui_retain(&self) -> bool {
+        self.gpu.ui_retain_tex.is_some()
     }
 }

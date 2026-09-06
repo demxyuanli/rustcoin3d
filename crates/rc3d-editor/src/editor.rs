@@ -24,18 +24,20 @@ impl Editor {
     }
 
     /// Build egui UI for this frame. Call this each frame before `paint()`.
+    /// Returns `true` when egui needs another immediate redraw (menus/popups).
     pub fn render(
         &mut self,
         window: &winit::window::Window,
         engine: &rc3d_engine_api::Engine,
         ui_ctx: &crate::ui::types::EditorUiContext,
-    ) {
-        self.ui
-            .render(window, engine.scene(), engine, ui_ctx);
+    ) -> bool {
+        self.ui.render(window, engine.scene(), engine, ui_ctx)
     }
 
     /// Collect editor commands queued during the last `render()` call.
-    pub fn take_commands(&mut self) -> std::collections::vec_deque::IntoIter<crate::commands::EditorCommand> {
+    pub fn take_commands(
+        &mut self,
+    ) -> std::collections::vec_deque::IntoIter<crate::commands::EditorCommand> {
         self.ui.take_commands()
     }
 
@@ -55,26 +57,8 @@ impl Editor {
         self.ui.resize(width, height, scale_factor);
     }
 
-    /// Push a log message to the console panel.
-    pub fn push_log(&mut self, msg: &str) {
-        self.ui.push_log(msg);
-    }
-
-    /// Toggle the console panel visibility.
-    pub fn toggle_console(&mut self) {
-        self.ui.toggle_console();
-    }
-
     pub fn scene_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
         self.ui.scene_pixel_rect()
-    }
-
-    pub fn document_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
-        self.ui.document_pixel_rect()
-    }
-
-    pub fn document_html_visible(&self) -> bool {
-        self.ui.document_html_visible()
     }
 
     pub fn document_open(&self) -> bool {
@@ -83,6 +67,22 @@ impl Editor {
 
     pub fn nav_cube_blocks_scene_pointer(&self, px: f32, py: f32) -> bool {
         self.ui.nav_cube_blocks_scene_pointer(px, py)
+    }
+
+    pub fn nav_cube_hover_slot(&self) -> Option<u32> {
+        self.ui.nav_cube_hover_slot()
+    }
+
+    pub fn egui_blocks_scene_pointer(&self) -> bool {
+        self.ui.egui_blocks_scene_pointer()
+    }
+
+    pub fn compositor_open(&self) -> bool {
+        self.ui.compositor_open()
+    }
+
+    pub fn compositor_graph(&self) -> &rc3d_render::CompositorGraph {
+        self.ui.compositor_graph()
     }
 
     /// Frameless caption + Fluent dark visuals. Used by the studio host only.
@@ -112,5 +112,13 @@ impl Editor {
 
     pub fn request_close_prompt(&mut self) {
         self.ui.request_close_prompt();
+    }
+
+    pub fn chrome_mut(&mut self) -> &mut crate::ui::types::EditorChromeState {
+        self.ui.chrome_mut()
+    }
+
+    pub fn chrome(&self) -> &crate::ui::types::EditorChromeState {
+        self.ui.chrome()
     }
 }

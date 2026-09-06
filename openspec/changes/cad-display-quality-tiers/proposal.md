@@ -23,6 +23,6 @@ CAD model visualization requires different rendering quality levels for differen
 - `crates/rc3d-render/src/renderer.rs` — new `CadDisplayTier` enum, tier config struct, interaction degrade/recover logic
 - `crates/rc3d-render/src/render_passes.rs` — gate passes on tier instead of individual feature flags
 - `crates/rc3d-render/src/renderer_internals.rs` — store tier in GpuInternals
-- `crates/rc3d-app/src/app/event_handler.rs` — wire interaction state to tier degrade
+- `crates/rc3d-studio/src/app.rs` — wire interaction state to tier degrade
 - No shader changes required
 - Backward compatible: default tier maps to current behavior

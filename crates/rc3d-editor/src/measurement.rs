@@ -1,19 +1,28 @@
-use rc3d_actions::Ray;
-use rc3d_core::math::Mat4;
+use rc3d_actions::{MeasurementAction, MeasurementMode, Ray};
+use rc3d_core::math::Vec3;
+use rc3d_scene::node_data::MeasurementType;
 
-#[allow(dead_code)]
-pub fn build_pick_ray(
-    cursor_pos: (f64, f64),
-    window_size: (u32, u32),
-    camera_view: Mat4,
-    camera_proj: Mat4,
-) -> Ray {
-    Ray::from_screen_point(
-        cursor_pos.0 as f32,
-        cursor_pos.1 as f32,
-        window_size.0 as f32,
-        window_size.1 as f32,
-        camera_view,
-        camera_proj,
-    )
+pub fn mode_for(ty: MeasurementType) -> MeasurementMode {
+    match ty {
+        MeasurementType::Distance => MeasurementMode::Distance,
+        MeasurementType::Angle => MeasurementMode::Angle,
+        MeasurementType::Radius => MeasurementMode::Radius,
+        MeasurementType::Diameter => MeasurementMode::Diameter,
+    }
+}
+
+pub fn action_for(ty: MeasurementType) -> MeasurementAction {
+    MeasurementAction::new(mode_for(ty))
+}
+
+pub fn ground_hit(ray: &Ray) -> Option<Vec3> {
+    if ray.direction.y.abs() < 1e-6 {
+        return None;
+    }
+    let t = -ray.origin.y / ray.direction.y;
+    if t > 1e-3 {
+        Some(ray.origin + ray.direction * t)
+    } else {
+        None
+    }
 }

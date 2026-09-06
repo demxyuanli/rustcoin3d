@@ -218,11 +218,20 @@ pub struct Text3Node {
     pub position: Vec3,
     pub size: f32,
     pub color: [f32; 4],
+    /// When true, the label lies on the parent transform XY plane instead of billboarding.
+    #[serde(default)]
+    pub plane_aligned: bool,
 }
 
 impl Default for Text3Node {
     fn default() -> Self {
-        Self { string: String::new(), position: Vec3::ZERO, size: 16.0, color: [1.0, 1.0, 1.0, 1.0] }
+        Self {
+            string: String::new(),
+            position: Vec3::ZERO,
+            size: 16.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            plane_aligned: false,
+        }
     }
 }
 
@@ -256,7 +265,7 @@ impl Default for FontNode {
 }
 
 /// Central node type enum.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeasurementType {
     Distance,
     Angle,

@@ -5,6 +5,7 @@ pub mod dirty_flags;
 pub mod auto_exposure;
 pub mod async_loader;
 pub mod background;
+pub mod compositor;
 pub mod cluster;
 pub mod cluster_lighting;
 pub mod cluster_tree;
@@ -79,6 +80,10 @@ pub use taa::{TaaJitter, TaaPass};
 pub use frustum::Frustum;
 pub use gpu_resource::{EdgeLineKind, GpuResourceManager, GpuUniformPool, MeshId};
 pub use cluster_lighting::{ClusterLightCuller, ClusterLightResources, GpuPointLight, GpuSpotLight};
+pub use compositor::{
+    CadLook, CompEdge, CompMenuGroup, CompNode, CompNodeId, CompOp, CompositorGraph, MathOp,
+    MixBlend,
+};
 pub use color_grading::ColorGradingPass;
 pub use dof_pass::DofPass;
 pub use material_library::{MaterialId, MaterialLibrary};

@@ -7,6 +7,16 @@ pub enum MeasurementMode {
     Distance,
     Angle,
     Radius,
+    Diameter,
+}
+
+impl MeasurementMode {
+    pub fn points_needed(self) -> usize {
+        match self {
+            MeasurementMode::Angle => 3,
+            MeasurementMode::Distance | MeasurementMode::Radius | MeasurementMode::Diameter => 2,
+        }
+    }
 }
 
 pub struct MeasurementAction {
@@ -52,6 +62,10 @@ impl MeasurementAction {
                 let r = self.points[0].distance(self.points[1]);
                 (2, r, format!("R={:.2} m", r))
             }
+            MeasurementMode::Diameter if self.points.len() >= 2 => {
+                let d = self.points[0].distance(self.points[1]);
+                (2, d, format!("D={:.2} m", d))
+            }
             _ => return false,
         };
         self.value = value;
@@ -80,8 +94,8 @@ impl MeasurementAction {
     /// Persistent 3D annotation from completed measurement picks (world space).
     pub fn build_annotation_set(&self) -> Option<rc3d_scene::node_data::AnnotationSetNode> {
         use rc3d_scene::annotation::{
-            world_angle_annotation, world_distance_annotation, world_radius_annotation,
-            AnnotationStyle,
+            world_angle_annotation, world_diameter_annotation, world_distance_annotation,
+            world_radius_annotation, AnnotationStyle,
         };
         if !self.completed {
             return None;
@@ -98,6 +112,9 @@ impl MeasurementAction {
             MeasurementMode::Radius if self.points.len() >= 2 => {
                 world_radius_annotation(self.points[0], self.points[1], color, style)
             }
+            MeasurementMode::Diameter if self.points.len() >= 2 => {
+                world_diameter_annotation(self.points[0], self.points[1], color, style)
+            }
             _ => return None,
         })
     }
@@ -109,5 +126,9 @@ impl MeasurementAction {
         let ann = graph.add_child(parent, NodeData::Annotation(AnnotationNode));
         let set_id = graph.add_child(ann, NodeData::AnnotationSet(set));
         Some(set_id)
+    }
+
+    pub fn points_needed(&self) -> usize {
+        self.mode.points_needed()
     }
 }

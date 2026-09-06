@@ -188,7 +188,7 @@ SoEngine                          rc3d-engine：28 种（Gate/Decompose/Concaten
 | 问题 | 说明 |
 |------|------|
 | **缺少标准动画 FBX 资产** | `test_data` 无 FBX；`cache/generated_models/test_cube.fbx` 为静态立方体，无法验证蒙皮变形与时间轴。 |
-| **`import_viewer` / `render_features` 冒烟** | 自动化后台运行会因编译耗时、窗口事件循环或手动结束进程得到**非零退出码**，不能视为崩溃结论；真实验收需本机前台跑：``cargo run -p rc3d-app --example import_viewer -- <路径>.fbx`` 等。 |
+| **`import_viewer` / `render_features` 冒烟** | 自动化后台运行会因编译耗时、窗口事件循环或手动结束进程得到**非零退出码**，不能视为崩溃结论；真实验收需本机前台跑：``cargo run -p rc3d-examples --example import_viewer -- <路径>.fbx`` 等。 |
 | **阴影 + 蒙皮** | CSM 与蒙皮网格同一帧路径上已接 compute 预处理，但需在**带纹理/多部位动画**的模型上目视确认无撕裂、无错影。 |
 | **部分关节有关键帧** | `AnimationClip::sample_all` 已对**无曲线关节**回退到 `Joint::bind_transform`；若姿势仍异常，需再查 FBX bind/rest 与 `Skeleton::new` 对逆绑定的处理，属数据/解析层而非单一采样技巧。 |
 

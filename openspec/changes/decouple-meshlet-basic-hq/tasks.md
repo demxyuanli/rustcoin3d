@@ -25,6 +25,6 @@
 
 - [x] 5.1 `cargo check --workspace` — 0 errors
 - [x] 5.2 `cargo test` — 250 passed, 4 ignored
-- [ ] 5.3 `cargo build -p rc3d-app --examples` — blocked by pre-existing `subdivide_quad_screen` error in app crate
+- [ ] 5.3 `cargo build -p rc3d-examples --examples` — blocked by pre-existing `subdivide_quad_screen` error in app crate
 - [x] 5.4 Manual test with Car engine.stl: all display modes render correctly, no artifacts
 - [ ] 5.5 Manual test with small STL (no meshlet data): regression check

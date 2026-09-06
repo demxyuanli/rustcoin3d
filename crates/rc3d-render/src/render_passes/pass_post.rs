@@ -186,16 +186,36 @@ pub(super) fn encode_post_processing(
         }
 
         // Bloom prefilter (compute dispatch: read HDR, write half-res bloom)
-        let ti = renderer.gpu_timer.begin(encoder, "PP Bloom");
-        pass_bloom_prefilter(&renderer.device, encoder, pl, fx);
-        renderer.gpu_timer.end(encoder, ti);
+        if renderer.enable_bloom {
+            let ti = renderer.gpu_timer.begin(encoder, "PP Bloom");
+            pass_bloom_prefilter(&renderer.device, encoder, pl, fx);
+            renderer.gpu_timer.end(encoder, ti);
+        }
         // SSAO (read depth, write AO) + blur
-        let ti = renderer.gpu_timer.begin(encoder, "PP SSAO");
-        pass_ssao(&renderer.device, encoder, pl, fx,
-            depth_read_view, &renderer.gpu.ssao_noise_view, &proj, &inv_proj);
-        // SSAO blur (read AO + depth, write blurred AO)
-        pass_ssao_blur(&renderer.device, encoder, pl, fx, depth_read_view);
-        renderer.gpu_timer.end(encoder, ti);
+        if renderer.enable_ssao {
+            let ti = renderer.gpu_timer.begin(encoder, "PP SSAO");
+            pass_ssao(&renderer.device, encoder, pl, fx,
+                depth_read_view, &renderer.gpu.ssao_noise_view, &proj, &inv_proj);
+            pass_ssao_blur(&renderer.device, encoder, pl, fx, depth_read_view);
+            renderer.gpu_timer.end(encoder, ti);
+        } else {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("SSAO Neutral"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &fx.ssao_blur_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
 
         // ── TAA (temporal anti-aliasing) ──
         if renderer.enable_taa {
@@ -434,6 +454,49 @@ pub(super) fn pass_fxaa_ldr_to_swapchain(
     });
     pass.set_pipeline(&pl.fxaa_ldr_pipeline);
     pass.set_bind_group(0, &fxaa_bg, &[]);
+    pass.draw(0..3, 0..1);
+}
+
+pub(super) fn pass_blit_ldr_to_swapchain(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pl: &PostFxPipelines,
+    ldr_scene_view: &wgpu::TextureView,
+    swap_view: &wgpu::TextureView,
+    bg_color: wgpu::Color,
+) {
+    let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("LDR film blit BG"),
+        layout: &pl.blit_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(ldr_scene_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&pl.tonemap_sampler),
+            },
+        ],
+    });
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Blit LDR film to swapchain"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: swap_view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(bg_color),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    pass.set_pipeline(&pl.blit_pipeline);
+    pass.set_bind_group(0, &blit_bg, &[]);
     pass.draw(0..3, 0..1);
 }
 

@@ -15,6 +15,7 @@
 - [x] 3.1 Add `apply_tier_config()` that sets all feature toggle fields from TierConfig
 - [x] 3.2 Call `apply_tier_config()` in Renderer whenever effective tier changes
 - [x] 3.3 Feature toggles already gate render passes (existing code)
+- [x] 3.4 IndustrialDisplay enables SSAO + TAA + color grading + HDR; ProductRendering adds SSR + fog + DOF; `enable_ssao` / `enable_ldr_fxaa` applied from config; Bloom stays compositor-only
 
 ## 4. Wire interaction state from app layer
 
@@ -31,6 +32,6 @@
 
 - [x] 6.1 `cargo check --workspace` — 0 errors
 - [x] 6.2 `cargo test` — 250 passed, 4 ignored
-- [ ] 6.3 Manual test: switch between tiers via `set_display_tier()`
-- [ ] 6.4 Manual test: orbit camera (trigger degrade), stop (verify recovery)
-- [ ] 6.5 Manual test: regression check with existing examples
+- [x] 6.3 Studio `--cad-matrix`: Identity Visualization / Industrial HUD flags; Product identity clamped on Standard GPU; Product compositor preset enables SSR/fog/DOF
+- [x] 6.4 Studio `--cad-matrix`: orbit Identity Industrial degrades to Visualization; cooldown recovers Industrial; Industrial preset keeps SSAO+TAA during orbit
+- [x] 6.5 Studio `--cad-matrix`: Hidden Line, Edges-only, SSAO+TAA then Identity snapshot restore, Mix film-only

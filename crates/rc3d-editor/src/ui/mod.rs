@@ -1,14 +1,21 @@
 //! In-viewport editor UI (egui) composited after the main scene pass.
 
+pub mod assets;
 pub mod caption;
+pub mod compositor;
+mod docks;
 pub mod draw;
 pub mod hierarchy;
+pub mod history;
 pub mod i18n;
 pub mod icons;
+pub mod inspector;
 pub mod menus;
 pub mod nav_cube;
 pub mod panel;
+mod shell;
 pub mod theme;
+pub mod tool_strip;
 pub mod types;
 
 use std::collections::VecDeque;
@@ -19,8 +26,9 @@ use rc3d_scene::SceneGraph;
 use wgpu;
 
 pub use types::{
-    CaptionAction, CaptionBarState, EditorChromeState, EditorDisplayMode, EditorUiContext,
-    NodeDataType, PixelRect, RenderFeatureFlags,
+    BottomTab, CaptionAction, CaptionBarState, CaseKind, CaseListItem, CaseParamView, CaseStepView,
+    EditorChromeState, EditorDisplayMode, EditorUiContext, NodeDataType, PixelRect,
+    RenderFeatureFlags, SideTab,
 };
 
 pub struct EditorUi {
@@ -34,12 +42,11 @@ pub struct EditorUi {
     textures_to_free: Vec<egui::TextureId>,
     /// Right-click context menu position in egui coordinates, if visible.
     context_menu_pos: Option<egui::Pos2>,
-    /// Console log ring buffer.
-    console_entries: Vec<String>,
-    show_console: bool,
     chrome: crate::ui::types::EditorChromeState,
     fonts_ready: bool,
     applied_theme: Option<crate::ui::theme::UiTheme>,
+    compositor: crate::ui::compositor::CompositorEditor,
+    markdown_cache: egui_commonmark::CommonMarkCache,
 }
 
 impl EditorUi {
@@ -80,11 +87,11 @@ impl EditorUi {
             pixels_per_point: window.scale_factor() as f32,
             textures_to_free: Vec::new(),
             context_menu_pos: None,
-            console_entries: Vec::new(),
-            show_console: false,
             chrome: crate::ui::types::EditorChromeState::default(),
             fonts_ready: false,
             applied_theme: None,
+            compositor: crate::ui::compositor::CompositorEditor::default(),
+            markdown_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -103,21 +110,10 @@ impl EditorUi {
         self.pixels_per_point = scale_factor;
     }
 
-    pub fn take_commands(&mut self) -> std::collections::vec_deque::IntoIter<crate::commands::EditorCommand> {
+    pub fn take_commands(
+        &mut self,
+    ) -> std::collections::vec_deque::IntoIter<crate::commands::EditorCommand> {
         std::mem::take(&mut self.command_queue).into_iter()
-    }
-
-    /// Push a log entry to the console ring buffer (max 200 entries).
-    pub fn push_log(&mut self, msg: &str) {
-        self.console_entries.push(msg.to_string());
-        if self.console_entries.len() > 200 {
-            self.console_entries.remove(0);
-        }
-    }
-
-    /// Toggle console panel visibility.
-    pub fn toggle_console(&mut self) {
-        self.show_console = !self.show_console;
     }
 
     pub fn handle_event(
@@ -165,13 +161,25 @@ impl EditorUi {
         self.chrome.caption.close_prompt = true;
     }
 
+    pub fn chrome_mut(&mut self) -> &mut crate::ui::types::EditorChromeState {
+        &mut self.chrome
+    }
+
+    pub fn chrome(&self) -> &crate::ui::types::EditorChromeState {
+        &self.chrome
+    }
+
+    /// Build egui UI for this frame. Returns `true` when egui needs another
+    /// immediate pass (menus, popups, settle frames). With `ControlFlow::Wait`
+    /// the host must schedule a redraw or those only appear after the next
+    /// pointer move.
     pub fn render(
         &mut self,
         window: &winit::window::Window,
         graph: &SceneGraph,
         engine: &Engine,
         ui_ctx: &EditorUiContext,
-    ) {
+    ) -> bool {
         let raw_input = self.winit_state.take_egui_input(window);
         if self.applied_theme != Some(ui_ctx.ui_theme) {
             crate::ui::theme::apply_theme(&self.egui_ctx, ui_ctx.ui_theme, !self.fonts_ready);
@@ -179,21 +187,28 @@ impl EditorUi {
             self.applied_theme = Some(ui_ctx.ui_theme);
         }
         let ctx_menu = &mut self.context_menu_pos;
-        let show_console = &mut self.show_console;
-        let console_ref = &mut self.console_entries;
         let chrome = &mut self.chrome;
-        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+        let compositor = &mut self.compositor;
+        let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             draw::build_ui(
                 ui,
                 graph,
                 ui_ctx,
                 ctx_menu,
-                show_console,
-                console_ref,
                 chrome,
+                compositor,
+                &mut self.markdown_cache,
                 &mut self.command_queue,
             );
         });
+        chrome.pointer_over_egui = self.egui_ctx.is_pointer_over_egui();
+        // egui-winit does not request redraw from platform_output; the host must
+        // honor ViewportOutput::repaint_delay (menus open mid-click need +1 frame).
+        // Only ZERO: non-zero delays are tooltips etc. and need a timer, not a spin.
+        let wants_immediate_repaint = full_output
+            .viewport_output
+            .values()
+            .any(|v| v.repaint_delay == std::time::Duration::ZERO);
         self.winit_state
             .handle_platform_output(window, full_output.platform_output);
 
@@ -208,11 +223,13 @@ impl EditorUi {
         }
         self.textures_to_free
             .extend(full_output.textures_delta.free.iter().copied());
+        full_output.textures_delta.clear();
 
         self.pixels_per_point = full_output.pixels_per_point;
         self.clipped_primitives = self
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
+        wants_immediate_repaint
     }
 
     pub fn paint(
@@ -255,7 +272,8 @@ impl EditorUi {
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
-            occlusion_query_set: None, multiview_mask: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
         self.egui_renderer.render(
             &mut pass.forget_lifetime(),
@@ -268,19 +286,8 @@ impl EditorUi {
         points_to_pixel(self.chrome.scene_rect_points, self.pixels_per_point)
     }
 
-    pub fn document_pixel_rect(&self) -> Option<crate::ui::types::PixelRect> {
-        if !self.chrome.document_open {
-            return None;
-        }
-        points_to_pixel(self.chrome.document_rect_points, self.pixels_per_point)
-    }
-
-    pub fn document_html_visible(&self) -> bool {
-        self.chrome.document_open && self.chrome.document_html
-    }
-
     pub fn document_open(&self) -> bool {
-        self.chrome.document_open
+        self.chrome.document_tab_open()
     }
 
     /// True when the pointer (window pixels) is on the nav cube, or the cube is being dragged.
@@ -288,15 +295,52 @@ impl EditorUi {
         if self.chrome.nav_cube_dragging {
             return true;
         }
-        let Some(r) = points_to_pixel(self.chrome.nav_cube_rect_points, self.pixels_per_point)
-        else {
-            return false;
-        };
-        px >= r.x as f32
-            && py >= r.y as f32
-            && px < (r.x + r.width) as f32
-            && py < (r.y + r.height) as f32
+        points_to_pixel(self.chrome.nav_cube_rect_points, self.pixels_per_point)
+            .is_some_and(|r| r.contains(px, py))
     }
+
+    pub fn nav_cube_hover_slot(&self) -> Option<u32> {
+        self.chrome.nav_cube_hover_slot
+    }
+
+    /// True when the pointer is over chrome widgets (menus, docks, tool strip, flyouts),
+    /// not the bare 3D viewport. Floating layers over the film must block Full 3D redraw.
+    pub fn egui_blocks_scene_pointer(&self) -> bool {
+        // Open menus: block even while the pointer crosses the film toward a submenu.
+        if egui::Popup::is_any_open(&self.egui_ctx) || self.context_menu_pos.is_some() {
+            return true;
+        }
+        let Some(pos) = self.egui_ctx.pointer_latest_pos() else {
+            return self.chrome.pointer_over_egui;
+        };
+        if rect_contains_points(self.chrome.tool_strip_rect_points, pos) {
+            return true;
+        }
+        if let Some(layer) = self.egui_ctx.layer_id_at(pos) {
+            if layer.order > egui::Order::Middle {
+                return true;
+            }
+        }
+        if !self.chrome.pointer_over_egui {
+            return false;
+        }
+        !rect_contains_points(self.chrome.scene_rect_points, pos)
+    }
+
+    pub fn compositor_open(&self) -> bool {
+        self.chrome.compositor_tab_open()
+    }
+
+    pub fn compositor_graph(&self) -> &rc3d_render::CompositorGraph {
+        &self.compositor.graph
+    }
+}
+
+fn rect_contains_points(rect: Option<[f32; 4]>, pos: egui::Pos2) -> bool {
+    let Some([x, y, w, h]) = rect else {
+        return false;
+    };
+    pos.x >= x && pos.y >= y && pos.x < x + w && pos.y < y + h
 }
 
 fn points_to_pixel(rect: Option<[f32; 4]>, ppp: f32) -> Option<crate::ui::types::PixelRect> {

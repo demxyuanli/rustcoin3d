@@ -10,10 +10,11 @@ mod resource_lifecycle;
 mod frame_scheduler;
 mod pass_orchestration;
 mod presentation;
+mod overlay_viewport;
+mod tier;
 
 pub use types::*;
 pub use internals::CadDisplayTier;
-pub(crate) use internals::{GpuTier, TierConfig};
 
 use crate::adaptive_quality::AdaptiveQuality;
 use crate::asset_manager::GpuAssetManager;
@@ -40,6 +41,7 @@ use crate::texture_cache::TextureCache;
 use crate::volumetric_fog::VolumetricFogPass;
 use crate::ibl::IblPreset;
 use self::internals::{DrawBatchBufs, FrameState, GpuInternals};
+use self::tier::CadLookSnapshot;
 use crate::settings::RenderSettings;
 use glam::{Mat4, Vec3};
 use rc3d_core::DisplayMode;
@@ -97,6 +99,8 @@ pub struct Renderer {
     /// Enable SMAA (Subpixel Morphological Anti-Aliasing) instead of FXAA.
     /// Mutually exclusive with enable_ldr_fxaa for LDR path.
     pub enable_ldr_smaa: bool,
+    pub enable_ssao: bool,
+    pub enable_bloom: bool,
     pub hdr_post_processing: bool,
     /// Enable WBOIT (Weighted Blended Order-Independent Transparency) for
     /// transparent objects instead of traditional back-to-front alpha blend.
@@ -117,6 +121,10 @@ pub struct Renderer {
     pub hud_enabled: bool,
     /// Pixel region used as the 3D film (egui central hole). Full surface when unset.
     pub scene_region: crate::viewport::ViewportRect,
+    /// Isolated overlay worlds (nav cube, etc.) rendered to offscreen tiles then composited.
+    pub(crate) overlay_pass: bool,
+    /// Screen-space blit destinations aligned with `gpu.overlay_tiles`.
+    pub(crate) overlay_blit_rects: Vec<crate::viewport::ViewportRect>,
     /// Size of the color target for the pass currently being encoded.
     pub(crate) pass_target_size: (u32, u32),
     pub outline_width: f32,
@@ -183,6 +191,10 @@ pub struct Renderer {
 
     // ── Light-set table (populated by traversal, consumed by passes) ──
     pub(crate) light_sets: crate::light_set::LightSetTable,
+
+    pub(crate) compositor_enabled: bool,
+    pub(crate) compositor_graph: crate::compositor::CompositorGraph,
+    cad_look_snapshot: Option<CadLookSnapshot>,
 
     // ── GPU internals tier ──
     pub(crate) gpu: GpuInternals,
@@ -281,164 +293,6 @@ impl Renderer {
             resolution,
             cascade_count,
         ));
-    }
-
-    /// Set the CAD display quality tier. Clamped by GPU capability on Basic tier.
-    pub fn set_display_tier(&mut self, tier: CadDisplayTier) {
-        self.cad_tier_authoritative = true;
-        let max_tier = match self.gpu.gpu_capability.tier {
-            GpuTier::Basic => CadDisplayTier::Visualization,
-            GpuTier::Standard => CadDisplayTier::IndustrialDisplay,
-            GpuTier::Enhanced => CadDisplayTier::ProductRendering,
-        };
-        let requested = if tier > max_tier { max_tier } else { tier };
-        if tier != requested {
-            log::warn!(
-                "Requested tier {:?} exceeds GPU capability (max {:?}); clamping to {:?}",
-                tier, max_tier, requested
-            );
-        }
-        if self.gpu.requested_tier != requested {
-            self.gpu.requested_tier = requested;
-            self.gpu.effective_tier = requested;
-            self.apply_tier_config(true);
-        } else if self.gpu.effective_tier != requested {
-            // Effective can lag behind requested during orbit degrade/recovery; choosing the
-            // same tier again (or repeating a tier hotkey) must snap visuals without changing request.
-            self.gpu.effective_tier = requested;
-            self.gpu.tier_cooldown_frames = 0;
-            self.apply_tier_config(true);
-        }
-    }
-
-    /// Called once per frame. Updates effective tier with degradation and recovery.
-    /// Reads `self.interaction_active` (set by app during camera orbit/pan/zoom).
-    pub fn update_tier(&mut self) {
-        let requested = self.gpu.requested_tier;
-        let max_tier = match self.gpu.gpu_capability.tier {
-            GpuTier::Basic => CadDisplayTier::Visualization,
-            GpuTier::Standard => CadDisplayTier::IndustrialDisplay,
-            GpuTier::Enhanced => CadDisplayTier::ProductRendering,
-        };
-        let clamped = if requested > max_tier { max_tier } else { requested };
-
-        // Detect interaction stop: start cooldown for recovery
-        if self.gpu.interaction_active && !self.interaction_active {
-            self.gpu.tier_cooldown_frames = 30; // ~500ms at 60fps
-        }
-        self.gpu.interaction_active = self.interaction_active;
-
-        // Degrade during interaction (tiers 2+ only)
-        if self.interaction_active {
-            let degraded = match clamped {
-                CadDisplayTier::ProductRendering => CadDisplayTier::Visualization,
-                CadDisplayTier::IndustrialDisplay => CadDisplayTier::Visualization,
-                other => other,
-            };
-            if self.gpu.effective_tier != degraded {
-                self.gpu.effective_tier = degraded;
-                self.gpu.tier_cooldown_frames = 0;
-                self.apply_tier_config(false);
-            }
-            return;
-        }
-
-        // Snap down when effective exceeds allowed target (requested lowered or clamp tightened).
-        if self.gpu.effective_tier > clamped {
-            self.gpu.effective_tier = clamped;
-            self.gpu.tier_cooldown_frames = 0;
-            self.apply_tier_config(false);
-        }
-
-        // Recovery: step up one tier per cooldown period
-        if self.gpu.effective_tier < clamped {
-            if self.gpu.tier_cooldown_frames > 0 {
-                self.gpu.tier_cooldown_frames -= 1;
-            } else {
-                let next = self.gpu.effective_tier as u32 + 1;
-                let next_tier = CadDisplayTier::from_u32(next);
-                if next_tier <= clamped {
-                    self.gpu.effective_tier = next_tier;
-                    self.gpu.tier_cooldown_frames = 30;
-                    self.apply_tier_config(false);
-                }
-            }
-        }
-    }
-
-    /// Apply feature toggles for the current effective tier.
-    ///
-    /// When `user_initiated` is true (user changed tier via UI), the tier's
-    /// display-mode semantics are also applied (e.g. DesignCreation → Flat).
-    /// When false (automatic degradation/recovery), display mode is preserved
-    /// so the user's explicit choice is not overridden.
-    fn apply_tier_config(&mut self, user_initiated: bool) {
-        let cfg = TierConfig::for_tier(self.gpu.effective_tier);
-        log::debug!(
-            "Tier config applied: {:?} (user={}) | HDR={} SSAO={} TAA={} SSR={} DOF={} Fog={}",
-            self.gpu.effective_tier, user_initiated,
-            cfg.hdr_post, cfg.ssao, cfg.taa, cfg.ssr, cfg.dof, cfg.volumetric_fog
-        );
-        // Apply display-mode semantics on user-initiated tier switch.
-        // Entering a flat-shading tier forces Flat; leaving restores user's choice.
-        if user_initiated {
-            self.global_display_mode = if cfg.flat_shading {
-                if cfg.edges { DisplayMode::FlatWithEdge } else { DisplayMode::Flat }
-            } else if cfg.edges {
-                DisplayMode::ShadedWithEdges
-            } else {
-                DisplayMode::Shaded
-            };
-        }
-        self.tier_wants_shadow = cfg.shadows;
-        self.tier_wants_edges = cfg.edges;
-        // Derive feature toggles from tier config
-        self.enable_taa = cfg.taa;
-        self.enable_motion_blur = cfg.motion_blur && self.gpu.motion_blur.is_some();
-        self.enable_ssr = cfg.ssr;
-        self.enable_color_grading = cfg.color_grading;
-        self.enable_dof = cfg.dof;
-        self.enable_volumetric_fog = cfg.volumetric_fog;
-        if cfg.hdr_post && self.gpu.post_fx.is_none() {
-            self.ensure_post_fx_targets();
-        }
-        self.hdr_post_processing = cfg.hdr_post;
-        // Motion blur needs TAA reference + HDR; guard against missing resources
-        if self.enable_motion_blur && !self.hdr_post_processing {
-            self.enable_motion_blur = false;
-        }
-        if self.enable_motion_blur {
-            self.enable_taa = true;
-        }
-    }
-
-    /// Flat-shading tiers (e.g. DesignCreation) always render as Flat; display-mode changes
-    /// still update `user_display_mode` so leaving the tier restores the user's choice.
-    fn clamp_global_display_mode_for_flat_shading_tier(&mut self) {
-        let cfg = TierConfig::for_tier(self.gpu.effective_tier);
-        if cfg.flat_shading {
-            // Wireframe is an explicit user choice; don't overwrite it.
-            if self.global_display_mode == DisplayMode::Wireframe {
-                return;
-            }
-            self.global_display_mode = if cfg.edges {
-                DisplayMode::FlatWithEdge
-            } else {
-                DisplayMode::Flat
-            };
-        }
-    }
-
-    /// Re-apply pipeline toggles for the current effective CAD tier (used when tier is
-    /// authoritative so interaction overrides / inspector cannot bypass tier presets).
-    pub fn reapply_cad_tier_constraints(&mut self) {
-        self.apply_tier_config(false);
-        self.clamp_global_display_mode_for_flat_shading_tier();
-    }
-
-    /// Whether CAD tier was explicitly chosen via [`Self::set_display_tier`].
-    pub fn cad_tier_authoritative(&self) -> bool {
-        self.cad_tier_authoritative
     }
 
     pub fn set_wboit(&mut self, enabled: bool) {
@@ -593,7 +447,7 @@ impl Renderer {
         let surface = unsafe {
             instance
                 .create_surface_unsafe(
-                    wgpu::SurfaceTargetUnsafe::from_window(window)
+                    wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
                         .expect("failed to create surface target"),
                 )
                 .expect("failed to create surface")
@@ -615,13 +469,17 @@ impl Renderer {
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
             | wgpu::Features::PIPELINE_CACHE
-            | wgpu::Features::IMMEDIATES;
+            | wgpu::Features::IMMEDIATES
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE;
         let features = adapter.features() & requested_features;
         let wireframe_supported = true; // wireframe pass uses line-list edges, not PolygonMode::Line
         let timing_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY)
             && features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
-        // multi_draw_indirect is core in wgpu 30; MULTI_DRAW_INDIRECT_COUNT remains optional.
-        let multi_draw_indirect_supported = true;
+        // multi_draw_indexed_indirect is core in wgpu 30, but our batches put a
+        // non-zero first_instance into the args so the PBR shader can index the
+        // instance SSBO. That requires INDIRECT_FIRST_INSTANCE on the device.
+        let multi_draw_indirect_supported =
+            features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
 
         let adapter_info = adapter.get_info();
         let is_integrated = matches!(
@@ -779,6 +637,83 @@ impl Renderer {
             depth_stencil: None,
             cache: None,
         });
+        let overlay_blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Overlay Blit Shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "../shaders/overlay_blit.wgsl"
+            ))),
+        });
+        let overlay_blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Overlay Blit BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ],
+        });
+        let overlay_blit_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Overlay Blit Pipeline Layout"),
+                bind_group_layouts: &[Some(&overlay_blit_bgl)],
+                immediate_size: 0,
+            });
+        let overlay_blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Overlay Blit Pipeline"),
+            layout: Some(&overlay_blit_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_blit_shader,
+                entry_point: Some("vs_blit"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_blit_shader,
+                entry_point: Some("fs_blit"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            depth_stencil: None,
+            cache: None,
+        });
         let upscale_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Upscale Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -786,6 +721,24 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let overlay_blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Overlay Blit Color Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let overlay_depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Overlay Blit Depth Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -962,6 +915,8 @@ impl Renderer {
             enable_omni_shadows: true,
             enable_ldr_fxaa: true,
             enable_ldr_smaa: false,
+            enable_ssao: true,
+            enable_bloom: true,
             hdr_post_processing: false,
             enable_wboit: true,
             global_display_mode: DisplayMode::Shaded,
@@ -972,6 +927,8 @@ impl Renderer {
             grid_enabled: false,
             hud_enabled: true,
             scene_region: crate::viewport::ViewportRect::default(),
+            overlay_pass: false,
+            overlay_blit_rects: Vec::new(),
             pass_target_size: (1, 1),
             outline_width: 1.0,
             outline_color: [1.0, 0.5, 0.0, 1.0], // orange
@@ -1006,6 +963,9 @@ impl Renderer {
             light_sets: crate::light_set::LightSetTable::new(),
             last_material_bg_key: 0,
             last_material_bg: None,
+            compositor_enabled: false,
+            compositor_graph: crate::compositor::CompositorGraph::identity(),
+            cad_look_snapshot: None,
             // Frame state
             frame: FrameState {
                 markup_vertices: Vec::new(),
@@ -1024,6 +984,7 @@ impl Renderer {
                 perf_mode_cooldown: 0,
                 last_diagnostics: None,
                 last_hud_update_frame: 0,
+                last_cad_hud: String::new(),
                 viewport_layout: ViewportLayout::new(),
                 frame_stats: FrameStats::default(),
                 effect_commands: crate::render_passes::pass_effects::EffectCommands::default(),
@@ -1121,6 +1082,9 @@ impl Renderer {
                 selection_outline_targets: None,
                 ldr_shade_tex: None,
                 ldr_shade_view: None,
+                ui_retain_tex: None,
+                ui_retain_view: None,
+                ui_retain_blit_bg: None,
                 interaction_downscale_tex: None,
                 interaction_downscale_view: None,
                 interaction_downscale_depth: None,
@@ -1132,6 +1096,10 @@ impl Renderer {
                 upscale_pipeline: Some(upscale_pipeline),
                 upscale_bgl: Some(upscale_bgl),
                 upscale_sampler: Some(upscale_sampler),
+                overlay_blit_pipeline: Some(overlay_blit_pipeline),
+                overlay_blit_bgl: Some(overlay_blit_bgl),
+                overlay_blit_sampler: Some(overlay_blit_sampler),
+                overlay_depth_sampler: Some(overlay_depth_sampler),
                 anaglyph_pipeline: None,
                 anaglyph_bgl: None,
                 ss_edge_pipeline: Some(ss_edge_pipeline),
@@ -1156,7 +1124,9 @@ impl Renderer {
                 global_frame_buffer: Some(global_frame_buffer),
                 velocity_buffer: Some(velocity_buffer),
                 quad_tiles: Vec::new(),
+                overlay_tiles: Vec::new(),
                 wboit_targets: None,
+                compositor: None,
                 draw_bufs: DrawBatchBufs {
                     meshlet_bitmask: Vec::with_capacity(4096),
                     meshlet_draws: Vec::with_capacity(4096),
@@ -1342,6 +1312,9 @@ impl Renderer {
             self.gpu.selection_outline_targets = None;
             self.gpu.ldr_shade_tex = None;
             self.gpu.ldr_shade_view = None;
+            self.gpu.ui_retain_tex = None;
+            self.gpu.ui_retain_view = None;
+            self.gpu.ui_retain_blit_bg = None;
             self.gpu.wboit_targets = None;
             self.gpu.hzb_baker = Some(HzbBaker::new(&self.device));
             let ds_bgl = &self.gpu.hzb_baker.as_ref().unwrap().downsample_bgl;
@@ -1712,7 +1685,7 @@ impl Renderer {
         self.upload_post_fx_params();
     }
 
-    fn upload_post_fx_params(&self) {
+    pub(super) fn upload_post_fx_params(&self) {
         self.queue.write_buffer(
             &self.gpu.post_fx_pipelines.post_params_buf,
             0,
@@ -1888,12 +1861,20 @@ impl Renderer {
 
     /// Prepare HUD overlay: scene Text2/Text3 (annotation labels use world quads in pass_markup).
     pub fn prepare_hud_overlay_for_render(&mut self) {
+        let film = self.current_pass_viewport();
         if let Some(ref mut hud) = self.gpu.hud {
             hud.positioned_texts.clone_from(&hud.scene_positioned_texts);
             hud.prepare_gpu_atlas_for_render(
                 &self.device,
                 &self.queue,
                 self.frame.scene_depth_reversed_z,
+                [film.x as f32, film.y as f32],
+                [
+                    film.x as i32,
+                    film.y as i32,
+                    (film.x + film.width) as i32,
+                    (film.y + film.height) as i32,
+                ],
             );
         }
     }

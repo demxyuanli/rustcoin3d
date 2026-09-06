@@ -26,6 +26,10 @@ impl super::Renderer {
 
         self.begin_frame_gpu_resources();
 
+        if self.overlay_pass {
+            return self.finish_overlay_pass(draw_calls, scene, presentation, ssao_projection);
+        }
+
         // ── GPU cull: read back previous frame's instance count (non-blocking) ──
         let mut gpu_visible: Option<Vec<usize>> = None;
         if self.gpu.gpu_cull_enabled
@@ -98,6 +102,7 @@ impl super::Renderer {
         if self.cad_tier_authoritative {
             self.reapply_cad_tier_constraints();
         }
+        self.apply_compositor_cad_look();
         let dt_sec = (self.gpu.adaptive_frame_time_ema_ms / 1000.0).clamp(0.0, 0.25);
         self.frame.animation_time_sec += dt_sec;
 
@@ -395,6 +400,56 @@ impl super::Renderer {
             ssao_projection,
             effect_commands,
             prev_vp,
+        )
+    }
+
+    fn finish_overlay_pass<'p>(
+        &'p mut self,
+        draw_calls: &[DrawCall],
+        scene: &SceneGraph,
+        presentation: render_passes::FramePresentation<'p>,
+        ssao_projection: Option<(Mat4, Mat4)>,
+    ) -> FrameStats {
+        if draw_calls.is_empty() {
+            return FrameStats::default();
+        }
+        let first = &draw_calls[0];
+        let vp = crate::render_action::view_projection_from_draw_call(first);
+        self.frame.scene_vp = vp;
+        self.frame.scene_depth_reversed_z = first.depth_reversed_z;
+        self.frame.scene_camera_pos = first.camera_pos;
+        let visible: Vec<&DrawCall> = draw_calls.iter().collect();
+        let (vw, vh) = match &presentation {
+            render_passes::FramePresentation::OffscreenSurface {
+                width_px,
+                height_px,
+                ..
+            } => (*width_px, *height_px),
+            render_passes::FramePresentation::Swapchain => {
+                (self.config.width, self.config.height)
+            }
+        };
+        self.frame.annotation_world_labels.clear();
+        let _ = render_passes::pass_text::collect_text_nodes(
+            scene,
+            Some(vp),
+            Some((vw.max(1), vh.max(1))),
+            Some(first.camera_pos),
+            first.depth_reversed_z,
+            &mut self.frame.annotation_world_labels,
+        );
+        let mesh_handles = self.upload_visible_meshes(&visible);
+        self.orchestrate_frame_passes(
+            visible,
+            mesh_handles,
+            draw_calls,
+            first,
+            scene,
+            None,
+            presentation,
+            ssao_projection,
+            crate::render_passes::pass_effects::EffectCommands::default(),
+            vp,
         )
     }
 }

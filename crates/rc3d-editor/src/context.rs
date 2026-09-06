@@ -3,13 +3,12 @@ use rc3d_core::NodeId;
 use rc3d_engine_api::Engine;
 use rc3d_render::viewport::ViewportSplitAxis;
 use rc3d_scene::node_data::MeasurementType;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use crate::commands::EditorCommand;
-use crate::selection::Selection;
-use crate::ui::types::{EditorDisplayMode, NodeDataType, RenderFeatureFlags};
+use crate::ui::types::{CanvasTool, SelectKind};
 
-/// Editor-local interaction state (mirrors rc3d-app's EditorSession fields).
+/// Editor-local interaction state (pointer, gizmo, measurement, box-select).
 pub struct EditorInteractionState {
     pub gizmo_dragging: bool,
     pub gizmo_pending_transform: Option<(NodeId, Mat4)>,
@@ -22,10 +21,17 @@ pub struct EditorInteractionState {
     pub lasso_points: Vec<(f32, f32)>,
     pub section_hovered: Option<NodeId>,
     pub section_drag: Option<(NodeId, [f32; 4])>,
+    pub view_split_hover: Option<ViewportSplitAxis>,
     pub view_split_drag: Option<ViewportSplitAxis>,
     pub left_pick_arm_pos: Option<(f64, f64)>,
     pub left_drag_suppresses_pick: bool,
     pub markup: rc3d_actions::MarkupAction,
+    pub markup_preview_live: bool,
+    pub measure: rc3d_actions::MeasurementAction,
+    pub measure_label: String,
+    pub locked_nodes: std::collections::HashSet<NodeId>,
+    pub select_kind: SelectKind,
+    pub canvas: CanvasTool,
 }
 
 impl Default for EditorInteractionState {
@@ -42,10 +48,17 @@ impl Default for EditorInteractionState {
             lasso_points: Vec::new(),
             section_hovered: None,
             section_drag: None,
+            view_split_hover: None,
             view_split_drag: None,
             left_pick_arm_pos: None,
             left_drag_suppresses_pick: false,
             markup: rc3d_actions::MarkupAction::new(),
+            markup_preview_live: false,
+            measure: rc3d_actions::MeasurementAction::new(rc3d_actions::MeasurementMode::Distance),
+            measure_label: String::new(),
+            locked_nodes: std::collections::HashSet::new(),
+            select_kind: SelectKind::Pick,
+            canvas: CanvasTool::Select,
         }
     }
 }
@@ -54,14 +67,7 @@ impl Default for EditorInteractionState {
 pub struct EditorContext<'a> {
     pub engine: &'a mut Engine,
     pub commands: VecDeque<EditorCommand>,
-    pub display_mode: EditorDisplayMode,
-    pub selected_nodes: HashSet<NodeId>,
-    pub hidden_nodes: HashSet<NodeId>,
-    pub gizmo_mode: rc3d_gizmo::GizmoMode,
-    pub render_features: RenderFeatureFlags,
-    pub node_data_type: NodeDataType,
     pub interaction: EditorInteractionState,
-    pub selection: Selection,
 }
 
 impl<'a> EditorContext<'a> {
@@ -69,21 +75,11 @@ impl<'a> EditorContext<'a> {
         Self::with_interaction(engine, EditorInteractionState::default())
     }
 
-    pub fn with_interaction(
-        engine: &'a mut Engine,
-        interaction: EditorInteractionState,
-    ) -> Self {
+    pub fn with_interaction(engine: &'a mut Engine, interaction: EditorInteractionState) -> Self {
         Self {
             engine,
             commands: VecDeque::new(),
-            display_mode: EditorDisplayMode::Shaded,
-            selected_nodes: HashSet::new(),
-            hidden_nodes: HashSet::new(),
-            gizmo_mode: rc3d_gizmo::GizmoMode::Translate,
-            render_features: RenderFeatureFlags::default(),
-            node_data_type: NodeDataType::All,
             interaction,
-            selection: Selection::new(),
         }
     }
 

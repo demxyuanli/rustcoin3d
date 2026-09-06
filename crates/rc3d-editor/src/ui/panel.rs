@@ -1,3 +1,6 @@
+//! Standalone eframe feature panel used by `rc3d-examples` (animation_control_panel).
+//! Studio does not host this window; editor chrome lives in `draw` / `inspector`.
+
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Slider};

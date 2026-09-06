@@ -1,12 +1,18 @@
 use std::collections::HashSet;
 
 use rc3d_core::DisplayMode;
-use rc3d_editor::commands::AdaptiveQualityMode;
-use rc3d_editor::{EditorDisplayMode, EditorSession, EditorUiContext, RenderFeatureFlags};
+use rc3d_editor::{EditorInteractionState, EditorSession, EditorUiContext, RenderFeatureFlags};
 use rc3d_engine_api::Engine;
 use rc3d_render::viewport::LayoutMode;
 
-pub fn build_ui_ctx(engine: &Engine, session: &EditorSession) -> EditorUiContext {
+use crate::cases::{self, ActiveCase};
+
+pub fn build_ui_ctx(
+    engine: &Engine,
+    session: &EditorSession,
+    interaction: &EditorInteractionState,
+    active_case: Option<&ActiveCase>,
+) -> EditorUiContext {
     let selected: HashSet<_> = engine.world.graph.selected_nodes().iter().copied().collect();
     let selected_count = selected.len();
     let r = engine.renderer.as_ref();
@@ -16,6 +22,14 @@ pub fn build_ui_ctx(engine: &Engine, session: &EditorSession) -> EditorUiContext
         .and_then(|r| r.viewport_layout().active())
         .map(|v| v.name.clone())
         .unwrap_or_else(|| "Perspective".into());
+    let (case_params, case_steps, active_case_id) = match active_case {
+        Some(a) => (
+            cases::param_views(a),
+            cases::step_views(a),
+            Some(a.id.clone()),
+        ),
+        None => (Vec::new(), Vec::new(), None),
+    };
     EditorUiContext {
         selected,
         display_mode_label: format!("{display_mode:?}"),
@@ -23,6 +37,10 @@ pub fn build_ui_ctx(engine: &Engine, session: &EditorSession) -> EditorUiContext
         ibl_preset: r.map(|r| r.ibl_preset).unwrap_or(rc3d_render::ibl::IblPreset::Studio),
         gizmo_mode: engine.gizmo.mode,
         layout_mode: layout,
+        viewport_h_split: r.map(|r| r.viewport_layout().quad_h_split).unwrap_or(0.5),
+        viewport_v_split: r.map(|r| r.viewport_layout().quad_v_split).unwrap_or(0.5),
+        viewport_split_hover: interaction.view_split_hover,
+        viewport_split_drag: interaction.view_split_drag,
         layout_mode_label: format!("{layout:?}"),
         active_viewport_label: active_vp,
         smoothed_fps: engine.fps.smoothed_fps(),
@@ -39,7 +57,6 @@ pub fn build_ui_ctx(engine: &Engine, session: &EditorSession) -> EditorUiContext
                 volumetric_fog: r.enable_volumetric_fog,
                 cluster_lights: r.enable_cluster_lights,
                 omni_shadows: r.enable_omni_shadows,
-                xray: r.xray_mode,
                 ldr_fxaa: r.enable_ldr_fxaa,
                 screen_space_edges: r.screen_space_edges,
                 screen_space_selection_outline: r.screen_space_selection_outline,
@@ -119,22 +136,21 @@ pub fn build_ui_ctx(engine: &Engine, session: &EditorSession) -> EditorUiContext
         },
         ui_theme: session.ui_theme,
         ui_locale: session.ui_locale,
+        select_kind: interaction.select_kind,
+        canvas_tool: interaction.canvas,
+        measurement_type: interaction.measurement_type,
+        markup_tool: interaction.markup.tool,
+        measure_label: interaction.measure_label.clone(),
+        measure_points: interaction.measure.points.len(),
+        measure_needed: interaction.measure.points_needed(),
+        keymap: session.keymap.clone(),
+        locked_nodes: interaction.locked_nodes.clone(),
+        history_undo: session.history.undo_log(),
+        history_redo: session.history.redo_log(),
+        file_dialog_dir: session.file_dialog_dir.clone(),
+        case_catalog: cases::catalog_list(),
+        active_case_id,
+        case_params,
+        case_steps,
     }
-}
-
-#[allow(dead_code)]
-pub fn editor_display_mode(mode: DisplayMode) -> EditorDisplayMode {
-    match mode {
-        DisplayMode::Wireframe => EditorDisplayMode::Wireframe,
-        DisplayMode::Shaded => EditorDisplayMode::Shaded,
-        DisplayMode::ShadedWithEdges => EditorDisplayMode::ShadedWithEdges,
-        DisplayMode::HiddenLine => EditorDisplayMode::HiddenLine,
-        DisplayMode::Flat => EditorDisplayMode::Flat,
-        DisplayMode::FlatWithEdge => EditorDisplayMode::FlatWithEdge,
-    }
-}
-
-#[allow(dead_code)]
-fn _adaptive_off() -> AdaptiveQualityMode {
-    AdaptiveQualityMode::Off
 }

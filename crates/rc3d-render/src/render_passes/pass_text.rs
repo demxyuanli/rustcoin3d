@@ -130,8 +130,13 @@ fn walk_children(
                 walk_children(ctx, &kids, accum, inside_billboard, font.clone());
             }
             Step::Xform { lm, kids } => {
-                accum *= lm;
-                walk_children(ctx, &kids, accum, inside_billboard, font.clone());
+                let nested = accum * lm;
+                walk_children(ctx, &kids, nested, inside_billboard, font.clone());
+                // Property-style Transform (no children) affects later siblings.
+                // Parented Transform must not leak into the next sibling frame.
+                if kids.is_empty() {
+                    accum = nested;
+                }
             }
             Step::Visit => {
                 collect_recursive(ctx, child, accum, inside_billboard, font.clone());
@@ -210,7 +215,11 @@ fn collect_recursive(
                 if clip.z > 1.0 || clip.z < -1.0 {
                     return;
                 }
-                let (tangent, bitangent) = camera_billboard_basis(world_pos, cam);
+                let (tangent, bitangent) = if t.plane_aligned {
+                    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+                } else {
+                    camera_billboard_basis(world_pos, cam)
+                };
                 let at = t.position.into();
                 let ext = size * 0.02;
                 let height_world = resolve_label_height_world(
@@ -324,6 +333,7 @@ mod tests {
                 position: Vec3::new(1.0, 2.0, 3.0),
                 size: 24.0,
                 color: [0.25, 0.5, 1.0, 1.0],
+                ..Default::default()
             }),
         );
 

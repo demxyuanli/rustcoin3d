@@ -17,7 +17,9 @@ pub(crate) fn node_data_for_type(t: NodeDataType) -> NodeData {
         NodeDataType::Cylinder => NodeData::Cylinder(CylinderNode::default()),
         NodeDataType::Cone => NodeData::Cone(ConeNode::default()),
         NodeDataType::Separator => NodeData::Separator(SeparatorNode),
-        NodeDataType::DirectionalLight => NodeData::DirectionalLight(DirectionalLightNode::default()),
+        NodeDataType::DirectionalLight => {
+            NodeData::DirectionalLight(DirectionalLightNode::default())
+        }
         NodeDataType::PointLight => NodeData::PointLight(PointLightNode::default()),
         NodeDataType::SpotLight => NodeData::SpotLight(SpotLightNode::default()),
         NodeDataType::PerspectiveCamera => {
@@ -49,7 +51,6 @@ pub(crate) fn node_data_for_type(t: NodeDataType) -> NodeData {
         NodeDataType::Particles => {
             NodeData::PointCloud(PointCloudNode::with_emitter(ParticleEmitter::fountain()))
         }
-        NodeDataType::All => NodeData::Separator(SeparatorNode),
     }
 }
 
@@ -83,11 +84,7 @@ fn default_instanced_mesh() -> InstancedMeshNode {
 
 fn default_batched_mesh() -> BatchedMeshNode {
     let mut node = BatchedMeshNode::default();
-    let positions = [
-        [-0.5, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ];
+    let positions = [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let normals = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
     let texcoords = [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]];
     let tangents = [

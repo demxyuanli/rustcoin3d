@@ -91,6 +91,7 @@ fn main() {
                 position: Vec3::ZERO,
                 size: 24.0,
                 color: [0.95, 0.92, 0.75, 1.0],
+                ..Default::default()
             }),
         );
     });

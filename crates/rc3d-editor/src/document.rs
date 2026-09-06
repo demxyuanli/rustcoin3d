@@ -28,25 +28,36 @@ pub fn save_native_scene(graph: &SceneGraph, path: &Path) -> Result<(), String> 
     std::fs::write(path, text).map_err(|e| e.to_string())
 }
 
-pub fn pick_open_scene() -> Option<PathBuf> {
-    rfd::FileDialog::new()
+fn with_start_dir(mut dlg: rfd::FileDialog, start_dir: Option<&Path>) -> rfd::FileDialog {
+    if let Some(dir) = start_dir.and_then(|p| if p.is_dir() { Some(p) } else { p.parent() }) {
+        dlg = dlg.set_directory(dir);
+    }
+    dlg
+}
+
+pub fn pick_open_scene(start_dir: Option<&Path>) -> Option<PathBuf> {
+    with_start_dir(rfd::FileDialog::new(), start_dir)
         .add_filter("Scene JSON", &["json"])
         .pick_file()
 }
 
-pub fn pick_save_scene() -> Option<PathBuf> {
-    rfd::FileDialog::new()
+pub fn pick_save_scene(start_dir: Option<&Path>) -> Option<PathBuf> {
+    with_start_dir(rfd::FileDialog::new(), start_dir)
         .add_filter("Scene JSON", &["json"])
         .set_file_name("untitled.json")
         .save_file()
         .map(with_json_extension)
 }
 
-pub fn pick_import_mesh() -> Option<PathBuf> {
-    rfd::FileDialog::new()
+pub fn pick_import_mesh(start_dir: Option<&Path>) -> Option<PathBuf> {
+    with_start_dir(rfd::FileDialog::new(), start_dir)
         .add_filter("Meshes", &["stl", "obj", "gltf", "glb", "fbx"])
         .add_filter("All files", &["*"])
         .pick_file()
+}
+
+pub fn dialog_dir_from_path(path: &Path) -> Option<PathBuf> {
+    path.parent().map(|p| p.to_path_buf())
 }
 
 /// Empty editable scene: camera + light, no geometry.

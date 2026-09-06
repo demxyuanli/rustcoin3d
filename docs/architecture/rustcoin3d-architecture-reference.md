@@ -1,6 +1,6 @@
 # rustcoin3d Architecture Reference
 
-**Generated:** 2026-06-22 | **Crates:** 22 | **Lines:** ~120K Rust | **Tests:** ~500
+**Generated:** 2026-06-22 | **Crates:** 21 | **Lines:** ~120K Rust | **Tests:** ~500
 
 Industrial 3D visualization engine in Rust + wgpu, aligned with Coin3D/HOOPS paradigms.
 
@@ -13,11 +13,11 @@ Industrial 3D visualization engine in Rust + wgpu, aligned with Coin3D/HOOPS par
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ LAYER 3 — Entry Points                                           │
-│  rc3d-cli-editor (binary)    rc3d-examples (19 examples)         │
+│  rc3d-studio (binary)  rc3d-cli-editor  rc3d-examples            │
 ├─────────────────────────────────────────────────────────────────┤
 │ LAYER 2 — Application & Integration                              │
-│  rc3d-app ─── rc3d-editor ─── rc3d-engine-api ─── rc3d-scene-api│
-│                rc3d-gizmo     rc3d-effects                       │
+│  rc3d-editor ─── rc3d-engine-api ─── rc3d-scene-api              │
+│  rc3d-gizmo     rc3d-effects                                     │
 ├─────────────────────────────────────────────────────────────────┤
 │ LAYER 1 — Domain Engines                                         │
 │  rc3d-render   rc3d-io     rc3d-shape   rc3d-engine   rc3d-actions│
@@ -50,17 +50,17 @@ Industrial 3D visualization engine in Rust + wgpu, aligned with Coin3D/HOOPS par
 | `rc3d-effects` | core, render | Post-processing effect graph, render config |
 | `rc3d-scene-api` | core, scene, mesh, engine | High-level declarative scene DSL |
 | `rc3d-engine-api` | core, scene, render, engine, io, actions, scene-api, effects, nurbs | Primary integration facade (`Engine`, `World`) |
-| `rc3d-editor` | core, scene, actions, render, engine-api, gizmo | egui-based editor (selection, commands, UI panels) |
-| `rc3d-app` | engine-api, editor | Application bootstrap (winit event loop) |
-| `rc3d-cli-editor` | core, scene, actions, render, editor | CLI+TUI binary (ratatui + egui) |
-| `rc3d-examples` | engine-api, scene-api, editor, ... | 19 example applications |
+| `rc3d-editor` | core, scene, actions, render, engine-api, gizmo | egui editor (panels, nav cube, compositor graph via `egui-snarl` on the bottom dock; GPU exec stays in `rc3d-render`) |
+| `rc3d-studio` | engine-api, editor | Desktop editor host (winit + Fluent chrome) |
+| `rc3d-cli-editor` | core, scene, actions, render | CLI+TUI binary (ratatui + egui) |
+| `rc3d-examples` | engine-api, scene-api, editor, ... | Demo applications |
 
 ### 1.3 Public-Facing vs Internal Crates
 
 | Visibility | Crates |
 |-----------|--------|
 | **Public API** | `rc3d-engine-api`, `rc3d-scene-api`, `rc3d-editor` |
-| **Internal** | All others (16 libraries + 2 entry points) |
+| **Internal** | All others (libraries + `rc3d-studio` / `rc3d-cli-editor` / `rc3d-examples` entry points) |
 
 ---
 
@@ -572,7 +572,7 @@ render_draw_calls(draw_calls, scene)
     ├── 9. Build PassContext { visible draws, sort orders, matrices, settings }
     │
     ▼
-execute_passes() — single command encoder
+execute_passes() — `render_passes/{execute,film,overlay}.rs`, single command encoder
     │
     ├── Background (gradient/image/solid)
     ├── GPU Cull Dispatch (compute shader, if enabled)
@@ -584,18 +584,19 @@ execute_passes() — single command encoder
     ├── Section Caps (back-face render with clip planes)
     ├── Transparent (WBOIT MRT on LDR/HDR shade, or painter fallback)
     ├── Effects (Decal, Volume, PointCloud)
-    ├── Wireframe Overlay
+    ├── Wireframe Overlay (on film, or deferred after FXAA blit)
     ├── Selection Fill + Edge + BBox
     ├── Feature Edge Overlay (depth-tested + anti-aliased)
-    ├── Post-Processing (HDR chain):
-    │   Velocity → XRay → Bloom Prefilter → SSR → SSAO+Blur →
-    │   Volumetric Fog → DoF → TAA → Motion Blur →
-    │   ACES Tonemap+FXAA → Color Grading → Blit to Swapchain
+    ├── LDR FXAA / LDR film blit / HDR Post-Processing
+    ├── Compositor (Viewer-reachable CAD look flags, then Mix/Blur GPU ops on the film)
+    ├── Screen-space edges + deferred line overlays
     ├── Ground Grid
     ├── Gizmo Overlay (Engine.gizmo generate_lines)
     ├── Viewport Borders
     ├── Markup Lines (annotation overlay with occlusion downsampling)
-    └── HUD Overlay (FPS, mode name, markup text)
+    ├── Overlay composite (nav cube tiles)
+    ├── HUD Overlay (FPS, mode name; top-left of the 3D film)
+    └── post_swapchain callback (egui)
 ```
 
 ### 8.3 PBR Shader Binding Model
@@ -645,6 +646,10 @@ Presets above still seed both axes. Per-node `fill_style` / `edge_style` compose
 | Visualization (1) | ✓ | ✓ | ✓ | — | — | — | — | — | — |
 | IndustrialDisplay (2) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
 | ProductRendering (3) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Identity compositor (`Beauty → Viewer`) derives these flags from the effective tier each frame. Viewer-reachable CAD compositor nodes override them as a test matrix (absent node = off). Bloom is compositor-only. HDR path uses TAA; LDR uses FXAA (not both). Color grading follows Industrial/Product. Visualization keeps motion blur off (orbit smear). Compositor presets: Identity, Industrial (SSAO+TAA+grade+shadows), Product (+SSR/fog/DOF/shadows), Hidden Line, X-Ray Edges, SSAO+TAA, Edges only. HUD `CAD:` line reports effective/requested tier, `tier` vs `comp` source, and active flags. Studio verification: `rtk cargo run -p rc3d-studio -- --cad-matrix` (writes `target/cad-matrix-report.txt`).
+
+Interaction on requested tier 2/3 degrades `effective_tier` to Visualization until cooldown recovery. Identity graphs follow that drop; Viewer-reachable CAD compositor nodes are re-applied after `update_tier` so the test matrix still wins during orbit.
 
 ### 8.8 GPU Culling Pipeline
 
@@ -729,15 +734,17 @@ Editor                                // Public API
         ├── egui-wgpu renderer        // GPU overlay pass
         ├── EditorCommand queue        // VecDeque<EditorCommand>
         └── UI panels:
-              ├── Menu bar (File, Edit, View, Tools, Bookmarks, Create)
-              ├── Toolbar (gizmo mode, view presets, toggles)
-              ├── Hierarchy panel (tree view, click to select)
-              ├── Inspector panel (property editing per node type)
-              ├── Console panel (backtick toggle)
-              └── Render feature panel (eframe window)
+              ├── Menu bar (File, Edit, View, Tools, Bookmarks, Create, Settings)
+              ├── Shared Keymap (menus + Studio host + Settings rebind)
+              ├── Floating left tool strip (Photoshop-style flyouts, display/overlay)
+              ├── Right side dock (icon tabs: Hierarchy / Inspector / Render / History / Assets)
+              ├── Bottom dock (icon tabs: Document / Compositor / Console)
+              └── Workspace presets (Model / LookDev / Compositor)
 ```
 
-**EditorCommand** (~50 variants): undo, redo, transform commit, camera change, material edit, visibility toggle, display mode, create/delete node, import file, bookmark, etc.
+**EditorCommand** (~80 variants): undo, redo, transform commit, camera change, material edit, visibility toggle, display mode, create/delete node, import file, bookmark, markup mouse, measurement pick, hide/isolate/lock, history jump, keymap bind, **LoadCase / SetCaseParam / RunCaseStep** (Studio case library), etc. `apply_command` in `rc3d-editor/src/apply/` routes by domain (`io`, `render`, `scene`, `tools`). Studio is a thin host (winit/DWM); editor chrome stays in `rc3d-editor`. The eframe `ui/panel.rs` window is examples-only.
+
+**Studio case library** (`rc3d-studio/src/cases/`): catalog of param/process demos built from shared scene builders (not forked example `main`s). Floating **Case Library** window plus Assets side tab; param sliders emit `SetCaseParam`, process buttons emit `RunCaseStep`. Stress/diagnostic examples remain CLI-only under `rc3d-examples`.
 
 ### 9.4 Gizmo System
 
@@ -842,10 +849,11 @@ BVH frustum cull                      ← CPU or GPU compute (async readback)
 Mesh upload (GpuMeshPool)             ← LRU + budget, max 16/frame
     │
     ▼
-execute_passes() ── single command encoder:
+execute_passes() ── `render_passes/{execute,film,overlay}.rs`, single command encoder:
     Background → CSM Shadows → Omni Shadows → HZB Prepass → Cluster Cull →
     Solid → Section Caps → Transparent (WBOIT) → Effects →
-    Wireframe → Selection → Edge Overlay → Post-FX → HUD → Swapchain
+    Wireframe → Selection → Edge Overlay → LDR/HDR present → Compositor (CAD look + film ops) →
+    SS edges / deferred lines → Grid/Gizmo/Markup → Overlay composite → HUD → Swapchain
     │
     ▼
 GPU presents to window

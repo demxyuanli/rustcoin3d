@@ -91,52 +91,22 @@ impl super::Renderer {
             return stats;
         };
         let swapchain_view = swapchain_frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let upscale_bgl = self.gpu.upscale_bgl.as_ref().unwrap();
-        let upscale_sampler = self.gpu.upscale_sampler.as_ref().unwrap();
         let intermediate_view = self
             .gpu
             .interaction_downscale_view
             .as_ref()
             .expect("Intermediate view must exist");
-        let upscale_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Upscale BindGroup"),
-            layout: upscale_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(intermediate_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(upscale_sampler),
-                },
-            ],
-        });
-
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Upscale Encoder"),
         });
-        {
-            let mut upscale_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Upscale to Swapchain"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &swapchain_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None, multiview_mask: None,
-            });
-            upscale_pass.set_pipeline(self.gpu.upscale_pipeline.as_ref().unwrap());
-            upscale_pass.set_bind_group(0, &upscale_bg, &[]);
-            upscale_pass.draw(0..3, 0..1);
-        }
-        // Post-swapchain overlay (e.g. egui) runs on the upscaled swapchain view
+        let _ = self.blit_texture_view_to_target(
+            &mut encoder,
+            intermediate_view,
+            &swapchain_view,
+        );
+        // Scene film + nav-cube tiles, then retain, then egui (UiOnly reuses retain).
+        self.encode_overlay_composite(&mut encoder, &swapchain_view);
+        self.capture_ui_retain(&mut encoder, &swapchain_frame.texture);
         if let Some(ref mut hook) = post_swapchain_overlay {
             hook(&mut encoder, &swapchain_view);
         }
@@ -146,6 +116,37 @@ impl super::Renderer {
         self.queue.present(swapchain_frame);
 
         stats
+    }
+
+    /// Present by blitting the scene-only retain film, then painting UI once.
+    /// Returns false when blit cannot run (caller should Full-render).
+    pub fn present_post_overlay_only(
+        &mut self,
+        mut post_swapchain_overlay: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::TextureView)>,
+    ) -> bool {
+        if !self.has_ui_retain() || self.gpu.ui_retain_blit_bg.is_none() {
+            return false;
+        }
+        let Some(output) = self.acquire_surface_texture() else {
+            return false;
+        };
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("post_overlay_only"),
+            });
+        if !self.blit_ui_retain_to_view(&mut encoder, &view) {
+            return false;
+        }
+        if let Some(hook) = post_swapchain_overlay.as_mut() {
+            hook(&mut encoder, &view);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.present(output);
+        true
     }
 
     pub fn render_draw_calls_to_viewport_texture<'t>(
@@ -208,17 +209,22 @@ impl super::Renderer {
         if !self.hud_enabled {
             return;
         }
+        let cad = self.cad_status_line();
+        let cad_changed = self.frame.last_cad_hud != cad;
         let interval = match self.gpu.adaptive_quality {
             AdaptiveQuality::High => 1,
             AdaptiveQuality::Medium => 2,
             AdaptiveQuality::Low => 6,
         };
-        if self.frame.frame_counter.saturating_sub(self.frame.last_hud_update_frame) < interval {
+        if !cad_changed
+            && self.frame.frame_counter.saturating_sub(self.frame.last_hud_update_frame) < interval
+        {
             return;
         }
         self.frame.last_hud_update_frame = self.frame.frame_counter;
+        self.frame.last_cad_hud = cad.clone();
         let quality_name = self.adaptive_quality_name();
-        let hud_mode_name = format!("{mode_name} [{quality_name}]");
+        let hud_mode_name = format!("{mode_name} [{quality_name}]\n{cad}");
         if let Some(hud) = &mut self.gpu.hud {
             hud.set_fps_buffer_text(fps, frame_time_ms, stats, &hud_mode_name);
         }
@@ -447,6 +453,7 @@ impl super::Renderer {
                 height: h,
                 texture,
                 view,
+                depth: None,
             });
         }
     }
@@ -616,6 +623,8 @@ impl super::Renderer {
         crate::render_passes::pass_viewport::encode_viewport_borders(
             self, &mut encoder, &view, sw, sh,
         );
+        self.encode_overlay_composite(&mut encoder, &view);
+        self.capture_ui_retain(&mut encoder, &frame.texture);
         if let Some(ref mut hook) = post_swapchain_overlay {
             hook(&mut encoder, &view);
         }

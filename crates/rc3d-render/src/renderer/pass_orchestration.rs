@@ -164,7 +164,8 @@ impl super::Renderer {
         // match the previous global-mode gates via the same helpers.
         let any_lit = visible.iter().any(|dc| dc.appearance().wants_lit_solid());
 
-        let solid_wants_shadow = !self.frame.performance_mode_active
+        let solid_wants_shadow = !self.overlay_pass
+            && !self.frame.performance_mode_active
             && any_lit
             && self.tier_wants_shadow;
 
