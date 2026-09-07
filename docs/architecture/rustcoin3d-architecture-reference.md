@@ -42,7 +42,7 @@ Industrial 3D visualization engine in Rust + wgpu, aligned with Coin3D/HOOPS par
 | `rc3d-actions` | core, fields, scene, mesh | Visitor/action pattern (render, pick, LOD, measurement) |
 | `rc3d-nodes` | core, fields, scene | Re-export shim for node types |
 | `rc3d-pointcloud` | core, scene | Point cloud with out-of-core tile caching |
-| `rc3d-pdf` | core, scene | PDF/U3D document generation |
+| `rc3d-pdf` | core, mesh, scene, image | PDF text reports + interactive U3D/3D-PDF export (`extract` scene traversal → `u3d` ECMA-363 writer → `pdf3d` PDF 1.7 `/3D` annotation). Per-shape model nodes + named-Separator GroupNode assembly tree; diffuse colours, PNG albedo textures and opacity via lit shader/material/texture resources; `PdfOptions` (render mode, lighting, background, FOV, zoom, framing center) shape the initial 3D view |
 | `rc3d-script` | core, scene | Rhai scripting bindings |
 | `rc3d-io` | core, scene, shape | STEP/STL/OBJ/glTF/FBX/VRML/IV/BREP import/export |
 | `rc3d-render` | core, fields, scene, mesh, actions | wgpu GPU renderer (~60 modules) |

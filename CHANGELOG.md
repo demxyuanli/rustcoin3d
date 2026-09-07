@@ -24,8 +24,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Studio split panel**: Hierarchy tab now hosts the scene tree plus the selected
   node's property table with a draggable divider (ratio persisted).
 - **i18n catalogs**: 450-key en/zh-Hans catalogs audited for dead/missing keys.
+- **Interactive 3D PDF export** (`rc3d-pdf`): real U3D (ECMA-363) embedding —
+  hand-rolled binary writer (file header, node/resource modifier chains, CLOD
+  mesh declaration + base-mesh continuation) wrapped in a PDF 1.7 `/3D`
+  annotation with camera framing. `export_u3d_pdf(scene)` flattens supported
+  shapes to world space via the shared scene traversal (Separator/Transform
+  hierarchies honored); each shape is a separate model node so parts stay
+  selectable, and `Material` nodes / `IndexedFaceSet.material_groups`
+  surface as per-part diffuse colours via lit-texture shader + material
+  resources (palette deduplicated). `export_mesh_u3d_pdf` takes an explicit
+  triangle mesh.
+- **3D PDF materials, assembly tree & view options** (`rc3d-pdf`): material
+  `albedo_texture` images are PNG-embedded as U3D texture resources (declaration
+  + continuation blocks, UVs ride in the base mesh) and material `opacity`
+  maps to the material opacity channel; named Separators become U3D
+  GroupNodes (0xFFFFFF21) so Acrobat's model tree mirrors the scene assembly
+  (parent/child name links, identity transforms, per-part world-space
+  geometry, duplicate labels auto-renamed); new `export_u3d_pdf_opts` +
+  `PdfOptions` configure the initial 3D view — `/RM` render mode, `/LS`
+  lighting scheme (non-White schemes use the PDF 1.7 `/3DLightingScheme`
+  dictionary), `/BG` solid DeviceRGB background, `/P` field of view, camera
+  zoom and framing-center override. Studio File menu “Export 3D PDF (U3D)…”
+  wires the exporter into the editor command bus.
+- **Studio 3D PDF export options dialog**: “Export 3D PDF (U3D)…” now opens a
+  lightweight options dialog (title, render mode, lighting, background colour,
+  FOV/zoom) backed by `PdfOptions` before writing the file; the command bus
+  `Export3dPdf` command carries the chosen options through to
+  `export_u3d_pdf_opts`.
 
 ### Changed
+- **3D PDF export dialog remembers its context**: the file picker starts in
+  the last-used folder (the editor's `file_dialog_dir`, persisted across
+  sessions) with a default `export.pdf` name, and the confirmed `PdfOptions`
+  seed the next export instead of resetting to defaults.
+- **Settings relocated to title bar**: the View menu “Settings” item was
+  replaced by a gear button on the right side of the caption bar that toggles a
+  top-right anchored settings panel (shared body with the old menu); the menu
+  item stays only when the caption bar is disabled.
+- **`rc3d-pdf` module restructure**: `u3d.rs` (1009 L) split into a `u3d/`
+  module directory — `u3d/mod.rs` holds the production writer and
+  `u3d/tests.rs` the unit-test suite; byte-for-byte identical output.
 - **UI restructure**: `menus.rs` split into `menus/` (file, view, display, render,
   create, labels) with shared helpers; `draw.rs` split into `docks.rs` (dock
   geometry, resize, tab bars, hierarchy split) and `shell.rs` (status bar, dialogs,

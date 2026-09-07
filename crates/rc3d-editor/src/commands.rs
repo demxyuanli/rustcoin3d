@@ -69,6 +69,12 @@ pub enum EditorCommand {
     SaveSceneAs(PathBuf),
     ImportPath(PathBuf),
     ExportIvPath(PathBuf),
+    /// Interactive 3D PDF export with per-view presentation options chosen
+    /// in the lightweight options dialog (defaults = plain export).
+    Export3dPdf {
+        path: PathBuf,
+        options: rc3d_pdf::PdfOptions,
+    },
     ExportDiagnosticsJsonPath(PathBuf),
     ExportScreenshot(PathBuf),
     ExportHiddenLineSvg(PathBuf),

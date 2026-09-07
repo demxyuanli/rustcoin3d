@@ -65,6 +65,7 @@ pub fn apply_command(
         | EditorCommand::SaveSceneAs(_)
         | EditorCommand::ImportPath(_)
         | EditorCommand::ExportIvPath(_)
+        | EditorCommand::Export3dPdf { .. }
         | EditorCommand::ExportDiagnosticsJsonPath(_)
         | EditorCommand::ExportScreenshot(_)
         | EditorCommand::ExportHiddenLineSvg(_)

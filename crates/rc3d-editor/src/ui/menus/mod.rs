@@ -12,6 +12,7 @@ use crate::ui::i18n::{t, UiLocale};
 use crate::ui::types::{EditorChromeState, EditorUiContext};
 
 pub(in crate::ui) use create::create_node_menu;
+pub(in crate::ui) use file::{settings_body, KeymapListHeight};
 pub(in crate::ui) use labels::{
     aq_mode_label, cad_tier_label, hierarchy_node_context_actions, layout_mode_label,
     selection_context_actions, view_preset_label, view_render_features_menu,
@@ -35,7 +36,11 @@ pub(super) fn menu_bar(
         ui.menu_button(t(loc, "menu.create"), |ui| {
             create_node_menu(ui, None, loc, push);
         });
-        file::settings_menu(ui, ui_ctx, chrome, push);
+        // With a caption bar the Settings gear on the title bar replaces the
+        // menu entry; without one (embedded/library hosts) keep it here.
+        if !chrome.caption.enabled {
+            file::settings_menu(ui, ui_ctx, chrome, push);
+        }
     });
 }
 

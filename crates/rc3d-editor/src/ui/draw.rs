@@ -13,7 +13,10 @@ use crate::ui::types::{EditorChromeState, EditorUiContext};
 use super::docks::{
     draw_bottom_dock_outer, draw_side_dock_outer, paint_scene_overlays,
 };
-use super::shell::{draw_close_prompt, draw_scene_context_menu, draw_status_bar, flush_panel};
+use super::shell::{
+    draw_close_prompt, draw_export3d_dialog, draw_scene_context_menu, draw_settings_panel,
+    draw_status_bar, flush_panel,
+};
 
 pub(super) fn build_ui(
     ctx: &mut egui::Ui,
@@ -99,6 +102,14 @@ pub(super) fn build_ui(
 
     if chrome.caption.close_prompt {
         draw_close_prompt(ctx.ctx(), ui_ctx, chrome, &mut push);
+    }
+
+    if chrome.export3d.is_some() {
+        draw_export3d_dialog(ctx.ctx(), ui_ctx, chrome, &mut push);
+    }
+
+    if chrome.settings_open {
+        draw_settings_panel(ctx.ctx(), ui_ctx, chrome, &mut push);
     }
 
     draw_scene_context_menu(

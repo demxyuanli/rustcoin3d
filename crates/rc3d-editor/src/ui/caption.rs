@@ -50,6 +50,11 @@ pub(super) fn draw_caption(
                 if caption_button(ui, CaptionIcon::Minimize, &pal).clicked() {
                     action = Some(CaptionAction::Minimize);
                 }
+                // Settings gear: opens the settings panel (menu-bar entry is
+                // hidden while the caption bar provides one).
+                if caption_button(ui, CaptionIcon::Settings, &pal).clicked() {
+                    chrome.settings_open = !chrome.settings_open;
+                }
 
                 let (rect, resp) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
@@ -87,6 +92,7 @@ enum CaptionIcon {
     Maximize,
     Restore,
     Close,
+    Settings,
 }
 
 fn caption_button(ui: &mut egui::Ui, icon: CaptionIcon, pal: &ThemePalette) -> egui::Response {
@@ -131,6 +137,7 @@ impl CaptionIcon {
             CaptionIcon::Maximize => 0xE922,
             CaptionIcon::Restore => 0xE923,
             CaptionIcon::Close => 0xE8BB,
+            CaptionIcon::Settings => 0xE713,
         }
     }
 }

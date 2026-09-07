@@ -323,6 +323,15 @@ impl Default for ToolStripState {
     }
 }
 
+/// Transient state for the lightweight "Export 3D PDF" options dialog:
+/// the target picked by the system file dialog plus the view options the
+/// user tuned before confirming the export.
+#[derive(Clone, Debug)]
+pub struct Export3dPdfDialogState {
+    pub path: std::path::PathBuf,
+    pub options: rc3d_pdf::PdfOptions,
+}
+
 pub struct EditorChromeState {
     pub bottom_tab: Option<BottomTab>,
     pub side_tab: Option<SideTab>,
@@ -351,6 +360,13 @@ pub struct EditorChromeState {
     /// Updated each egui frame; used to route scene pointer without blocking the empty viewport.
     pub pointer_over_egui: bool,
     pub caption: CaptionBarState,
+    /// Open "Export 3D PDF" options dialog, if any (path + current options).
+    pub export3d: Option<Export3dPdfDialogState>,
+    /// Options from the last confirmed 3D PDF export, so a repeat export
+    /// reopens the dialog with the previously tuned view settings.
+    pub last_pdf_options: rc3d_pdf::PdfOptions,
+    /// Caption-bar gear "Settings" panel open state (Studio-style title bar).
+    pub settings_open: bool,
 }
 
 impl Default for EditorChromeState {
@@ -377,6 +393,9 @@ impl Default for EditorChromeState {
             nav_cube_hover_slot: None,
             pointer_over_egui: false,
             caption: CaptionBarState::default(),
+            export3d: None,
+            last_pdf_options: rc3d_pdf::PdfOptions::default(),
+            settings_open: false,
         }
     }
 }

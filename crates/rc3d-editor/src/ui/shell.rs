@@ -83,6 +83,200 @@ pub(super) fn draw_status_bar(ui: &mut egui::Ui, ui_ctx: &EditorUiContext) {
     });
 }
 
+/// Lightweight options dialog for the "Export 3D PDF (U3D)..." command.
+/// Collects render mode / lighting / background / FOV / zoom into the
+/// [`rc3d_pdf::PdfOptions`] that the export command carries; "Export" pushes
+/// the command and closes, "Cancel" discards without touching the file.
+pub(super) fn draw_export3d_dialog(
+    ctx: &egui::Context,
+    ui_ctx: &EditorUiContext,
+    chrome: &mut EditorChromeState,
+    push: &mut impl FnMut(EditorCommand),
+) {
+    use rc3d_pdf::{PdfLighting, PdfRenderMode};
+
+    let Some(state) = chrome.export3d.as_mut() else {
+        return;
+    };
+    let loc = ui_ctx.ui_locale;
+    let mut close = false;
+    let mut export = false;
+
+    egui::Window::new(t(loc, "export3d.title"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let target = state
+                .path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            ui.label(format!("{}: {target}", t(loc, "export3d.path")));
+            ui.add_space(6.0);
+
+            let o = &mut state.options;
+
+            // Render mode override (None = keep the model's default).
+            ui.horizontal(|ui| {
+                ui.label(t(loc, "export3d.render_mode"));
+                let sel = o.render_mode.map(|m| m.pdf_name()).unwrap_or("__none__");
+                egui::ComboBox::from_id_salt("rc3d_export3d_rm")
+                    .selected_text(if sel == "__none__" {
+                        t(loc, "export3d.render_default").to_string()
+                    } else {
+                        sel.to_string()
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(sel == "__none__", t(loc, "export3d.render_default"))
+                            .clicked()
+                        {
+                            o.render_mode = None;
+                        }
+                        for m in [
+                            PdfRenderMode::Solid,
+                            PdfRenderMode::SolidWireframe,
+                            PdfRenderMode::Transparent,
+                            PdfRenderMode::TransparentWireframe,
+                            PdfRenderMode::Wireframe,
+                            PdfRenderMode::BoundingBox,
+                            PdfRenderMode::SolidOutline,
+                        ] {
+                            let name = m.pdf_name();
+                            if ui.selectable_label(sel == name, name).clicked() {
+                                o.render_mode = Some(m);
+                            }
+                        }
+                    });
+            });
+
+            // Lighting scheme (White keeps the legacy lights dictionary).
+            ui.horizontal(|ui| {
+                ui.label(t(loc, "export3d.lighting"));
+                let sel = o.lighting.pdf_name();
+                egui::ComboBox::from_id_salt("rc3d_export3d_ls")
+                    .selected_text(sel)
+                    .show_ui(ui, |ui| {
+                        for l in [
+                            PdfLighting::White,
+                            PdfLighting::Cad,
+                            PdfLighting::Day,
+                            PdfLighting::Night,
+                            PdfLighting::Headlamp,
+                            PdfLighting::Artwork,
+                            PdfLighting::Blue,
+                            PdfLighting::Red,
+                            PdfLighting::None,
+                        ] {
+                            let name = l.pdf_name();
+                            if ui.selectable_label(sel == name, name).clicked() {
+                                o.lighting = l;
+                            }
+                        }
+                    });
+            });
+
+            // Background toggle + solid color.
+            let mut bg_on = o.background.is_some();
+            let mut bg = o.background.unwrap_or([1.0, 1.0, 1.0]);
+            ui.horizontal(|ui| {
+                let toggled = ui.checkbox(&mut bg_on, t(loc, "export3d.background")).changed();
+                if bg_on {
+                    let edited = ui.color_edit_button_rgb(&mut bg).changed();
+                    // Enabling writes the current swatch immediately, so the
+                    // first frame of the checkbox already has a background.
+                    if toggled || edited {
+                        o.background = Some(bg);
+                    }
+                } else if toggled {
+                    o.background = None;
+                }
+            });
+
+            ui.add_space(4.0);
+            let mut fov = o.fov_degrees.unwrap_or(45.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Slider::new(&mut fov, 15.0..=120.0)
+                        .suffix(" deg")
+                        .text(t(loc, "export3d.fov")),
+                );
+            });
+            // Stored unconditionally so the rendered view always matches the
+            // value the user last saw in the slider.
+            o.fov_degrees = Some(fov);
+
+            let mut zoom = o.zoom.unwrap_or(1.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Slider::new(&mut zoom, 0.25..=4.0)
+                        .logarithmic(true)
+                        .text(t(loc, "export3d.zoom")),
+                );
+            });
+            o.zoom = Some(zoom);
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button(t(loc, "export3d.export")).clicked() {
+                    export = true;
+                }
+                if ui.button(t(loc, "export3d.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+    if export {
+        if let Some(state) = chrome.export3d.take() {
+            // Remember the confirmed view options for the next export.
+            chrome.last_pdf_options = state.options;
+            let cmd = EditorCommand::Export3dPdf {
+                path: state.path,
+                options: state.options,
+            };
+            push(cmd);
+        }
+    } else if close {
+        chrome.export3d = None;
+    }
+}
+
+/// Panel window opened by the caption-bar gear icon. Reuses the shared
+/// settings body (theme / language / keymap); `chrome.settings_open` binds
+/// the native window close (X) button.
+pub(super) fn draw_settings_panel(
+    ctx: &egui::Context,
+    ui_ctx: &EditorUiContext,
+    chrome: &mut EditorChromeState,
+    push: &mut impl FnMut(EditorCommand),
+) {
+    if !chrome.settings_open {
+        return;
+    }
+    let mut open = chrome.settings_open;
+    egui::Window::new(t(ui_ctx.ui_locale, "menu.settings"))
+        .collapsible(false)
+        .resizable(true)
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 40.0))
+        .default_width(340.0)
+        .default_height(520.0)
+        .min_size(egui::vec2(320.0, 300.0))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            super::menus::settings_body(
+                ui,
+                ui_ctx,
+                chrome,
+                push,
+                super::menus::KeymapListHeight::Fill,
+            );
+        });
+    chrome.settings_open = open;
+}
+
 /// Modal "unsaved changes" prompt shown on caption close with dirty state.
 pub(super) fn draw_close_prompt(
     ctx: &egui::Context,

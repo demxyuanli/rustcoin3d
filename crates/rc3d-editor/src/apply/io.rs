@@ -47,6 +47,12 @@ pub(super) fn apply(
         EditorCommand::ExportIvPath(path) => {
             export_scene_json(engine.scene(), &path);
         }
+        EditorCommand::Export3dPdf { path, options } => {
+            export_3d_pdf(engine.scene(), &path, &options);
+            // Remember the export folder so the next export dialog opens
+            // here (persisted to prefs as `last_folder`).
+            session.file_dialog_dir = document::dialog_dir_from_path(&path);
+        }
         EditorCommand::ExportDiagnosticsJsonPath(path) => {
             export_diagnostics(engine, &path);
         }
@@ -132,6 +138,28 @@ fn export_scene_json(graph: &SceneGraph, path: &Path) {
             }
         }
         Err(e) => log::warn!("serialize scene failed: {e}"),
+    }
+}
+
+/// Interactive 3D PDF (U3D) export for the current scene. The document
+/// stem becomes the 3D-view title; errors surface on the log.
+fn export_3d_pdf(graph: &SceneGraph, path: &Path, options: &rc3d_pdf::PdfOptions) {
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("rc3d scene");
+    let with_ext = if path.extension().is_some() {
+        path.to_path_buf()
+    } else {
+        path.with_extension("pdf")
+    };
+    match rc3d_pdf::export_u3d_pdf_opts(graph, title, options) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(&with_ext, bytes) {
+                log::warn!("3D PDF export failed: {e}");
+            }
+        }
+        Err(e) => log::warn!("3D PDF export failed: {e}"),
     }
 }
 
