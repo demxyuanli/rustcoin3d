@@ -70,6 +70,10 @@ pub(crate) fn encode_hud_overlay(
         timestamp_writes: None,
         occlusion_query_set: None, multiview_mask: None,
     });
+    // Clamp to the actual pass target: swapchain size can lag `config` for a
+    // frame during window resize; an out-of-bounds scissor is a fatal wgpu error.
+    let (tw, th) = renderer.pass_target_size;
+    let film = film.clamped_to(tw.max(1), th.max(1));
     pass.set_scissor_rect(film.x, film.y, film.width.max(1), film.height.max(1));
     hud.render_hud_chrome(&mut pass);
 }

@@ -400,7 +400,13 @@ impl CompositorGpu {
             });
             pass.set_pipeline(&self.blit_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.set_scissor_rect(scissor[0], scissor[1], scissor[2].max(1), scissor[3].max(1));
+            // Clamp to the dest target: swapchain size can lag `config` during
+            // resize; an out-of-bounds scissor is a fatal wgpu error.
+            let sx = scissor[0].min(self.size[0].saturating_sub(1));
+            let sy = scissor[1].min(self.size[1].saturating_sub(1));
+            let sw = scissor[2].max(1).min(self.size[0].saturating_sub(sx));
+            let sh = scissor[3].max(1).min(self.size[1].saturating_sub(sy));
+            pass.set_scissor_rect(sx, sy, sw.max(1), sh.max(1));
             pass.draw(0..3, 0..1);
         }
 

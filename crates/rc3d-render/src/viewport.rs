@@ -59,6 +59,19 @@ impl ViewportRect {
     }
 
     /// Map clip-space (-1..1) onto this pixel rect of the current render target.
+    ///
+    /// Clamps to `target_w` x `target_h` first: during a window resize the
+    /// acquired swapchain texture can lag `config` for one frame, and an
+    /// out-of-bounds scissor is a fatal wgpu validation error.
+    pub fn apply_to_pass_in(&self, pass: &mut wgpu::RenderPass<'_>, target_w: u32, target_h: u32) {
+        let rect = self.clamped_to(target_w, target_h);
+        let w = rect.width.max(1);
+        let h = rect.height.max(1);
+        pass.set_viewport(rect.x as f32, rect.y as f32, w as f32, h as f32, 0.0, 1.0);
+        pass.set_scissor_rect(rect.x, rect.y, w, h);
+    }
+
+    /// Map clip-space (-1..1) onto this pixel rect without clamping.
     pub fn apply_to_pass(&self, pass: &mut wgpu::RenderPass<'_>) {
         let w = self.width.max(1);
         let h = self.height.max(1);

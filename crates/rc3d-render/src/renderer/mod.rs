@@ -420,7 +420,36 @@ impl Renderer {
     }
 
     pub fn acquire_surface_texture(&self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
+        let acquired = self.surface.get_current_texture();
+        let stale = matches!(
+            &acquired,
+            wgpu::CurrentSurfaceTexture::Success(tex)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(tex)
+                    if tex.texture.width() != self.config.width
+                        || tex.texture.height() != self.config.height
+        );
+        if stale {
+            // A window resize can hand out a swapchain texture of the previous
+            // size before the surface catches up with `config`. Every scissor
+            // and viewport this frame is computed in `config` pixels; using a
+            // mismatched target trips a fatal wgpu validation error, so
+            // reconfigure and retry once instead of rendering into it.
+            drop(acquired);
+            self.surface.configure(&self.device, &self.config);
+            return match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(tex)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(tex)
+                    if tex.texture.width() == self.config.width
+                        && tex.texture.height() == self.config.height =>
+                {
+                    Some(tex)
+                }
+                // Retry still mismatched or failed: skip this frame (the
+                // surface is already reconfigured for the next acquire).
+                _ => None,
+            };
+        }
+        match acquired {
             wgpu::CurrentSurfaceTexture::Success(tex)
             | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => Some(tex),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
@@ -1534,7 +1563,8 @@ impl Renderer {
     }
 
     pub fn apply_scene_viewport(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.current_pass_viewport().apply_to_pass(pass);
+        let (tw, th) = self.pass_target_size;
+        self.current_pass_viewport().apply_to_pass_in(pass, tw.max(1), th.max(1));
     }
 
     pub fn set_display_mode(&mut self, mode: DisplayMode) {

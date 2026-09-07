@@ -556,15 +556,20 @@ impl super::Renderer {
                 let Some(rect) = rects.get(i) else {
                     break;
                 };
+                // Clamp to the destination target: swapchain size can lag
+                // `config` during resize; out-of-bounds scissor is fatal.
+                let rect = rect.clamped_to(self.pass_target_size.0, self.pass_target_size.1);
+                let w = rect.width.max(1);
+                let h = rect.height.max(1);
                 pass.set_viewport(
                     rect.x as f32,
                     rect.y as f32,
-                    rect.width.max(1) as f32,
-                    rect.height.max(1) as f32,
+                    w as f32,
+                    h as f32,
                     0.0,
                     1.0,
                 );
-                pass.set_scissor_rect(rect.x, rect.y, rect.width.max(1), rect.height.max(1));
+                pass.set_scissor_rect(rect.x, rect.y, w, h);
                 pass.set_bind_group(0, bg, &[]);
                 pass.draw(0..3, 0..1);
             }
