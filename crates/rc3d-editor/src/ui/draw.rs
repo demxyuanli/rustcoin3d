@@ -21,10 +21,15 @@ pub(super) fn build_ui(
     ui_ctx: &EditorUiContext,
     context_menu_pos: &mut Option<egui::Pos2>,
     chrome: &mut EditorChromeState,
+    splash: &mut super::splash::SplashState,
     compositor: &mut super::compositor::CompositorEditor,
     markdown_cache: &mut egui_commonmark::CommonMarkCache,
     q: &mut VecDeque<EditorCommand>,
 ) {
+    // Splash takes over the whole window until the host flips `done`.
+    if super::splash::draw_splash(ctx.ctx(), ui_ctx, splash) {
+        return;
+    }
     let mut push = |c: EditorCommand| q.push_back(c);
     let pal: ThemePalette = ui_ctx.ui_theme.palette();
     let bar_inner = egui::Margin::symmetric(8, 2);

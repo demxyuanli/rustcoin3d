@@ -448,5 +448,10 @@
   "hier.duplicate": "复制",
   "hier.add_child": "添加子节点",
   "insp.visible": "可见 (应用)",
-  "edge.outline": "轮廓线宽"
+  "edge.outline": "轮廓线宽",
+  "splash.tagline": "工业级 3D 可视化引擎",
+  "splash.copyright": "rustcoin3d - BSD-3-Clause",
+  "splash.stage_device": "正在初始化 GPU 设备...",
+  "splash.stage_scene": "正在加载场景...",
+  "splash.stage_ready": "正在准备工作区..."
 }

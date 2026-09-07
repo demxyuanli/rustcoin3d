@@ -2,12 +2,17 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::window::{CursorIcon, ResizeDirection, Theme, Window, WindowAttributes};
 
 pub fn window_attributes() -> WindowAttributes {
+    // Hidden at creation: the client area only gets real pixels on the first
+    // present, until then DWM would show a white un-presented swapchain plus
+    // the dark Mica backdrop edge (white-top / black-strip startup flash).
+    // The window is revealed in `present.rs` right after the first full frame.
     let attrs = WindowAttributes::default()
         .with_title("rustcoin3d Studio")
         .with_decorations(false)
         .with_resizable(true)
         .with_min_inner_size(LogicalSize::new(960.0, 640.0))
-        .with_inner_size(LogicalSize::new(1440.0, 900.0));
+        .with_inner_size(LogicalSize::new(1440.0, 900.0))
+        .with_visible(false);
     #[cfg(windows)]
     {
         use winit::platform::windows::{
@@ -26,6 +31,22 @@ pub fn window_attributes() -> WindowAttributes {
 
 pub fn apply_after_create(window: &Window) {
     window.set_theme(Some(Theme::Dark));
+    center_on_primary_monitor(window);
+}
+
+/// Center the undecorated window on the primary monitor (winit 0.30 has no
+/// `Position::Centered`; the OS would otherwise cascade it arbitrarily).
+fn center_on_primary_monitor(window: &Window) {
+    let Some(monitor) = window.current_monitor().or_else(|| window.primary_monitor())
+    else {
+        return;
+    };
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let win = window.outer_size();
+    let x = mon_pos.x + ((mon_size.width as i32 - win.width as i32) / 2).max(0);
+    let y = mon_pos.y + ((mon_size.height as i32 - win.height as i32) / 2).max(0);
+    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
 
 pub fn resize_direction(

@@ -53,6 +53,62 @@ pub(crate) fn apply_scene_region_from_editor(engine: &mut Engine, editor: &Edito
     })
 }
 
+/// Load the pending scene graph once (first splash frame), before any present
+/// so the very first rendered frame already contains real geometry.
+fn load_pending_scene(engine: &mut Engine, state: &mut HostState) {
+    if let Some(graph) = state.pending_graph.take() {
+        engine.load_scene(graph);
+    }
+}
+
+/// Minimum time the splash stays up: long enough to be perceived, short
+/// enough not to feel like stalling.
+pub(crate) const SPLASH_MIN_SHOW: std::time::Duration =
+    std::time::Duration::from_millis(700);
+
+/// One splash frame. The splash advances Device -> Scene -> Ready over at
+/// least `SPLASH_MIN_SHOW`, then flips `done` so the next frame paints the
+/// real workspace. Frames during the splash are driven by `about_to_wait`
+/// polling because a hidden window receives no `WM_PAINT`, so
+/// `request_redraw` alone never delivers `RedrawRequested` on Windows.
+pub(crate) fn splash_step(
+    editor: &mut Editor,
+    state: &mut HostState,
+    now: std::time::Instant,
+) {
+    use rc3d_editor::ui::splash::{SplashStage, SplashState};
+    let cur = editor.splash();
+    if cur.done {
+        return;
+    }
+    // Measure the minimum show from the first painted splash frame, not from
+    // window creation: slow device/scene init could otherwise consume the
+    // whole budget and skip the splash entirely.
+    if !cur.painted {
+        state.splash_start = now;
+        return;
+    }
+    let elapsed = now.saturating_duration_since(state.splash_start);
+    // Continuous bar: discrete per-stage steps stalled at 75% for the whole
+    // second half of the show.
+    let frac = (elapsed.as_secs_f32() / SPLASH_MIN_SHOW.as_secs_f32()).clamp(0.0, 1.0);
+    let stage = if frac >= 1.0 {
+        SplashStage::Ready
+    } else if frac < 0.5 {
+        SplashStage::Device
+    } else {
+        SplashStage::Scene
+    };
+    // Keep `painted`: it is set by the egui draw pass and gates the window
+    // reveal, so replacing the whole state must not clear it.
+    editor.set_splash(SplashState {
+        stage,
+        progress: frac,
+        done: frac >= 1.0,
+        painted: cur.painted,
+    });
+}
+
 /// Drain editor commands, render egui chrome and present UiOnly or Full.
 pub(crate) fn present_frame(deps: FrameDeps<'_>, state: &mut HostState) -> FrameOutcome {
     let FrameDeps {
@@ -67,6 +123,16 @@ pub(crate) fn present_frame(deps: FrameDeps<'_>, state: &mut HostState) -> Frame
     }
     let mut redraw = state.pending_redraw;
     state.pending_redraw = RedrawKind::None;
+    // Splash lifecycle: load the scene on the first frame so the reveal frame
+    // already contains geometry; the stage bar is time driven. The first frames
+    // run while the window is still hidden (no WM_PAINT), so `about_to_wait`
+    // drives them directly until the splash painted frame reveals the window.
+    let splash_active = !editor.splash().done;
+    if splash_active {
+        load_pending_scene(engine, state);
+        splash_step(editor, state, std::time::Instant::now());
+        redraw = RedrawKind::Full;
+    }
     // No scene film yet → Full. Bare request_repaint (egui menus) → UiOnly, never Full.
     if !state.scene_presented {
         redraw = RedrawKind::Full;
@@ -120,6 +186,12 @@ pub(crate) fn present_frame(deps: FrameDeps<'_>, state: &mut HostState) -> Frame
         // Menus/popups open on click and need a settle frame; without this,
         // Wait + no pointer move leaves the dropdown invisible until move.
         merge_redraw(&mut state.pending_redraw, RedrawKind::UiOnly);
+        window.request_redraw();
+    }
+    // The splash paints no widgets, so it never sets `repaint_delay`; without
+    // an explicit pump the loop stalls on the current stage (the bar froze at
+    // 75%) and `done` is never reached.
+    if !editor.splash().done {
         window.request_redraw();
     }
     match editor.take_caption_action() {
@@ -176,6 +248,17 @@ pub(crate) fn present_frame(deps: FrameDeps<'_>, state: &mut HostState) -> Frame
     if do_full {
         present_full_frame(engine, editor, state, window, &device, &queue);
         state.scene_presented = true;
+        // Reveal as soon as a frame has real pixels in the swapchain.
+        // Splash phase: that frame paints only the splash (build_ui returns
+        // early), so the user sees the splash first — `painted` guards the
+        // very first frames where egui has no screen size yet and the surface
+        // would still be un-presented white. After `done` flips, the same
+        // path reveals the finished workspace when the splash is disabled.
+        let splash = editor.splash();
+        let revealed = if splash.done { true } else { splash.painted };
+        if revealed && window.is_visible() != Some(true) {
+            window.set_visible(true);
+        }
     }
     FrameOutcome::Done
 }

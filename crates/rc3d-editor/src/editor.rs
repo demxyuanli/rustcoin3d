@@ -23,6 +23,15 @@ impl Editor {
         self.ui.handle_event(window, event)
     }
 
+    /// Host-driven splash lifecycle: set the loading stage / completion.
+    pub fn set_splash(&mut self, splash: crate::ui::splash::SplashState) {
+        self.ui.set_splash(splash);
+    }
+
+    pub fn splash(&self) -> crate::ui::splash::SplashState {
+        self.ui.splash()
+    }
+
     /// Build egui UI for this frame. Call this each frame before `paint()`.
     /// Returns `true` when egui needs another immediate redraw (menus/popups).
     pub fn render(

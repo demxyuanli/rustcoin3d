@@ -14,6 +14,7 @@ pub mod menus;
 pub mod nav_cube;
 pub mod panel;
 mod shell;
+pub mod splash;
 pub mod theme;
 pub mod tool_strip;
 pub mod types;
@@ -43,6 +44,7 @@ pub struct EditorUi {
     /// Right-click context menu position in egui coordinates, if visible.
     context_menu_pos: Option<egui::Pos2>,
     chrome: crate::ui::types::EditorChromeState,
+    splash: crate::ui::splash::SplashState,
     fonts_ready: bool,
     applied_theme: Option<crate::ui::theme::UiTheme>,
     compositor: crate::ui::compositor::CompositorEditor,
@@ -88,6 +90,7 @@ impl EditorUi {
             textures_to_free: Vec::new(),
             context_menu_pos: None,
             chrome: crate::ui::types::EditorChromeState::default(),
+            splash: crate::ui::splash::SplashState::default(),
             fonts_ready: false,
             applied_theme: None,
             compositor: crate::ui::compositor::CompositorEditor::default(),
@@ -169,6 +172,15 @@ impl EditorUi {
         &self.chrome
     }
 
+    /// Host-driven splash lifecycle: set the loading stage / completion.
+    pub fn set_splash(&mut self, splash: crate::ui::splash::SplashState) {
+        self.splash = splash;
+    }
+
+    pub fn splash(&self) -> crate::ui::splash::SplashState {
+        self.splash
+    }
+
     /// Build egui UI for this frame. Returns `true` when egui needs another
     /// immediate pass (menus, popups, settle frames). With `ControlFlow::Wait`
     /// the host must schedule a redraw or those only appear after the next
@@ -188,6 +200,7 @@ impl EditorUi {
         }
         let ctx_menu = &mut self.context_menu_pos;
         let chrome = &mut self.chrome;
+        let splash = &mut self.splash;
         let compositor = &mut self.compositor;
         let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             draw::build_ui(
@@ -196,6 +209,7 @@ impl EditorUi {
                 ui_ctx,
                 ctx_menu,
                 chrome,
+                splash,
                 compositor,
                 &mut self.markdown_cache,
                 &mut self.command_queue,

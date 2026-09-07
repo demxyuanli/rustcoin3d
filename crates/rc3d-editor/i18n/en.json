@@ -448,5 +448,10 @@
   "hier.duplicate": "Duplicate",
   "hier.add_child": "Add child",
   "insp.visible": "visible (app)",
-  "edge.outline": "outline thickness"
+  "edge.outline": "outline thickness",
+  "splash.tagline": "Industrial 3D visualization engine",
+  "splash.copyright": "rustcoin3d - BSD-3-Clause",
+  "splash.stage_device": "Initializing GPU device...",
+  "splash.stage_scene": "Loading scene...",
+  "splash.stage_ready": "Preparing workspace..."
 }

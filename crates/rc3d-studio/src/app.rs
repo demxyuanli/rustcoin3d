@@ -24,7 +24,6 @@ use crate::redraw::{
 use crate::win_shell;
 
 pub struct StudioApp {
-    pending_graph: Option<SceneGraph>,
     engine: Option<Engine>,
     editor: Option<Editor>,
     window: Option<winit::window::Window>,
@@ -49,13 +48,13 @@ impl StudioApp {
             }
         }
         Self {
-            pending_graph: Some(pending),
             engine: None,
             editor: None,
             window: None,
             state: HostState {
                 interaction: EditorInteractionState::default(),
                 session,
+                pending_graph: Some(pending),
                 cursor_pos: None,
                 recent: prefs.recent,
                 last_autosave: std::time::Instant::now(),
@@ -66,6 +65,7 @@ impl StudioApp {
                 active_case: None,
                 docks_resizing: false,
                 viewport_split_resizing: false,
+                splash_start: std::time::Instant::now(),
             },
             on_resize_edge: false,
             cad_matrix,
@@ -82,14 +82,16 @@ impl ApplicationHandler for StudioApp {
             .create_window(win_shell::window_attributes())
             .expect("failed to create window");
         win_shell::apply_after_create(&window);
-        let graph = self.pending_graph.take().expect("demo scene");
+        // Splash shows immediately: engine + editor are created now (device,
+        // pipelines, egui fonts), but the scene graph upload is deferred to the
+        // first `Ready` frame so the splash is visible while it runs.
         let mut engine = Engine::new(&window);
-        engine.load_scene(graph);
         engine.controller = CameraController::new(rc3d_core::math::Vec3::ZERO, 10.0);
         engine.set_display_mode(DisplayMode::Shaded);
         engine.add_overlay_viewport(rc3d_editor::ui::nav_cube::nav_cube_overlay());
         let mut editor = Editor::new(&window, &engine);
         editor.enable_studio_shell("rustcoin3d Studio");
+        editor.set_splash(rc3d_editor::ui::splash::SplashState::starting());
         {
             let p = crate::prefs::load();
             let chrome = editor.chrome_mut();
@@ -129,6 +131,9 @@ impl ApplicationHandler for StudioApp {
             std::process::exit(if report.passed { 0 } else { 1 });
         }
         if let Some(window) = self.window.as_ref() {
+            // Pacing starts when the first frame can run, not when the app
+            // struct was built (engine init would eat the splash budget).
+            self.state.splash_start = std::time::Instant::now();
             window.request_redraw();
         }
     }
@@ -397,7 +402,41 @@ impl ApplicationHandler for StudioApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Before the first painted splash frame reveals the window it is
+        // hidden, and a hidden window receives no WM_PAINT — so neither
+        // `request_redraw` nor Poll would deliver `RedrawRequested`. Drive
+        // those frames directly from the wake tick. Once visible, Poll keeps
+        // the splash animating via normal RedrawRequested events and direct
+        // presentation would double-present, so skip it.
+        let splash_active = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| !e.splash().done);
+        if splash_active {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            let window_hidden = self
+                .window
+                .as_ref()
+                .is_some_and(|w| w.is_visible() != Some(true));
+            if window_hidden {
+                if let (Some(engine), Some(editor), Some(window)) =
+                    (self.engine.as_mut(), self.editor.as_mut(), self.window.as_ref())
+                {
+                    let _ = present_frame(
+                        FrameDeps {
+                            engine,
+                            editor,
+                            window,
+                            event_loop,
+                        },
+                        &mut self.state,
+                    );
+                }
+            }
+            return;
+        }
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         if let (Some(engine), Some(editor)) =
             (self.engine.as_mut(), self.editor.as_mut())
         {
