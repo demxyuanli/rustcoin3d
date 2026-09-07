@@ -6,5 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 rc3d-core = { workspace = true }
+rc3d-mesh = { workspace = true }
 rc3d-scene = { workspace = true }
+image = { workspace = true }
 thiserror = { workspace = true }
