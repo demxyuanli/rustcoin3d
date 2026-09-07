@@ -22,10 +22,13 @@ use view::{ViewCmd, ViewState};
 use viewer::CompViewer;
 
 const SNARL_ID: &str = "rc3d-compositor-snarl";
-pub(super) const NODE_W: f32 = 133.0;
-const DOT_STEP: f32 = 20.0;
-const NODE_FILL: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-const NODE_R: u8 = 5;
+/// Target width (graph units) for the center parameter column of a node. The
+/// socket strips on the left / right edges add a bit on each side, so total
+/// node width ends up slightly wider.
+pub(super) const NODE_W: f32 = 180.0;
+const DOT_STEP: f32 = 24.0;
+const NODE_FILL: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
+const NODE_R: u8 = 6;
 
 const ADD_MENU: [(CompMenuGroup, &str); 6] = [
     (CompMenuGroup::Input, "comp.group.input"),
@@ -319,9 +322,14 @@ fn look_status(graph: &CompositorGraph) -> String {
 }
 
 fn add_menu(ui: &mut Ui, state: &mut CompositorEditor, loc: UiLocale) {
+    // Insert new nodes near the visible canvas centre (graph space) so they
+    // never land off-screen or pile onto existing nodes. Minor stagger avoids
+    // overlap when several ops are added in a row.
     pick_add_op(ui, loc, |op| {
-        let n = state.snarl.nodes().count() as f32;
-        let pos = pos2(80.0 + n * 16.0, 60.0 + n * 12.0);
+        let (c, scale) = (state.view.panel_rect.center(), state.view.last_scale.max(0.1));
+        let base = pos2(c.x - state.view.pan.x, c.y - state.view.pan.y) / scale;
+        let count = state.snarl.nodes().count() as f32;
+        let pos = pos2(base.x + (count % 5.0) * 36.0, base.y + (count / 5.0).floor() * 26.0);
         state
             .snarl
             .insert_node(pos, CompNode::new(0, op, [pos.x, pos.y]));

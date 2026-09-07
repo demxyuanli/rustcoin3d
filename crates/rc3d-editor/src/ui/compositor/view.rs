@@ -3,11 +3,16 @@
 use egui::{emath::TSTransform, pos2, vec2, Pos2, Rect, Vec2};
 use egui_snarl::Snarl;
 
-use rc3d_render::CompNode;
+use rc3d_render::{CompNode, CompOp};
 
-use super::NODE_W;
+use super::{sync::ui_input_count, NODE_W};
 
-const NODE_H_EST: f32 = 110.0;
+/// Header + top padding, in graph units.
+const HEADER_EST: f32 = 28.0;
+/// One socket / parameter row.
+const ROW_EST: f32 = 24.0;
+/// Extra width the two socket strips add to a node (both sides combined).
+const SOCKET_COL_EST: f32 = 90.0;
 const BB_PAD: f32 = 48.0;
 pub(super) const MIN_SCALE: f32 = 0.25;
 pub(super) const MAX_SCALE: f32 = 2.0;
@@ -19,6 +24,37 @@ pub(super) enum ViewCmd {
     ZoomOut,
     Fit,
     Center,
+}
+
+/// Number of parameter rows a node shows in its body (drives the fit estimate).
+fn body_rows(op: CompOp) -> f32 {
+    match op {
+        CompOp::Mix => 2.0, // blend type + Fac
+        CompOp::AlphaOver => 1.0, // Fac
+        CompOp::Rgb => 2.0,  // color + alpha
+        CompOp::Value => 1.0,
+        CompOp::Math => 1.0, // operator
+        CompOp::BrightContrast => 2.0,
+        CompOp::Blur => 1.0,
+        CompOp::Bloom => 1.0,
+        CompOp::Exposure | CompOp::Gamma | CompOp::Invert => 1.0,
+        CompOp::HueSat => 3.0,
+        CompOp::Translate | CompOp::Rotate | CompOp::Scale => 2.0,
+        CompOp::Crop => 4.0,
+        CompOp::DilateErode => 1.0,
+        CompOp::ColorRamp => 4.0,
+        _ => 0.0,
+    }
+}
+
+fn node_height_est(op: CompOp) -> f32 {
+    let sockets = if op == CompOp::Viewer {
+        1.0
+    } else {
+        ui_input_count(op).max(1) as f32
+    };
+    let rows = body_rows(op).max(sockets);
+    HEADER_EST + rows * ROW_EST + 10.0
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,6 +96,8 @@ pub(super) struct ViewState {
     pub last_scale: f32,
     /// Live view translation, updated each frame for background drawing.
     pub pan: Vec2,
+    /// First-frame auto-fit (keeps node graph on screen after load / resize).
+    fitted_once: bool,
 }
 
 impl Default for ViewState {
@@ -72,6 +110,7 @@ impl Default for ViewState {
             color_scheme: NodeColorScheme::Default,
             last_scale: 1.0,
             pan: Vec2::ZERO,
+            fitted_once: false,
         }
     }
 }
@@ -95,6 +134,15 @@ impl ViewState {
                 // Keep the graph point that sat under the old center under the new center.
                 let delta = panel.center() - prev_c;
                 to_global.translation += delta;
+            }
+        }
+
+        // Auto-fit once the canvas has a real size: keeps freshly loaded
+        // graphs (or the initial identity chain) centred and fully visible.
+        if !self.fitted_once {
+            self.fitted_once = true;
+            if let Some(bb) = nodes_bb(snarl) {
+                fit_view(to_global, bb, panel);
             }
         }
 
@@ -125,9 +173,12 @@ impl ViewState {
 
 fn nodes_bb(snarl: &Snarl<CompNode>) -> Option<Rect> {
     let mut bb = Rect::NOTHING;
-    for (_id, pos, _value) in snarl.nodes_pos_ids() {
+    for (_id, pos, value) in snarl.nodes_pos_ids() {
         bb.extend_with(pos);
-        bb.extend_with(pos2(pos.x + NODE_W, pos.y + NODE_H_EST));
+        bb.extend_with(pos2(
+            pos.x + NODE_W + SOCKET_COL_EST,
+            pos.y + node_height_est(value.op),
+        ));
     }
     if bb.is_finite() {
         Some(bb.expand(BB_PAD))

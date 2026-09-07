@@ -72,43 +72,25 @@ pub(super) fn export_graph(snarl: &Snarl<CompNode>) -> (Vec<CompNode>, Vec<CompE
     (nodes, edges)
 }
 
+/// UI input sockets are exactly the *connectable* graph inputs, in order.
+/// Every displayed input pin has a graph slot, so snarl pin index == slot.
 pub(super) fn graph_slot(op: CompOp, snarl_input: usize) -> Option<u8> {
-    match op {
-        CompOp::Mix | CompOp::AlphaOver => match snarl_input {
-            1 => Some(0),
-            2 => Some(1),
-            _ => None,
-        },
-        // Math: A and B are both wire-able, each with a scalar fallback value.
-        CompOp::Math => match snarl_input {
-            0 => Some(0),
-            1 => Some(1),
-            _ => None,
-        },
-        CompOp::RenderLayers | CompOp::Rgb | CompOp::Value => None,
-        _ => (snarl_input == 0).then_some(0),
-    }
+    (snarl_input < ui_input_count(op)).then_some(snarl_input as u8)
 }
 
-fn snarl_slot(op: CompOp, graph_slot: u8) -> usize {
-    match op {
-        CompOp::Mix | CompOp::AlphaOver => graph_slot as usize + 1,
-        _ => graph_slot as usize,
-    }
+fn snarl_slot(_op: CompOp, graph_slot: u8) -> usize {
+    graph_slot as usize
 }
 
 pub(super) fn ui_input_count(op: CompOp) -> usize {
     match op {
         CompOp::RenderLayers | CompOp::Rgb | CompOp::Value => 0,
-        CompOp::Mix | CompOp::AlphaOver | CompOp::BrightContrast => 3,
-        CompOp::Blur | CompOp::Bloom | CompOp::Math => 2,
+        CompOp::Mix | CompOp::AlphaOver | CompOp::Math => 2,
         _ => 1,
     }
 }
 
-pub(super) fn first_image_pin(op: CompOp) -> usize {
-    match op {
-        CompOp::Mix | CompOp::AlphaOver => 1,
-        _ => 0,
-    }
+/// First image input socket (all connectable inputs start at 0).
+pub(super) fn first_image_pin(_op: CompOp) -> usize {
+    0
 }

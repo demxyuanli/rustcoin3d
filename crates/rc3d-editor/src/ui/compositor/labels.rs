@@ -130,17 +130,31 @@ pub(super) fn value_pin() -> PinInfo {
         .with_wire_color(Color32::from_rgb(0x8F, 0x8F, 0x8F))
 }
 
-pub(super) fn factor_pin() -> PinInfo {
-    // Blender "Factor" socket: bright green.
-    PinInfo::circle()
-        .with_fill(Color32::from_rgb(0x7F, 0xE0, 0x50))
-        .with_wire_color(Color32::from_rgb(0x6F, 0xC8, 0x45))
+/// Socket ring color for a connectable input pin.
+pub(super) fn input_pin(op: CompOp, _idx: usize) -> PinInfo {
+    match op {
+        CompOp::Math => value_pin(),
+        _ => image_pin(),
+    }
+}
+
+/// Short label shown right of an input socket (A / B for multi-input ops).
+pub(super) fn input_socket_label(op: CompOp, idx: usize, loc: UiLocale) -> Option<&'static str> {
+    match op {
+        CompOp::Mix | CompOp::AlphaOver | CompOp::Math => match idx {
+            0 => Some(t(loc, "comp.socket.a")),
+            1 => Some(t(loc, "comp.socket.b")),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Output socket label + color per op, Blender-style (Image / Value / Color).
 pub(super) fn output_pin_info(op: CompOp, loc: UiLocale) -> (String, PinInfo) {
     match op {
         CompOp::Math | CompOp::Value => (t(loc, "comp.socket.value").to_owned(), value_pin()),
+        CompOp::Rgb => (t(loc, "comp.color").to_owned(), image_pin()),
         _ => (t(loc, "comp.socket.image").to_owned(), image_pin()),
     }
 }

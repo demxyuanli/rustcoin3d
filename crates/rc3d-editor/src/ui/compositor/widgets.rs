@@ -9,15 +9,6 @@ const SLIDER_BG_HOVER: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x5E);
 const SLIDER_FILL: Color32 = Color32::from_rgb(0x47, 0x72, 0xB3);
 const SLIDER_R: u8 = 3;
 const PILL_FILL_HOVER: Color32 = Color32::from_rgb(0x54, 0x54, 0x54);
-const LABEL_TEXT: Color32 = Color32::from_rgb(0xD0, 0xD0, 0xD0);
-
-/// Right-aligned muted label (used for plain socket-only rows: Image / A / B).
-pub(super) fn param_label(ui: &mut Ui, text: &str) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.style_mut().visuals.widgets.inactive.fg_stroke = Stroke::new(0.0, LABEL_TEXT);
-        ui.label(egui::RichText::new(text).size(10.0));
-    });
-}
 
 /// Blender node slider: full-width dark track, blue progress fill, label left +
 /// value right overlaid. Click sets absolute; drag adjusts.
@@ -91,6 +82,65 @@ pub(super) fn blender_slider(
         pos2(rect.right() - pad, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value_text,
+        font,
+        text_color,
+    );
+
+    resp
+}
+
+/// Compact value chip used inline next to a scalar socket (Math A / B).
+/// Fixed width so socket columns stay narrow under the side-by-side layout.
+pub(super) fn socket_field(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> egui::Response {
+    let width = 58.0;
+    let (rect, mut resp) =
+        ui.allocate_exact_size(vec2(width, SLIDER_H), egui::Sense::click_and_drag());
+    resp = resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+
+    let lo = *range.start();
+    let hi = *range.end();
+    let span = (hi - lo).abs().max(1e-6);
+
+    if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.clicked() || resp.dragged() {
+            let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            *value = lo + t * span;
+            resp.mark_changed();
+        }
+    }
+
+    let hovered = resp.hovered() || resp.dragged();
+    let bg = if hovered { SLIDER_BG_HOVER } else { SLIDER_BG };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(SLIDER_R), bg);
+
+    let t = ((*value - lo) / span).clamp(0.0, 1.0);
+    if t > 0.001 {
+        let mut fill = rect;
+        fill.set_width(rect.width() * t);
+        let radius = if t > 0.98 {
+            CornerRadius::same(SLIDER_R)
+        } else {
+            CornerRadius {
+                nw: SLIDER_R,
+                ne: 0,
+                sw: SLIDER_R,
+                se: 0,
+            }
+        };
+        painter.rect_filled(fill, radius, SLIDER_FILL);
+    }
+
+    let text_color = Color32::from_rgba_unmultiplied(255, 255, 255, 230);
+    let font = egui::FontId::proportional(10.0);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format_slider_value(*value, span),
         font,
         text_color,
     );

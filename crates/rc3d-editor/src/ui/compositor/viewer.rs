@@ -1,4 +1,12 @@
 //! egui-snarl viewer: node rendering, style and body widgets.
+//!
+//! Layout follows the Blender compositor convention:
+//! - inputs as sockets on the node's left edge, outputs on the right edge
+//!   (`NodeLayoutKind::Coil`);
+//! - each socket row is a thin label strip on the edge column while parameter
+//!   rows (dropdowns / sliders / fields) sit in the wider center column;
+//! - wires are smooth cubic Beziers whose curvature adapts to the distance
+//!   between sockets.
 
 use egui::{
     emath::TSTransform, pos2, vec2, Color32, CornerRadius, Frame, Margin, Painter, Pos2, Rect,
@@ -18,17 +26,21 @@ use crate::ui::icons::{self, Icon, PANEL_BTN};
 use crate::ui::theme::{paint_icon_glyph, ThemePalette};
 
 use super::labels::{
-    blend_label, factor_pin, header_color, image_pin, math_label, op_title, output_pin_info,
-    value_pin, MATH_OPS,
+    blend_label, header_color, input_pin, input_socket_label, math_label, op_title,
+    output_pin_info, value_pin, viewer_color, MATH_OPS,
 };
 use super::sync::{first_image_pin, graph_slot, protected, ui_input_count};
 use super::view::{NodeColorScheme, ViewState, MIN_SCALE};
 use super::widgets::{
-    blender_color_row_rgb, blender_dropdown, blender_slider, param_label, param_row, SLIDER_H,
+    blender_color_row_rgb, blender_dropdown, blender_slider, param_row, socket_field, SLIDER_H,
 };
-use super::{
-    pick_add_op, DOT_STEP, NODE_FILL, NODE_R, NODE_W,
-};
+use super::{pick_add_op, DOT_STEP, NODE_FILL, NODE_R, NODE_W};
+
+/// Horizontal gap between the socket (which sits on the node edge) and the
+/// first piece of text in the same socket row.
+const SOCKET_GAP: f32 = 7.0;
+/// Muted white used for socket labels.
+const SOCKET_TEXT: Color32 = Color32::from_rgb(0xC8, 0xC8, 0xC8);
 
 pub(super) fn force_node_width(ui: &mut Ui) {
     ui.set_min_width(NODE_W);
@@ -36,18 +48,21 @@ pub(super) fn force_node_width(ui: &mut Ui) {
 }
 
 pub(super) fn compositor_style() -> SnarlStyle {
-    let mut layout = egui_snarl::ui::NodeLayout::flipped_sandwich();
-    layout.min_pin_row_height = SLIDER_H + 4.0;
+    let mut layout = egui_snarl::ui::NodeLayout::coil();
+    // Rows in the socket columns are slightly taller than the widgets so the
+    // dots breathe like Blender's socket strips.
+    layout.min_pin_row_height = SLIDER_H + 8.0;
     // Blender-like socket: dark outline around the colored circle.
-    let pin_stroke = Stroke::new(1.2, Color32::from_rgb(0x1D, 0x1D, 0x1D));
+    let pin_stroke = Stroke::new(1.4, Color32::from_rgb(0x16, 0x16, 0x16));
     SnarlStyle {
         node_layout: Some(layout),
         pin_placement: Some(egui_snarl::ui::PinPlacement::Edge),
-        pin_size: Some(5.0),
+        pin_size: Some(5.5),
         pin_stroke: Some(pin_stroke),
-        wire_width: Some(1.1),
+        // Noticeable smooth connections: adaptive cubic Beziers.
+        wire_width: Some(1.6),
         wire_style: Some(WireStyle::Bezier3),
-        wire_smoothness: Some(32.0),
+        wire_smoothness: Some(150.0),
         collapsible: Some(false),
         min_scale: Some(MIN_SCALE),
         max_scale: Some(super::view::MAX_SCALE),
@@ -126,6 +141,7 @@ const GROUP_HSV: [MixBlend; 4] = [
     MixBlend::Color,
 ];
 
+/// One parameter row rendered inside the center column of a node.
 fn draw_node_body(ui: &mut Ui, n: &mut CompNode, loc: UiLocale) {
     match n.op {
         CompOp::Mix => {
@@ -156,6 +172,20 @@ fn draw_node_body(ui: &mut Ui, n: &mut CompNode, loc: UiLocale) {
                     }
                 },
             );
+            param_row(ui, &t(loc, "comp.fac"), &mut n.fac, 0.0..=1.0);
+        }
+        CompOp::AlphaOver => {
+            param_row(ui, &t(loc, "comp.fac"), &mut n.fac, 0.0..=1.0);
+        }
+        CompOp::BrightContrast => {
+            param_row(ui, &t(loc, "comp.brightness"), &mut n.brightness, -1.0..=1.0);
+            param_row(ui, &t(loc, "comp.contrast"), &mut n.contrast, -1.0..=1.0);
+        }
+        CompOp::Blur => {
+            param_row(ui, &t(loc, "comp.radius"), &mut n.blur_radius, 0.0..=24.0);
+        }
+        CompOp::Bloom => {
+            param_row(ui, &t(loc, "comp.fac"), &mut n.fac, 0.0..=1.0);
         }
         CompOp::Rgb => {
             // Blender RGB node: color row with right swatch + picker popup.
@@ -164,7 +194,7 @@ fn draw_node_body(ui: &mut Ui, n: &mut CompNode, loc: UiLocale) {
             param_row(ui, &t(loc, "comp.alpha"), &mut n.color[3], 0.0..=1.0);
         }
         CompOp::Value => {
-            blender_slider(ui, &t(loc, "comp.value"), &mut n.value, -100.0..=100.0);
+            param_row(ui, &t(loc, "comp.value"), &mut n.value, -100.0..=100.0);
         }
         CompOp::Math => {
             let popup_id = ui.make_persistent_id("comp-math-op");
@@ -237,6 +267,11 @@ fn draw_node_body(ui: &mut Ui, n: &mut CompNode, loc: UiLocale) {
         }
         _ => {}
     }
+}
+
+/// Muted socket name next to a pin (left column inputs / right column outputs).
+fn socket_label(ui: &mut Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(10.0).color(SOCKET_TEXT));
 }
 
 pub(super) struct CompViewer<'a> {
@@ -315,81 +350,52 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
 
     #[allow(refining_impl_trait)]
     fn show_input(&mut self, pin: &InPin, ui: &mut Ui, snarl: &mut Snarl<CompNode>) -> PinInfo {
-        // Only expand min_rect: set_max_width would rewind the layout cursor
-        // over the socket space snarl reserved for this pin row.
-        ui.set_min_width(NODE_W);
+        // Input socket rows live in the narrow strip along the node's left
+        // edge. Row content is the socket name (A/B for multi-input ops) plus,
+        // for scalar operands that fall back to a constant when unlinked, a
+        // compact inline field.
+        ui.spacing_mut().item_spacing.x = 3.0;
         ui.spacing_mut().item_spacing.y = 1.0;
         let loc = self.loc;
         let n = &mut snarl[pin.id.node];
-        // Blender look: the wire droops left of a right-aligned label, pill
-        // widgets fill the rest of the row.
         let linked = !pin.remotes.is_empty();
+        // Keep the label clear of the socket circle that sits on the edge.
+        ui.add_space(SOCKET_GAP);
         match (n.op, pin.id.input) {
-            (CompOp::Mix, 0) | (CompOp::AlphaOver, 0) | (CompOp::Bloom, 1) => {
-                blender_slider(ui, &t(loc, "comp.fac"), &mut n.fac, 0.0..=1.0);
-                factor_pin()
-            }
-            (CompOp::Mix, 1) | (CompOp::AlphaOver, 1) => {
-                param_label(ui, &t(loc, "comp.socket.a"));
-                image_pin()
-            }
-            (CompOp::Mix, 2) | (CompOp::AlphaOver, 2) => {
-                param_label(ui, &t(loc, "comp.socket.b"));
-                image_pin()
-            }
             (CompOp::Math, 0) => {
-                if linked {
-                    param_label(ui, "A");
-                } else {
-                    blender_slider(ui, "A", &mut n.value_a, -100.0..=100.0);
+                socket_label(ui, t(loc, "comp.socket.a"));
+                if !linked {
+                    socket_field(ui, &mut n.value_a, -100.0..=100.0);
                 }
                 value_pin()
             }
             (CompOp::Math, 1) => {
-                if linked {
-                    param_label(ui, "B");
-                } else {
-                    blender_slider(ui, "B", &mut n.value, -100.0..=100.0);
+                socket_label(ui, t(loc, "comp.socket.b"));
+                if !linked {
+                    socket_field(ui, &mut n.value, -100.0..=100.0);
                 }
                 value_pin()
             }
-            (CompOp::BrightContrast, 1) => {
-                blender_slider(
-                    ui,
-                    &t(loc, "comp.brightness"),
-                    &mut n.brightness,
-                    -1.0..=1.0,
-                );
-                value_pin()
-            }
-            (CompOp::BrightContrast, 2) => {
-                blender_slider(ui, &t(loc, "comp.contrast"), &mut n.contrast, -1.0..=1.0);
-                value_pin()
-            }
-            (CompOp::Blur, 1) => {
-                blender_slider(ui, &t(loc, "comp.radius"), &mut n.blur_radius, 0.0..=24.0);
-                value_pin()
-            }
             _ => {
-                param_label(ui, &t(loc, "comp.socket.image"));
-                image_pin()
+                let text = input_socket_label(n.op, pin.id.input, loc)
+                    .unwrap_or(t(loc, "comp.socket.image"));
+                socket_label(ui, text);
+                input_pin(n.op, pin.id.input)
             }
         }
     }
 
     #[allow(refining_impl_trait)]
     fn show_output(&mut self, _pin: &OutPin, ui: &mut Ui, snarl: &mut Snarl<CompNode>) -> PinInfo {
-        // Only expand min_rect: set_max_width would rewind the layout cursor
-        // over the socket space snarl reserved for this pin row.
-        ui.set_min_width(NODE_W);
+        // Output socket rows live along the node's right edge: label to the
+        // left of the socket, mirrored from the input column.
+        ui.spacing_mut().item_spacing.x = 3.0;
         let n = &snarl[_pin.id.node];
         let (label, pin) = output_pin_info(n.op, self.loc);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Edge placement sockets protrude into the node by pin_size/2;
-            // claim that space first so the label never overlaps the circle.
-            ui.add_space(4.0);
-            param_label(ui, &label);
-        });
+        // Right-to-left allocation: the gap ends up right next to the socket,
+        // the label just left of it.
+        ui.add_space(SOCKET_GAP);
+        socket_label(ui, &label);
         pin
     }
 
@@ -416,7 +422,7 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
     ) -> Frame {
         let n = &snarl[node];
         default.fill = if n.op == CompOp::Viewer {
-            super::labels::viewer_color(self.color_scheme)
+            viewer_color(self.color_scheme)
         } else {
             header_color(n.op, self.color_scheme)
         };
@@ -435,6 +441,10 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
         matches!(
             node.op,
             CompOp::Mix
+                | CompOp::AlphaOver
+                | CompOp::BrightContrast
+                | CompOp::Blur
+                | CompOp::Bloom
                 | CompOp::ColorRamp
                 | CompOp::Rgb
                 | CompOp::Value
@@ -472,8 +482,10 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
         painter: &Painter,
         _snarl: &Snarl<CompNode>,
     ) {
-        // Blender-like dot grid: spacing is fixed in graph space and scales with
-        // zoom; dots stay aligned to the graph origin via the view translation.
+        // Blender-like dot grid: spacing is fixed in graph space and scales
+        // with zoom; dots stay aligned to the graph origin via the view
+        // translation. Dot spacing halves between zoom levels to keep density
+        // constant on screen while the step visibly changes (Blender style).
         let scale = self.view.last_scale.max(0.05);
         // Densify when zoomed out, thin out when zoomed in (screen-space clamp).
         let mut step = DOT_STEP * scale;
@@ -483,17 +495,32 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
         while step > 56.0 {
             step *= 0.5;
         }
-        let radius = if scale < 0.6 { 1.0_f32 } else { 1.4_f32 }.max(step * 0.035);
+        // Two dot intensities: strong dots on the current level, faint dots on
+        // the level below (they render where the coarse dots would land at
+        // 2x spacing), which reads like Blender's two-tier grid.
+        let strong = Color32::from_rgb(0x46, 0x46, 0x46);
+        let faint = Color32::from_rgb(0x32, 0x32, 0x32);
+        let radius = (step * 0.045).clamp(0.6, 1.8);
         let pan = self.view.pan;
-        let color = Color32::from_rgb(0x3F, 0x3F, 0x3F);
         let mut y = (viewport.min.y - pan.y).rem_euclid(step) + viewport.min.y;
         while y <= viewport.max.y {
             let mut x = (viewport.min.x - pan.x).rem_euclid(step) + viewport.min.x;
             while x <= viewport.max.x {
-                painter.circle_filled(pos2(x, y), radius, color);
+                painter.circle_filled(pos2(x, y), radius, strong);
                 x += step;
             }
             y += step;
+        }
+        // Faint dots at the 2x grid (alternate levels).
+        let coarse = step * 2.0;
+        let mut y = (viewport.min.y - pan.y).rem_euclid(coarse) + viewport.min.y;
+        while y <= viewport.max.y {
+            let mut x = (viewport.min.x - pan.x).rem_euclid(coarse) + viewport.min.x;
+            while x <= viewport.max.x {
+                painter.circle_filled(pos2(x, y), radius * 0.8, faint);
+                x += coarse;
+            }
+            y += coarse;
         }
     }
 
