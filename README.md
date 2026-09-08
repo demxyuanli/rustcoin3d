@@ -1,5 +1,7 @@
 # rustcoin3d — Industrial 3D Visualization Engine
 
+**English** · [简体中文](README.zh-cn.md) · [日本語](README.ja.md)
+
 Coin3D/HOOPS-aligned 3D visualization engine in Rust + wgpu. Built for
 large-scale industrial visualization: CAD import, real-time PBR rendering,
 node-graph compositing, and interactive scene editing — all in a desktop
@@ -251,6 +253,8 @@ cargo clippy --workspace         # lint check
 ```
 
 ## Studio Desktop Editor
+
+![Studio UI](assets/studio-ui.png)
 
 `rc3d-studio` is the flagship desktop application:
 
