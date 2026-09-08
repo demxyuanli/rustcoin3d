@@ -26,21 +26,15 @@ use crate::ui::icons::{self, Icon, PANEL_BTN};
 use crate::ui::theme::{paint_icon_glyph, ThemePalette};
 
 use super::labels::{
-    blend_label, header_color, input_pin, input_socket_label, math_label, op_title,
-    output_pin_info, value_pin, viewer_color, MATH_OPS,
+    blend_label, header_color, input_pin, math_label, op_title, output_pin_info, value_pin,
+    viewer_color, MATH_OPS,
 };
 use super::sync::{first_image_pin, graph_slot, protected, ui_input_count};
-use super::view::{NodeColorScheme, ViewState, MIN_SCALE};
+use super::view::{op_has_body, NodeColorScheme, ViewState, MIN_SCALE};
 use super::widgets::{
     blender_color_row_rgb, blender_dropdown, blender_slider, param_row, socket_field, SLIDER_H,
 };
 use super::{pick_add_op, DOT_STEP, NODE_FILL, NODE_R, NODE_W};
-
-/// Horizontal gap between the socket (which sits on the node edge) and the
-/// first piece of text in the same socket row.
-const SOCKET_GAP: f32 = 7.0;
-/// Muted white used for socket labels.
-const SOCKET_TEXT: Color32 = Color32::from_rgb(0xC8, 0xC8, 0xC8);
 
 pub(super) fn force_node_width(ui: &mut Ui) {
     ui.set_min_width(NODE_W);
@@ -49,20 +43,28 @@ pub(super) fn force_node_width(ui: &mut Ui) {
 
 pub(super) fn compositor_style() -> SnarlStyle {
     let mut layout = egui_snarl::ui::NodeLayout::coil();
-    // Rows in the socket columns are slightly taller than the widgets so the
-    // dots breathe like Blender's socket strips.
-    layout.min_pin_row_height = SLIDER_H + 8.0;
+    // Rows in the socket columns are compact: the socket is a bare dot so the
+    // strip height only needs a little breathing room around it (Blender style).
+    layout.min_pin_row_height = SLIDER_H + 2.0;
     // Blender-like socket: dark outline around the colored circle.
     let pin_stroke = Stroke::new(1.4, Color32::from_rgb(0x16, 0x16, 0x16));
     SnarlStyle {
         node_layout: Some(layout),
         pin_placement: Some(egui_snarl::ui::PinPlacement::Edge),
-        pin_size: Some(5.5),
+        pin_size: Some(6.0),
         pin_stroke: Some(pin_stroke),
-        // Noticeable smooth connections: adaptive cubic Beziers.
-        wire_width: Some(1.6),
+        // Smooth Blender-style connections. `wire_frame_size` is the horizontal
+        // handle reach of the Bezier curve; with up/down-scale both enabled the
+        // handle ends up ~1/6 of the socket distance, so short wires stay tight
+        // and long wires keep a gentle, visible arc.
+        wire_width: Some(1.7),
         wire_style: Some(WireStyle::Bezier3),
-        wire_smoothness: Some(150.0),
+        wire_frame_size: Some(24.0),
+        upscale_wire_frame: Some(true),
+        downscale_wire_frame: Some(true),
+        // `wire_smoothness` is the polyline tessellation tolerance, not the
+        // curvature: keep it small so curves are actually drawn smooth.
+        wire_smoothness: Some(1.0),
         collapsible: Some(false),
         min_scale: Some(MIN_SCALE),
         max_scale: Some(super::view::MAX_SCALE),
@@ -70,8 +72,10 @@ pub(super) fn compositor_style() -> SnarlStyle {
         centering: Some(true),
         bg_pattern: Some(BackgroundPattern::NoPattern),
         // Node body: dark slab with a soft drop shadow, like Blender nodes.
+        // No horizontal padding on the node frame: the header strip and body
+        // fill the full node width so there are no gaps on the left/right.
         node_frame: Some(Frame {
-            inner_margin: Margin::symmetric(4, 2),
+            inner_margin: Margin::symmetric(0, 2),
             outer_margin: Margin::ZERO,
             corner_radius: CornerRadius::same(NODE_R),
             fill: NODE_FILL,
@@ -83,9 +87,11 @@ pub(super) fn compositor_style() -> SnarlStyle {
                 color: Color32::from_black_alpha(110),
             },
         }),
-        // Header: colored strip, flat (shadow lives on the node frame).
+        // Header: colored strip, flat (shadow lives on the node frame). It
+        // spans the full node width; its own inner margin pads the chevron and
+        // title from the strip edges.
         header_frame: Some(Frame {
-            inner_margin: Margin::symmetric(2, 2),
+            inner_margin: Margin::symmetric(0, 2),
             outer_margin: Margin::ZERO,
             corner_radius: CornerRadius {
                 nw: NODE_R,
@@ -269,11 +275,6 @@ fn draw_node_body(ui: &mut Ui, n: &mut CompNode, loc: UiLocale) {
     }
 }
 
-/// Muted socket name next to a pin (left column inputs / right column outputs).
-fn socket_label(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(10.0).color(SOCKET_TEXT));
-}
-
 pub(super) struct CompViewer<'a> {
     pub(super) loc: UiLocale,
     pub(super) view: &'a mut ViewState,
@@ -318,6 +319,10 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
         ui.style_mut()
             .text_styles
             .insert(egui::TextStyle::Body, egui::FontId::proportional(10.0));
+        // Tight header: chevron sits right against the title.
+        ui.spacing_mut().item_spacing.x = 2.0;
+        // Left inset: 2px from the node edge to the chevron.
+        ui.add_space(2.0);
         // Character chevron replaces snarl's oversized triangle icon; small
         // click target toggles node openness (style.collapsible is disabled).
         // Glyph comes from Segoe Fluent Icons (same as the rest of the UI);
@@ -328,7 +333,7 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
         } else {
             icons::CODEPOINT_CHEVRON_RIGHT
         };
-        let (hit, btn_resp) = ui.allocate_exact_size(vec2(9.0, 12.0), egui::Sense::click());
+        let (hit, btn_resp) = ui.allocate_exact_size(vec2(8.0, 12.0), egui::Sense::click());
         paint_icon_glyph(
             ui.painter(),
             hit,
@@ -345,58 +350,45 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
                 info.value.open = !open;
             }
         }
-        ui.strong(op_title(self.loc, snarl[node].op));
+        // Non-selectable title so node labels do not capture mouse selection.
+        ui.add(
+            egui::Label::new(egui::RichText::new(op_title(self.loc, snarl[node].op)))
+                .selectable(false),
+        );
     }
 
     #[allow(refining_impl_trait)]
     fn show_input(&mut self, pin: &InPin, ui: &mut Ui, snarl: &mut Snarl<CompNode>) -> PinInfo {
-        // Input socket rows live in the narrow strip along the node's left
-        // edge. Row content is the socket name (A/B for multi-input ops) plus,
-        // for scalar operands that fall back to a constant when unlinked, a
-        // compact inline field.
-        ui.spacing_mut().item_spacing.x = 3.0;
+        // Input socket rows are bare dots on the node's left edge (Blender
+        // style); no text label. Scalar operands that fall back to a constant
+        // when unlinked still get a compact inline field.
+        ui.spacing_mut().item_spacing.x = 2.0;
         ui.spacing_mut().item_spacing.y = 1.0;
-        let loc = self.loc;
         let n = &mut snarl[pin.id.node];
         let linked = !pin.remotes.is_empty();
-        // Keep the label clear of the socket circle that sits on the edge.
-        ui.add_space(SOCKET_GAP);
         match (n.op, pin.id.input) {
             (CompOp::Math, 0) => {
-                socket_label(ui, t(loc, "comp.socket.a"));
                 if !linked {
                     socket_field(ui, &mut n.value_a, -100.0..=100.0);
                 }
                 value_pin()
             }
             (CompOp::Math, 1) => {
-                socket_label(ui, t(loc, "comp.socket.b"));
                 if !linked {
                     socket_field(ui, &mut n.value, -100.0..=100.0);
                 }
                 value_pin()
             }
-            _ => {
-                let text = input_socket_label(n.op, pin.id.input, loc)
-                    .unwrap_or(t(loc, "comp.socket.image"));
-                socket_label(ui, text);
-                input_pin(n.op, pin.id.input)
-            }
+            _ => input_pin(n.op, pin.id.input),
         }
     }
 
     #[allow(refining_impl_trait)]
     fn show_output(&mut self, _pin: &OutPin, ui: &mut Ui, snarl: &mut Snarl<CompNode>) -> PinInfo {
-        // Output socket rows live along the node's right edge: label to the
-        // left of the socket, mirrored from the input column.
-        ui.spacing_mut().item_spacing.x = 3.0;
+        // Output socket rows are bare dots on the node's right edge.
+        ui.spacing_mut().item_spacing.x = 2.0;
         let n = &snarl[_pin.id.node];
-        let (label, pin) = output_pin_info(n.op, self.loc);
-        // Right-to-left allocation: the gap ends up right next to the socket,
-        // the label just left of it.
-        ui.add_space(SOCKET_GAP);
-        socket_label(ui, &label);
-        pin
+        output_pin_info(n.op)
     }
 
     fn node_frame(
@@ -438,27 +430,7 @@ impl SnarlViewer<CompNode> for CompViewer<'_> {
     }
 
     fn has_body(&mut self, node: &CompNode) -> bool {
-        matches!(
-            node.op,
-            CompOp::Mix
-                | CompOp::AlphaOver
-                | CompOp::BrightContrast
-                | CompOp::Blur
-                | CompOp::Bloom
-                | CompOp::ColorRamp
-                | CompOp::Rgb
-                | CompOp::Value
-                | CompOp::Math
-                | CompOp::HueSat
-                | CompOp::Invert
-                | CompOp::Crop
-                | CompOp::Exposure
-                | CompOp::Gamma
-                | CompOp::Translate
-                | CompOp::Rotate
-                | CompOp::Scale
-                | CompOp::DilateErode
-        )
+        op_has_body(node.op)
     }
 
     fn show_body(

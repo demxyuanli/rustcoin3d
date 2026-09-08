@@ -25,7 +25,7 @@ const SNARL_ID: &str = "rc3d-compositor-snarl";
 /// Target width (graph units) for the center parameter column of a node. The
 /// socket strips on the left / right edges add a bit on each side, so total
 /// node width ends up slightly wider.
-pub(super) const NODE_W: f32 = 180.0;
+pub(super) const NODE_W: f32 = 150.0;
 const DOT_STEP: f32 = 24.0;
 const NODE_FILL: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
 const NODE_R: u8 = 6;

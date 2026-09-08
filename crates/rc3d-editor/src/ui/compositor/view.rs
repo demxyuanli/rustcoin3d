@@ -7,13 +7,18 @@ use rc3d_render::{CompNode, CompOp};
 
 use super::{sync::ui_input_count, NODE_W};
 
-/// Header + top padding, in graph units.
-const HEADER_EST: f32 = 28.0;
-/// One socket / parameter row.
-const ROW_EST: f32 = 24.0;
-/// Extra width the two socket strips add to a node (both sides combined).
-const SOCKET_COL_EST: f32 = 90.0;
-const BB_PAD: f32 = 48.0;
+/// Header height (collapse button + title), in graph units.
+const HEADER_EST: f32 = 26.0;
+/// Height of one body parameter row (slider / dropdown + spacing).
+const ROW_EST: f32 = 18.0;
+/// Height of one socket strip row (`min_pin_row_height` in the node style).
+const SOCKET_ROW_EST: f32 = 15.0;
+/// Width of one bare-dot socket strip on a node edge.
+const STRIP_W_EST: f32 = 20.0;
+/// Bottom slack below the payload when estimating node height.
+const NODE_END_PAD: f32 = 8.0;
+/// Extra graph margin used by the exact "fit all" view command.
+const BB_PAD: f32 = 32.0;
 pub(super) const MIN_SCALE: f32 = 0.25;
 pub(super) const MAX_SCALE: f32 = 2.0;
 const ZOOM_STEP: f32 = 1.15;
@@ -26,14 +31,41 @@ pub(super) enum ViewCmd {
     Center,
 }
 
+/// Whether an op renders a parameter body in the node's center column.
+/// Mirrors the `has_body` viewer hook (kept in one place so fit estimates and
+/// the actual node layout cannot drift apart).
+pub(super) fn op_has_body(op: CompOp) -> bool {
+    matches!(
+        op,
+        CompOp::Mix
+            | CompOp::AlphaOver
+            | CompOp::BrightContrast
+            | CompOp::Blur
+            | CompOp::Bloom
+            | CompOp::ColorRamp
+            | CompOp::Rgb
+            | CompOp::Value
+            | CompOp::Math
+            | CompOp::HueSat
+            | CompOp::Invert
+            | CompOp::Crop
+            | CompOp::Exposure
+            | CompOp::Gamma
+            | CompOp::Translate
+            | CompOp::Rotate
+            | CompOp::Scale
+            | CompOp::DilateErode
+    )
+}
+
 /// Number of parameter rows a node shows in its body (drives the fit estimate).
 fn body_rows(op: CompOp) -> f32 {
     match op {
-        CompOp::Mix => 2.0, // blend type + Fac
-        CompOp::AlphaOver => 1.0, // Fac
-        CompOp::Rgb => 2.0,  // color + alpha
+        CompOp::Mix => 2.0,          // blend type + Fac
+        CompOp::AlphaOver => 1.0,    // Fac
+        CompOp::Rgb => 2.0,          // color + alpha
         CompOp::Value => 1.0,
-        CompOp::Math => 1.0, // operator
+        CompOp::Math => 1.0,         // operator
         CompOp::BrightContrast => 2.0,
         CompOp::Blur => 1.0,
         CompOp::Bloom => 1.0,
@@ -47,14 +79,30 @@ fn body_rows(op: CompOp) -> f32 {
     }
 }
 
-fn node_height_est(op: CompOp) -> f32 {
-    let sockets = if op == CompOp::Viewer {
-        1.0
+/// Estimated node width in graph units. The header sets a `NODE_W` floor on
+/// every node (bodyless render ops are about that wide), while ops with a
+/// parameter body add the two bare-dot socket strips around the `NODE_W` body
+/// column.
+fn node_width_est(op: CompOp) -> f32 {
+    if op_has_body(op) {
+        NODE_W + STRIP_W_EST * 2.0
     } else {
-        ui_input_count(op).max(1) as f32
+        NODE_W
+    }
+}
+
+/// Estimated node height in graph units. Payload height is the taller of the
+/// body rows and the socket strip block, both starting under the header.
+fn node_height_est(op: CompOp) -> f32 {
+    let in_rows = ui_input_count(op);
+    let out_rows = usize::from(op != CompOp::Viewer);
+    let body_h = if op_has_body(op) {
+        body_rows(op) * ROW_EST
+    } else {
+        0.0
     };
-    let rows = body_rows(op).max(sockets);
-    HEADER_EST + rows * ROW_EST + 10.0
+    let pin_h = in_rows.max(out_rows).max(1) as f32 * SOCKET_ROW_EST;
+    HEADER_EST + body_h.max(pin_h) + NODE_END_PAD
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -176,12 +224,12 @@ fn nodes_bb(snarl: &Snarl<CompNode>) -> Option<Rect> {
     for (_id, pos, value) in snarl.nodes_pos_ids() {
         bb.extend_with(pos);
         bb.extend_with(pos2(
-            pos.x + NODE_W + SOCKET_COL_EST,
+            pos.x + node_width_est(value.op),
             pos.y + node_height_est(value.op),
         ));
     }
     if bb.is_finite() {
-        Some(bb.expand(BB_PAD))
+        Some(bb)
     } else {
         None
     }
@@ -193,6 +241,7 @@ fn zoom_at(t: &mut TSTransform, factor: f32, screen_anchor: Pos2) {
 }
 
 fn fit_view(t: &mut TSTransform, view: Rect, panel: Rect) {
+    let view = view.expand(BB_PAD);
     let size = view.size().max(vec2(1.0, 1.0));
     let scaling = (panel.size() / size).min_elem().clamp(MIN_SCALE, MAX_SCALE);
     *t = transform_matching_points(view.center(), panel.center(), scaling);

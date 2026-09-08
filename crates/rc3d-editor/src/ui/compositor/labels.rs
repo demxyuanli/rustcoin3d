@@ -138,24 +138,14 @@ pub(super) fn input_pin(op: CompOp, _idx: usize) -> PinInfo {
     }
 }
 
-/// Short label shown right of an input socket (A / B for multi-input ops).
-pub(super) fn input_socket_label(op: CompOp, idx: usize, loc: UiLocale) -> Option<&'static str> {
+/// Output socket pin per op, Blender-style (Image / Value / Color). The pin
+/// carries its own colour; input/output labels are intentionally omitted so
+/// sockets render as bare dots.
+pub(super) fn output_pin_info(op: CompOp) -> PinInfo {
     match op {
-        CompOp::Mix | CompOp::AlphaOver | CompOp::Math => match idx {
-            0 => Some(t(loc, "comp.socket.a")),
-            1 => Some(t(loc, "comp.socket.b")),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Output socket label + color per op, Blender-style (Image / Value / Color).
-pub(super) fn output_pin_info(op: CompOp, loc: UiLocale) -> (String, PinInfo) {
-    match op {
-        CompOp::Math | CompOp::Value => (t(loc, "comp.socket.value").to_owned(), value_pin()),
-        CompOp::Rgb => (t(loc, "comp.color").to_owned(), image_pin()),
-        _ => (t(loc, "comp.socket.image").to_owned(), image_pin()),
+        CompOp::Math | CompOp::Value => value_pin(),
+        CompOp::Rgb => image_pin(),
+        _ => image_pin(),
     }
 }
 
